@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI 事件流 UI 风格演示 v2</title>
+<title>AI 事件流 UI 风格演示 v3</title>
 <style>
 /* ============================================================
    主题变量：极简浅色 light / 纸感线框 paper / 深色质感 dark
@@ -143,7 +143,7 @@ body{
 /* ---------- 顶栏 ---------- */
 .topbar{
   display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: 14px; margin-bottom: 34px;
+  flex-wrap: wrap; gap: 14px; margin-bottom: 30px;
 }
 .brand{ display: flex; align-items: center; gap: 12px; }
 .brand .mark{
@@ -188,34 +188,40 @@ body{
   from{ opacity: 0; transform: translateY(14px); }
   to{ opacity: 1; transform: translateY(0); }
 }
+/* 事件块入场（工具/命令依次出现） */
+.rise-in{ animation: rise .42s cubic-bezier(.2,.7,.3,1) both; }
+.fade-in{ animation: fade .38s ease both; }
+@keyframes fade{ from{ opacity: 0; } to{ opacity: 1; } }
+/* 尚未轮到的事件块先隐藏，避免结果提前出现 */
+.queued{ display: none !important; }
 
 /* ============================================================
    用户消息（气泡）
    ============================================================ */
-.user-turn{ display: flex; justify-content: flex-end; margin: 10px 0 16px; }
+.user-turn{ display: flex; justify-content: flex-end; margin: 8px 0 12px; }
 .msg{
   background: var(--user-bg);
   color: var(--user-fg);
   border-radius: 18px 18px 6px 18px;
-  padding: 13px 18px;
+  padding: 12px 17px;
   font-size: 13.5px; line-height: 1.65;
   max-width: 84%;
   box-shadow: var(--card-shadow);
 }
-.msg .meta{ display: block; margin-top: 6px; font-size: 10.5px; opacity: .55; }
+.msg .meta{ display: block; margin-top: 5px; font-size: 10.5px; opacity: .55; }
 
 /* ============================================================
    AI 回合：无气泡，虚线隔离分区
    ============================================================ */
 .ai-turn{
   position: relative;
-  margin: 0 0 30px;
-  padding: 18px 0 6px;
+  margin: 0 0 22px;
+  padding: 14px 0 4px;
   border-top: 1px dashed var(--dash);
   border-bottom: 1px dashed var(--dash);
 }
 .ai-turn .vline{ /* 左侧垂直虚线，强化分区感 */
-  position: absolute; left: -14px; top: 18px; bottom: 8px;
+  position: absolute; left: -14px; top: 14px; bottom: 6px;
   width: 1px;
   background-image: linear-gradient(var(--dash) 50%, transparent 50%);
   background-size: 1px 8px;
@@ -235,7 +241,7 @@ body{
 }
 .cost-ribbon svg{ width: 13px; height: 13px; }
 .sys-meta{
-  margin: 12px 0 16px;
+  margin: 8px 0 10px;
   font-size: 11px; color: var(--muted);
   font-family: var(--font-mono);
 }
@@ -247,8 +253,8 @@ body{
   border: 1px solid var(--card-border);
   border-radius: 6px 16px 16px 16px;
   box-shadow: var(--card-shadow);
-  padding: 13px 15px;
-  margin-bottom: 14px;
+  padding: 12px 15px;
+  margin-bottom: 12px;
   position: relative;
   backdrop-filter: blur(var(--glass-blur, 0));
   -webkit-backdrop-filter: blur(var(--glass-blur, 0));
@@ -268,7 +274,13 @@ body{
   background: var(--tag-bg); color: var(--tag-fg);
   white-space: nowrap;
 }
-.think-bubble .think-txt{ font-size: 12.5px; line-height: 1.75; color: var(--body-fg); }
+.think-bubble .think-txt{
+  font-size: 12.5px; line-height: 1.75; color: var(--body-fg);
+  white-space: pre-wrap; word-break: break-word;
+  /* 默认高度完全自适应，不预留任何空白 */
+  max-height: none;
+  transition: max-height .45s cubic-bezier(.2,.7,.3,1);
+}
 .think-bubble .dots{ display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; }
 .dots i{
   width: 4px; height: 4px; border-radius: 50%;
@@ -278,104 +290,14 @@ body{
 .dots i:nth-child(2){ animation-delay: .15s; }
 .dots i:nth-child(3){ animation-delay: .3s; }
 @keyframes dot{ 0%,80%,100%{ transform: translateY(0);} 40%{ transform: translateY(-3px);} }
-/* ---------- 思考折叠：正文 > 5 行自动折叠 ---------- */
-.tb-body{
-  overflow: hidden;
-  transition: max-height .5s cubic-bezier(.2,.7,.3,1), opacity .35s ease, margin .5s ease;
-}
-.think-bubble .tb-body{ max-height: 900px; }
-/* ---------- 过程区：完成汇报后整体收起，点击按钮展开/收起 ---------- */
-.ai-proc{
-  overflow: hidden;
-  max-height: 1200px;
-  transition: max-height .55s cubic-bezier(.2,.7,.3,1), opacity .4s ease, margin .55s ease;
-  margin-bottom: 4px;
-}
-.ai-turn.done .ai-proc{
-  max-height: 0; opacity: 0; margin-bottom: 0; pointer-events: none;
-}
-.proc-ctrl{ margin: 2px 0 14px; }
-.proc-btn{
-  appearance: none; cursor: pointer;
-  font-family: var(--font-ui); font-size: 11.5px; font-weight: 600;
-  color: var(--accent);
-  background: transparent;
-  border: 1px solid var(--card-border);
-  border-radius: 999px;
-  padding: 5px 13px;
-  display: inline-flex; align-items: center; gap: 5px;
-  transition: all .2s ease;
-}
-.proc-btn:hover{ background: var(--accent-soft); }
-.proc-btn svg{ width: 12px; height: 12px; transition: transform .3s ease; transform: rotate(-90deg); }
-.ai-turn.done .proc-btn svg{ transform: rotate(90deg); }
-
-/* ---------- 工具调用 / 执行命令（无气泡，行内条目） ---------- */
-.tool-call{
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 10px 2px; margin-bottom: 12px;
-}
-.tc-icon{
-  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px;
-  display: grid; place-items: center;
-  background: var(--icon-shell); color: var(--icon-color);
-  box-shadow: 0 0 0 1px var(--card-border) inset;
-}
-.tc-icon svg{ width: 16px; height: 16px; }
-.tc-body{ min-width: 0; }
-.tc-title{ font-size: 12.5px; font-weight: 600; color: var(--title-fg); font-family: var(--font-mono); }
-.tc-meta{ font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--font-mono); }
-.kv{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
-.kv em{
-  font-style: normal; font-size: 11px;
-  padding: 4px 10px; border-radius: 7px;
-  background: var(--tag-bg); color: var(--tag-fg);
-  font-family: var(--font-mono);
-}
-.kv em b{ font-weight: 600; color: var(--title-fg); margin-right: 5px; }
-
-.cmd{
-  margin-bottom: 14px; border-radius: 10px; overflow: hidden;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--card-border) 45%, transparent);
-  backdrop-filter: blur(var(--glass-blur, 0));
-  -webkit-backdrop-filter: blur(var(--glass-blur, 0));
-}
-.cmd .bar{
-  font-family: var(--font-mono); font-size: 11px;
-  padding: 7px 12px;
-  color: var(--body-fg);
-  border-bottom: 1px solid var(--line);
-  display: flex; gap: 12px; align-items: center;
-}
-.cmd .bar .dotbtn{ width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
-.cmd .in{ font-family: var(--font-mono); font-size: 12.5px; color: var(--cmd-fg); padding: 11px 13px; }
-.cmd .in .dol{ color: var(--accent); }
-.cmd .out{
-  font-family: var(--font-mono); font-size: 11.5px; color: var(--ok-fg);
-  padding: 0 13px 11px;
-}
-.cmd .out::before{ content: "ok  "; opacity: .55; font-weight: 700; }
+/* 思考结束：标签圆点停止并隐藏 */
+.think-bubble.think-done .dots{ display: none; }
 
 /* ============================================================
-   正文回复区：永不收起，完整展示
+   思考折叠：只有正文严格超过 5 行时，JS 才加 .folded 封顶 5 行；
+   ≤5 行的短气泡永远保持内容高度（高度自适应），不预留 5 行空白。
    ============================================================ */
-.stream{ margin-bottom: 16px; }
-.stream .txt{
-  font-size: 13.5px; line-height: 1.8; color: var(--body-fg);
-  white-space: pre-wrap; word-break: break-word;
-}
-/* 打字光标 */
-.caret{
-  display: inline-block; width: 7px; height: 15px;
-  vertical-align: text-bottom; margin-left: 2px;
-  border-radius: 1px;
-  background: var(--accent);
-  animation: blink 1s steps(1) infinite;
-}
-@keyframes blink{ 50%{ opacity: 0; } }
-/* 思考过程折叠遮罩：max-height 为 5 行 */
-.think-bubble .think-txt{ transition: max-height .45s cubic-bezier(.2,.7,.3,1); }
+.tb-body{ overflow: hidden; }
 .think-bubble.folded .think-txt{
   max-height: calc(5 * 1.75em);
   overflow: hidden;
@@ -400,8 +322,105 @@ body{
 .fold-btn svg{ width: 13px; height: 13px; transition: transform .3s ease; }
 .fold-btn.open svg{ transform: rotate(180deg); }
 
+/* ---------- 过程区：完成汇报后整体收起，点击按钮展开/收起 ---------- */
+.ai-proc{
+  overflow: hidden;
+  max-height: 1200px;
+  transition: max-height .55s cubic-bezier(.2,.7,.3,1), opacity .4s ease, margin .55s ease;
+  margin-bottom: 2px;
+}
+.ai-turn.done .ai-proc{
+  max-height: 0; opacity: 0; margin-bottom: 0; pointer-events: none;
+}
+.proc-ctrl{ margin: 2px 0 10px; }
+.proc-btn{
+  appearance: none; cursor: pointer;
+  font-family: var(--font-ui); font-size: 11.5px; font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 5px 13px;
+  display: inline-flex; align-items: center; gap: 5px;
+  transition: all .2s ease;
+}
+.proc-btn:hover{ background: var(--accent-soft); }
+.proc-btn svg{ width: 12px; height: 12px; transition: transform .3s ease; transform: rotate(-90deg); }
+.ai-turn.done .proc-btn svg{ transform: rotate(90deg); }
+
+/* ---------- 工具调用 / 执行命令（无气泡，行内条目） ---------- */
+.tool-call{
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 2px; margin-bottom: 10px;
+}
+.tc-icon{
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  background: var(--icon-shell); color: var(--icon-color);
+  box-shadow: 0 0 0 1px var(--card-border) inset;
+}
+.tc-icon svg{ width: 16px; height: 16px; }
+.tc-body{ min-width: 0; }
+.tc-title{ font-size: 12.5px; font-weight: 600; color: var(--title-fg); font-family: var(--font-mono); }
+.tc-meta{ font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--font-mono); }
+.kv{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.kv em{
+  font-style: normal; font-size: 11px;
+  padding: 4px 10px; border-radius: 7px;
+  background: var(--tag-bg); color: var(--tag-fg);
+  font-family: var(--font-mono);
+}
+.kv em b{ font-weight: 600; color: var(--title-fg); margin-right: 5px; }
+
+.cmd{
+  margin-bottom: 12px; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--card-border) 45%, transparent);
+  backdrop-filter: blur(var(--glass-blur, 0));
+  -webkit-backdrop-filter: blur(var(--glass-blur, 0));
+}
+.cmd .bar{
+  font-family: var(--font-mono); font-size: 11px;
+  padding: 7px 12px;
+  color: var(--body-fg);
+  border-bottom: 1px solid var(--line);
+  display: flex; gap: 12px; align-items: center;
+}
+.cmd .bar .dotbtn{ width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.cmd .in{ font-family: var(--font-mono); font-size: 12.5px; color: var(--cmd-fg); padding: 10px 13px; }
+.cmd .in .dol{ color: var(--accent); }
+.cmd .in .typing{ white-space: pre-wrap; word-break: break-word; }
+.cmd .out{
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--ok-fg);
+  padding: 0 13px 10px;
+}
+.cmd .out::before{ content: "ok  "; opacity: .55; font-weight: 700; }
+
+/* ============================================================
+   正文回复区：永不收起，完整展示
+   ============================================================ */
+.stream{ margin-bottom: 10px; }
+.stream .txt{
+  font-size: 13.5px; line-height: 1.8; color: var(--body-fg);
+  white-space: pre-wrap; word-break: break-word;
+}
+/* 打字光标：内联伪元素，紧跟最后一个字符，绝不另起空行；
+   仅在 .typing（流式输出中）显示，完成后自动淡出。 */
+.stream .txt::after{
+  content: "";
+  display: inline-block; width: 7px; height: 15px;
+  vertical-align: text-bottom; margin-left: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0;
+  animation: blink 1s steps(1) infinite;
+  transition: opacity .25s ease;
+}
+.stream.typing .txt::after{ opacity: 1; }
+@keyframes blink{ 50%{ opacity: 0; } }
+
 /* ---------- 操作区 ---------- */
-.actions{ margin-top: 30px; text-align: center; }
+.actions{ margin-top: 26px; text-align: center; }
 .btn{
   appearance: none; cursor: pointer;
   font-family: var(--font-ui); font-size: 13px; font-weight: 600;
@@ -441,7 +460,7 @@ body[data-theme="glass"] .cmd{ backdrop-filter: blur(20px); -webkit-backdrop-fil
     <div class="brand">
       <div class="mark" id="brandMark"></div>
       <div>
-        <h1>AI 事件流 UI 风格演示 v2</h1>
+        <h1>AI 事件流 UI 风格演示 v3</h1>
       </div>
     </div>
     <nav class="switcher" id="switcher">
@@ -542,16 +561,40 @@ const ICONS = {
 const iconSvg = (name, w) =>
   `<svg width="${w||16}" height="${w||16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
 
-/* ---------- typewriter：流式打字 ---------- */
-function typeWriter(el, fullText, speed, onDone) {
-  let i = 0;
-  const step = () => {
-    el.textContent = fullText.slice(0, i);
-    i += 2; /* 丝滑：一次推进 2 字符 */
-    if (i <= fullText.length) { setTimeout(step, speed); }
-    else { el.textContent = fullText; if (onDone) onDone(); }
-  };
-  setTimeout(step, 120);
+/* ============================================================
+   流式引擎：requestAnimationFrame 驱动，按恒定“字符/秒”速率
+   逐帧推进，与屏幕刷新同步，丝滑连贯；掉帧时按时间补偿，
+   不会因帧率波动而忽快忽慢。
+   ============================================================ */
+const CANCEL = { cancelled: true };
+let playGen = 0;                 /* 播放代次：重播/重挂载时自增，旧播放链自动失效 */
+
+function rafStream(el, text, cps, gen) {
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    el.textContent = "";
+    const frame = (now) => {
+      if (gen !== playGen) return reject(CANCEL);
+      const n = Math.min(text.length, Math.max(0, Math.floor((now - t0) / 1000 * cps)));
+      el.textContent = text.slice(0, n);
+      scrollTick();
+      if (n >= text.length) { el.textContent = text; resolve(); }
+      else requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  });
+}
+const wait = (ms, gen) => new Promise((resolve, reject) => {
+  setTimeout(() => (gen === playGen ? resolve() : reject(CANCEL)), ms);
+});
+
+/* ---------- 跟随滚动：用户在底部时自动跟随，手动上翻后不强制拉回 ---------- */
+let stickBottom = true;
+window.addEventListener("scroll", () => {
+  stickBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 140;
+});
+function scrollTick() {
+  if (stickBottom) window.scrollTo(0, document.body.scrollHeight);
 }
 
 /* ---------- 回合渲染 ---------- */
@@ -564,20 +607,23 @@ const renders = {
   },
   ai(t) {
     const cost = `<div class="cost-ribbon">${iconSvg('clock', 13)}${t.cost}</div>`;
-    /* 过程区：思考/工具/命令；正文：最终回复，永不收起 */
-    const proc = t.items.filter(it => it.type !== 'stream').map(it => renders[it.type] ? renders[it.type](it) : "").join("");
-    const body = t.items.filter(it => it.type === 'stream').map(it => renders.stream(it)).join("");
     const sys = `<div class="sys-meta">${t.time}</div>`;
+    /* 每个事件块带 data-key，播放时按 items 顺序逐个揭示；
+       思考/工具/命令在过程区内，正文在过程区外（永不收起）。 */
+    const procBlocks = t.items.map((it, i) =>
+      it.type !== "stream" && renders[it.type] ? renders[it.type](it, i) : "").join("");
+    const bodyBlocks = t.items.map((it, i) =>
+      it.type === "stream" ? renders[it.type](it, i) : "").join("");
     return `
       <div class="turn ai-turn n${t._i}">
         <span class="vline"></span>${cost}
-        ${proc ? `<div class="ai-proc">${proc}</div>` : ''}
-        ${body}${sys}
+        <div class="ai-proc">${procBlocks}</div>
+        ${bodyBlocks}${sys}
       </div>`;
   },
-  think(it) {
+  think(it, key) {
     return `
-      <div class="think-bubble">
+      <div class="think-bubble" data-key="${key}">
         <div class="tb-head">
           <span class="icon">${iconSvg('think')}</span>
           <strong>思考过程</strong>
@@ -585,13 +631,13 @@ const renders = {
         </div>
         <div class="tb-body">
           <div class="think-txt"></div>
-          <div class="fold-ctrl" hidden><button class="fold-btn">继续查看${iconSvg('down', 13)}</button></div>
+          <div class="fold-ctrl queued"><button class="fold-btn">继续查看${iconSvg('down', 13)}</button></div>
         </div>
       </div>`;
   },
-  tool(it) {
+  tool(it, key) {
     return `
-      <div class="tool-call">
+      <div class="tool-call queued" data-key="${key}">
         <span class="tc-icon">${iconSvg('tool')}</span>
         <div class="tc-body">
           <div class="tc-title">${it.name}</div>
@@ -600,79 +646,101 @@ const renders = {
         </div>
       </div>`;
   },
-  exec(it) {
+  exec(it, key) {
     return `
-      <div class="cmd">
+      <div class="cmd queued" data-key="${key}">
         <div class="bar"><span class="dotbtn"></span><span class="dotbtn"></span><span class="dotbtn"></span><span>PowerShell</span></div>
-        <div class="in"><span class="dol">$&nbsp;</span><span class="typing">${it.cmd}</span></div>
-        <div class="out">${it.out}</div>
+        <div class="in"><span class="dol">$&nbsp;</span><span class="typing"></span></div>
+        <div class="out queued">${it.out}</div>
       </div>`;
   },
-  stream() {
+  stream(it, key) {
     return `
-      <div class="stream">
-        <div class="txt"></div><span class="caret"></span>
+      <div class="stream" data-key="${key}">
+        <div class="txt"></div>
       </div>`;
   }
 };
 
 /* ---------- 挂载 ---------- */
 const thread = document.getElementById('thread');
-const mount = () => {
-  thread.innerHTML = DEMO_THREAD.map((t, i) => renders[t.kind](Object.assign({}, t, { _i: i + 1 }))).join('');
-  wireStreams();
-};
+function mount() {
+  thread.innerHTML = DEMO_THREAD.map((t, i) =>
+    renders[t.kind](Object.assign({}, t, { _i: i + 1 }))).join('');
+}
 mount();
 
-/* 思考过程折叠装配：文本超 5 行自动折叠，按钮控制展开/收起 */
-function wireFoldable(root, txtSel, rows) {
-  const txt = root.querySelector(txtSel);
-  const ctl = root.querySelector('.fold-ctrl');
-  const btn = root.querySelector('.fold-btn');
-  if (!txt || !ctl) return () => {};
+/* ============================================================
+   思考折叠装配：严格按“实际行数 > 5”判定
+   - >5 行：加 .folded，封顶 5 行 + 展开按钮
+   - ≤5 行：绝不加 .folded，气泡保持内容高度（高度自适应）
+   ============================================================ */
+function makeFoldable(bubble) {
+  const txt = bubble.querySelector('.think-txt');
+  const ctl = bubble.querySelector('.fold-ctrl');
+  const btn = bubble.querySelector('.fold-btn');
 
-  const applyFold = () => {
+  const reflow = () => {
     const lineH = parseFloat(getComputedStyle(txt).lineHeight);
-    if (txt.offsetHeight / lineH > rows) {
-      root.classList.add('folded'); /* 默认折叠态 */
-      ctl.hidden = false;
-    } else {
-      ctl.hidden = true;
-    }
+    const over = txt.scrollHeight / lineH > 5.02; /* 容差，避免临界行误判 */
+    bubble.classList.toggle('folded', over);
+    ctl.classList.toggle('queued', !over);
   };
 
   if (btn) btn.addEventListener('click', e => {
     e.stopPropagation();
-    const expanded = root.classList.toggle('open');
+    const expanded = bubble.classList.toggle('open');
     btn.innerHTML = expanded ? `收起${iconSvg('down', 13)}` : `继续查看${iconSvg('down', 13)}`;
     btn.classList.toggle('open', expanded);
   });
-  return applyFold;
+  return reflow;
 }
 
-/* 装配：正文打字（不折叠）+ 思考过程打字折叠 + 完成后收起过程区 */
-function wireStreams() {
-  /* 正文：只流式打字，永不收起 */
-  const texts = [];
-  DEMO_THREAD.forEach(t => t.kind === 'ai' && t.items.forEach(it => it.type === 'stream' && texts.push(it.text)));
+/* ---------- 单个事件块的揭示 ---------- */
+function reveal(el, animClass) {
+  el.classList.remove('queued');
+  el.classList.add(animClass || 'rise-in');
+}
 
-  thread.querySelectorAll('.stream').forEach((s, idx) => {
-    const txt = s.querySelector('.txt');
-    const turn = s.closest('.ai-turn');
-    /* 正文输出完成 = AI 正式完成汇报 -> 收起全部过程，只留正文 */
-    setTimeout(() => typeWriter(txt, texts[idx] || '', 14, () => {
-      if (turn) wireProcCollapse(turn);
-    }), 240 + idx * 320);
-  });
+/* ---------- 单个 AI 回合顺序播放：思考 → 工具/命令 → 正文 ---------- */
+async function playTurn(turnEl, data, gen) {
+  for (let i = 0; i < data.items.length; i++) {
+    if (gen !== playGen) throw CANCEL;
+    const it = data.items[i];
+    const block = turnEl.querySelector(`[data-key="${i}"]`);
 
-  /* 思考过程：打字 + 超 5 行折叠 */
-  const thinks = [];
-  DEMO_THREAD.forEach(t => t.kind === 'ai' && t.items.forEach(it => it.type === 'think' && thinks.push(it)));
-  thread.querySelectorAll('.think-bubble').forEach((b, idx) => {
-    const txt = b.querySelector('.think-txt');
-    const applyFold = wireFoldable(b, '.think-txt', 5);
-    setTimeout(() => typeWriter(txt, (thinks[idx] || {}).text || '', 14, applyFold), 320 + idx * 460);
-  });
+    if (it.type === 'think') {
+      const txt = block.querySelector('.think-txt');
+      const reflowFold = makeFoldable(block);  /* 对思考气泡本身装配折叠 */
+      await rafStream(txt, it.text, 115, gen);   /* 思考快速流出 */
+      block.classList.add('think-done');          /* 停止标签圆点 */
+      reflowFold();                               /* 按行数决定是否折叠 */
+      await wait(160, gen);
+    } else if (it.type === 'tool') {
+      reveal(block, 'rise-in');
+      scrollTick();
+      await wait(360, gen);
+    } else if (it.type === 'exec') {
+      reveal(block, 'rise-in');
+      const typing = block.querySelector('.typing');
+      const out = block.querySelector('.out');
+      await wait(200, gen);
+      await rafStream(typing, it.cmd, 260, gen);  /* 命令行快速打出 */
+      await wait(180, gen);
+      out.classList.remove('queued');
+      out.classList.add('fade-in');               /* 输出淡入 */
+      scrollTick();
+      await wait(300, gen);
+    } else if (it.type === 'stream') {
+      block.classList.add('typing');
+      const txt = block.querySelector('.txt');
+      await rafStream(txt, it.text, 78, gen);     /* 正文从容输出 */
+      block.classList.remove('typing');           /* 光标淡出 */
+    }
+  }
+
+  /* 正文输出完成 = AI 正式完成汇报 → 收起过程区，只留正文 */
+  wireProcCollapse(turnEl);
 }
 
 /* 过程区收起/展开按钮装配：AI 完成后默认收起过程，只留正文 */
@@ -699,13 +767,47 @@ function wireProcCollapse(turn) {
   });
 }
 
+/* ---------- 整场播放：回合并发改为严格顺序，杜绝时序错乱 ---------- */
+async function play() {
+  const gen = ++playGen;
+  stickBottom = true;
+  const aiTurns = [...thread.querySelectorAll('.ai-turn')];
+  const aiData = DEMO_THREAD.filter(t => t.kind === 'ai');
+  try {
+    await wait(260, gen);
+    for (let k = 0; k < aiTurns.length; k++) {
+      await playTurn(aiTurns[k], aiData[k], gen);
+      await wait(300, gen);
+    }
+  } catch (e) {
+    if (e !== CANCEL) throw e; /* 旧播放链被重播取代，静默退出 */
+  }
+}
+play();
+
+/* 窗口尺寸变化：重新判定思考折叠（短内容自动取消折叠，高度自适应） */
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    thread.querySelectorAll('.think-bubble').forEach(b => {
+      const txt = b.querySelector('.think-txt');
+      const ctl = b.querySelector('.fold-ctrl');
+      const lineH = parseFloat(getComputedStyle(txt).lineHeight);
+      const over = txt.scrollHeight / lineH > 5.02;
+      if (!over) { b.classList.remove('folded', 'open'); ctl.classList.add('queued'); }
+    });
+  }, 180);
+});
+
 /* ---------- 交互 ---------- */
 const replay = document.getElementById('replay');
 const restart = () => {
-  mount();
+  mount();                       /* 重建 DOM，所有状态归零 */
   thread.classList.remove('play');
   void thread.offsetWidth;
   thread.classList.add('play');
+  play();                        /* 旧播放链因 playGen 自增自动取消 */
 };
 replay.addEventListener('click', restart);
 

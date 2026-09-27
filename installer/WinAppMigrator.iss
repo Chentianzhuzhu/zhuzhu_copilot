@@ -6,7 +6,7 @@
 ; ╚══════════════════════════════════════════════════════════╝
 
 #define MyAppName "zhuzhu Copilot"
-#define MyAppVersion "5.1.2"
+#define MyAppVersion "5.1.3"
 #define MyAppPublisher "zhutianliang"
 #define MyAppExeName "zhuzhu Copilot.exe"
 ; 签名私钥密码：由 build_sign.ps1 以 /DMyAppPwd=<密码> 传入，这里提供兜底默认

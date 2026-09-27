@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ui_style_demo 风格演示页 v2 的静态结构回归测试。
+"""ui_style_demo 风格演示页 v3 的静态结构回归测试。
 
 校验点：
 1. 五种主题（light/paper/dark/glass/terminal）切换按钮齐全
@@ -34,7 +34,7 @@ def test_default_theme_is_glass():
 def test_body_never_folds():
     """正文回复永不收起：正文渲染器不应包含折叠控件。"""
     html = DEMO_HTML.read_text(encoding="utf-8")
-    m = re.search(r"stream\(\)\s*\{(.*?)\n  \}", html, re.S)
+    m = re.search(r"stream\(it, key\)\s*\{(.*?)\n  \}", html, re.S)
     assert m, "未找到 stream 渲染器"
     body = m.group(1)
     assert "fold-ctrl" not in body, "正文渲染器不应含折叠控件"
@@ -45,7 +45,7 @@ def test_think_fold_by_lines():
     """思考过程：正文 >5 行自动折叠。"""
     html = DEMO_HTML.read_text(encoding="utf-8")
     assert ".think-txt" in html, "缺少思考内容折叠容器"
-    assert "lines > rows" in html or "> rows" in html, "缺少按行数折叠判定"
+    assert "scrollHeight / lineH > 5" in html, "缺少按行数折叠判定"
 
 
 def test_proc_collapse_on_report():
@@ -54,9 +54,9 @@ def test_proc_collapse_on_report():
     assert ".ai-proc" in html, "缺少过程区容器"
     assert ".ai-turn.done .ai-proc" in html, "缺少过程区收起样式"
     assert "查看执行过程" in html and "收起执行过程" in html, "缺少过程区展开/收起按钮"
-    # 过程区不含 stream（正文），正文独立且不参与收起
-    assert "it.type !== 'stream'" in html, "过程区应排除正文"
-    assert "it.type === 'stream'" in html, "正文应独立渲染"
+    # 过程区不含 stream（正文），正文独立且不参与收起（v3 使用双引号）
+    assert 'it.type !== "stream"' in html, "过程区应排除正文"
+    assert 'it.type === "stream"' in html, "正文应独立渲染"
 
 
 def test_theme_switcher_buttons():

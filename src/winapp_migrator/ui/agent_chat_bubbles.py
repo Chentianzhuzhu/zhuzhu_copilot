@@ -201,15 +201,26 @@ def _need_resize(cur: int, want: int) -> bool:
 def _label_hfw(lbl: QLabel, width: int, ver: int) -> int:
     """按 (内容版本, 宽度) 缓存**单个标签**的高度测量结果。
 
-    QLabel.heightForWidth 会为整篇富文本做一次完整布局；流式刷新（120fps）会反复
+    QLabel.heightForWidth 会为整篇富文本做一次完整布局；流式刷新（60fps）会反复
     问同一批标签的高度，缓存后可把开销压到只剩「正在增长的那一个标签」。
     缓存挂在标签上而不是块上：一个块可能有多行文本（命令块 = 命令 + 输出），
     共用块级缓存会把两行的高度串味。
+
+    **关键：测量前必须临时解除 minimumHeight 钳制。**
+    QLabel.heightForWidth(w) 实际返回 max(文档在 w 下的真实高度, minimumHeight())。
+    新块在布局给宽前以默认窄宽度（~100px）首测并钉入了偏大的最小高度，之后即使
+    拿到真实宽度，每次测量都被这个旧钉值钳制 → 块/回合高度永远偏大，表现为正文
+    上下（尤其下方）大片空白。测量前置零、测完恢复，才能拿到与宽度一致的真实高度。
     """
     key = (ver, int(width))
     if getattr(lbl, "_hfwk", None) == key:
         return lbl._hfqv
+    saved = int(lbl.minimumHeight())
+    if saved:
+        lbl.setMinimumHeight(0)
     val = int(lbl.heightForWidth(width) or 0)
+    if saved:
+        lbl.setMinimumHeight(saved)
     lbl._hfwk, lbl._hfqv = key, val
     return val
 
@@ -1198,15 +1209,29 @@ class ChatTurn(QWidget):
 
     # ---------- 增量重建 ----------
     def _rebuild_blocks(self, specs: list):
-        reuse = 0
-        while (reuse < len(specs) and reuse < len(self._items)
-               and self._items[reuse].kind == specs[reuse][0]
-               and self._items[reuse].sig == specs[reuse][2]):
-            # 签名命中：内容未变，不重建也不重排（流式只处理末段）
-            reuse += 1
-        if reuse < len(self._items):
-            self._drop_from(reuse)
-        for kind, payload, sig in specs[reuse:]:
+        """按 specs 同步区块结构与内容。
+
+        - 同位置 **kind 相同、签名变化**（流式增长的思考/正文段，每 tick 签名都变）：
+          **就地更新内容，不销毁控件**。旧实现一律销毁重建，每帧整棵子树重建+全量
+          布局，观感是闪烁/卡顿（流式不丝滑的主因）；就地 setText 只触发该标签重排，
+          控件身份与几何稳定，输出才连贯。
+        - kind 序列或数量变化（过程块插入/收起）：从分歧位置销毁旧块、补建新块。
+        """
+        common = min(len(self._items), len(specs))
+        i = 0
+        while i < common:
+            kind, payload, sig = specs[i]
+            ref = self._items[i]
+            if ref.kind != kind:
+                break
+            ref.is_proc = self._block_proc(kind, payload)
+            if ref.sig != sig:
+                ref.sig = sig
+                self._update_block(ref.widget, kind, payload)
+            i += 1
+        if i < len(self._items):
+            self._drop_from(i)
+        for kind, payload, sig in specs[i:]:
             self._append_block(kind, payload, sig)
 
     def _drop_from(self, index: int):

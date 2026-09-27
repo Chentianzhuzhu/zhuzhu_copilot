@@ -172,42 +172,45 @@ def test_ai_turn_has_no_filled_bubble(host):
 
 def test_think_bubble_folds_over_five_lines_and_expands(host):
     """思考气泡 = demo .think-bubble：正文超 5 行自动折叠（尾部渐隐 + 「继续查看」），
-    点击后展开为全文并可再收起。"""
+    点击后展开为全文并可再收起。
+
+    折叠机制为 **min-only 钉定**（钉 body 最小高度 = 5 行高，不设 maximumHeight 截断）：
+    设上限会在「新内容已 setText、上限仍是旧值」的瞬间裁掉文字，反复触发即闪烁。
+    """
     tb = host.add(cb.ThinkBubble(STYLE, ap._line_icon))
     tb.set_content("PLANNING", f"<div>{LONG_THINK}</div>")
     host.show()
     line_h = tb._line_height()
     assert tb._folded is True
-    assert tb._body.maximumHeight() == line_h * 5
+    assert tb._body.minimumHeight() == line_h * 5
+    assert tb._body.maximumHeight() == 16777215, "折叠靠钉下界，不设上限截断"
     assert tb._fold_btn.text() == "继续查看"
     assert not tb._fold_btn.isHidden(), "超行折叠必须给出展开入口"
 
     tb._fold_btn.click()
     app.processEvents()
     assert tb._folded is False
-    assert tb._body.maximumHeight() == 16777215, "展开后须解除行数截断"
+    assert tb._body.minimumHeight() > line_h * 5, "展开后下界须回到全文高度"
     assert tb._fold_btn.text() == "收起"
 
     tb._fold_btn.click()
     app.processEvents()
-    assert tb._folded is True and tb._body.maximumHeight() == line_h * 5
+    assert tb._folded is True and tb._body.minimumHeight() == line_h * 5
 
 
 def test_fold_button_is_not_squeezed(host):
     """折叠后正文必须被真正截到 5 行，且「继续查看」按钮保持完整高度。
 
-    历史缺陷：钉高度时用了**全文**高度，超过折叠上限 → minimumHeight > maximumHeight，
-    Qt 以最小值为准 ⇒ 折叠失效（正文全展开），且该块真实高度远超 heightForWidth 的
-    估算，把整条回合的高度预算撑爆、最后一项（按钮）被压扁 —— 即用户报的「按钮被挤压」。
+    历史缺陷：钉高度时用了**全文**高度，超过折叠上限 → 折叠失效（正文全展开），
+    且该块真实高度远超 heightForWidth 的估算，把整条回合的高度预算撑爆、最后一项
+    （按钮）被压扁 —— 即用户报的「按钮被挤压」。
     """
     tb = host.add(cb.ThinkBubble(STYLE, ap._line_icon))
     tb.set_content("PLANNING", f"<div>{LONG_THINK}</div>")
     host.show()
     limit = tb._line_height() * 5
-    assert tb._body.minimumHeight() <= tb._body.maximumHeight(), \
-        "最小高度不得超过最大高度（否则折叠失效）"
-    assert tb._body.maximumHeight() == limit, "折叠后正文须截到 5 行"
-    assert tb._body.minimumHeight() == limit, "钉住的高度须与折叠上限一致"
+    assert tb._body.minimumHeight() == limit, "钉住的下界须与折叠上限一致"
+    assert tb._body.maximumHeight() == 16777215, "折叠靠钉下界，不设上限"
 
     fb = tb._fold_btn
     assert fb.height() >= fb.sizeHint().height(), f"折叠按钮被压扁：{fb.size()} < {fb.sizeHint()}"
@@ -263,7 +266,7 @@ def test_no_extra_blank_space_around_text(host):
         "文本必须顶端对齐（否则多余高度会被上下均分）"
     need = lbl.heightForWidth(lbl.width())
     assert lbl.minimumHeight() == need, f"最小高度未钉到内容高度：{lbl.minimumHeight()} vs {need}"
-    assert lbl.maximumHeight() == need, f"最大高度未钉到内容高度：{lbl.maximumHeight()} vs {need}"
+    assert lbl.maximumHeight() == 16777215, "只钉下界，不设上限（设上限会在增量瞬间裁切）"
     assert lbl.height() == need, f"标签实际高度 {lbl.height()} ≠ 内容高度 {need}"
     assert blk.height() <= blk.heightForWidth(blk.width()) + 2, \
         "块高度不应超出内容高度（多余高度必须留在块外）"
@@ -405,15 +408,18 @@ def test_earlier_round_text_becomes_process_block(host):
 
 
 def test_incremental_render_only_rebuilds_changed_block(host):
-    """流式增量：签名未变的块必须复用同一控件实例，只有变化的末块被重建。"""
+    """流式增量：签名未变的块必须复用同一控件实例；内容变化的块**就地更新**
+    （控件身份保持稳定），而不是销毁重建。
+
+    旧实现把正在增长的末块每帧销毁重建（整棵子树重建+全量布局），是流式闪烁/卡顿的
+    来源；就地 setText 只触发该标签重排，输出才丝滑连贯。
+    """
     turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
     blocks = [
         (cb.KIND_THINK, {"tag": "PLANNING", "body": "<div>思考</div>"}, ("a", 0)),
         (cb.KIND_CMD, {"label": "run_command", "cmd": "dir", "out": "ok"}, ("b", 0)),
         (cb.KIND_STREAM, {"html": "<div>正文</div>"}, ("c", 0)),
     ]
-    # 用「标记」而不是 id() 判身份：deleteLater 后新控件可能复用同一内存地址，
-    # id() 会给出假相等（测试会偶发失败）。
     turn.render(blocks, live=True)
     host.show()
     for n, ref in enumerate(turn._items):
@@ -427,7 +433,8 @@ def test_incremental_render_only_rebuilds_changed_block(host):
     turn.render(grown, live=True)
     marks = [getattr(r.widget, "_reuse_mark", None) for r in turn._items]
     assert marks[:2] == [0, 1], "未变化的块应复用同一控件"
-    assert marks[2] is None, "内容变化的末块应重建（新控件）"
+    assert marks[2] == 2, "内容变化的末块应就地更新（保持同一控件，不销毁重建）"
+    assert "正文 + 追加" in turn._items[2].widget._body.text(), "就地更新后内容须为最新"
     assert [r.sig for r in turn._items] == [("a", 0), ("b", 0), ("c", 1)]
 
 
