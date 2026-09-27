@@ -342,8 +342,9 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
     """AI 完成汇报后过程区整体收起，只留正文与「查看执行过程」（demo .ai-turn.done
     .ai-proc）；点击开关可再展开，且用户选择不被后续重渲染覆盖。
 
-    收起态**不创建过程控件**（长会话实测 60 回合会堆出上万个控件，历史重建近 2 秒），
-    因此断言的是「过程块不存在」而不是「被隐藏」。
+    新设计：过程块控件**始终保留**，收起时仅隐藏（setVisible(False) + spacer 归零），
+    展开时仅显示——避免展开时重建 20+ 复杂控件导致 700ms+ 卡顿。因此断言的是
+    「过程块被隐藏」而不是「被销毁」。
     """
     turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
     blocks = [
@@ -359,8 +360,12 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
 
     turn.render(blocks, cost=12.4, live=False, sys_meta="14:02:31 → 14:02:43", done=True)
     app.processEvents()
-    assert [r.kind for r in turn._items] == [cb.KIND_STREAM], \
-        "完成后过程类区块不应再存在（只留正文）"
+    assert [r.kind for r in turn._items] == [cb.KIND_THINK, cb.KIND_TOOL, cb.KIND_STREAM], \
+        "完成后过程块控件保留（不销毁）"
+    assert all(r.widget.isHidden() for r in turn._items if r.is_proc), \
+        "完成后过程块应被隐藏"
+    assert all(not r.widget.isHidden() for r in turn._items if not r.is_proc), \
+        "正文块应保持可见"
     assert not turn._toggle.isHidden() and turn._toggle.text() == "查看执行过程"
     assert turn._ribbon._text.text() == "12.4s"
     assert turn._sys.text() == "14:02:31 → 14:02:43"
@@ -371,7 +376,9 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
     app.processEvents()
     expanded_h = turn.heightForWidth(760)
     assert [r.kind for r in turn._items] == [cb.KIND_THINK, cb.KIND_TOOL, cb.KIND_STREAM], \
-        "展开后按原顺序补建过程块"
+        "展开后过程块仍然保留（不重建）"
+    assert all(not r.widget.isHidden() for r in turn._items), \
+        "展开后所有块应可见"
     assert turn._toggle.text() == "收起执行过程"
     assert collapsed_h < expanded_h, f"折叠后高度未收缩：{collapsed_h} vs {expanded_h}"
 
@@ -379,11 +386,13 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
     turn.render(blocks, cost=12.4, live=False, sys_meta="14:02:31 → 14:02:43", done=True)
     app.processEvents()
     assert len(turn._items) == 3, "重渲染不得覆盖用户手动展开的选择"
+    assert all(not r.widget.isHidden() for r in turn._items), "用户展开后应保持可见"
 
-    # 再收起：过程控件应被真正释放（控件数量回落）
+    # 再收起：过程块被隐藏（控件不销毁）
     turn._toggle.click()
     app.processEvents()
-    assert len(turn._items) == 1 and turn._toggle.text() == "查看执行过程"
+    assert len(turn._items) == 3 and turn._toggle.text() == "查看执行过程"
+    assert all(r.widget.isHidden() for r in turn._items if r.is_proc)
 
 
 def test_earlier_round_text_becomes_process_block(host):
@@ -402,9 +411,14 @@ def test_earlier_round_text_becomes_process_block(host):
 
     turn.render(blocks, cost=1.0, live=False, done=True)
     app.processEvents()
-    remaining = [r.sig for r in turn._items]
-    assert remaining == [("d", 0)], f"折叠后只应留最终正文，实际 {remaining}"
-    assert "最终回答" in turn._items[0].widget._body.text()
+    # 新设计：过程块控件保留但隐藏，_items 仍含全部 4 块
+    assert len(turn._items) == 4, f"折叠后控件应保留，实际 {len(turn._items)} 块"
+    visible = [r.sig for r in turn._items if not r.widget.isHidden()]
+    assert visible == [("d", 0)], f"折叠后只应留最终正文可见，实际 {visible}"
+    hidden = [r.sig for r in turn._items if r.widget.isHidden()]
+    assert hidden == [("a", 0), ("b", 0), ("c", 0)], f"过程块应被隐藏，实际 {hidden}"
+    final = [r for r in turn._items if r.sig == ("d", 0)][0]
+    assert "最终回答" in final.widget._body.text()
 
 
 def test_incremental_render_only_rebuilds_changed_block(host):

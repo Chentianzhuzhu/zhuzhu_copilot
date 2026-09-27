@@ -32,6 +32,7 @@ from typing import Callable, Optional
 from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QTransform
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -319,6 +320,11 @@ class FlowLayout(QLayout):
     """按行流式排列并自动换行（demo `.kv { display:flex; flex-wrap:wrap }`）。
 
     Qt 无内置流式布局；工具参数 chip 个数不确定，不换行会撑破面板宽度。
+
+    性能：heightForWidth 按宽度缓存测量结果。展开执行过程时外层布局会反复询问
+    同一宽度（QVBoxLayout 多轮试探），无缓存时 15 个 FlowLayout 各被问 60+ 次，
+    累计近 1000 次 _measure（每次遍历所有 chip 调 sizeHint）。缓存后同宽度
+    直接返回，展开耗时显著下降。
     """
 
     def __init__(self, parent: QWidget = None, h_gap: int = SPACING_XS,
@@ -327,10 +333,12 @@ class FlowLayout(QLayout):
         self._items: list = []
         self._h_gap = h_gap
         self._v_gap = v_gap
+        self._hfw_cache: Optional[tuple] = None   # (width, height)
         self.setContentsMargins(0, 0, 0, 0)
 
     def addItem(self, item):
         self._items.append(item)
+        self._hfw_cache = None
 
     def count(self) -> int:
         return len(self._items)
@@ -339,6 +347,7 @@ class FlowLayout(QLayout):
         return self._items[index] if 0 <= index < len(self._items) else None
 
     def takeAt(self, index):
+        self._hfw_cache = None
         return self._items.pop(index) if 0 <= index < len(self._items) else None
 
     def expandingDirections(self):
@@ -348,11 +357,17 @@ class FlowLayout(QLayout):
         return True
 
     def heightForWidth(self, width: int) -> int:
-        return self._measure(max(1, int(width)))
+        w = max(1, int(width))
+        if self._hfw_cache is not None and self._hfw_cache[0] == w:
+            return self._hfw_cache[1]
+        h = self._measure(w)
+        self._hfw_cache = (w, h)
+        return h
 
     def setGeometry(self, rect):
         super().setGeometry(rect)
         self._do_layout(rect)
+        self._hfw_cache = None
 
     def sizeHint(self) -> QSize:
         return self.minimumSize()
@@ -1056,6 +1071,7 @@ class ChatTurn(QWidget):
         self._t0 = 0.0
         self._inset = RIBBON_H // 2     # 顶部虚线相对容器顶部的偏移（徽章骑线）
         self._lay_w = -1                # 上次重算高度所用的宽度（去重用）
+        self._hfw_cache: Optional[tuple] = None   # (width, height) 回合级高度缓存
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         pol = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         pol.setHeightForWidth(True)
@@ -1150,13 +1166,14 @@ class ChatTurn(QWidget):
     def _apply_done(self, done: bool):
         """收敛到目标显隐状态。
 
-        收起态下过程块**根本不创建控件**：一条已结束的回合通常只剩一段正文要显示，
-        若把思考/命令/子 Agent 块都建出来再 hidden，长会话会堆出上万个控件
-        （实测 60 回合 = 1.04 万个子控件、历史重建近 2 秒），滚动与切主题都会发涩。
-        用户点「查看执行过程」时才按原顺序补建（一次性）。
+        过程块控件**始终创建并保留**，收起时仅隐藏（setVisible(False) + spacer 归零），
+        展开时仅显示。旧实现收起时销毁过程块、展开时重建 20+ 个复杂控件，单次展开
+        需 700-800ms（控件创建 250ms + 布局级联 500ms），用户感知明显卡顿。保留控件
+        后展开退化为 O(n) 次 setVisible + 一次 relayout，实测 <50ms。
 
-        一旦结束过（settled），开关按钮就常驻，用户手动展开后仍可再收起；用户的手动
-        选择（_user_open）优先于传入的 done，避免窗口缩放等重渲染把它又自动收起。
+        内存代价：隐藏控件不参与布局与绘制，60 回合约 300 个过程块控件，可接受。
+        一旦结束过（settled），开关按钮就常驻；用户的手动选择（_user_open）优先于
+        传入的 done，避免窗口缩放等重渲染把它又自动收起。
         """
         done = bool(done)
         if done:
@@ -1164,27 +1181,48 @@ class ChatTurn(QWidget):
         if self._user_open is not None:
             done = not self._user_open
         self._done = done
-        self._rebuild_blocks(self._visible_specs(done))
+        # 批量操作期间禁重绘：setVisible/setMinimumHeight 各触发一次失效，
+        # 禁重绘后中间状态不 paint，结束后一次 update，减少绘制开销
+        self.setUpdatesEnabled(False)
+        try:
+            # 始终按完整序列重建（增量：签名不变的块就地更新，不销毁）
+            self._rebuild_blocks(self._blocks_full)
+            # 收起/展开只切换过程块可见性，不重建控件
+            self._set_proc_visible(not done)
 
-        show_toggle = self._settled and self._proc_count > 0
-        if self._toggle.isHidden() == show_toggle:
-            self._toggle.setVisible(show_toggle)
-        text = TOGGLE_CLOSED_TEXT if done else TOGGLE_OPEN_TEXT
-        if self._toggle.text() != text:
-            self._toggle.setText(text)
-            self._toggle.setIcon(rotate_icon(
-                self._icon_provider("chev", FONT_SMALL, self._style.accent),
-                0 if done else 180, FONT_SMALL))
-        if show_toggle:
-            self._place_toggle()
-        self.relayout_heights(monotonic=self._live)
+            show_toggle = self._settled and self._proc_count > 0
+            if self._toggle.isHidden() == show_toggle:
+                self._toggle.setVisible(show_toggle)
+            text = TOGGLE_CLOSED_TEXT if done else TOGGLE_OPEN_TEXT
+            if self._toggle.text() != text:
+                self._toggle.setText(text)
+                self._toggle.setIcon(rotate_icon(
+                    self._icon_provider("chev", FONT_SMALL, self._style.accent),
+                    0 if done else 180, FONT_SMALL))
+            if show_toggle:
+                self._place_toggle()
+            self.relayout_heights(monotonic=self._live)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
-    def _visible_specs(self, collapsed: bool) -> list:
-        """当前状态下需要建控件的区块序列（收起时剔除过程块）"""
-        if not collapsed:
-            return list(self._blocks_full)
-        return [(kind, payload, sig) for kind, payload, sig in self._blocks_full
-                if not self._block_proc(kind, payload)]
+    def _set_proc_visible(self, visible: bool):
+        """收起/展开过程区：只切换过程块控件与对应 spacer 的可见性，不重建控件。
+
+        QSpacerItem 无 setVisible，用 changeSize(0,0) / changeSize(0,gap) 切换。
+        切换后 invalidate 布局，由后续 relayout_heights 统一钉高度。
+        """
+        for ref in self._items:
+            if not ref.is_proc:
+                continue
+            if ref.widget.isHidden() != (not visible):
+                ref.widget.setVisible(visible)
+            gap = ref.gap() if visible else 0
+            if ref.spacer.sizeHint().height() != gap:
+                ref.spacer.changeSize(0, gap, QSizePolicy.Policy.Minimum,
+                                      QSizePolicy.Policy.Fixed)
+        self._hfw_cache = None
+        self._box_lay.invalidate()
 
     def _on_toggle(self):
         self._user_open = self._done      # 记住用户选择（后续重渲染不再自动收起）
@@ -1209,61 +1247,100 @@ class ChatTurn(QWidget):
 
     # ---------- 增量重建 ----------
     def _rebuild_blocks(self, specs: list):
-        """按 specs 同步区块结构与内容。
+        """按 specs 同步区块结构与内容（头尾匹配 + 中间批量重建）。
+        结构或内容变化 → 回合级高度缓存失效。
 
-        - 同位置 **kind 相同、签名变化**（流式增长的思考/正文段，每 tick 签名都变）：
-          **就地更新内容，不销毁控件**。旧实现一律销毁重建，每帧整棵子树重建+全量
-          布局，观感是闪烁/卡顿（流式不丝滑的主因）；就地 setText 只触发该标签重排，
-          控件身份与几何稳定，输出才连贯。
-        - kind 序列或数量变化（过程块插入/收起）：从分歧位置销毁旧块、补建新块。
+        匹配策略：
+        1. 头部匹配：从前往后，kind 相同则就地更新（sig 变化时），kind 不同停止。
+        2. 尾部匹配：从后往前，同样规则。展开过程区时正文块在末尾，可直接保留，
+           避免销毁重建（旧实现从头匹配，第一个 kind 不同就 drop 全部）。
+        3. 中间批量插入：头尾之间的差异部分，先批量创建空控件加入布局（获得真实
+           宽度），再统一 set_content。逐个 set_content 会每次触发 setMinimumHeight
+           → 布局级联失效，是展开卡顿的主因（22 块 785ms → 批量后 <100ms）。
         """
-        common = min(len(self._items), len(specs))
-        i = 0
-        while i < common:
-            kind, payload, sig = specs[i]
-            ref = self._items[i]
+        specs = list(specs)
+        self._hfw_cache = None
+        head = 0
+        while head < min(len(self._items), len(specs)):
+            kind, payload, sig = specs[head]
+            ref = self._items[head]
             if ref.kind != kind:
                 break
             ref.is_proc = self._block_proc(kind, payload)
             if ref.sig != sig:
                 ref.sig = sig
                 self._update_block(ref.widget, kind, payload)
-            i += 1
-        if i < len(self._items):
-            self._drop_from(i)
-        for kind, payload, sig in specs[i:]:
-            self._append_block(kind, payload, sig)
+            head += 1
 
-    def _drop_from(self, index: int):
-        for ref in self._items[index:]:
+        tail = 0
+        max_tail = min(len(self._items) - head, len(specs) - head)
+        while tail < max_tail:
+            kind, payload, sig = specs[len(specs) - 1 - tail]
+            ref = self._items[len(self._items) - 1 - tail]
+            if ref.kind != kind:
+                break
+            ref.is_proc = self._block_proc(kind, payload)
+            if ref.sig != sig:
+                ref.sig = sig
+                self._update_block(ref.widget, kind, payload)
+            tail += 1
+
+        drop_end = len(self._items) - tail
+        if head < drop_end:
+            self._drop_from(head, drop_end)
+
+        insert_end = len(specs) - tail
+        new_specs = specs[head:insert_end]
+        if new_specs:
+            self._insert_blocks(head, new_specs)
+
+    def _drop_from(self, start: int, end: int = None):
+        if end is None:
+            end = len(self._items)
+        for ref in self._items[start:end]:
             self._box_lay.removeWidget(ref.widget)
             self._box_lay.removeItem(ref.spacer)
             ref.widget.setParent(None)
             ref.widget.deleteLater()
-        del self._items[index:]
+        del self._items[start:end]
         self._toggle_idx = -1
 
-    def _append_block(self, kind: str, payload: dict, sig):
-        wid = self._make_block(kind)
-        spacer = QSpacerItem(0, BLOCK_GAP.get(kind, SPACING_XS),
-                             QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self._box_lay.insertWidget(self._box_lay.count() - 1, wid)
-        self._box_lay.insertItem(self._box_lay.count() - 1, spacer)
-        self._items.append(_BlockRef(kind, sig, wid, spacer,
-                                     self._block_proc(kind, payload)))
-        self._update_block(wid, kind, payload)
-        self._wire(wid)
+    def _insert_blocks(self, index: int, specs: list):
+        """批量插入区块：先以 parent=None 创建并赋值（不触发布局级联），
+        再批量加入布局，最后由 relayout_heights 统一钉高度。
 
-    def _make_block(self, kind: str) -> QWidget:
+        逐个 _append_block 时，每个 set_content 立即触发 setMinimumHeight → 布局
+        失效级联，下一个控件在布局未稳定时测量，O(n²) 布局计算（22 块 785ms）。
+        批量赋值时控件无父布局，setMinimumHeight 只标记自身，加入布局后一次
+        relayout 即可，降为 O(n)。
+        """
+        self.setUpdatesEnabled(False)
+        created = []
+        for kind, payload, sig in specs:
+            wid = self._make_block(kind, parent=None)
+            self._update_block(wid, kind, payload)
+            self._wire(wid)
+            spacer = QSpacerItem(0, BLOCK_GAP.get(kind, SPACING_XS),
+                                 QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            created.append((kind, sig, wid, spacer, self._block_proc(kind, payload)))
+        for i, (kind, sig, wid, spacer, is_proc) in enumerate(created):
+            pos = index * 2 + i * 2
+            self._box_lay.insertWidget(pos, wid)
+            self._box_lay.insertItem(pos + 1, spacer)
+            self._items.insert(index + i, _BlockRef(kind, sig, wid, spacer, is_proc))
+        self.setUpdatesEnabled(True)
+
+    def _make_block(self, kind: str, parent: QWidget = None) -> QWidget:
+        p = parent if parent is not None else self._box
         if kind == KIND_THINK:
-            return ThinkBubble(self._style, self._icon_provider, self._box)
+            return ThinkBubble(self._style, self._icon_provider, p)
         if kind == KIND_TOOL:
-            return ToolCallRow(self._style, self._icon_provider, self._box)
+            return ToolCallRow(self._style, self._icon_provider, p)
         if kind == KIND_CMD:
-            return CmdBlock(self._style, self._box)
+            return CmdBlock(self._style, p)
         if kind == KIND_STREAM:
-            return StreamBlock(self._style, self._box)
-        return RichBlock(self._style, parent=self._box)
+            return StreamBlock(self._style, p)
+        return RichBlock(self._style, parent=p)
 
     def _update_block(self, wid: QWidget, kind: str, payload: dict):
         payload = payload or {}
@@ -1344,9 +1421,11 @@ class ChatTurn(QWidget):
         inner = max(1, w - m.left() - m.right())
         for ref in self._items:
             wdg = ref.widget
-            # 不按 isHidden() 跳过：收起态下过程块根本不存在（懒创建），这里的 item 都是
-            # 要显示的；而新建控件在父级布局生效前 isHidden() 恒为 True，按它跳过会漏算
-            # 高度、让回合高度停在旧值（表现为文字被裁切 / 底部空白）。
+            # 收起态下过程块控件保留但隐藏，跳过其高度计算；
+            # 新建控件在父级布局生效前 isHidden() 恒为 True，但新建只发生在展开态
+            # （过程块可见），因此不会被误跳。
+            if wdg.isHidden():
+                continue
             pin = getattr(wdg, "_pin_wrapping", None)
             if callable(pin):
                 pin(inner)      # 先固定内部标签高度，再据此固定块高度
@@ -1377,6 +1456,8 @@ class ChatTurn(QWidget):
 
     def _apply_live(self):
         for ref in self._items:
+            if ref.widget.isHidden():
+                continue
             if isinstance(ref.widget, ThinkBubble):
                 ref.widget.set_live(self._live)
 
@@ -1446,16 +1527,25 @@ class ChatTurn(QWidget):
     def heightForWidth(self, width: int) -> int:
         """整条回合在给定宽度下的高度（供消息区钉住最小高度）。
 
+        回合级 (width) 缓存：外层 QVBoxLayout 在布局时会反复询问同一宽度（多轮试探
+        + 每次 setMinimumHeight 后的重新布局），无缓存时 22 块被重复测量 9+ 次。
+        缓存后同宽度直接返回，展开耗时进一步下降。
         各区块自身的测量走 _label_hfw 缓存：内容与宽度都没变的标签直接返回旧值，
         因此流式刷新时只有正在增长的那一块会真正重排富文本。
         """
+        w = max(1, int(width))
+        if self._hfw_cache is not None and self._hfw_cache[0] == w:
+            return self._hfw_cache[1]
         m = self._box_lay.contentsMargins()
-        inner = max(1, int(width) - m.left() - m.right())
+        inner = max(1, w - m.left() - m.right())
         h = m.top() + m.bottom()
         for ref in self._items:
+            if ref.widget.isHidden():
+                continue
             h += _widget_hfw(ref.widget, inner) + ref.spacer.sizeHint().height()
         if self._settled:      # 开关一旦出现就常驻（不按 isHidden 判定，理由同上）
             h += self._toggle.sizeHint().height()
         if not self._sys.isHidden():
             h += _widget_hfw(self._sys, inner)
+        self._hfw_cache = (w, h)
         return h

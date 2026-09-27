@@ -2172,16 +2172,12 @@ class AgentEngine:
                              for (i, name, args, call, skill_read, approved) in pending
                              if approved and name in _CONCURRENT_TOOLS]
                     if _jobs:
-                        if self.on_status:
-                            if len(_jobs) == 1:
-                                # 单个工具：发精准的「正在执行: <工具>」，
-                                # 让 UI 显示该工具对应的状态（如「正在搜索文件」「正在读取时间」），
-                                # 而非「正在并行执行 1 个工具调用」这类不贴合当前动作的措辞
-                                self.on_status(f"正在执行: {_jobs[0][1]}")
-                            else:
-                                _names = "、".join(dict.fromkeys(j[1] for j in _jobs))
-                                self.on_status(f"正在并行执行 {len(_jobs)} 个工具调用"
-                                               f"（{_names}）…")
+                        if self.on_status and len(_jobs) == 1:
+                            # 单个工具：发精准的「正在执行: <工具>」，
+                            # 让 UI 显示该工具对应的状态（如「正在搜索文件」「正在读取时间」）
+                            self.on_status(f"正在执行: {_jobs[0][1]}")
+                        # 多工具并发：不再发「正在并行执行 N 个工具调用」状态提示
+                        # （用户反馈该提示冗余，各工具的行内条目已足够反馈）
                         _futs = {}
                         with ThreadPoolExecutor(
                                 max_workers=min(_CONCURRENT_MAX_WORKERS,
