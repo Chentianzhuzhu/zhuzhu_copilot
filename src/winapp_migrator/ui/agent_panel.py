@@ -1496,10 +1496,11 @@ def _segs_same(a: list, b: list) -> bool:
 # 百 KB 的块会让该控件的富文本布局变慢，进而拖累滚动与缩放。
 _RESULT_TRUNCATE = 6000
 
-# 流式输出节拍（毫秒）：8ms≈120fps 连续落字（用户要求的丝滑档）；正文超大时放宽到
-# 60ms 兜底，避免极端长文下单帧占用过高。滚动跟随 16ms≈60fps，跟手但不做无谓的
-# 超高频滚动（滚动会触发整屏重绘，比渲染文字贵得多）。
-_STREAM_TICK_MS = 8
+# 流式输出节拍（毫秒）：实测「一次完整布局+重绘」在流式增长期间约 5~18ms，
+# 8ms 节拍会把主线程排满 —— 表现为卡顿与抖动（越"高帧"越明显）。
+# 因此取 16ms（60fps，与主流显示器刷新率对齐，帧间隔均匀才是真的丝滑）；
+# 正文超大时放宽到 60ms 兜底。滚动跟随同频，跟手且不做无谓的超高频重绘。
+_STREAM_TICK_MS = 16
 _SCROLL_TICK_MS = 16
 _STREAM_BIG_CHARS = 200_000
 
@@ -14250,8 +14251,11 @@ class AgentPanel(QDialog):
         for b in self._bubble_widgets:
             try:
                 if b.property("align") == "ai":
-                    # AI 回合铺满内容宽度（demo .ai-turn 铺满线程宽度）
+                    # AI 回合铺满内容宽度（demo .ai-turn 铺满线程宽度）：固定宽度，
+                    # 并立刻按新宽度重算内容高度（resizeEvent 里也会兜底重算一次）
                     b.setMaximumWidth(ai_mw)
+                    if hasattr(b, "relayout_heights"):
+                        b.relayout_heights(b.width() or ai_mw)
                 else:
                     # 用户气泡按内容自适应宽度（demo .msg 为右侧收窄气泡）
                     b.setMaximumWidth(mw)
@@ -15847,8 +15851,10 @@ class AgentPanel(QDialog):
             bubble.setMaximumWidth(self._bubble_max_width())
         else:
             bubble = chat_bubbles.ChatTurn(self._chat_style(), self._chat_icon)
+            # 先用目标宽度做一次高度预估；真实宽度由布局给出后，回合自己的 resizeEvent
+            # 会按实际宽度重算（min-only 写回，可增可减，所以预估偏大也会自愈）
             bubble.setMaximumWidth(self._ai_turn_max_width())
-            bubble.setMinimumWidth(0)
+            bubble.relayout_heights(self._ai_turn_max_width())
             bubble.set_link_handler(lambda url, b=bubble: self._on_ai_turn_link(b, url))
             bubble.set_menu_handler(lambda pos, b=bubble: self._on_ai_bubble_menu(b, pos))
             bubble.set_toggle_handler(lambda b=bubble: self._sync_after_toggle(b))
@@ -17191,12 +17197,9 @@ class AgentPanel(QDialog):
                 if not self._bubble_alive(b):
                     continue
                 if isinstance(b, chat_bubbles.ChatTurn):
-                    # 事件流回合的高度由内容（heightForWidth/sizeHint）驱动，面板不再钉死。
-                    # 钉死会在「子块刚重建、还没拿到真实宽度」时按偏大高度撑高回合，
-                    # 而正文是顶端对齐的 → 汇报完成后正文底部留一大片空白。
-                    if b.minimumHeight():
-                        b.setMinimumHeight(0)
-                        b.updateGeometry()
+                    # 事件流回合的高度完全自管（relayout_heights 按固定宽度一次性算准
+                    # 每个块与整条回合的高度），面板既不再钉最小值、也不去清它的固定高度，
+                    # 否则会把已算准的几何破坏掉。
                     continue
                 w_b = b.width()
                 if w_b <= 0:
