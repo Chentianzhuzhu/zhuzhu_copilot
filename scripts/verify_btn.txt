@@ -1,0 +1,31 @@
+2275:         self.input.textChanged.connect(self._sync_action_style)
+2276:         self.input.installEventFilter(self)   # 拦截 Ctrl+V：剪贴板图片转附件
+2277:         self.input.fileDropped.connect(self._on_input_files_dropped)   # 文件拖入 → 附件
+2278:         bottom.addWidget(self.input, 1)
+2279: 
+2280:         # 输入框右侧「+」上传按钮：文件选择器多选（也支持拖拽 / Ctrl+V 粘贴）
+2281:         self.attach_btn = QPushButton(_line_icon("plus", 20, ACCENT), "")
+2282:         self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+2283:         self.attach_btn.setAutoDefault(False)
+2284:         self.attach_btn.setFixedSize(42, 42)
+2285:         self.attach_btn.setIconSize(QSize(20, 20))
+2286:         self.attach_btn.setToolTip("上传文件/图片给 AI（也可拖拽文件到输入框或 Ctrl+V 粘贴截图）")
+2287:         self.attach_btn.setStyleSheet(
+2288:             f"QPushButton {{ background: {PANEL}; border: 1px solid {BORDER};"
+2289:             f"border-radius: 21px; }}"
+2290:             f"QPushButton:hover {{ border: 1px solid {ACCENT}; }}")
+2291:         self.attach_btn.clicked.connect(self._pick_attachments)
+2292:         bottom.addWidget(self.attach_btn)
+2293: 
+2294:         # 输入框右侧：手动切换本次使用的模型（选「自动」则按工作力度路由）
+2295:         self.model_combo = _ArrowComboBox()
+2296:         self.model_combo.setMinimumWidth(150)
+2297:         self.model_combo.setMaximumWidth(230)
+2298:         self.model_combo.setStyleSheet(_QCOMBO)
+2299:         self.model_combo.setToolTip("手动切换本次使用的模型；「自动选择」= 按工作力度路由")
+2300:         self.model_combo.currentIndexChanged.connect(self._on_model_combo)
+2301:         self.model_combo.setAcceptDrops(False)   # 文件拖放由面板统一接收
+2302:         bottom.addWidget(self.model_combo)
+2303: 
+2304:         # 发送/停止融合按钮：空闲=发送（深蓝），运行中=转圈可点击停止，停止中=红底转圈
+2305:         self.action_btn = QPushButton(_line_icon("send", 18, "#FFFFFF"), "")

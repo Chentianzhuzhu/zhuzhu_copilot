@@ -1,0 +1,7 @@
+__init__.py
+agent_panel.py
+download_dialog.py
+main_window.py
+styles.py
+tts_panel.py
+widgets.py

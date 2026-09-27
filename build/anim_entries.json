@@ -1,0 +1,1750 @@
+{
+ "1": {
+  "presetID": "1",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "2",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   }
+  ]
+ },
+ "2": {
+  "presetID": "2",
+  "presetClass": "entr",
+  "presetSubtype": "4",
+  "spid": "3",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "3": {
+  "presetID": "3",
+  "presetClass": "entr",
+  "presetSubtype": "10",
+  "spid": "4",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "blinds(horizontal)"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "4": {
+  "presetID": "4",
+  "presetClass": "entr",
+  "presetSubtype": "16",
+  "spid": "5",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "box(in)"
+    },
+    "dur": "2000"
+   }
+  ]
+ },
+ "5": {
+  "presetID": "5",
+  "presetClass": "entr",
+  "presetSubtype": "10",
+  "spid": "6",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "checkerboard(across)"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "6": {
+  "presetID": "6",
+  "presetClass": "entr",
+  "presetSubtype": "16",
+  "spid": "7",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "circle(in)"
+    },
+    "dur": "2000"
+   }
+  ]
+ },
+ "7": {
+  "presetID": "7",
+  "presetClass": "entr",
+  "presetSubtype": "4",
+  "spid": "8",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "8": {
+  "presetID": "8",
+  "presetClass": "entr",
+  "presetSubtype": "16",
+  "spid": "9",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "diamond(in)"
+    },
+    "dur": "2000"
+   }
+  ]
+ },
+ "9": {
+  "presetID": "9",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "10",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "dissolve"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "10": {
+  "presetID": "10",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "11",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "11": {
+  "presetID": "11",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "12",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   }
+  ]
+ },
+ "12": {
+  "presetID": "12",
+  "presetClass": "entr",
+  "presetSubtype": "4",
+  "spid": "13",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "wipe(up)"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "13": {
+  "presetID": "13",
+  "presetClass": "entr",
+  "presetSubtype": "16",
+  "spid": "14",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "plus(in)"
+    },
+    "dur": "2000"
+   }
+  ]
+ },
+ "14": {
+  "presetID": "14",
+  "presetClass": "entr",
+  "presetSubtype": "10",
+  "spid": "15",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "randombar(horizontal)"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "15": {
+  "presetID": "15",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "16",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "16": {
+  "presetID": "16",
+  "presetClass": "entr",
+  "presetSubtype": "21",
+  "spid": "17",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "barn(inVertical)"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "17": {
+  "presetID": "17",
+  "presetClass": "entr",
+  "presetSubtype": "10",
+  "spid": "18",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "18": {
+  "presetID": "18",
+  "presetClass": "entr",
+  "presetSubtype": "12",
+  "spid": "19",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "strips(downLeft)"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "19": {
+  "presetID": "19",
+  "presetClass": "entr",
+  "presetSubtype": "10",
+  "spid": "20",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "20": {
+  "presetID": "20",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "21",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "wedge"
+    },
+    "dur": "2000"
+   }
+  ]
+ },
+ "21": {
+  "presetID": "21",
+  "presetClass": "entr",
+  "presetSubtype": "1",
+  "spid": "22",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "wheel(1)"
+    },
+    "dur": "2000"
+   }
+  ]
+ },
+ "22": {
+  "presetID": "22",
+  "presetClass": "entr",
+  "presetSubtype": "4",
+  "spid": "23",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "wipe(down)"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "23": {
+  "presetID": "23",
+  "presetClass": "entr",
+  "presetSubtype": "16",
+  "spid": "24",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "24": {
+  "presetID": "24",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "25",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "to": "",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "25": {
+  "presetID": "25",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "26",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   }
+  ]
+ },
+ "26": {
+  "presetID": "26",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "27",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "wipe(down)"
+    },
+    "dur": "580"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   }
+  ]
+ },
+ "27": {
+  "presetID": "27",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "28",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "discrete",
+     "valueType": "clr"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "discrete",
+     "valueType": "clr"
+    }
+   },
+   {
+    "tag": "set",
+    "attrs": {}
+   }
+  ]
+ },
+ "28": {
+  "presetID": "28",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "29",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "29": {
+  "presetID": "29",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "30",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "wipe(right)",
+     "prLst": "gradientSize: 0.1"
+    },
+    "dur": "1000"
+   }
+  ]
+ },
+ "30": {
+  "presetID": "30",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "31",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "800"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "31": {
+  "presetID": "31",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "32",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   }
+  ]
+ },
+ "34": {
+  "presetID": "34",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "33",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "from": "(-#ppt_w/2)",
+     "to": "(#ppt_x)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "from": "0",
+     "to": "-1.0",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "by": "(#ppt_h/3+#ppt_w*0.1)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "35": {
+  "presetID": "35",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "34",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "2000"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "37": {
+  "presetID": "37",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "35",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "38": {
+  "presetID": "38",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "36",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "39": {
+  "presetID": "39",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "37",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "40": {
+  "presetID": "40",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "38",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "41": {
+  "presetID": "41",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "39",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "42": {
+  "presetID": "42",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "40",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "43": {
+  "presetID": "43",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "41",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "100"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "45": {
+  "presetID": "45",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "42",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "2000"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "47": {
+  "presetID": "47",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "43",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "48": {
+  "presetID": "48",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "44",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   }
+  ]
+ },
+ "49": {
+  "presetID": "49",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "45",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "50": {
+  "presetID": "50",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "46",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   }
+  ]
+ },
+ "51": {
+  "presetID": "51",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "47",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "770"
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "from": "(0.5)",
+     "to": "(#ppt_x)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "from": "(#ppt_y+0.4)",
+     "to": "(#ppt_y)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   }
+  ]
+ },
+ "52": {
+  "presetID": "52",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "48",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "animMotion",
+    "attrs": {
+     "origin": "layout",
+     "path": "M -0.46736 0.92887  C -0.37517 0.88508  -0.02552 0.75279  0.0908 0.66613  C  0.20747 0.57948  0.21649 0.50394  0.23177 0.40825  C 0.24705 0.31256  0.22118 0.15964   0.18264 0.09152  C 0.1441 0.02341  0.03802 0.0  0.0 0.0  ",
+     "pathEditMode": "relative",
+     "ptsTypes": ""
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   }
+  ]
+ },
+ "53": {
+  "presetID": "53",
+  "presetClass": "entr",
+  "presetSubtype": "16",
+  "spid": "49",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "54": {
+  "presetID": "54",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "50",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "500"
+   }
+  ]
+ },
+ "55": {
+  "presetID": "55",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "51",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "1000"
+   }
+  ]
+ },
+ "56": {
+  "presetID": "56",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "52",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "by": "(-#ppt_w*2)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "by": "(#ppt_w*0.50)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "from": "(-#ppt_h/2)",
+     "to": "(#ppt_y)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animRot",
+    "attrs": {
+     "by": "21600000"
+    }
+   }
+  ]
+ },
+ "36": {
+  "presetID": "36",
+  "presetClass": "emph",
+  "presetSubtype": "0",
+  "spid": "53",
+  "children": [
+   {
+    "tag": "animScale",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "by": "(#ppt_w*0.10)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "by": "(-#ppt_w*0.10)",
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animRot",
+    "attrs": {
+     "by": "-480000"
+    }
+   }
+  ]
+ },
+ "58": {
+  "presetID": "58",
+  "presetClass": "entr",
+  "presetSubtype": "0",
+  "spid": "54",
+  "children": [
+   {
+    "tag": "set",
+    "attrs": {}
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "anim",
+    "attrs": {
+     "calcmode": "lin",
+     "valueType": "num"
+    }
+   },
+   {
+    "tag": "animEffect",
+    "attrs": {
+     "transition": "in",
+     "filter": "fade"
+    },
+    "dur": "500"
+   }
+  ]
+ }
+}

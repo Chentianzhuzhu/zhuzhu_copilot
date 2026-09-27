@@ -1,0 +1,14 @@
+{
+  "name": "g9_study_helper",
+  "description": "九年级学习助手：班主任主 Agent 统筹语文、数学、英语、物理、化学、道德与法治、历史七科老师子 Agent",
+  "core_files": [
+    "agent.py",
+    "llm.py",
+    "tools.py",
+    "skills",
+    "plugins",
+    "mcp.json"
+  ],
+  "created": "2026-09-13 22:54",
+  "updated": "2026-09-13 22:54"
+}

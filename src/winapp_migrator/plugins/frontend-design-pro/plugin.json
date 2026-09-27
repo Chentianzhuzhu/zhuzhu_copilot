@@ -1,0 +1,9 @@
+{
+  "name": "frontend-design-pro",
+  "kind": "combined",
+  "enabled": true,
+  "description": "前端设计与动画增强插件，支持H5/Vue3/HTML/CSS/JS的炫酷动画生成与代码美化",
+  "created_at": "2026-08-16 12:15:49",
+  "mcp_name": "frontend-design-pro-mcp",
+  "skill_name": "frontend-design-pro"
+}

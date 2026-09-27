@@ -1,0 +1,9 @@
+# 构建产物与运行时目录
+target/
+uploads/
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/

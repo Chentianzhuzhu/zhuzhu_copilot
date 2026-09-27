@@ -1,0 +1,7 @@
+{
+  "id": "frontend_design",
+  "display_name": "前端设计",
+  "description": "工作团成员（前端设计）：负责 UI/UX 设计、页面实现与设计规范；可被产品经理派发设计任务，开启共享后结论写回共同上下文空间。",
+  "workflow_name": "frontend_design",
+  "agents": []
+}

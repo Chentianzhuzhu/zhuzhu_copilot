@@ -1,0 +1,60 @@
+4287:         self._confirm_evt.wait(timeout=600)
+4288:         return self._confirm_result
+4289: 
+4290:     def _on_confirm(self, name: str, args_json: str, risk: str):
+4291:         try:
+4292:             args = json.loads(args_json)
+4293:         except json.JSONDecodeError:
+4294:             args = {}
+4295:         dlg = _ConfirmDialog(name, args, risk, self)
+4296:         dlg.exec()
+4297:         self._confirm_result = dlg.result_ok
+4298:         self._confirm_evt.set()
+4299: 
+4300:     # ---------- ask_user 提问（engine 线程 → 信号 → 主线程弹窗） ----------
+4301:     def _ask_user_tool(self, args: dict) -> str:
+4302:         """阻塞式提问：engine 线程等待主线程弹窗选择结果"""
+4303:         self._ask_evt.clear()
+4304:         self.ask_signal.emit(json.dumps(args, ensure_ascii=False))
+4305:         self._ask_evt.wait(timeout=600)
+4306:         return self._ask_result
+4307: 
+4308:     def _on_ask(self, args_json: str):
+4309:         try:
+4310:             args = json.loads(args_json)
+4311:         except json.JSONDecodeError:
+4312:             args = {}
+4313:         dlg = _AskUserDialog(str(args.get("question", "")),
+4314:                              list(args.get("options") or []),
+4315:                              bool(args.get("multi_select", False)), self)
+4316:         dlg.exec()
+4317:         self._ask_result = dlg.answer()
+4318:         self._ask_evt.set()
+4319: 
+4320:     # ---------- 设置 ----------
+4321:     # 模型/接口/API Key 已写死，无需设置对话框
+4322: 
+4323:     def closeEvent(self, event):
+4324:         # 隐藏主程序窗口模式下关闭 AI 面板时，恢复显示主窗口，避免应用无可见窗口
+4325:         if str(self._settings.value("hide_main_window", "0")).strip().lower() in ("1", "true", "yes"):
+4326:             mw = self.parent()
+4327:             if mw is not None:
+4328:                 mw.show()
+4329:                 mw.raise_()
+4330:                 mw.activateWindow()
+4331:         if self._engine:
+4332:             self._engine.stop()
+4333:             self._engine.join(3)
+4334:         self._persist_current()   # 关闭前持久化当前会话（重启可恢复）
+4335:         try:
+4336:             self._mcp.close_all()
+4337:         except Exception:
+4338:             pass
+4339:         if self._admin_drop_filter is not None:
+4340:             try:
+4341:                 QApplication.instance().removeNativeEventFilter(self._admin_drop_filter)
+4342:             except Exception:
+4343:                 pass
+4344:             self._admin_drop_filter = None
+4345:         event.accept()
+4346: 

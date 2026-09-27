@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>功能介绍 - zhuzhu Copilot 周报系统</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
+      margin-top: 2rem;
+    }
+    
+    .feature-card {
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      padding: 2rem;
+      box-shadow: var(--shadow);
+      text-align: center;
+      transition: all 0.3s ease;
+    }
+    
+    .feature-card:hover {
+      transform: translateY(-5px);
+      box-shadow: var(--shadow-lg);
+    }
+    
+    .feature-icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+    }
+    
+    .feature-card h3 {
+      color: var(--primary-color);
+      margin-bottom: 1rem;
+      font-size: 1.3rem;
+    }
+    
+    .feature-card p {
+      color: var(--text-secondary);
+      line-height: 1.8;
+    }
+    
+    .feature-list {
+      list-style: none;
+      margin-top: 1rem;
+    }
+    
+    .feature-list li {
+      padding: 0.5rem 0;
+      color: var(--text-secondary);
+    }
+    
+    .feature-list li::before {
+      content: '✓';
+      color: var(--accent-color);
+      font-weight: bold;
+      margin-right: 0.5rem;
+    }
+    
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 2rem;
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    
+    .comparison-table th,
+    .comparison-table td {
+      padding: 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+    
+    .comparison-table th {
+      background: var(--primary-color);
+      color: white;
+      font-weight: 600;
+    }
+    
+    .comparison-table tr:hover {
+      background: var(--bg-color);
+    }
+    
+    .highlight-section {
+      background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-light) 100%);
+      color: white;
+      padding: 3rem 2rem;
+      border-radius: var(--radius);
+      margin: 3rem 0;
+      text-align: center;
+    }
+    
+    .highlight-section h2 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+    
+    .highlight-section p {
+      font-size: 1.1rem;
+      opacity: 0.9;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    
+    .cta-buttons {
+      margin-top: 2rem;
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    
+    .cta-btn {
+      padding: 1rem 2rem;
+      border-radius: var(--radius-sm);
+      text-decoration: none;
+      font-weight: 600;
+      transition: all 0.3s ease;
+    }
+    
+    .cta-btn.primary {
+      background: white;
+      color: var(--primary-color);
+    }
+    
+    .cta-btn.secondary {
+      background: transparent;
+      color: white;
+      border: 2px solid white;
+    }
+    
+    .cta-btn:hover {
+      transform: scale(1.05);
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <h1>🚀 功能介绍</h1>
+    <p>探索 zhuzhu Copilot 周报系统的强大功能</p>
+  </header>
+
+  <!-- Navigation -->
+  <nav class="nav">
+    <a href="index.html">返回首页</a>
+    <a href="#features" class="active">核心功能</a>
+    <a href="#comparison">功能对比</a>
+    <a href="#usecases">应用场景</a>
+    <a href="download.html">下载资源</a>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="container">
+    <!-- Features Grid -->
+    <section id="features">
+      <h2 class="section-title">⭐ 核心功能</h2>
+      
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon">📝</div>
+          <h3>智能内容解析</h3>
+          <p>自动识别和提取用户输入的工作内容，智能分类到各个周报模块</p>
+          <ul class="feature-list">
+            <li>自然语言处理技术</li>
+            <li>自动提取关键信息</li>
+            <li>智能分类和归纳</li>
+            <li>支持多种输入格式</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🎨</div>
+          <h3>多样化模板</h3>
+          <p>提供多种周报模板风格，满足不同行业和团队的需求</p>
+          <ul class="feature-list">
+            <li>简约商务风格</li>
+            <li>科技创新风格</li>
+            <li>创意可视化风格</li>
+            <li>自定义主题颜色</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📊</div>
+          <h3>数据可视化</h3>
+          <p>将工作数据转化为直观的图表和统计，让成果一目了然</p>
+          <ul class="feature-list">
+            <li>任务完成情况图表</li>
+            <li>工时统计分析</li>
+            <li>进度趋势图</li>
+            <li>团队贡献度分析</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🔄</div>
+          <h3>多格式导出</h3>
+          <p>支持导出为多种格式，方便在不同场景下使用</p>
+          <ul class="feature-list">
+            <li>Markdown 格式</li>
+            <li>PDF 文档</li>
+            <li>Word 文档</li>
+            <li>HTML 网页</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📚</div>
+          <h3>历史记录管理</h3>
+          <p>自动保存所有周报记录，支持历史查询和复用</p>
+          <ul class="feature-list">
+            <li>自动生成备份</li>
+            <li>支持关键词搜索</li>
+            <li>一键复用过往内容</li>
+            <li>版本历史对比</li>
+          </ul>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">👥</div>
+          <h3>团队协作</h3>
+          <p>支持多人协作编辑，实现团队周报的高效管理</p>
+          <ul class="feature-list">
+            <li>实时协同编辑</li>
+            <li>权限分级管理</li>
+            <li>评论和批注</li>
+            <li>审批流程支持</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Comparison Table -->
+    <section id="comparison" style="margin-top: 4rem;">
+      <h2 class="section-title">📋 功能对比</h2>
+      
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th>功能特性</th>
+            <th>免费版</th>
+            <th>专业版</th>
+            <th>企业版</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>周报生成次数</td>
+            <td>10次/月</td>
+            <td>无限</td>
+            <td>无限</td>
+          </tr>
+          <tr>
+            <td>模板数量</td>
+            <td>3个基础模板</td>
+            <td>15个全模板</td>
+            <td>全部+自定义</td>
+          </tr>
+          <tr>
+            <td>导出格式</td>
+            <td>Markdown</td>
+            <td>全部格式</td>
+            <td>全部+批量导出</td>
+          </tr>
+          <tr>
+            <td>历史记录</td>
+            <td>3个月</td>
+            <td>1年</td>
+            <td>永久</td>
+          </tr>
+          <tr>
+            <td>团队协作</td>
+            <td>不支持</td>
+            <td>5人团队</td>
+            <td>无限制</td>
+          </tr>
+          <tr>
+            <td>API 接口</td>
+            <td>不支持</td>
+            <td>基础 API</td>
+            <td>完整 API</td>
+          </tr>
+          <tr>
+            <td>技术支持</td>
+            <td>社区支持</td>
+            <td>邮件支持</td>
+            <td>7×24 专属支持</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Use Cases -->
+    <section id="usecases" style="margin-top: 4rem;">
+      <h2 class="section-title">💼 应用场景</h2>
+      
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon">💻</div>
+          <h3>软件开发团队</h3>
+          <p>跟踪开发进度、Bug 修复、代码审查等日常工作，自动生成结构化周报</p>
+        </div>
+        
+        <div class="feature-card">
+          <div class="feature-icon">📈</div>
+          <h3>项目管理</h3>
+          <p>汇总项目里程碑、风险事项、资源分配等关键信息，便于管理层决策</p>
+        </div>
+        
+        <div class="feature-card">
+          <div class="feature-icon">🎯</div>
+          <h3>个人成长</h3>
+          <p>记录每日学习心得、技能提升、工作反思，形成个人成长档案</p>
+        </div>
+        
+        <div class="feature-card">
+          <div class="feature-icon">🏢</div>
+          <h3>企业管理</h3>
+          <p>收集各部门周报，自动生成团队汇报，提升管理效率</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Highlight Section -->
+    <section class="highlight-section">
+      <h2>🚀 立即体验强大的周报功能</h2>
+      <p>加入 thousands 的使用者，让周报生成变得简单高效。从繁琐的报告中解放出来，专注于真正重要的工作。</p>
+      <div class="cta-buttons">
+        <a href="index.html" class="cta-btn primary">开始使用</a>
+        <a href="download.html" class="cta-btn secondary">下载资源</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <p>📊 zhuzhu Copilot 周报系统</p>
+    <p style="font-size: 0.9rem; margin-top: 0.5rem;">© 2026 专业周报生成助手 | 让工作汇报更高效</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

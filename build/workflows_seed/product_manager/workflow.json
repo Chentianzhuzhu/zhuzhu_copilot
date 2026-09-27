@@ -1,0 +1,13 @@
+{
+  "name": "product_manager",
+  "description": "产品经理（工作团核心领导者）",
+  "enabled": true,
+  "preset": "product_manager",
+  "core_files": [
+    "agent.py",
+    "tools.py",
+    "mcp.json"
+  ],
+  "created": "2026-09-15 00:33",
+  "updated": "2026-09-15 00:33"
+}

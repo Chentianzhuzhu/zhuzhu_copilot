@@ -1,0 +1,47 @@
+{
+  "action_policy": {"high": 80, "mid": 40, "low": 0},
+  "trusted_signers": ["microsoft", "adobe", "google", "intel", "nvidia", "tencent", "kingsoft"],
+  "ransomware_extensions": [".locked", ".encrypted", ".crypt", ".crypted", ".crypto",
+    ".locky", ".zepto", ".wncry", ".wcry", ".cerber", ".de-crypt", ".pay", ".vault", ".ryuk", ".phobos"],
+  "thresholds": {
+    "ransomware": {"window_s": 10, "rename_burst": 12, "newfile_burst": 20,
+                   "entropy_min": 7.0, "trigger_score": 50}
+  },
+  "rules": [
+    {"id": "script.encoded_command", "category": "script", "confidence": 85,
+     "matchers": [{"type": "pattern", "params": {"field": "script", "ignore_case": true,
+       "patterns": ["(?i)-enc(odedcommand)?\\s+[a-z0-9+/=]{80,}", "(?i)\\bencodedcommand\\b"]}}]},
+    {"id": "script.liveload", "category": "script", "confidence": 90,
+     "matchers": [{"type": "pattern", "params": {"field": "script", "ignore_case": true,
+       "patterns": ["(?i)(iex\\s*\\(|invoke-expression|downloadstring|frombase64string\\s*\\()"]}}]},
+    {"id": "script.obfuscation", "category": "script", "confidence": 55,
+     "matchers": [{"type": "ratio", "params": {"field": "script", "charset": "base64", "min_ratio": 0.75}},
+                  {"type": "length", "params": {"field": "script", "min": 120}}]},
+    {"id": "command.liveload", "category": "command", "confidence": 90,
+     "matchers": [{"type": "cmdline-regex", "params": {
+       "pattern": "(?i)(iex\\s*\\(|invoke-expression|downloadstring|encodedcommand)"}}]},
+    {"id": "command.destructive", "category": "command", "confidence": 60,
+     "matchers": [{"type": "cmdline-regex", "params": {
+       "pattern": "(?i)(format\\s+[a-z]:|diskpart|rm\\s+-rf|cipher\\s+/w|bcdedit\\s+/set)"}}]},
+    {"id": "file.ransom_extension", "category": "file", "confidence": 80,
+     "matchers": [{"type": "extension", "params": {"values": [".locked", ".encrypted", ".crypt", ".crypted",
+       ".crypto", ".locky", ".zepto", ".wncry", ".wcry", ".cerber", ".de-crypt", ".pay", ".vault", ".ryuk", ".phobos"]}}]},
+    {"id": "file.high_entropy_exe", "category": "file", "confidence": 45,
+     "matchers": [{"type": "entropy", "params": {"min": 7.2}},
+                  {"type": "pattern", "params": {"field": "path", "ignore_case": true,
+                    "patterns": ["(?i)\\.(exe|dll|scr)$"]}}]},
+    {"id": "file.packer", "category": "file", "confidence": 55,
+     "matchers": [{"type": "section-name", "params": {"values": ["upx0", "upx1", ".petite", ".aspack",
+       ".mpress", ".themida", ".vmp0", ".vmp1", ".enigma"]}}]},
+    {"id": "file.suspicious_import", "category": "file", "confidence": 70,
+     "matchers": [{"type": "pe-import", "params": {
+       "any": ["virtualalloc", "virtualallocex", "writeprocessmemory", "createremotethread",
+               "cryptacquirecontext", "isdebuggerpresent", "checkremotedebuggerpresent"]}}]},
+    {"id": "startup.known_malware", "category": "startup", "confidence": 90,
+     "matchers": [{"type": "pattern", "params": {"field": "name", "ignore_case": true,
+       "patterns": ["(?i)(njrat|darkcomet|wannacry|locky|asyncrat|quasar|xmrig|minerd|poison|njw0rm)"]}}]},
+    {"id": "startup.temp_path", "category": "startup", "confidence": 60,
+     "matchers": [{"type": "path-regex", "params": {
+       "pattern": "(?i)([\\\\/]temp[\\\\/]|[\\\\/]local[\\\\/]temp|%temp%)"}}]}
+  ]
+}

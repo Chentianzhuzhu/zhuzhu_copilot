@@ -1,0 +1,27 @@
+=== core 目录文件样本 ===
+__init__.py
+agent_browser.py
+agent_engine.c
+agent_engine.py
+agent_feedback.py
+agent_find.c
+agent_find.py
+agent_llm.c
+agent_llm.py
+agent_mcp.c
+agent_mcp.py
+agent_sandbox.c
+agent_sandbox.py
+agent_screen.c
+agent_screen.py
+agent_skills.c
+agent_skills.py
+agent_subagent.c
+agent_subagent.py
+agent_tools.c
+agent_tools.py
+agent_tts.py
+
+=== __init__.py 是否存在 ===
+True
+--- __init__.py 内容 ---

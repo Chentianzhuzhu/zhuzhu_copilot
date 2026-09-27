@@ -1,0 +1,11 @@
+{
+  "name": "product_dev",
+  "description": "产品开发（工作团成员）",
+  "enabled": true,
+  "preset": "product_dev",
+  "core_files": [
+    "agent.py"
+  ],
+  "created": "2026-09-15 00:33",
+  "updated": "2026-09-15 00:33"
+}

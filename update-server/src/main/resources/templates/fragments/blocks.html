@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<body>
+
+<!-- ============ 页脚 ============ -->
+<footer class="footer" th:fragment="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="3" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M12 1.6v20.8M1.6 12h20.8" stroke="currentColor" stroke-width="1" opacity=".38"/>
+        <rect x="4.7" y="4.7" width="6" height="6" rx="1.2" fill="#1E40AF"/>
+      </svg>
+      <span class="footer-name" th:text="${site.title}">WinAppMigrator</span>
+    </div>
+
+    <p class="footer-tag" th:text="${site.description}">产品简介</p>
+
+    <nav class="footer-links" aria-label="页脚导航">
+      <a th:each="l : ${site.footer.links}" th:href="${l.href}" th:text="${l.label}">功能特性</a>
+    </nav>
+
+    <div class="footer-meta">
+      <span>© <span id="year">2026</span> <span th:text="${site.title}">WinAppMigrator</span></span>
+      <span th:if="${!#strings.isEmpty(site.footer.icp)}" th:text="${site.footer.icp}">备案号</span>
+      <a href="/about" th:text="${site.footer.contactLabel}">联系我们</a>
+      <a href="/sitemap.xml">站点地图</a>
+      <a href="#top" id="backTopLink">返回顶部</a>
+    </div>
+  </div>
+</footer>
+
+<!-- ============ 子页面头部（每页唯一的标题区） ============
+     子页面的标签 / 标题 / 副标题统一在这里输出；
+     页内的内容区块（图库 / 视频 / 问答）不再重复输出各自的 sectionHead，避免同一标题出现两次。 -->
+<section class="page-hero" th:fragment="pageHero()">
+  <div class="wrap">
+    <nav class="crumbs reveal" aria-label="面包屑导航">
+      <a href="/">首页</a>
+      <span aria-hidden="true">/</span>
+      <span class="crumb-current" th:text="${pageCrumb}">当前页</span>
+    </nav>
+    <p class="section-tag reveal" style="--d:.05s"
+       th:if="${pageTag != null and !#strings.isEmpty(pageTag)}" th:text="${pageTag}">// 区块</p>
+    <h1 class="page-title reveal" style="--d:.1s" th:text="${pageSection}">页面标题</h1>
+    <p class="page-desc reveal" style="--d:.18s" th:text="${pageDesc}">页面描述</p>
+  </div>
+  <span class="page-deco" aria-hidden="true" th:text="${#strings.toUpperCase(pagePath)}"></span>
+</section>
+
+<!-- ============ 区块标题 ============ -->
+<div class="section-head sr" th:fragment="sectionHead(sec)" th:if="${sec != null}">
+  <p class="section-tag" th:text="${sec.tag}">// 区块</p>
+  <h2 class="section-title" th:text="${sec.title}">标题</h2>
+  <p class="section-sub" th:text="${sec.sub}">副标题</p>
+</div>
+
+<!-- ============ 功能特性 ============ -->
+<section class="section" id="features" th:fragment="features(list, sec)" th:if="${list != null and !list.isEmpty()}">
+  <div class="wrap">
+    <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
+    <div class="features-grid sr" id="featuresGrid">
+      <article class="feature-card" data-light th:each="f, it : ${list}">
+        <span class="feature-num" th:text="${'/' + #numbers.formatInteger(it.index + 1, 2)}">/01</span>
+        <span class="feature-icon" aria-hidden="true">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round"
+               th:utext="${iconPaths[f.icon]}"></svg>
+        </span>
+        <h3 class="feature-title" th:text="${f.title}">特性标题</h3>
+        <p class="feature-desc" th:text="${f.desc}">特性描述</p>
+        <span class="feature-corn" aria-hidden="true"></span>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 界面实拍（图片展示位 + 灯箱） ============
+     showHead=false 时只输出图片墙，用于 /gallery 页面（标题已由 pageHero 输出，避免重复） -->
+<section class="section" id="gallery" th:fragment="gallery(list, sec, showHead)"
+         th:if="${list != null and !list.isEmpty()}">
+  <div class="wrap">
+    <th:block th:if="${showHead}">
+      <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
+    </th:block>
+    <div class="gallery-grid sr" id="galleryGrid">
+      <figure class="gallery-item" th:each="g, it : ${list}"
+              th:classappend="${it.index % 5 == 0} ? 'wide' : ''">
+        <a class="gallery-link" th:href="${g.url}" data-lightbox
+           th:attr="data-src=${g.url},data-title=${g.title},data-desc=${g.desc},data-index=${it.index}">
+          <img th:src="${g.url}" th:alt="${#strings.isEmpty(g.title) ? '产品界面截图' : g.title}"
+               loading="lazy" decoding="async">
+          <span class="gallery-veil" aria-hidden="true"></span>
+          <span class="gallery-zoom" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              <circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8 21 21M11 8.6v4.8M8.6 11h4.8"/>
+            </svg>
+          </span>
+        </a>
+        <figcaption class="gallery-caption">
+          <span class="gc-title" th:text="${g.title}">标题</span>
+          <span class="gc-desc" th:text="${g.desc}">描述</span>
+        </figcaption>
+      </figure>
+    </div>
+    <p class="gallery-foot" th:if="${pagePath == '/'}">
+      <a class="btn btn-ghost" href="/gallery">查看全部界面实拍</a>
+    </p>
+  </div>
+</section>
+
+<!-- ============ 视频展示位 ============ -->
+<section class="section" id="videos" th:fragment="videos(list, sec, showHead)"
+         th:if="${list != null and !list.isEmpty()}">
+  <div class="wrap">
+    <th:block th:if="${showHead}">
+      <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
+    </th:block>
+    <div class="video-wall sr" id="videoWall">
+      <article class="video-card" th:each="v : ${list}"
+               th:attr="data-video=${v.url},data-vtype=${v.type},data-vtitle=${v.title},data-vdesc=${v.desc},data-vposter=${v.poster}">
+        <button class="video-thumb" type="button"
+                th:attr="aria-label=${'播放视频：' + (v.title ?: '产品演示')}">
+          <img th:if="${!#strings.isEmpty(v.poster)}" th:src="${v.poster}"
+               th:alt="${v.title ?: '视频封面'}" loading="lazy" decoding="async">
+          <span class="video-placeholder" th:unless="${!#strings.isEmpty(v.poster)}" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="4.5" width="19" height="15" rx="2"/><path d="M9.5 9.2v5.6l4.8-2.8-4.8-2.8Z"/></svg>
+          </span>
+          <span class="video-veil" aria-hidden="true"></span>
+          <span class="video-play" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 6.6v10.8L18.4 12 9 6.6Z"/></svg>
+          </span>
+          <span class="video-badge" th:text="${v.type == 'embed' ? '外链播放' : '本地视频'}">带字幕</span>
+        </button>
+        <div class="video-body">
+          <h3 class="video-title" th:text="${v.title}">视频标题</h3>
+          <p class="video-desc" th:text="${v.desc}">视频描述</p>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 数据一览 ============ -->
+<section class="section" id="stats" th:fragment="statsBlock(list, sec)"
+         th:if="${(list != null and !list.isEmpty()) or downloads > 0}">
+  <div class="wrap stats">
+    <div class="stats-lead sr">
+      <p class="section-tag" th:text="${sec.tag}">// 数据</p>
+      <h2 class="section-title" th:text="${sec.title}">数据一览</h2>
+      <p class="section-sub" th:text="${sec.sub}">副标题</p>
+    </div>
+    <div class="stats-main">
+      <div class="dl-block sr">
+        <span class="dl-label">TOTAL DOWNLOADS / 总下载量</span>
+        <span class="dl-num num" id="dlNum"
+              th:attr="data-target=${downloads}" th:text="${downloadsText}">0</span>
+      </div>
+      <div class="stats-grid sr">
+        <div class="stat" th:each="s : ${list}">
+          <span class="stat-label" th:text="${s.label}">标签</span>
+          <span class="stat-value num" th:attr="data-raw=${s.value}" th:text="${s.value}">0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 产品优势 ============ -->
+<section class="section" id="advantages" th:fragment="advantages(list, sec)" th:if="${list != null and !list.isEmpty()}">
+  <div class="wrap">
+    <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
+    <div class="adv-grid sr">
+      <article class="adv-card" data-light th:each="a, it : ${list}">
+        <span class="adv-index" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
+        <h3 class="adv-title" th:text="${a.title}">优势标题</h3>
+        <p class="adv-desc" th:text="${a.desc}">优势描述</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 常见问题（原生 details，无 JS 也可展开） ============ -->
+<section class="section" id="faq" th:fragment="faq(list, sec, showHead)"
+         th:if="${list != null and !list.isEmpty()}">
+  <div class="wrap">
+    <th:block th:if="${showHead}">
+      <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
+    </th:block>
+    <div class="faq-list sr" id="faqList">
+      <details class="faq-item" th:each="f, it : ${list}" th:attr="data-index=${it.index}">
+        <summary class="faq-q">
+          <span class="faq-num" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
+          <span class="faq-text" th:text="${f.q}">问题</span>
+          <span class="faq-toggle" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </span>
+        </summary>
+        <div class="faq-body"><p th:text="${f.a}">回答</p></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 下载 / 更新日志 ============ -->
+<section class="section" id="changelog" th:fragment="changelog(lat, sec)">
+  <div class="wrap">
+    <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
+
+    <div class="changelog-card sr" th:if="${lat != null}">
+      <div class="cl-head">
+        <span class="cl-version" th:text="${'v' + lat.version}">v1.0.0</span>
+        <span class="cl-size" th:text="${lat.sizeText + ' / ' + downloadsText + ' 次下载'}">—</span>
+      </div>
+      <ul class="cl-notes" th:if="${lat.notesLines != null and !lat.notesLines.isEmpty()}">
+        <li th:each="line : ${lat.notesLines}" th:text="${line}">更新说明</li>
+      </ul>
+      <p class="cl-empty" th:if="${lat.notesLines == null or lat.notesLines.isEmpty()}">暂无更新说明</p>
+      <div class="cl-actions">
+        <a class="btn btn-primary" id="clDownload" th:href="${lat.url}">下载此版本</a>
+        <a class="btn btn-ghost" href="/download">全部版本与日志</a>
+      </div>
+    </div>
+
+    <div class="empty-state sr" th:if="${lat == null}" id="changelogEmpty">
+      <p>版本信息暂不可用，请稍后再试或前往下载页查看。</p>
+      <p class="empty-hint">若持续出现，请联系站点管理员检查版本服务。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 结尾行动区 ============ -->
+<section class="section cta-section" th:fragment="ctaBand()">
+  <div class="wrap">
+    <div class="cta-card sr">
+      <p class="section-tag cta-tag">READY TO GO</p>
+      <h2 class="cta-title">让系统更轻盈，也让操作更省心</h2>
+      <p class="cta-desc" th:text="${site.slogan}">标语</p>
+      <div class="cta-actions">
+        <a class="btn btn-primary" th:href="${latest != null ? latest.url : '/download'}">立即下载</a>
+        <a class="btn btn-ghost" href="/gallery">先看看界面</a>
+      </div>
+      <p class="cta-note" th:if="${latest != null}"
+         th:text="${'当前版本 v' + latest.version + ' · 支持 Windows 10 / 11'}">版本说明</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 灯箱与视频弹层（全站共用，无需 JS 时降级为新窗口打开） ============ -->
+<div class="lightbox" id="lightbox" hidden th:fragment="overlays">
+  <div class="lb-backdrop" data-lb-close></div>
+  <button class="lb-btn lb-prev" type="button" data-lb-prev aria-label="上一张">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg>
+  </button>
+  <button class="lb-btn lb-next" type="button" data-lb-next aria-label="下一张">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 5l7 7-7 7"/></svg>
+  </button>
+  <button class="lb-btn lb-close" type="button" data-lb-close aria-label="关闭">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  <figure class="lb-stage">
+    <img id="lbImage" alt="">
+    <figcaption class="lb-caption">
+      <span class="lb-title" id="lbTitle"></span>
+      <span class="lb-desc" id="lbDesc"></span>
+      <span class="lb-counter" id="lbCounter"></span>
+    </figcaption>
+  </figure>
+  <div class="lb-strip" id="lbStrip" aria-hidden="true"></div>
+</div>
+
+<div class="video-modal" id="videoModal" hidden th:fragment="videoModal">
+  <div class="vm-backdrop" data-vm-close></div>
+  <div class="vm-stage" role="dialog" aria-modal="true" aria-label="视频播放">
+    <header class="vm-head">
+      <span class="vm-title" id="vmTitle"></span>
+      <button class="lb-btn vm-close" type="button" data-vm-close aria-label="关闭视频">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="vm-frame" id="vmFrame"></div>
+    <p class="vm-desc" id="vmDesc"></p>
+  </div>
+</div>
+
+</body>
+</html>

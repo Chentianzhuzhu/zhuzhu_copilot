@@ -1,0 +1,58 @@
+{
+  "game_id": "20260913_135826",
+  "start_time": "2026-09-13T13:58:26.873776",
+  "black_player": "玩家A",
+  "white_player": "玩家B",
+  "moves": [
+    {
+      "move": 2,
+      "player": 1,
+      "coord": "G10",
+      "time": "13:58:28",
+      "captured": [],
+      "timestamp": "2026-09-13T13:58:28.957155"
+    },
+    {
+      "move": 3,
+      "player": 2,
+      "coord": "I14",
+      "time": "13:58:29",
+      "captured": [],
+      "timestamp": "2026-09-13T13:58:29.193618"
+    },
+    {
+      "move": 4,
+      "player": 1,
+      "coord": "I17",
+      "time": "13:58:29",
+      "captured": [],
+      "timestamp": "2026-09-13T13:58:29.426901"
+    },
+    {
+      "move": 5,
+      "player": 2,
+      "coord": "G16",
+      "time": "13:58:29",
+      "captured": [],
+      "timestamp": "2026-09-13T13:58:29.593848"
+    },
+    {
+      "move": 6,
+      "player": 1,
+      "coord": "K10",
+      "time": "13:58:29",
+      "captured": [],
+      "timestamp": "2026-09-13T13:58:29.864097"
+    },
+    {
+      "move": 7,
+      "player": 2,
+      "coord": "K13",
+      "time": "13:58:30",
+      "captured": [],
+      "timestamp": "2026-09-13T13:58:30.131900"
+    }
+  ],
+  "status": "in_progress",
+  "result": null
+}

@@ -1,0 +1,14 @@
+# WinAppMigrator 运行时依赖（Python 3.13）
+PyQt6>=6.7
+PyQt6-WebEngine>=6.7
+Pillow>=10.0
+pywin32>=306
+python-docx>=1.1
+openpyxl>=3.1
+python-pptx>=0.6
+# 办公文档读取：PDF（read_pdf / PDF 预览；缺失时优雅降级并提示安装）
+pypdf>=4.0
+# 构建期（Cython 编译 .pyd）可选
+Cython>=3.0
+# 安全引擎：YARA 规则引擎（缺失时安全引擎自动降级为禁用 YARA，不影响其他防护）
+yara-python>=4.5

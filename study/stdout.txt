@@ -1,0 +1,20 @@
+﻿5541:             self.go_btn.setStyleSheet(_dark_btn_qss)
+5542:         # Ĭ��չʾ Bing
+5543:         if agent_ui_ux.web_engine_available():
+5544:             try:
+5545:                 from winapp_migrator.core import agent_browser_web
+5546:                 agent_browser_web.wire_downloads(self)
+5547:             except Exception:
+5548:                 pass
+5549:         QTimer.singleShot(0, self.show_bing)
+5550: 
+5551:     # ---- ҳ�湹�� ----
+5552:     def _btn(self, text, slot, tip=""):
+5553:         b = QToolButton()
+5554:         b.setText(text)
+5555:         if tip:
+5556:             b.setToolTip(tip)
+5557:         b.setFixedSize(24, 24)
+5558:         b.setCursor(Qt.CursorShape.PointingHandCursor)
+5559:         b.setStyleSheet(f"QToolButton {{ background: transparent; border: none;"
+5560:                         f"color: {TEXT}; font-size: 13px; }}"

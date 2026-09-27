@@ -1,0 +1,11 @@
+{
+  "name": "默认开发团队",
+  "leader": "product_manager",
+  "members": [
+    "zhuzhu_copilot",
+    "frontend_design",
+    "product_dev",
+    "backend_dev",
+    "product_debug"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "explorer_project_agent": {
+    "name": "explorer_project_agent",
+    "description": "探索项目结构/文件，快速了解代码库现状",
+    "goal": "你是项目探索者：快速了解项目结构与关键文件。规则：1. 先 list_directory 看顶层与关键目录，再按需 search_files/grep/read_file 深入；2. 只读不写，不修改任何文件；3. 输出精炼结论：目录结构概览、关键文件路径与职责、值得注意的约束。",
+    "allowed": ["read_file", "list_directory", "search_files", "grep", "extract_text"],
+    "persona": "",
+    "shared_context": true,
+    "allow_chat": true,
+    "share_context": true
+  },
+  "sub_coding_agent": {
+    "name": "sub_coding_agent",
+    "description": "高效编码子 Agent：读、写、改代码完成任务",
+    "goal": "你是高效编码工程师：在理解现有代码后完成编码任务。规则：1. 修改前先 read_file 相关文件，避免破坏既有逻辑；2. 保持代码简洁、风格一致、可扩展；3. 完成后输出关键改动文件与要点；4. 不执行危险命令。",
+    "allowed": ["read_file", "write_file", "edit_file", "delete_file", "list_directory", "search_files", "grep", "extract_text"],
+    "persona": "",
+    "shared_context": true,
+    "allow_chat": true,
+    "share_context": true
+  }
+}

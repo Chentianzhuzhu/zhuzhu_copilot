@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/head :: head}"></head>
+<body th:attr="data-page=${pagePath}">
+
+<a class="skip-link" href="#main">跳到主要内容</a>
+<canvas id="starfield" aria-hidden="true"></canvas>
+<div class="noise" aria-hidden="true"></div>
+<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+
+<header th:replace="~{fragments/nav :: nav}"></header>
+
+<main id="main">
+
+  <!-- ==================== 主视觉 ==================== -->
+  <section class="hero" id="hero">
+    <div class="hero-inner">
+      <div class="hero-copy">
+        <p class="eyebrow reveal" style="--d:.05s">
+          <span class="pulse-dot" aria-hidden="true"></span>WINDOWS 应用迁移 / AI COPILOT
+        </p>
+        <h1 class="hero-title reveal" style="--d:.15s" th:text="${site.title}">WinAppMigrator</h1>
+        <p class="hero-slogan reveal" style="--d:.28s" th:text="${site.slogan}">标语</p>
+        <p class="hero-desc reveal" style="--d:.4s" th:text="${site.description}">产品描述</p>
+        <div class="hero-actions reveal" style="--d:.52s">
+          <a class="btn btn-primary magnetic" id="downloadBtn"
+             th:href="${latest != null ? latest.url : '/download'}">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>
+            </svg>
+            <span th:text="${'下载 ' + site.title}">下载</span>
+          </a>
+          <a class="btn btn-ghost magnetic" href="#features">浏览功能特性</a>
+        </div>
+        <p class="hero-version reveal" id="versionLine" style="--d:.64s">
+          <span th:if="${latest != null}">
+            最新版本 <a class="v-link" href="#changelog" th:text="${'v' + latest.version}">v1.0.0</a>
+            <span class="v-sep" th:if="${!#strings.isEmpty(latest.sizeText)}">/</span>
+            <span th:if="${!#strings.isEmpty(latest.sizeText)}" th:text="${latest.sizeText}">1.0 MB</span>
+            <span class="v-sep">/</span><span id="dlInline" th:text="${downloadsText}">0</span> 次下载
+          </span>
+          <span th:unless="${latest != null}">版本信息暂不可用</span>
+        </p>
+      </div>
+
+      <!-- 右侧视觉：有主图则展示产品截图，否则用真实数据渲染状态面板 -->
+      <div class="hero-visual reveal" id="heroVisual" style="--d:.6s">
+        <figure class="hero-shot" th:if="${!#strings.isEmpty(site.heroImage)}">
+          <img th:src="${site.heroImage}" th:alt="${site.title + ' 界面预览'}" loading="eager" decoding="async">
+          <span class="shot-glow" aria-hidden="true"></span>
+        </figure>
+        <div class="console" th:unless="${!#strings.isEmpty(site.heroImage)}">
+          <div class="console-bar">
+            <span class="c-dot"></span><span class="c-dot"></span><span class="c-dot"></span>
+            <span class="c-title">winappmigrator — status</span>
+          </div>
+          <div class="console-body">
+            <p class="c-cmd"><span class="c-prompt">$</span> winappmigrator --status</p>
+            <p class="c-line"><span class="c-key">VERSION</span>
+              <span class="c-val" th:text="${latest != null ? 'v' + latest.version : '—'}">—</span></p>
+            <p class="c-line"><span class="c-key">SIZE</span>
+              <span class="c-val" th:text="${latest != null and !#strings.isEmpty(latest.sizeText) ? latest.sizeText : '—'}">—</span></p>
+            <p class="c-line"><span class="c-key">DOWNLOADS</span>
+              <span class="c-val" id="consoleDownloads" th:text="${downloadsText}">0</span></p>
+            <p class="c-line"><span class="c-key">STATE</span><span class="c-val c-ok">OK</span></p>
+            <p class="c-cursor"><span class="caret"></span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="marquee" aria-hidden="true">
+      <div class="marquee-track">
+        <span th:text="${site.title + ' ◆ AI COPILOT ◆ WINDOWS 迁移优化 ◆ 数据安全 ◆ 自动操作 ◆'}"></span>
+        <span th:text="${site.title + ' ◆ AI COPILOT ◆ WINDOWS 迁移优化 ◆ 数据安全 ◆ 自动操作 ◆'}"></span>
+      </div>
+    </div>
+    <span class="hero-deco" aria-hidden="true">MIGRATE · OPTIMIZE · AUTOMATE</span>
+  </section>
+
+  <!-- ==================== 功能特性 ==================== -->
+  <div th:replace="~{fragments/blocks :: features(${features}, ${site.sections.features})}"></div>
+
+  <!-- ==================== 界面实拍 ==================== -->
+  <div th:replace="~{fragments/blocks :: gallery(${galleryPreview}, ${site.sections.gallery}, true)}"></div>
+
+  <!-- ==================== 视频演示 ==================== -->
+  <div th:replace="~{fragments/blocks :: videos(${videoPreview}, ${site.sections.videos}, true)}"></div>
+
+  <!-- ==================== 数据一览 ==================== -->
+  <div th:replace="~{fragments/blocks :: statsBlock(${site.stats}, ${site.sections.stats})}"></div>
+
+  <!-- ==================== 产品优势 ==================== -->
+  <div th:replace="~{fragments/blocks :: advantages(${site.advantages}, ${site.sections.advantages})}"></div>
+
+  <!-- ==================== 常见问题 ==================== -->
+  <div th:replace="~{fragments/blocks :: faq(${faqPreview}, ${site.sections.faq}, true)}"></div>
+  <div class="wrap faq-more" th:if="${site.faq != null and site.faq.size() > 5}">
+    <a class="btn btn-ghost" href="/faq">查看全部问题</a>
+  </div>
+
+  <!-- ==================== 更新日志 ==================== -->
+  <div th:replace="~{fragments/blocks :: changelog(${latest}, ${site.sections.changelog})}"></div>
+
+  <!-- ==================== 结尾行动区 ==================== -->
+  <div th:replace="~{fragments/blocks :: ctaBand()}"></div>
+</main>
+
+<footer th:replace="~{fragments/blocks :: footer}"></footer>
+<div th:replace="~{fragments/blocks :: overlays}"></div>
+<div th:replace="~{fragments/blocks :: videoModal}"></div>
+
+<button class="back-top" id="backTop" type="button" aria-label="返回顶部" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</button>
+
+<script th:src="'/js/site.js?v=' + ${assetJs}" defer></script>
+</body>
+</html>

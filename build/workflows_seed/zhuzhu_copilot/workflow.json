@@ -1,0 +1,39 @@
+{
+  "name": "zhuzhu_copilot",
+  "description": "默认工作流（继承原有人格 + 预置子 Agent）",
+  "enabled": true,
+  "preset": "zhuzhu_copilot",
+  "core_files": [
+    "agent.py"
+  ],
+  "created": "2026-09-15 00:33",
+  "updated": "2026-09-25 19:18",
+  "skill_states": {
+    "web-search": true,
+    "writing-plans": true,
+    "test-driven-development": true,
+    "systematic-debugging": true,
+    "system-admin": true,
+    "sub-agent": true,
+    "skill-mgmt": true,
+    "skill-create": true,
+    "plugin-create": true,
+    "brainstorming": true,
+    "browser-control": true,
+    "cmd-ops": true,
+    "code-review": true,
+    "create-cordis": true,
+    "complex-task": true,
+    "custom-ui-ux": true,
+    "feature-panel": true,
+    "file-ops": true,
+    "frontend-design-pro": true,
+    "git-commit": true,
+    "image-gen": true,
+    "memory": true,
+    "evil": true,
+    "download-skill": true,
+    "doc-gen": true,
+    "deep-customize": true
+  }
+}

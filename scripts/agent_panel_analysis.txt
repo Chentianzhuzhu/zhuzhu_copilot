@@ -1,0 +1,84 @@
+===== __init__ starts at line 527 =====
+===== __init__ ends before line 535 (next func: def _tick(self):) =====
+527:     def __init__(self, parent=None):
+528:         super().__init__(parent)
+529:         self.setFixedSize(46, 16)
+530:         self._phase = 0.0      # 循环相位 0→1（每点激活时刻错开 1/3）
+531:         self._timer = QTimer(self)
+532:         self._timer.timeout.connect(self._tick)
+533:         self._timer.start(35)
+534: 
+
+===== 查找发送/底部按钮 =====
+7: - 反馈：发送中/停止中按钮状态 + "思考中"点号动画 + tokens 实时统计
+51: BG_BOTTOM = "#0A0A0A"     # 窗口底色渐变收尾（淡黑）
+61: USER_BG = "#1E40AF"       # 用户气泡/发送按钮底色（深蓝）
+82: # 灰蓝：输入框为空时的发送按钮（弱化提示，有内容后切换深蓝 _BTN_PRIMARY）
+185:     if kind == "send":          # 上箭头（发送）
+1006:             "向 API 发送 reasoning_effort 参数（仅支持该参数的服务商开启，如 OpenAI o 系列 / Qwen）")
+1793:         return size + QSize(m.left() + m.right(), m.top() + m.bottom())
+1809:         return y + line_h + m.bottom() - rect.y()
+1813:     """多行输入框：自动换行、高度自适应（42~140px）、Enter 发送（Shift+Enter 换行）、
+1815:     submit = pyqtSignal()          # 用户按 Enter（发送）
+1846:         # Enter 发送；Shift+Enter 换行
+1880: # 方案：RevokeDragDrop 移除 Qt 的 OLE 注册 → Explorer 回退发送 WM_DROPFILES 消息 →
+2035:             f"stop:0 {BG}, stop:1 {BG_BOTTOM}); }}"
+2127:         # 发送/停止按钮转圈动画
+2263:         bottom = QHBoxLayout()
+2264:         bottom.setSpacing(10)
+2273:         self.input.submit.connect(self._send)   # Enter 发送（Shift+Enter 换行）
+2278:         bottom.addWidget(self.input, 1)
+2292:         bottom.addWidget(self.attach_btn)
+2302:         bottom.addWidget(self.model_combo)
+2304:         # 发送/停止融合按钮：空闲=发送（深蓝），运行中=转圈可点击停止，停止中=红底转圈
+2311:         self.action_btn.setToolTip("发送")
+2313:         bottom.addWidget(self.action_btn)
+2314:         root.addLayout(bottom)
+2509:         self._scroll_bottom()
+2535:         self._scroll_bottom()
+2644:         QTimer.singleShot(0, self._scroll_bottom)
+2645:         QTimer.singleShot(300, self._scroll_bottom)
+2689:         self._place_spinner_bottom()   # 新气泡加入后动画行移到最底部（AI 气泡下方外侧）
+2692:         self._scroll_bottom()
+2703:         self._place_spinner_bottom()   # 动画行始终保持在消息流最底部
+2704:         self._scroll_bottom()
+2717:         self._place_spinner_bottom()   # 动画行始终保持在消息流最底部
+2718:         self._scroll_bottom()
+2720:     def _place_spinner_bottom(self):
+2729:         self._scroll_bottom()   # 移动后确保滚到底部，动画行不被遮挡
+2731:     # ---------- 发送/停止融合按钮状态与转圈动画 ----------
+2746:         """空闲：输入框为空显示灰蓝发送按钮，有内容切换深蓝（可发送）"""
+2752:         self.action_btn.setToolTip("发送")
+2755:         """输入框内容变化：空闲时刷新发送按钮配色（空→灰蓝，有内容→深蓝）"""
+2780:         """任务结束：停止动画并恢复空闲发送状态"""
+2784:         """融合按钮点击：空闲→发送；运行中→停止"""
+2790:     def _scroll_bottom(self):
+2796:         QTimer.singleShot(0, self._do_scroll_bottom)
+2797:         QTimer.singleShot(150, self._do_scroll_bottom)
+2798:         QTimer.singleShot(400, self._do_scroll_bottom)
+2799:         QTimer.singleShot(800, self._do_scroll_bottom)
+2801:     def _do_scroll_bottom(self):
+3072:         self._scroll_bottom()
+3110:         self._scroll_bottom()
+3153:         self._scroll_bottom()
+3254:         """手动切换模型：选中具体模型则本次发送使用其所属服务商；选「自动」回到力度路由"""
+3396:     # ---------- 发送 / 停止 ----------
+3522:         self._set_action_busy()   # 发送后按钮变转圈（可点击停止）
+3524:         self._clear_attachments()   # 发送后清空附件条
+3633:         self._engine = None   # 下次发送时重建全新引擎
+3641:         self._scroll_bottom()
+3787:         self._stop_button_anim()   # 融合按钮恢复空闲发送状态
+3911:             # 压缩为 ≤320px JPEG data URL 发送给模型（缩略图预览用原图）
+3951:         """文件徽章缩略图 → PNG data URL（嵌入发送后用户气泡富文本）"""
+3996:         paths, _ = QFileDialog.getOpenFileNames(self, "选择文件/图片发送给 AI")
+4073:         """取消单个附件：从附件条移除缩略图并从待发送列表剔除"""
+4126:             self._set_action_idle()   # 融合按钮恢复空闲发送状态
+4131:             self._scroll_bottom()   # 结束执行时自动滚动到最下方
+4160:         self._scroll_bottom()
+4206:         self._scroll_bottom()
+4222:         self._scroll_bottom()
+4234:             self._scroll_bottom()
+4243:             self._scroll_bottom()
+4253:             self._scroll_bottom()
+4263:             self._scroll_bottom()
+4271:             self._scroll_bottom()

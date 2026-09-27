@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<body>
+<!--
+  顶部导航：桌面端横向菜单 + 移动端抽屉；当前页高亮与滚动监听锚点均由服务端下发
+-->
+<header class="nav" id="nav" th:fragment="nav">
+  <div class="scroll-progress" id="scrollProgress" aria-hidden="true"></div>
+  <div class="nav-inner">
+    <a class="brand" href="/">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="3" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M12 1.6v20.8M1.6 12h20.8" stroke="currentColor" stroke-width="1" opacity=".38"/>
+        <rect x="4.7" y="4.7" width="6" height="6" rx="1.2" fill="#1E40AF"/>
+      </svg>
+      <span class="brand-name" th:text="${site.title}">WinAppMigrator</span>
+    </a>
+
+    <nav class="menu" aria-label="主导航">
+      <a th:each="n : ${navItems}"
+         th:href="${n.href}"
+         th:text="${n.label}"
+         th:classappend="${n.active}"
+         th:attr="data-spy=${n.spy}">功能特性</a>
+    </nav>
+
+    <div class="nav-right">
+      <a class="nav-cta" id="navDownload"
+         th:href="${latest != null ? latest.url : '/download'}">下载</a>
+      <button class="nav-burger" id="navBurger" type="button"
+              aria-label="打开导航菜单" aria-expanded="false" aria-controls="navDrawer">
+        <span aria-hidden="true"></span><span aria-hidden="true"></span>
+      </button>
+    </div>
+  </div>
+
+  <div class="nav-drawer" id="navDrawer" hidden>
+    <nav aria-label="移动端导航">
+      <a th:each="n : ${navItems}" th:href="${n.href}" th:text="${n.label}">功能特性</a>
+      <a th:href="${latest != null ? latest.url : '/download'}">下载安装包</a>
+    </nav>
+  </div>
+</header>
+</body>
+</html>

@@ -1,0 +1,11 @@
+44: from winapp_migrator.ui.tts_panel import TtsPanel
+2282:         self.tts_btn = QPushButton("TTS")
+2283:         self.tts_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+2284:         self.tts_btn.setAutoDefault(False)
+2285:         self.tts_btn.setFixedSize(42, 42)
+2286:         self.tts_btn.setStyleSheet(
+2290:         self.tts_btn.setToolTip("Qwen-TTS 声音复刻")
+2291:         self.tts_btn.clicked.connect(self._open_tts_panel)
+2292:         bottom.addWidget(self.tts_btn)
+2291:         self.tts_btn.clicked.connect(self._open_tts_panel)
+4339:     def _open_tts_panel(self):

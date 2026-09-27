@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WinAppMigrator · 管理后台</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<!--
+  资源一律用绝对路径：后台首页是通过 /admin 内部转发提供的，
+  浏览器地址栏仍是 /admin，相对路径会被解析成 /admin.css 而 404（样式全失效）。
+-->
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+
+<!--
+  后台界面几乎全部由 admin.js 渲染，脚本一旦没执行就是一片空白。
+  下面两段提示负责把「空白」变成「可自诊断」：禁用 JS 时用 noscript 说明，
+  脚本未能加载（CDN 拦截 / 缓存错配）时 3 秒后显示提示。
+-->
+<noscript>
+  <div class="boot-notice">
+    <strong>当前浏览器禁用了 JavaScript</strong>
+    <p>管理后台依赖脚本完成界面渲染与接口调用，请在浏览器设置中允许 JavaScript 后重新打开本页。</p>
+  </div>
+</noscript>
+<div id="bootNotice" class="boot-notice" hidden>
+  <strong>后台脚本未能加载</strong>
+  <p>本页结构几乎全部由 <code>admin.js</code> 渲染，脚本未执行时就会显示为空白。</p>
+  <p>最常见原因是浏览器或 CDN 缓存了旧版本资源：请按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>
+     强制刷新；若仍无效，请确认 <code>/admin/admin.js</code> 能否正常打开。</p>
+</div>
+<script>
+  setTimeout(function () {
+    if (!window.__wmAdminReady) {
+      var notice = document.getElementById('bootNotice');
+      if (notice) { notice.hidden = false; }
+    }
+  }, 3000);
+</script>
+
+<!-- ============ 登录页 ============ -->
+<div id="loginView" class="login-view hidden">
+  <div class="login-grid" aria-hidden="true"></div>
+  <div class="login-card">
+    <div class="login-mark" aria-hidden="true">
+      <svg viewBox="0 0 48 48" width="52" height="52" fill="none">
+        <rect x="4" y="4" width="40" height="40" rx="6" stroke="#1E40AF" stroke-width="2.5"/>
+        <path d="M14 17h20M14 24h20M14 31h11" stroke="#F5F5F5" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="38" cy="38" r="3.5" fill="#1E40AF"/>
+      </svg>
+    </div>
+    <h1 class="login-title">WinAppMigrator</h1>
+    <p class="login-subtitle">管理控制台 · 需要授权访问</p>
+    <form id="loginForm" autocomplete="off">
+      <label class="field-label" for="password">访问密码</label>
+      <div class="field-wrap">
+        <input type="password" id="password" class="input" placeholder="输入访问密码" autocomplete="current-password" required>
+        <button type="button" id="togglePwd" class="pwd-toggle" aria-label="显示密码">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/>
+            <circle cx="12" cy="12" r="2.8"/>
+          </svg>
+        </button>
+      </div>
+      <p id="loginError" class="login-error hidden"></p>
+      <button type="submit" id="loginBtn" class="btn btn-primary btn-block">登 录</button>
+    </form>
+    <p class="login-foot">仅限 SSH 隧道内网访问 · 127.0.0.1</p>
+  </div>
+</div>
+
+<!-- ============ 主面板 ============ -->
+<div id="mainView" class="main-view hidden">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <span class="brand-name">WinAppMigrator</span>
+      <span class="brand-sep" aria-hidden="true"></span>
+      <span class="brand-tag">ADMIN</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="content" role="tab">内容管理</button>
+      <button class="tab" data-tab="media" role="tab">媒体库</button>
+      <button class="tab" data-tab="release" role="tab">版本发布</button>
+      <button class="tab" data-tab="stats" role="tab">统计图表</button>
+    </nav>
+    <div class="topbar-right">
+      <a class="btn btn-ghost btn-sm" href="/" target="_blank" rel="noopener">查看官网</a>
+      <span id="onlineDot" class="online-dot" aria-hidden="true"></span>
+      <button id="logoutBtn" class="btn btn-ghost btn-sm">退出登录</button>
+    </div>
+  </header>
+
+  <main class="content">
+
+    <!-- ==================== 内容管理 ==================== -->
+    <section id="panel-content" class="panel active" role="tabpanel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title">内容管理</h2>
+          <p class="panel-desc">官网全部可见文案、图片与视频均由这里配置，保存后即时生效（官网为服务端渲染，刷新即更新）</p>
+        </div>
+        <button id="saveSiteBtn" class="btn btn-primary">保存修改</button>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">基础信息</h3>
+        <div class="form-grid">
+          <div class="form-field span-2">
+            <label class="field-label" for="siteTitle">网站标题 title</label>
+            <input type="text" id="siteTitle" class="input" placeholder="WinAppMigrator">
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="siteSlogan">标语 slogan</label>
+            <input type="text" id="siteSlogan" class="input" placeholder="一句话宣传语">
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="siteDescription">描述 description</label>
+            <input type="text" id="siteDescription" class="input" placeholder="产品简介（同时用于搜索摘要）">
+          </div>
+          <div class="form-field span-2">
+            <label class="field-label">主视觉图 heroImage</label>
+            <div class="media-field" data-media-field="heroImage" data-kind="image">
+              <input type="text" id="siteHeroImage" class="input" data-key="heroImage" placeholder="留空则展示实时数据状态面板">
+            </div>
+            <p class="field-hint">建议 16:10 左右截图，浅色/深色界面均可；留空时首页右侧展示版本与下载量状态面板。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">分区文案 sections</h3>
+          <span class="count-badge" id="sectionCount">7</span>
+        </div>
+        <p class="field-hint">每个区块的标签 / 标题 / 副标题，留空则用后台默认值。</p>
+        <div class="list-editor" data-editor="sections"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">功能特性 features</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="features">添加特性</button>
+        </div>
+        <div class="list-editor" data-editor="features"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">界面实拍 gallery</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="gallery">添加图片</button>
+        </div>
+        <p class="field-hint">在「媒体库」上传图片后，点下方【添加图片】新建一行，
+          再点「图片」输入框右侧的【选择 / 上传】从媒体库挑选。首页展示前 6 张，全部图片见 /gallery 页面。</p>
+        <div class="list-editor" data-editor="gallery"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">视频演示 videos</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="videos">添加视频</button>
+        </div>
+        <p class="field-hint">本地上传支持 mp4 / webm / ogg / mov，地址可通过【选择 / 上传】从媒体库挑选；
+          外链嵌入则把第三方播放页地址直接填到「视频地址」。</p>
+        <div class="list-editor" data-editor="videos"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">产品优势 advantages</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="advantages">添加优势</button>
+        </div>
+        <div class="list-editor" data-editor="advantages"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">常见问题 faq</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="faq">添加问答</button>
+        </div>
+        <p class="field-hint">首页展示前 5 条，完整列表见 /faq 页面；结构化问答有利于搜索引擎理解。</p>
+        <div class="list-editor" data-editor="faq"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">数据统计 stats</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="stats">添加数据</button>
+        </div>
+        <p class="field-hint">数值支持「50+」「3 层」「100%」这类写法，官网会自动做滚动动画。</p>
+        <div class="list-editor" data-editor="stats"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">系统要求 requirements</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="requirements">添加条目</button>
+        </div>
+        <div class="list-editor" data-editor="requirements"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">页脚链接 footer.links</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="footerLinks">添加链接</button>
+        </div>
+        <div class="list-editor" data-editor="footerLinks"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">关于我们 · 联系方式 about.contacts</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="aboutContacts">添加联系方式</button>
+        </div>
+        <p class="field-hint">点击首页底部「联系我们」跳转到 /about 页面，此处配置该页展示的联系方式（邮箱、GitHub 等）。</p>
+        <div class="list-editor" data-editor="aboutContacts"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">关于我们 · 团队成员 about.members</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="aboutMembers">添加成员</button>
+        </div>
+        <p class="field-hint">团队成员头像可在「媒体库」上传后通过「选择 / 上传」挑选；留空则显示姓名首字。</p>
+        <div class="list-editor" data-editor="aboutMembers"></div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">页脚信息与 SEO</h3>
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="field-label" for="footerIcp">备案号 footer.icp</label>
+            <input type="text" id="footerIcp" class="input" placeholder="留空则不显示">
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="footerContactLabel">页脚联系文字 footer.contactLabel</label>
+            <input type="text" id="footerContactLabel" class="input" placeholder="联系我们">
+          </div>
+          <div class="form-field span-2">
+            <label class="field-label" for="seoKeywords">搜索关键词 seo.keywords</label>
+            <input type="text" id="seoKeywords" class="input" placeholder="英文逗号分隔">
+          </div>
+          <div class="form-field span-2">
+            <label class="field-label">社交分享图 seo.ogImage</label>
+            <div class="media-field" data-media-field="seoOgImage" data-kind="image">
+              <input type="text" id="seoOgImage" class="input" data-key="ogImage" placeholder="留空则使用默认品牌分享图">
+            </div>
+            <p class="field-hint">建议 1200×630；用于微信 / 搜索引擎等分享卡片。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 媒体库 ==================== -->
+    <section id="panel-media" class="panel" role="tabpanel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title">媒体库</h2>
+          <p class="panel-desc">官网图片与视频资源，上传后可被画廊 / 视频 / 主图等字段引用</p>
+        </div>
+        <div class="panel-actions">
+          <input type="file" id="mediaUploadInput" class="hidden-input">
+          <button type="button" id="uploadImageBtn" class="btn btn-secondary">上传图片</button>
+          <button type="button" id="uploadVideoBtn" class="btn btn-secondary">上传视频</button>
+          <button type="button" id="refreshMediaBtn" class="btn btn-ghost">刷新</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">图片 img</h3>
+          <span class="count-badge" id="imageCount">0</span>
+        </div>
+        <div class="media-grid" id="mediaImageGrid"></div>
+        <p class="empty-row" id="imageEmpty" hidden>暂无图片资源</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">视频 video</h3>
+          <span class="count-badge" id="videoCount">0</span>
+        </div>
+        <div class="media-grid" id="mediaVideoGrid"></div>
+        <p class="empty-row" id="videoEmpty" hidden>暂无视频资源</p>
+      </div>
+    </section>
+
+    <!-- ==================== 版本发布 ==================== -->
+    <section id="panel-release" class="panel" role="tabpanel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title">版本发布</h2>
+          <p class="panel-desc">上传安装包并填写更新说明，客户端将按版本号与强制标记升级</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">发布新版本</h3>
+        <form id="releaseForm" autocomplete="off">
+          <div class="form-grid">
+            <div class="form-field">
+              <label class="field-label" for="releaseVersion">版本号 version</label>
+              <input type="text" id="releaseVersion" class="input" placeholder="1.2.0" required>
+            </div>
+            <div class="form-field">
+              <label class="field-label" for="releaseFile">安装包 file</label>
+              <label class="file-drop" for="releaseFile">
+                <input type="file" id="releaseFile" class="hidden-input" required>
+                <span class="file-drop-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 16V4m0 0 4 4m-4-4L8 8"/>
+                    <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+                  </svg>
+                </span>
+                <span id="releaseFileName" class="file-drop-name">选择安装包文件</span>
+              </label>
+            </div>
+            <div class="form-field span-2">
+              <label class="field-label" for="releaseNotes">更新说明 notes</label>
+              <textarea id="releaseNotes" class="textarea" rows="3" placeholder="每行一条，官网下载页会按行展示"></textarea>
+            </div>
+            <div class="form-field span-2">
+              <label class="check-row">
+                <input type="checkbox" id="releaseForce">
+                <span class="check-box" aria-hidden="true"></span>
+                <span class="check-label">强制更新 <em>客户端检测到该版本时强制升级，不可跳过</em></span>
+              </label>
+            </div>
+          </div>
+          <div class="form-actions">
+            <p id="releaseMsg" class="field-hint hidden"></p>
+            <button type="submit" id="releaseBtn" class="btn btn-primary">发布版本</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">已发布版本</h3>
+          <span id="versionCount" class="count-badge">0</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>版本号</th>
+                <th>文件名</th>
+                <th>大小</th>
+                <th>更新说明</th>
+                <th>发布日期</th>
+                <th>强制</th>
+                <th class="th-right">操作</th>
+              </tr>
+            </thead>
+            <tbody id="versionTbody">
+              <tr class="empty-row"><td colspan="7">暂无已发布版本</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 统计图表 ==================== -->
+    <section id="panel-stats" class="panel" role="tabpanel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title">统计图表</h2>
+          <p class="panel-desc">近 30 天安装包下载趋势，数据来自服务器实时统计</p>
+        </div>
+      </div>
+
+      <div class="stat-banner">
+        <div class="stat-banner-meta">TOTAL DOWNLOADS</div>
+        <div class="stat-banner-value" id="totalDownloads">--</div>
+        <div class="stat-banner-foot">累计下载次数 · 实时更新</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">下载趋势</h3>
+          <div class="chart-legend" aria-hidden="true">
+            <span class="legend-line"></span>
+            <span class="legend-text">每日下载量</span>
+          </div>
+        </div>
+        <div id="chartBox" class="chart-box">
+          <canvas id="trendCanvas"></canvas>
+          <div id="chartTip" class="chart-tip hidden"></div>
+          <div id="chartEmpty" class="chart-empty hidden">暂无下载数据</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">版本信息</h3>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>版本号</th>
+                <th>文件名</th>
+                <th>发布日期</th>
+                <th>大小</th>
+              </tr>
+            </thead>
+            <tbody id="statsVersionTbody">
+              <tr class="empty-row"><td colspan="4">暂无版本数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<!-- ============ 媒体选择弹窗 ============ -->
+<div id="pickerMask" class="confirm-mask hidden">
+  <div class="picker-dialog" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
+    <header class="picker-head">
+      <span class="confirm-title" id="pickerTitle">选择媒体</span>
+      <div class="picker-tabs" id="pickerTabs">
+        <button type="button" class="picker-tab active" data-kind="image">图片</button>
+        <button type="button" class="picker-tab" data-kind="video">视频</button>
+        <button type="button" class="picker-tab" data-kind="url">手填地址</button>
+      </div>
+    </header>
+    <div class="picker-body">
+      <div class="picker-pane" id="pickerGrid"></div>
+      <div class="picker-pane hidden" id="pickerManual">
+        <label class="field-label" for="pickerUrl">媒体地址</label>
+        <input type="text" id="pickerUrl" class="input" placeholder="/uploads/... 或 https://...">
+        <p class="field-hint">支持站内相对路径与 http(s) 外链（外链仅在视频「外链嵌入」时使用）。</p>
+      </div>
+    </div>
+    <footer class="picker-foot">
+      <input type="file" id="pickerFileInput" class="hidden-input">
+      <button type="button" id="pickerUploadBtn" class="btn btn-secondary btn-sm">上传到当前分类</button>
+      <button type="button" id="pickerCancel" class="btn btn-ghost btn-sm">取消</button>
+      <button type="button" id="pickerConfirm" class="btn btn-primary btn-sm">使用该地址</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ============ 确认对话框 ============ -->
+<div id="confirmMask" class="confirm-mask hidden">
+  <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="confirm-title" id="confirmTitle">确认操作</div>
+    <p class="confirm-text" id="confirmText"></p>
+    <div class="confirm-actions">
+      <button type="button" id="confirmCancel" class="btn btn-secondary">取消</button>
+      <button type="button" id="confirmOk" class="btn btn-danger">删除</button>
+    </div>
+  </div>
+</div>
+
+<script src="/admin/admin.js"></script>
+</body>
+</html>

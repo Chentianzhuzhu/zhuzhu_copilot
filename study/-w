@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+Date: Fri, 28 Aug 2026 17:53:38 GMT
+Content-Type: text/html
+Content-Length: 77048
+Connection: keep-alive
+Vary: Accept-Encoding
+Last-Modified: Fri, 24 Jul 2026 11:10:46 GMT
+ETag: "6a634836-12cf8"
+Strict-Transport-Security: max-age=15768000
+Via: npmmirror.com-03
+Accept-Ranges: bytes
+

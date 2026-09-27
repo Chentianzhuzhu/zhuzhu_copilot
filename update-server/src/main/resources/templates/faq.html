@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/head :: head}"></head>
+<body th:attr="data-page=${pagePath}">
+
+<a class="skip-link" href="#main">跳到主要内容</a>
+<canvas id="starfield" aria-hidden="true"></canvas>
+<div class="noise" aria-hidden="true"></div>
+<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+
+<header th:replace="~{fragments/nav :: nav}"></header>
+
+<main id="main">
+  <div th:replace="~{fragments/blocks :: pageHero()}"></div>
+
+  <!-- 标题已由 pageHero 输出，这里只出问答列表 -->
+  <div th:replace="~{fragments/blocks :: faq(${site.faq}, ${site.sections.faq}, false)}"></div>
+
+  <div class="wrap" th:if="${site.faq == null or site.faq.isEmpty()}">
+    <div class="empty-state sr">
+      <p>暂未配置常见问题。</p>
+      <p class="empty-hint">管理员可在后台「常见问题」中补充问答，此处会自动同步。</p>
+    </div>
+  </div>
+
+  <!-- 仍未解决：引导下载页与联系方式 -->
+  <section class="section" id="more-help">
+    <div class="wrap">
+      <div class="help-band sr">
+        <div class="help-copy">
+          <p class="section-tag">// 仍未解决</p>
+          <h2 class="section-title">还有疑问？</h2>
+          <p class="section-sub">先下载安装试用，或前往下载页查看版本说明与系统要求。</p>
+        </div>
+        <div class="help-actions">
+          <a class="btn btn-primary magnetic" th:href="${latest != null ? latest.url : '/download'}">下载安装包</a>
+          <a class="btn btn-ghost" href="/download">查看版本历史</a>
+          <a class="btn btn-ghost" href="/about" th:text="${site.footer.contactLabel}">联系我们</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer th:replace="~{fragments/blocks :: footer}"></footer>
+<div th:replace="~{fragments/blocks :: videoModal}"></div>
+
+<button class="back-top" id="backTop" type="button" aria-label="返回顶部" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</button>
+
+<script th:src="'/js/site.js?v=' + ${assetJs}" defer></script>
+</body>
+</html>

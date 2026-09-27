@@ -1,0 +1,10 @@
+{
+  "id": "zhuzhu_copilot",
+  "display_name": "zhuzhu Copilot",
+  "description": "默认工作流（继承原有人格）：以 zhuzhu Copilot 全能力工作；预置 explorer_project_agent（项目探索）与 sub_coding_agent（高效编码）两个注册式子 Agent，可 @ 直呼或由主 Agent 派发。",
+  "workflow_name": "zhuzhu_copilot",
+  "agents": [
+    "explorer_project_agent（项目探索）",
+    "sub_coding_agent（高效编码）"
+  ]
+}

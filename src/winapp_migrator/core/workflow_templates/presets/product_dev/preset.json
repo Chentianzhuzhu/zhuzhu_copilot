@@ -1,0 +1,7 @@
+{
+  "id": "product_dev",
+  "display_name": "产品开发",
+  "description": "工作团成员（产品开发）：负责功能实现与业务逻辑开发；可被产品经理派发开发任务，开启共享后结论写回共同上下文空间。",
+  "workflow_name": "product_dev",
+  "agents": []
+}

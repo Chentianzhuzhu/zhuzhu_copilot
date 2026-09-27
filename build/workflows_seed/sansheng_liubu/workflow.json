@@ -1,0 +1,18 @@
+{
+  "name": "sansheng_liubu",
+  "description": "以古制三省六部为编队的协同工作流（全编队以文言文奏对）：中书省（主 Agent）草制决策，门下省驳议封还，尚书省督课调度，吏户礼兵刑工六部分承办事；编队共用共同上下文空间，并可调用 create-cordis 技能扩展核心文件与注册式子 Agent。",
+  "enabled": true,
+  "preset": "sansheng_liubu",
+  "core_files": [
+    "agent.py",
+    "tools.py",
+    "skills",
+    "plugins",
+    "mcp.json"
+  ],
+  "created": "2026-09-13 16:32",
+  "updated": "2026-09-26 12:21",
+  "skill_states": {
+    "file-upload": true
+  }
+}

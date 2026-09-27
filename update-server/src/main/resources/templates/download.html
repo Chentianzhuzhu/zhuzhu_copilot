@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/head :: head}"></head>
+<body th:attr="data-page=${pagePath}">
+
+<a class="skip-link" href="#main">跳到主要内容</a>
+<canvas id="starfield" aria-hidden="true"></canvas>
+<div class="noise" aria-hidden="true"></div>
+<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+
+<header th:replace="~{fragments/nav :: nav}"></header>
+
+<main id="main">
+  <div th:replace="~{fragments/blocks :: pageHero()}"></div>
+
+  <!-- ==================== 最新版本下载 ==================== -->
+  <section class="section">
+    <div class="wrap">
+      <div class="dl-hero sr">
+        <div class="dl-hero-main">
+          <!-- 区块标签由页面头部（pageHero）输出，这里不再重复 -->
+          <h2 class="dl-version" th:if="${latest != null}" th:text="${'v' + latest.version}">v1.0.0</h2>
+          <h2 class="dl-version" th:unless="${latest != null}">版本同步中</h2>
+          <p class="dl-meta" th:if="${latest != null}">
+            <span th:text="${'安装包 ' + latest.sizeText}">安装包</span>
+            <span class="dot" aria-hidden="true"></span>
+            <span th:if="${latest.force}" class="tag-force">强制更新</span>
+            <span th:unless="${latest.force}" class="tag-optional">可选更新</span>
+          </p>
+          <p class="dl-meta" th:unless="${latest != null}">版本接口暂不可用，请稍后刷新重试。</p>
+          <div class="dl-actions">
+            <a class="btn btn-primary magnetic" id="downloadBtn"
+               th:if="${latest != null}" th:href="${latest.url}">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>
+              </svg>
+              下载安装包
+            </a>
+            <a class="btn btn-ghost" href="/faq">安装遇到问题？</a>
+          </div>
+        </div>
+        <div class="dl-hero-stat">
+          <span class="dl-stat-label">TOTAL DOWNLOADS</span>
+          <span class="dl-stat-value num" id="dlNum" th:attr="data-target=${downloads}" th:text="${downloadsText}">0</span>
+          <span class="dl-stat-foot">累计下载次数 · 来自后端统计</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 系统要求 ==================== -->
+  <section class="section" id="requirements" th:if="${site.requirements != null and !site.requirements.isEmpty()}">
+    <div class="wrap">
+      <div class="section-head sr">
+        <p class="section-tag">// 系统要求</p>
+        <h2 class="section-title">运行环境</h2>
+        <p class="section-sub">请确认设备满足以下条件，以获得完整的迁移与优化体验。</p>
+      </div>
+      <div class="req-grid sr">
+        <div class="req-item" th:each="r : ${site.requirements}">
+          <span class="req-label" th:text="${r.label}">项目</span>
+          <span class="req-value" th:text="${r.value}">要求</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 版本历史 ==================== -->
+  <section class="section" id="history">
+    <div class="wrap">
+      <div class="section-head sr">
+        <p class="section-tag">// 更新日志</p>
+        <h2 class="section-title">版本历史</h2>
+        <p class="section-sub">全部历史版本与更新说明，按版本号从高到低排列。</p>
+      </div>
+
+      <ol class="timeline sr" th:if="${!versions.isEmpty()}">
+        <li class="tl-item" th:each="v : ${versions}">
+          <span class="tl-dot" aria-hidden="true"></span>
+          <div class="tl-card">
+            <div class="tl-head">
+              <span class="tl-version" th:text="${'v' + v.version}">v1.0.0</span>
+              <span class="tl-date" th:text="${v.date}">2026-01-01</span>
+              <span class="tl-size" th:text="${v.sizeText}">1.0 MB</span>
+              <span class="tag-force" th:if="${v.force}">强制</span>
+            </div>
+            <ul class="tl-notes" th:if="${!v.notes.isEmpty()}">
+              <li th:each="n : ${v.notes}" th:text="${n}">更新说明</li>
+            </ul>
+            <p class="tl-empty" th:if="${v.notes.isEmpty()}">该版本未填写更新说明。</p>
+            <a class="tl-download" th:href="${v.url}">下载该版本</a>
+          </div>
+        </li>
+      </ol>
+
+      <div class="empty-state sr" th:if="${versions.isEmpty()}">
+        <p>暂未发布任何版本。</p>
+        <p class="empty-hint">管理员在后台「版本发布」中上传安装包后，此处会自动列出。</p>
+      </div>
+    </div>
+  </section>
+
+  <div th:replace="~{fragments/blocks :: ctaBand()}"></div>
+</main>
+
+<footer th:replace="~{fragments/blocks :: footer}"></footer>
+<div th:replace="~{fragments/blocks :: overlays}"></div>
+<div th:replace="~{fragments/blocks :: videoModal}"></div>
+
+<button class="back-top" id="backTop" type="button" aria-label="返回顶部" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</button>
+
+<script th:src="'/js/site.js?v=' + ${assetJs}" defer></script>
+</body>
+</html>

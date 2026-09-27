@@ -1,0 +1,108 @@
+{
+  "enabled_modules": {
+    "yara": true,
+    "ransomware": true,
+    "popup": true,
+    "startup": true,
+    "dns": true,
+    "download": true,
+    "llm": true
+  },
+  "yara": {
+    "rules_dir": "config/yara",
+    "scan_on_start": false
+  },
+  "quarantine": {
+    "root": "%ProgramData%/WinAppMigrator/Quarantine"
+  },
+  "ransomware": {
+    "canary_dirs": [
+      "%USERPROFILE%/Documents",
+      "%USERPROFILE%/Desktop",
+      "%USERPROFILE%/Pictures",
+      "%USERPROFILE%/Downloads"
+    ],
+    "canary_files": [
+      "_passwords.txt",
+      "_bank_account.docx",
+      "_important_notes.pdf",
+      "_customer_data.xlsx"
+    ],
+    "canary_content": "WinAppMigrator canary file. Do not edit.",
+    "extensions": [
+      ".locked", ".encrypted", ".crypt", ".crypted", ".crypto",
+      ".locky", ".zepto", ".wncry", ".wcry", ".cerber",
+      ".de-crypt", ".pay", ".vault", ".ryuk", ".phobos"
+    ],
+    "vss_enabled": true,
+    "vss_interval_h": 6,
+    "vss_drive": "C:"
+  },
+  "popup": {
+    "action": "close",
+    "title_keywords": [
+      "广告", "推荐", "热点资讯", "今日头条", "弹窗", "抢红包",
+      "领红包", "抽奖", "优惠", "秒杀", "中奖", "免费领取"
+    ],
+    "ad_processes": [
+      "popup", "ad", "news", "push", "banner", "minibrowser"
+    ]
+  },
+  "startup": {
+    "watch_reg_keys": [
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+    ],
+    "watch_folders": [
+      "%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup",
+      "%ProgramData%/Microsoft/Windows/Start Menu/Programs/Startup"
+    ],
+    "suspicious_markers": [
+      "\\temp\\", "powershell", "wscript", "cscript",
+      "mshta", "regsvr32", "certutil"
+    ]
+  },
+  "dns": {
+    "hosts_path": "C:/Windows/System32/drivers/etc/hosts",
+    "suspicious_domains": [
+      "google.com", "google.com.hk", "youtube.com", "twitter.com",
+      "facebook.com", "github.com", "microsoft.com", "windowsupdate.com"
+    ]
+  },
+  "network": {
+    "syn_flood_threshold": 100,
+    "syn_block_rounds": 2,
+    "seg_rate_threshold": 5000,
+    "udp_rate_threshold": 4000,
+    "port_scan_ports": 60,
+    "port_scan_rounds": 2,
+    "max_block_rules": 50,
+    "high_risk_ports": [445, 139, 135, 3389, 23, 21, 1433, 3306, 5900, 6379],
+    "local_allowed_ports": [135, 137, 138, 139, 445, 5353, 1900, 5040],
+    "port_names": {"445": "SMB", "139": "NetBIOS", "135": "RPC", "3389": "RDP",
+      "23": "Telnet", "21": "FTP", "1433": "MSSQL", "3306": "MySQL",
+      "5900": "VNC", "6379": "Redis"}
+  },
+  "download_guard": {
+    "dirs": [],
+    "walk_subdirs": false,
+    "scan_interval_s": 30,
+    "action": "notify",
+    "extensions": [
+      ".exe", ".dll", ".scr", ".bat", ".cmd", ".ps1", ".vbs", ".vbe",
+      ".js", ".jse", ".jar", ".msi", ".hta", ".lnk",
+      ".docm", ".xlsm", ".pptm", ".doc", ".xls", ".ppt"
+    ],
+    "max_file_mb": 200
+  },
+  "llm": {
+    "enabled": true,
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "timeout_s": 15.0,
+    "max_calls_per_scan": 10
+  }
+}

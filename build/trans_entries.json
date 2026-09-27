@@ -1,0 +1,603 @@
+{
+ "ppEffectCut": {
+  "eid": 257,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cut",
+  "cattrs": {}
+ },
+ "ppEffectCutThroughBlack": {
+  "eid": 258,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cut",
+  "cattrs": {
+   "thruBlk": "1"
+  }
+ },
+ "ppEffectRandom": {
+  "eid": 513,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "random",
+  "cattrs": {}
+ },
+ "ppEffectBlindsHorizontal": {
+  "eid": 769,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "blinds",
+  "cattrs": {}
+ },
+ "ppEffectBlindsVertical": {
+  "eid": 770,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "blinds",
+  "cattrs": {
+   "dir": "vert"
+  }
+ },
+ "ppEffectCheckerboardAcross": {
+  "eid": 1025,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "checker",
+  "cattrs": {}
+ },
+ "ppEffectCheckerboardDown": {
+  "eid": 1026,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "checker",
+  "cattrs": {
+   "dir": "vert"
+  }
+ },
+ "ppEffectCoverLeft": {
+  "eid": 1281,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {}
+ },
+ "ppEffectCoverUp": {
+  "eid": 1282,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {
+   "dir": "u"
+  }
+ },
+ "ppEffectCoverRight": {
+  "eid": 1283,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {
+   "dir": "r"
+  }
+ },
+ "ppEffectCoverDown": {
+  "eid": 1284,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {
+   "dir": "d"
+  }
+ },
+ "ppEffectCoverLeftUp": {
+  "eid": 1285,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {
+   "dir": "lu"
+  }
+ },
+ "ppEffectCoverRightUp": {
+  "eid": 1286,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {
+   "dir": "ru"
+  }
+ },
+ "ppEffectCoverLeftDown": {
+  "eid": 1287,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {
+   "dir": "ld"
+  }
+ },
+ "ppEffectCoverRightDown": {
+  "eid": 1288,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "cover",
+  "cattrs": {
+   "dir": "rd"
+  }
+ },
+ "ppEffectDissolve": {
+  "eid": 1537,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "dissolve",
+  "cattrs": {}
+ },
+ "ppEffectFade": {
+  "eid": 1793,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "fade",
+  "cattrs": {
+   "thruBlk": "1"
+  }
+ },
+ "ppEffectUncoverLeft": {
+  "eid": 2049,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {}
+ },
+ "ppEffectUncoverUp": {
+  "eid": 2050,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {
+   "dir": "u"
+  }
+ },
+ "ppEffectUncoverRight": {
+  "eid": 2051,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {
+   "dir": "r"
+  }
+ },
+ "ppEffectUncoverDown": {
+  "eid": 2052,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {
+   "dir": "d"
+  }
+ },
+ "ppEffectUncoverLeftUp": {
+  "eid": 2053,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {
+   "dir": "lu"
+  }
+ },
+ "ppEffectUncoverRightUp": {
+  "eid": 2054,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {
+   "dir": "ru"
+  }
+ },
+ "ppEffectUncoverLeftDown": {
+  "eid": 2055,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {
+   "dir": "ld"
+  }
+ },
+ "ppEffectUncoverRightDown": {
+  "eid": 2056,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "pull",
+  "cattrs": {
+   "dir": "rd"
+  }
+ },
+ "ppEffectStripsUpLeft": {
+  "eid": 2561,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {}
+ },
+ "ppEffectStripsUpRight": {
+  "eid": 2562,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {
+   "dir": "ru"
+  }
+ },
+ "ppEffectStripsDownLeft": {
+  "eid": 2563,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {
+   "dir": "ld"
+  }
+ },
+ "ppEffectStripsDownRight": {
+  "eid": 2564,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {
+   "dir": "rd"
+  }
+ },
+ "ppEffectStripsLeftUp": {
+  "eid": 2565,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {}
+ },
+ "ppEffectStripsRightUp": {
+  "eid": 2566,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {
+   "dir": "ru"
+  }
+ },
+ "ppEffectStripsLeftDown": {
+  "eid": 2567,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {
+   "dir": "ld"
+  }
+ },
+ "ppEffectStripsRightDown": {
+  "eid": 2568,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "strips",
+  "cattrs": {
+   "dir": "rd"
+  }
+ },
+ "ppEffectWipeLeft": {
+  "eid": 2817,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wipe",
+  "cattrs": {}
+ },
+ "ppEffectWipeUp": {
+  "eid": 2818,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wipe",
+  "cattrs": {
+   "dir": "u"
+  }
+ },
+ "ppEffectWipeRight": {
+  "eid": 2819,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wipe",
+  "cattrs": {
+   "dir": "r"
+  }
+ },
+ "ppEffectWipeDown": {
+  "eid": 2820,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wipe",
+  "cattrs": {
+   "dir": "d"
+  }
+ },
+ "ppEffectBoxOut": {
+  "eid": 3073,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "zoom",
+  "cattrs": {}
+ },
+ "ppEffectBoxIn": {
+  "eid": 3074,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "zoom",
+  "cattrs": {
+   "dir": "in"
+  }
+ },
+ "ppEffectSplitHorizontalOut": {
+  "eid": 3585,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "split",
+  "cattrs": {}
+ },
+ "ppEffectSplitHorizontalIn": {
+  "eid": 3586,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "split",
+  "cattrs": {
+   "dir": "in"
+  }
+ },
+ "ppEffectSplitVerticalOut": {
+  "eid": 3587,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "split",
+  "cattrs": {
+   "orient": "vert"
+  }
+ },
+ "ppEffectSplitVerticalIn": {
+  "eid": 3588,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "split",
+  "cattrs": {
+   "orient": "vert",
+   "dir": "in"
+  }
+ },
+ "ppEffectCircleOut": {
+  "eid": 3845,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "circle",
+  "cattrs": {}
+ },
+ "ppEffectCombHorizontal": {
+  "eid": 3847,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "comb",
+  "cattrs": {}
+ },
+ "ppEffectCombVertical": {
+  "eid": 3848,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "comb",
+  "cattrs": {
+   "dir": "vert"
+  }
+ },
+ "ppEffectNewsflash": {
+  "eid": 3850,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "newsflash",
+  "cattrs": {}
+ },
+ "ppEffectPlusOut": {
+  "eid": 3851,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "plus",
+  "cattrs": {}
+ },
+ "ppEffectPushDown": {
+  "eid": 3852,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "push",
+  "cattrs": {
+   "dir": "d"
+  }
+ },
+ "ppEffectPushLeft": {
+  "eid": 3853,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "push",
+  "cattrs": {}
+ },
+ "ppEffectPushRight": {
+  "eid": 3854,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "push",
+  "cattrs": {
+   "dir": "r"
+  }
+ },
+ "ppEffectPushUp": {
+  "eid": 3855,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "push",
+  "cattrs": {
+   "dir": "u"
+  }
+ },
+ "ppEffectWedge": {
+  "eid": 3856,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wedge",
+  "cattrs": {}
+ },
+ "ppEffectWheel1Spoke": {
+  "eid": 3857,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wheel",
+  "cattrs": {
+   "spokes": "1"
+  }
+ },
+ "ppEffectWheel2Spokes": {
+  "eid": 3858,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wheel",
+  "cattrs": {
+   "spokes": "2"
+  }
+ },
+ "ppEffectWheel3Spokes": {
+  "eid": 3859,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wheel",
+  "cattrs": {
+   "spokes": "3"
+  }
+ },
+ "ppEffectWheel4Spokes": {
+  "eid": 3860,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wheel",
+  "cattrs": {}
+ },
+ "ppEffectWheel8Spokes": {
+  "eid": 3861,
+  "attrs": {
+   "spd": "slow",
+   "p14:dur": "2000"
+  },
+  "tag": "wheel",
+  "cattrs": {
+   "spokes": "8"
+  }
+ }
+}

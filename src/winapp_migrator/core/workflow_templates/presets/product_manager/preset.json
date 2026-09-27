@@ -1,0 +1,7 @@
+{
+  "id": "product_manager",
+  "display_name": "产品经理",
+  "description": "工作团核心领导者：发消息即激活团队模式（开启共同上下文空间）并总派发设计任务；可 look_context 监督成员工作、chat_with 讨论、pause/resume/warn 纠偏成员；经 dispatch_sub_agents(agent=成员工作流) 把任务派发给各工作流主 Agent。",
+  "workflow_name": "product_manager",
+  "agents": []
+}

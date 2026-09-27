@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+*.log
+
+# Cython build artifacts (.c generated from .py)
+src/winapp_migrator/**/*.c
+
+# Code-signing private key (public .cer / bat are committed)
+build/certs/*.pfx
+
+# PyInstaller
+build/__pycache__/
+build/WinAppMigrator/
+build/setup/
+build/uninstall/
+build/build/
+installer/build/
+# 构建期预下载的沙盒运行时（Node/Python，体积大），不入库
+build/runtime_bundle/
+# 构建期预下载的 VC++ 运行库安装器（体积大），不入库，缺则构建脚本自动下载
+build/redist/
+dist/
+dist_new/
+*.spec
+!build/WinAppMigrator.spec
+
+# Inno Setup
+Output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# 临时/诊断脚本与产物（根目录及 scripts 下的 _ 前缀文件）
+/_*
+scripts/_
+scripts._*
+!/.gitignore
+_build_*.txt
+
+# 构建中间产物与运行时输出
+src/build/
+tts_output/
+src/tts_output/
+src/_focus.log
+src/_wfa_result.json
+src/*.pyc
+
+# 文档产物
+*.docx
+
+# ---- 补充：体积大或可再生的本地产物（不入库） ----
+# 下载的第三方安装包（msys2 等，体积大，可重新获取）
+downloads/
+# src 的重复压缩包（源码已由版本控制管理）
+src.zip
+# 本地 agent 备份快照（与源码重复）
+.workbuddy/backup_*/
+# 构建期日志（*.log 已忽略，此处补 .txt 命名的同类产物）
+build/build_log*.txt
+build/smoke_result.txt
+
+# 本地仓库历史备份快照（体积大，且与源码重复；勿入库）
+.git_broken_backup/

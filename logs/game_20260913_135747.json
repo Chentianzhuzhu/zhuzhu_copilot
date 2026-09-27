@@ -1,0 +1,221 @@
+{
+  "game_id": "20260913_135747",
+  "start_time": "2026-09-13T13:57:47.485521",
+  "black_player": "玩家A",
+  "white_player": "玩家B",
+  "moves": [
+    {
+      "move": 2,
+      "player": 1,
+      "coord": "J10",
+      "time": "13:57:51",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:51.535209"
+    },
+    {
+      "move": 3,
+      "player": 2,
+      "coord": "M9",
+      "time": "13:57:51",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:51.937284"
+    },
+    {
+      "move": 4,
+      "player": 1,
+      "coord": "M11",
+      "time": "13:57:52",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:52.237392"
+    },
+    {
+      "move": 5,
+      "player": 2,
+      "coord": "K12",
+      "time": "13:57:52",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:52.503200"
+    },
+    {
+      "move": 6,
+      "player": 1,
+      "coord": "E12",
+      "time": "13:57:52",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:52.772107"
+    },
+    {
+      "move": 7,
+      "player": 2,
+      "coord": "D7",
+      "time": "13:57:52",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:52.974016"
+    },
+    {
+      "move": 8,
+      "player": 1,
+      "coord": "J7",
+      "time": "13:57:53",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:53.209064"
+    },
+    {
+      "move": 9,
+      "player": 2,
+      "coord": "L9",
+      "time": "13:57:53",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:53.410801"
+    },
+    {
+      "move": 10,
+      "player": 1,
+      "coord": "N2",
+      "time": "13:57:53",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:53.681848"
+    },
+    {
+      "move": 11,
+      "player": 2,
+      "coord": "R5",
+      "time": "13:57:53",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:53.916147"
+    },
+    {
+      "move": 12,
+      "player": 1,
+      "coord": "P7",
+      "time": "13:57:54",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:54.184258"
+    },
+    {
+      "move": 13,
+      "player": 2,
+      "coord": "Q10",
+      "time": "13:57:54",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:54.386131"
+    },
+    {
+      "move": 14,
+      "player": 1,
+      "coord": "Q3",
+      "time": "13:57:54",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:54.719786"
+    },
+    {
+      "move": 15,
+      "player": 2,
+      "coord": "P3",
+      "time": "13:57:54",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:54.989760"
+    },
+    {
+      "move": 16,
+      "player": 1,
+      "coord": "E3",
+      "time": "13:57:55",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:55.224249"
+    },
+    {
+      "move": 17,
+      "player": 2,
+      "coord": "F5",
+      "time": "13:57:55",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:55.490444"
+    },
+    {
+      "move": 18,
+      "player": 1,
+      "coord": "K11",
+      "time": "13:57:55",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:55.689191"
+    },
+    {
+      "move": 19,
+      "player": 2,
+      "coord": "M15",
+      "time": "13:57:55",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:55.991486"
+    },
+    {
+      "move": 20,
+      "player": 1,
+      "coord": "F12",
+      "time": "13:57:56",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:56.258913"
+    },
+    {
+      "move": 21,
+      "player": 2,
+      "coord": "H6",
+      "time": "13:57:56",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:56.493527"
+    },
+    {
+      "move": 22,
+      "player": 1,
+      "coord": "I9",
+      "time": "13:57:56",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:56.760287"
+    },
+    {
+      "move": 23,
+      "player": 2,
+      "coord": "G12",
+      "time": "13:57:56",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:56.959210"
+    },
+    {
+      "move": 24,
+      "player": 1,
+      "coord": "G15",
+      "time": "13:57:57",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:57.161730"
+    },
+    {
+      "move": 25,
+      "player": 2,
+      "coord": "D15",
+      "time": "13:57:57",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:57.461410"
+    },
+    {
+      "move": 26,
+      "player": 1,
+      "coord": "G17",
+      "time": "13:57:57",
+      "captured": [],
+      "timestamp": "2026-09-13T13:57:57.797111"
+    }
+  ],
+  "status": "finished",
+  "result": {
+    "black_area": 0,
+    "white_area": 0,
+    "black_stones": 13,
+    "white_stones": 12,
+    "black_score": 13,
+    "white_score": 19.5,
+    "winner": 1,
+    "margin": 6.5,
+    "method": "resign"
+  },
+  "end_time": "2026-09-13T13:58:03.039619"
+}

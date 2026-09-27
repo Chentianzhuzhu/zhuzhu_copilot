@@ -1,0 +1,7 @@
+{
+  "id": "product_debug",
+  "display_name": "产品调试",
+  "description": "工作团成员（产品调试）：负责测试、调试与问题定位；可被产品经理派发调试任务，开启共享后结论写回共同上下文空间。",
+  "workflow_name": "product_debug",
+  "agents": []
+}

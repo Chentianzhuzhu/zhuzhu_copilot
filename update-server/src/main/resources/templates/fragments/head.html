@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<!--
+  SEO 头部：标题 / 描述 / 关键词 / 规范化链接 / Open Graph / Twitter Card / 结构化数据 / 站点图标 / 清单
+  取值全部来自模型（由库内内容与请求推导），无硬编码域名
+-->
+<head th:fragment="head">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+
+  <title th:text="${pageTitle}">WinAppMigrator</title>
+  <meta name="description" th:attr="content=${pageDesc}">
+  <meta name="keywords" th:if="${!#strings.isEmpty(keywords)}" th:attr="content=${keywords}">
+  <meta name="author" th:attr="content=${site.title}">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+  <link rel="canonical" th:attr="href=${canonical}">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" th:attr="content=${site.title}">
+  <meta property="og:title" th:attr="content=${pageTitle}">
+  <meta property="og:description" th:attr="content=${pageDesc}">
+  <meta property="og:url" th:attr="content=${canonical}">
+  <meta property="og:image" th:attr="content=${ogImage}">
+  <meta property="og:locale" content="zh_CN">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" th:attr="content=${pageTitle}">
+  <meta name="twitter:description" th:attr="content=${pageDesc}">
+  <meta name="twitter:image" th:attr="content=${ogImage}">
+
+  <!-- 站点图标与安装清单 -->
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <link rel="alternate" hreflang="zh-CN" th:attr="href=${canonical}">
+
+  <!--
+    样式与脚本带内容哈希版本号：资源内容一变 URL 就变，
+    因此 CDN 与浏览器缓存不可能再把旧版 CSS/JS 与新页面混用。
+    这里用绝对路径拼版本号（而非 @{} 链接表达式），与模板其余资源写法一致，
+    也让模板能在非 Web 上下文中独立渲染（便于测试）。
+  -->
+  <link rel="preload" as="style" th:href="'/css/site.css?v=' + ${assetCss}">
+  <link rel="stylesheet" th:href="'/css/site.css?v=' + ${assetCss}">
+
+  <!--
+    标记 JS 可用：滚动揭示动画只在 JS 可用时才隐藏初始内容。
+    site.js 若因 CDN 拦截、缓存错配或网络问题没能执行，3 秒后撤回该标记，
+    让正文恢复可见 —— 内容可见性优先于装饰动画，绝不留下一屏空白。
+  -->
+  <script>
+    document.documentElement.classList.add('js');
+    setTimeout(function () {
+      if (!window.__wmSiteReady) { document.documentElement.classList.remove('js'); }
+    }, 3000);
+  </script>
+
+  <script type="application/ld+json" th:utext="${jsonLd}"></script>
+</head>
+</html>

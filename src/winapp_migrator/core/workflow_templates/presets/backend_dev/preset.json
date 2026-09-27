@@ -1,0 +1,7 @@
+{
+  "id": "backend_dev",
+  "display_name": "后端开发",
+  "description": "工作团成员（后端开发）：负责 API/服务/数据层开发；可被产品经理派发后端任务，开启共享后结论写回共同上下文空间。",
+  "workflow_name": "backend_dev",
+  "agents": []
+}

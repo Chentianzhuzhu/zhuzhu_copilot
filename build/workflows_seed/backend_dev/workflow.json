@@ -1,0 +1,11 @@
+{
+  "name": "backend_dev",
+  "description": "后端开发（工作团成员）",
+  "enabled": true,
+  "preset": "backend_dev",
+  "core_files": [
+    "agent.py"
+  ],
+  "created": "2026-09-15 00:33",
+  "updated": "2026-09-15 00:33"
+}

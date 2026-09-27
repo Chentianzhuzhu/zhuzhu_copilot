@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/head :: head}"></head>
+<body th:attr="data-page=${pagePath}">
+
+<a class="skip-link" href="#main">跳到主要内容</a>
+<canvas id="starfield" aria-hidden="true"></canvas>
+<div class="noise" aria-hidden="true"></div>
+<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+
+<header th:replace="~{fragments/nav :: nav}"></header>
+
+<main id="main">
+  <div th:replace="~{fragments/blocks :: pageHero()}"></div>
+
+  <!-- 标题已由 pageHero 输出，内容区块只出图与视频，避免同一标题出现两次 -->
+  <div th:replace="~{fragments/blocks :: gallery(${site.gallery}, ${site.sections.gallery}, false)}"></div>
+
+  <div class="wrap" th:if="${site.gallery == null or site.gallery.isEmpty()}">
+    <div class="empty-state sr">
+      <p>暂未上传界面截图。</p>
+      <p class="empty-hint">管理员可在后台「媒体库 / 界面实拍」中上传图片后自动展示。</p>
+    </div>
+  </div>
+
+  <div th:replace="~{fragments/blocks :: videos(${site.videos}, ${site.sections.videos}, false)}"></div>
+
+  <div th:replace="~{fragments/blocks :: ctaBand()}"></div>
+</main>
+
+<footer th:replace="~{fragments/blocks :: footer}"></footer>
+<div th:replace="~{fragments/blocks :: overlays}"></div>
+<div th:replace="~{fragments/blocks :: videoModal}"></div>
+
+<button class="back-top" id="backTop" type="button" aria-label="返回顶部" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</button>
+
+<script th:src="'/js/site.js?v=' + ${assetJs}" defer></script>
+</body>
+</html>

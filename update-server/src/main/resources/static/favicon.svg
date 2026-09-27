@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="WinAppMigrator">
+  <title>WinAppMigrator</title>
+  <!-- 四色体系：纯黑底 / 淡灰描边 / 深蓝方块 -->
+  <rect width="32" height="32" rx="6" fill="#000000"/>
+  <path d="M16 2.6v26.8M2.6 16h26.8" stroke="#F5F5F5" stroke-width=".85" opacity=".3"/>
+  <rect x="2.6" y="2.6" width="26.8" height="26.8" rx="4.2" fill="none" stroke="#F5F5F5" stroke-width="1.9"/>
+  <rect x="7.4" y="7.4" width="8.6" height="8.6" rx="1.6" fill="#1E40AF"/>
+</svg>

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt ruff
+      - name: 语法编译检查
+        run: python -m compileall -q src mcp_servers
+      - name: Ruff 静态检查
+        run: ruff check src mcp_servers --statistics || true
+
+  security-engine-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt pytest
+      - name: 安全引擎/网络防御/Git 数据层 单元测试
+        run: python -m pytest tests -v
+
+  update-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: 编译 + 单元测试（内容合并 / SEO 推导 / 上传安全 / 模板渲染）
+        working-directory: update-server
+        run: |
+          if [ -f mvnw ]; then MVN=./mvnw; else MVN=mvn; fi
+          $MVN -B -q test
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 官网静态回归校验（模板配平 / 元素 id 一致性 / 四色规范 / SEO 资源 / 编码）
+        working-directory: update-server
+        run: python -m unittest discover -s tests -v

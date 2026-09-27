@@ -1,0 +1,11 @@
+{
+  "name": "product_debug",
+  "description": "产品调试（工作团成员）",
+  "enabled": true,
+  "preset": "product_debug",
+  "core_files": [
+    "agent.py"
+  ],
+  "created": "2026-09-15 00:33",
+  "updated": "2026-09-15 00:33"
+}
