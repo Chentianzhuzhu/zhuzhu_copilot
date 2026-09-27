@@ -48,15 +48,27 @@
   （表现为"无输出 + 退出码 127"）。集成测试用真 `QDialog` 基类初始化 +
   手工接线最小属性，且不 show。
 
-## ⚠️ 仓库 git 状态（2026-09-27）
-- 本机 `.git` 对象库损坏：`refs/` 目录与 `objects/pack/*.pack` 丢失（15:51 左右，
-  疑为 `git stash` 触发 auto-gc 后清理）。已手工重建 refs：
-  `main` = `6816631abfdb64b7c7a94ddd59d56e30500019f6`，
-  `origin/main` = `486256b953daee8851bbebaa44ebbd5746712681`，但对象本体已不存在。
-- **工作区文件完好**，无需从 git 恢复内容；恢复历史需在沙箱外
-  `git fetch`/重 clone 远端 `https://github.com/Chentianzhuzhu/zhuzhu_copilot.git`，
-  再把工作区覆盖过去重新提交。
-- **在该仓库恢复前，避免任何 git 写操作**（commit/stash/gc/checkout），防止二次清理。
+## ⚠️ 仓库 git 状态（2026-09-27 重建）
+- 旧 `.git` 对象库曾损坏（`refs/` 与 `objects/pack/*.pack` 丢失，工作区文件未受影响）。
+  已按用户要求重建本地仓库：**新 `main` 首版提交 `136430e`**（`chore(repo): 重建本地仓库…`），
+  跟踪 696 文件，仓库约 16 MiB，`origin` 已配回
+  `https://github.com/Chentianzhuzhu/zhuzhu_copilot.git`，**尚未推送**。
+- **历史不再连续**：原 9 条提交（旧 tip `6816631a`）的对象已丢失，新仓库是全新历史。
+  提交标题清单已存 `memory/2026-09-27.md`，可按需人工重建说明。
+- 旧 `.git` 备份在仓库外 `C:\Users\zhuzhu\Desktop\.git_broken_20260927_myfirstandroidapp`
+
+### 可用的历史快照
+- 项目根 `.git_broken_backup/`（581MB）= **2026-09-26 的完整有效仓库**，
+  tip `498ba64`，含真实 pack 对象（不含今天的提交）。想接回 9-26 之前的历史可
+  `git fetch C:/Users/zhuzhu/Desktop/my\ first\ android\ app/.git_broken_backup main`。
+  该目录已加入 `.gitignore`（防止 `git add -A` 误提交 581MB）。
+- 远端 `origin/main` 停在 `486256b9`（比损坏前的本地少 3 个提交），
+  网络恢复后 `git fetch origin` 可取回该提交及其祖先。
+
+### 教训（重要，避免重犯）
+- **不要在这个仓库上随意跑 `git stash` / `git gc` 等写操作**：refs 一旦异常，
+  auto-gc 会把所有对象判定为不可达并删除 pack。
+
 
 ## update-server（官网 + 后台 + 更新 API，2026-09-25 起）
 - 位置 `update-server/`，Spring Boot 3.2.5 + MySQL + Redis；线上 `/www/update-server`，
