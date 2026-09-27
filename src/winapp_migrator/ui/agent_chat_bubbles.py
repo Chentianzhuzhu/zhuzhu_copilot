@@ -66,15 +66,18 @@ from winapp_migrator.ui.tokens import (
 # ---------------------------------------------------------------------------
 BUBBLE_PAD_V = 13              # .msg padding: 13px 18px
 BUBBLE_PAD_H = 18
-AI_TURN_PAD_TOP = 18           # .ai-turn padding-top: 18px
-AI_TURN_PAD_BOTTOM = 6         # .ai-turn padding-bottom: 6px
-AI_TURN_GAP = 30               # .ai-turn margin-bottom: 30px
+# 回合内/回合间留白：demo 原值 18/6/30，实测观感过于松散（每段文字上下都有大片空白），
+# 按用户反馈收紧到 12/6/18；虚线分区与「耗时徽章骑线」的结构不变。
+AI_TURN_PAD_TOP = 8            # demo 18 → 8（收紧）
+AI_TURN_PAD_BOTTOM = 3         # demo 6  → 3
+AI_TURN_GAP = 10               # demo 30 → 10（回合间距；原值在紧凑界面里像大片空白）
 RIBBON_H = 21                  # .cost-ribbon 实测高度（上下 padding 4 + 行高 12 + 边框）
 LEFT_GUTTER = 14               # .vline left:-14px 的等效留白（竖虚线到内容左缘）
-THINK_PAD_V = 13               # .think-bubble padding: 13px 15px
+THINK_PAD_V = 11               # .think-bubble padding: 13px 15px → 11px 15px（收紧）
 THINK_PAD_H = 15
 THINK_HEAD_GAP = 8             # .tb-head margin-bottom
 TOOL_ICON = 30                 # .tc-icon 30x30
+TOOL_GLYPH_RATIO = 0.66        # 工具图标绘制比例（族底图 + 动作角标要在壳内看清）
 THINK_ICON = 28                # .tb-head .icon 28x28
 CMD_PAD_V = 7                  # .cmd .bar padding: 7px 12px
 CMD_PAD_H = 13                 # .cmd .in / .out 左右内边距
@@ -92,8 +95,9 @@ KIND_RICH = "rich"
 KIND_STREAM = "stream"
 
 # 各段与下一段之间的间距（demo 中 .think-bubble/.cmd 的 margin-bottom、.tool-call 的 padding）
-BLOCK_GAP = {KIND_THINK: 14, KIND_TOOL: 0, KIND_CMD: 14, KIND_RICH: SPACING_XS,
-             KIND_STREAM: 16}
+# 块间距：demo 的 .think-bubble/.cmd margin-bottom 为 14、.stream 约 16，统一收紧到 8
+BLOCK_GAP = {KIND_THINK: 8, KIND_TOOL: 0, KIND_CMD: 8, KIND_RICH: SPACING_XS,
+             KIND_STREAM: 8}
 
 # 归入「过程区」的段类型（AI 完成汇报后整体收起，只留正文）
 PROC_KINDS = frozenset({KIND_THINK, KIND_TOOL, KIND_CMD, KIND_RICH})
@@ -343,16 +347,25 @@ def _mk_label(style: ChatStyle, wrap: bool = True) -> QLabel:
         Qt.TextInteractionFlag.LinksAccessibleByMouse)
     lbl.setOpenExternalLinks(False)
     lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+    # 一律左上对齐：QLabel 默认是 AlignVCenter，一旦布局给了多余高度，文字会被
+    # 垂直居中 → 上下各留一大片空白（用户反馈的「每段文字上下都有很大空白」根因之一）
+    lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
     lbl.setStyleSheet(f"background: transparent; font-family: {style.font_ui};")
     return lbl
 
 
-def _tile(style: ChatStyle, icon: QIcon, size: int, radius: int) -> QLabel:
+def _tile_pixmap(icon: QIcon, size: int, ratio: float = 0.55) -> QPixmap:
+    """图标壳内的实际绘制尺寸：组合类图标（工具专属图标）用更大比例才看得清"""
+    glyph = max(12, int(size * ratio))
+    return icon.pixmap(glyph, glyph)
+
+
+def _tile(style: ChatStyle, icon: QIcon, size: int, radius: int,
+          ratio: float = 0.55) -> QLabel:
     """图标壳（demo .tc-icon / .tb-head .icon）：壳底 + 内描边 + 居中线条矢量图标。"""
     lbl = QLabel()
     lbl.setFixedSize(size, size)
-    glyph = max(12, int(size * 0.55))
-    lbl.setPixmap(icon.pixmap(glyph, glyph))
+    lbl.setPixmap(_tile_pixmap(icon, size, ratio))
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"background: {style.icon_shell}; border: 1px solid {style.border};"
@@ -381,23 +394,107 @@ class _FadeMask(QWidget):
 
 
 class _PinMixin:
-    """换行标签高度钉住：QLabel.sizeHint 对换行长文只按单行计高，
-    必须按真实宽度显式钉住最小高度，否则气泡底部的文字会被裁掉。"""
+    """换行标签的高度钉定 + 测量缓存。
+
+    两件事：
+    1. **钉高度**：QLabel.sizeHint 对换行长文只按单行计高，必须按真实宽度显式钉住
+       最小高度，否则气泡底部的文字会被裁掉。
+    2. **缓存测量**：QLabel.heightForWidth 会为整篇富文本做一次完整布局。流式期间
+       ChatTurn 每 tick 都会问一遍所有块的高度，长正文/大子块会把主线程拖垮 ——
+       按 (内容版本, 宽度) 缓存测量结果，内容或宽度没变就直接返回旧值。
+    """
+
+    _content_ver = 0      # 内容版本：set_content/set_html/折叠态变化时自增
+    _hfw_key = None       # (内容版本, 宽度)
+    _hfw_val = 0
+    _pin_w = -1           # 上次钉定所用的宽度（-1 = 未钉定）
+
+    def _fix_vertical(self):
+        """竖直方向固定为内容高度，并开启 heightForWidth 协商。
+
+        必须在子类构造里显式调用（本 mixin 无 __init__，不能自动生效）。
+        `setHeightForWidth(True)` 让布局直接以**目标宽度**询问高度，而不是先给宽度
+        再回头改高度 —— 少了这一轮，块会先按旧宽度定高、再收缩，观感就是闪烁与
+        底部残留空白。
+        """
+        pol = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        pol.setHeightForWidth(True)
+        self.setSizePolicy(pol)
+
+    def _bump_content(self):
+        """内容或影响高度的状态发生变化 → 让测量缓存失效，并安排一次延迟钉高度"""
+        self._content_ver = getattr(self, "_content_ver", 0) + 1
+        self._hfw_key = None
+        self._pin_w = -1
+        self._defer_pin()
+
+    def _defer_pin(self):
+        """内容变化后延迟一帧再钉高度。
+
+        控件刚创建/刚重建（回合收起时正文块会重建）时 width() 还是 Qt 的默认值，
+        用它测出的高度会明显偏大；一旦按偏大值把标签钉成 min=max（正文顶端对齐），
+        正文底部就会空出一大片。延迟一帧可确保布局已给出真实宽度。
+        """
+        if getattr(self, "_pin_armed", False):
+            return
+        self._pin_armed = True
+        QTimer.singleShot(0, self._pin_now)
+
+    def _pin_now(self):
+        self._pin_armed = False
+        self._pin_w = -1
+        self._pin_wrapping()
+
+    def _measured_hfw(self, width: int, measure) -> int:
+        """按 (内容版本, 宽度) 缓存 heightForWidth 测量结果"""
+        key = (self._content_ver, int(width))
+        if key == self._hfw_key:
+            return self._hfw_val
+        val = int(measure() or 0)
+        self._hfw_key, self._hfw_val = key, val
+        return val
+
+    def _inner_w(self) -> int:
+        m = self.layout().contentsMargins()
+        return max(1, self.width() - m.left() - m.right())
 
     def _pin_wrapping(self):
+        """把正文标签钉成「高度 = 内容在当前宽度下的真实高度」（min = max）。
+
+        只钉最小值是不够的：布局给的多余高度会被标签吸收（QLabel 竖直方向可伸展），
+        文字随之被居中、上下各留一片空白。min = max 后标签高度恒等于内容高度，
+        多余高度无处可去，由布局留在块外侧（配合 Fixed 策略与块级 sizeHint，
+        整块高度也恒定等于内容高度）。
+        """
         lbl = getattr(self, "_body", None)
         if lbl is None:
             return
-        m = self.layout().contentsMargins()
-        w = self.width() - m.left() - m.right()
-        if w <= 0:
+        w = self._inner_w()
+        if w <= 0 or w == self._pin_w:
+            return      # 宽度未变：已钉过，不重复测（避免每次 resize 都重排富文本）
+        self._pin_w = w
+        h = self._measured_hfw(w, lambda: lbl.heightForWidth(w))
+        if h <= 0:
             return
-        try:
-            h = lbl.heightForWidth(w)
-        except Exception:
-            return
-        if isinstance(h, int) and h > 0 and abs(lbl.minimumHeight() - h) >= 2:
+        changed = lbl.maximumHeight() != h or abs(lbl.minimumHeight() - h) >= 2
+        if lbl.maximumHeight() != h:
+            lbl.setMaximumHeight(h)      # 先放开/收紧上限，避免出现 min > max 的瞬时状态
+        if abs(lbl.minimumHeight() - h) >= 2:
             lbl.setMinimumHeight(h)
+        if changed:
+            self.updateGeometry()
+
+    def sizeHint(self) -> QSize:
+        """块高度 = 内容在**当前宽度**下的真实高度。
+
+        换行标签的 sizeHint 只按单行计高（QLabel 固有行为），若直接交给布局，块会被
+        压扁/留白。这里按当前宽度给出真实高度，配合竖直 Fixed 策略，块的高度就恒定
+        等于内容高度 —— 这是「消灭多余高度 ⇒ 消灭上下空白」的第二半。
+        """
+        w = self.width()
+        if w <= 0:
+            return super().sizeHint()
+        return QSize(w, self.heightForWidth(w))
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -429,6 +526,7 @@ class ThinkBubble(_PinMixin, QFrame):
         root.setSpacing(THINK_HEAD_GAP)
 
         head = QWidget(self)
+        head.setFixedHeight(THINK_ICON)     # 固定头行高度：避免布局余量被头行吸走
         hl = QHBoxLayout(head)
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(9)
@@ -475,10 +573,14 @@ class ThinkBubble(_PinMixin, QFrame):
         wrap.addWidget(self._fold_btn)
         wrap.addStretch(1)
         root.addLayout(wrap)
+        # 末尾留白：外层若给了多余高度（历史重建/布局余量），余量全部落到底部，
+        # 避免被 QBoxLayout 摊到各子项之间，把正文与「继续查看」拉开大片空隙
+        root.addStretch(1)
 
         self._mask = _FadeMask(style.card, self)
         self._mask.hide()
         self._folded = None      # 折叠态缓存：仅在状态真正变化时改动几何
+        self._fix_vertical()
 
     # ---------- 内容 ----------
     def set_content(self, tag: str, body_html: str):
@@ -486,9 +588,11 @@ class ThinkBubble(_PinMixin, QFrame):
         self._tag.setVisible(bool(tag))
         self._body.setText(body_html or "")
         self._body.setMinimumHeight(0)
+        self._body.setMaximumHeight(16777215)
         self._user_open = None
         self._fold_btn.setText("继续查看")
         self._fold_btn.setIcon(self._icon_provider("chev", FONT_SMALL, self._style.accent))
+        self._bump_content()
         self._apply_fold()
 
     def set_live(self, live: bool):
@@ -501,25 +605,48 @@ class ThinkBubble(_PinMixin, QFrame):
     def _limit_h(self) -> int:
         return self._line_height() * THINK_FOLD_LINES
 
-    def _inner_w(self) -> int:
-        m = self.layout().contentsMargins()
-        return max(1, self.width() - m.left() - m.right())
-
     def _full_h(self) -> int:
-        return _widget_hfw(self._body, self._inner_w())
+        return self._measured_hfw(self._inner_w(),
+                                  lambda: _widget_hfw(self._body, self._inner_w()))
 
     def _is_foldable(self) -> bool:
         return self._full_h() > self._limit_h()
+
+    def _pin_wrapping(self):
+        """钉住正文高度：折叠态钳到 5 行上限，展开态取全文高度。
+
+        **关键**：钉住的最小高度绝不允许超过折叠上限 —— 否则 minimumHeight >
+        maximumHeight，Qt 以最小值为准，折叠彻底失效（正文全展开），并且该气泡的
+        真实高度远超 heightForWidth 的估算，把整条回合的高度预算撑爆，连带把下方的
+        「继续查看」按钮压扁（这是用户报的「按钮被挤压」根因）。
+        """
+        w = self._inner_w()
+        if w <= 0 or (w == self._pin_w and self._hfw_key is not None):
+            return
+        self._pin_w = w
+        full = self._measured_hfw(w, lambda: _widget_hfw(self._body, w))
+        foldable = full > self._limit_h()
+        folded = foldable and self._user_open is not True
+        target = self._limit_h() if folded else full
+        changed = (self._body.maximumHeight() != (target if folded else 16777215)
+                   or abs(self._body.minimumHeight() - target) >= 2)
+        # 先放开上限再钉最小值，避免出现 min > max 的瞬时状态
+        self._body.setMaximumHeight(target if folded else 16777215)
+        if target > 0 and abs(self._body.minimumHeight() - target) >= 2:
+            self._body.setMinimumHeight(target)
+        if changed:
+            self.updateGeometry()
 
     def _apply_fold(self):
         foldable = self._is_foldable()
         folded = foldable and self._user_open is not True
         if self._folded == folded:
+            self._pin_wrapping()
             self._place_mask()
             return
         self._folded = folded
         self._fold_btn.setVisible(foldable)
-        self._body.setMaximumHeight(self._limit_h() if folded else 16777215)
+        self._pin_wrapping()
         self._mask.setVisible(folded)
         self._place_mask()
         self.updateGeometry()
@@ -541,6 +668,7 @@ class ThinkBubble(_PinMixin, QFrame):
         self._fold_btn.setIcon(rotate_icon(
             self._icon_provider("chev", FONT_SMALL, self._style.accent),
             180 if opened else 0, FONT_SMALL))
+        self._bump_content()      # 折叠态影响高度 → 测量缓存失效
         self._apply_fold()
 
     def resizeEvent(self, e):
@@ -548,10 +676,12 @@ class ThinkBubble(_PinMixin, QFrame):
         self._apply_fold()
 
     def heightForWidth(self, width: int) -> int:
+        """本块在给定宽度下需要的高度（必须与 _pin_wrapping 钉出的真实高度一致，
+        否则 ChatTurn 的最小高度会小于内容，Qt 会压扁最后一个不设最小值的子项）。"""
         m = self.layout().contentsMargins()
         inner = max(1, int(width) - m.left() - m.right())
         h = m.top() + m.bottom() + THINK_ICON + THINK_HEAD_GAP
-        full = _widget_hfw(self._body, inner)
+        full = self._measured_hfw(inner, lambda: _widget_hfw(self._body, inner))
         foldable = full > self._limit_h()
         folded = foldable and self._user_open is not True
         h += self._limit_h() if folded else full
@@ -560,7 +690,7 @@ class ThinkBubble(_PinMixin, QFrame):
         return h
 
 
-class ToolCallRow(QWidget):
+class ToolCallRow(_PinMixin, QWidget):
     """工具调用行（demo .tool-call）：无气泡，图标壳 + 工具名 + meta + 参数 chip。"""
 
     def __init__(self, style: ChatStyle, icon_provider: IconProvider,
@@ -570,8 +700,10 @@ class ToolCallRow(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
+        self._icon_provider = icon_provider
+        # 先放通用占位图标：真实工具名在 set_content 时才知道（那时换成专属图标）
         self._icon = _tile(style, icon_provider("tool", FONT_BASE + 2, style.icon_color),
-                           TOOL_ICON, RADIUS_TILE)
+                           TOOL_ICON, RADIUS_TILE, ratio=TOOL_GLYPH_RATIO)
         root.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignTop)
         self._body = QWidget(self)
         bl = QVBoxLayout(self._body)
@@ -593,9 +725,14 @@ class ToolCallRow(QWidget):
         bl.addWidget(self._chips)
         root.addWidget(self._body, 1)
         self._body_lay = bl
+        self._fix_vertical()
 
     def set_content(self, name: str, meta: str, params: dict):
         self._title.setText(name or "")
+        # 每个工具都有自己的专属图标（tool_icons 表），按工具名解析
+        self._icon.setPixmap(_tile_pixmap(
+            self._icon_provider(name or "tool", FONT_BASE + 2, self._style.icon_color),
+            TOOL_ICON, TOOL_GLYPH_RATIO))
         self._meta.setText(meta or "")
         self._meta.setVisible(bool(meta))
         while self._chip_lay.count():
@@ -607,6 +744,7 @@ class ToolCallRow(QWidget):
         for key, val in (params or {}).items():
             self._chip_lay.addWidget(self._chip(key, val))
         self._chips.setVisible(bool(params))
+        self._bump_content()
 
     def _chip(self, key: str, value) -> QLabel:
         lbl = QLabel(f"<b>{key}</b>&nbsp;{value}")
@@ -620,24 +758,35 @@ class ToolCallRow(QWidget):
         return max(1, self.width() - self.layout().contentsMargins().right()
                    - TOOL_ICON - self.layout().spacing())
 
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
+    def _pin_wrapping(self):
         w = self._inner_w()
-        for lbl in (self._meta,):
-            if not lbl.isHidden():
-                h = lbl.heightForWidth(w)
-                if isinstance(h, int) and h > 0 and abs(lbl.minimumHeight() - h) >= 2:
-                    lbl.setMinimumHeight(h)
+        if w <= 0 or w == self._pin_w:
+            return
+        self._pin_w = w
+        if self._meta.isHidden():
+            return
+        h = self._measured_hfw(w, lambda: _widget_hfw(self._meta, w))
+        if h <= 0:
+            return
+        if self._meta.maximumHeight() != h:
+            self._meta.setMaximumHeight(h)
+        if abs(self._meta.minimumHeight() - h) >= 2:
+            self._meta.setMinimumHeight(h)
+            self.updateGeometry()
 
     def heightForWidth(self, width: int) -> int:
         inner = max(1, int(width) - TOOL_ICON - self.layout().spacing()
                     - self.layout().contentsMargins().right())
-        h = self._title.sizeHint().height()
-        if not self._meta.isHidden():
-            h += self._body_lay.spacing() + _widget_hfw(self._meta, inner)
-        if not self._chips.isHidden():
-            h += self._body_lay.spacing() + self._chip_lay.heightForWidth(inner)
-        return max(TOOL_ICON, h)
+
+        def measure() -> int:
+            h = self._title.sizeHint().height()
+            if not self._meta.isHidden():
+                h += self._body_lay.spacing() + _widget_hfw(self._meta, inner)
+            if not self._chips.isHidden():
+                h += self._body_lay.spacing() + self._chip_lay.heightForWidth(inner)
+            return max(TOOL_ICON, h)
+
+        return self._measured_hfw(inner, measure)
 
 
 class CmdBlock(_PinMixin, QFrame):
@@ -689,6 +838,7 @@ class CmdBlock(_PinMixin, QFrame):
             f" color: {style.ok_fg}; font-size: {FONT_SMALL}px;"
             f" font-family: {style.font_mono};")
         root.addWidget(self._body)
+        self._fix_vertical()
 
     def set_content(self, label: str, cmd_html: str, out_html: str):
         self._bar_label.setText(label or "")
@@ -700,29 +850,42 @@ class CmdBlock(_PinMixin, QFrame):
         self._body.setVisible(bool(out_html))
         for lbl in (self._cmd, self._body):
             lbl.setMinimumHeight(0)
+        self._bump_content()
 
     def _inner_w(self) -> int:
         return max(1, self.width() - 2)
 
     def _pin_wrapping(self):
+        w = self._inner_w()
+        if w <= 0 or w == self._pin_w:
+            return
+        self._pin_w = w
         for lbl in (self._cmd, self._body):
-            if not lbl.isVisible():
+            if lbl.isHidden():
                 continue
-            h = _widget_hfw(lbl, self._inner_w())
-            if h > 0 and abs(lbl.minimumHeight() - h) >= 2:
+            h = self._measured_hfw(w, lambda l=lbl: _widget_hfw(l, w))
+            if h <= 0:
+                continue
+            if lbl.maximumHeight() != h:
+                lbl.setMaximumHeight(h)
+            if abs(lbl.minimumHeight() - h) >= 2:
                 lbl.setMinimumHeight(h)
+                self.updateGeometry()
 
     def heightForWidth(self, width: int) -> int:
         inner = max(1, int(width) - 2)
-        h = self.layout().itemAt(0).widget().sizeHint().height()
-        if not self._cmd.isHidden():
-            h += _widget_hfw(self._cmd, inner)
-        if not self._body.isHidden():
-            h += _widget_hfw(self._body, inner)
-        return h + 2
+
+        def measure() -> int:
+            h = self.layout().itemAt(0).widget().sizeHint().height() + 2
+            for lbl in (self._cmd, self._body):
+                if not lbl.isHidden():
+                    h += _widget_hfw(lbl, inner)
+            return h
+
+        return self._measured_hfw(inner, measure)
 
 
-class RichBlock(QWidget):
+class RichBlock(_PinMixin, QWidget):
     """通用富文本段容器（透明无气泡）：承载提问 / 子 Agent / 下载进度 / 截图等既有段，
     内容 HTML 由调用方渲染，链接点击回到面板既有处理链路。"""
 
@@ -738,25 +901,19 @@ class RichBlock(QWidget):
             f" font-size: {font_size}px; line-height: 1.8;"
             f" font-family: {style.font_ui};")
         root.addWidget(self._body)
+        self._fix_vertical()
 
     def set_html(self, html: str):
         self._body.setText(html or "")
         self._body.setMinimumHeight(0)
+        self._bump_content()
+        self._pin_wrapping()
 
     def heightForWidth(self, width: int) -> int:
         m = self.layout().contentsMargins()
         inner = max(1, int(width) - m.left() - m.right())
-        return _widget_hfw(self._body, inner) + m.top() + m.bottom()
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        m = self.layout().contentsMargins()
-        w = self.width() - m.left() - m.right()
-        if w <= 0:
-            return
-        h = _widget_hfw(self._body, w)
-        if h > 0 and abs(self._body.minimumHeight() - h) >= 2:
-            self._body.setMinimumHeight(h)
+        return (self._measured_hfw(inner, lambda: _widget_hfw(self._body, inner))
+                + m.top() + m.bottom())
 
 
 class StreamBlock(RichBlock):
@@ -850,12 +1007,32 @@ class CostRibbon(QFrame):
             self._timer.start()
 
 
+class _BlockRef:
+    """回合内一个区块的引用：控件 + 间距项 + 「是否过程块」分类。
+
+    分类必须随每次渲染刷新：多轮任务里「中间轮次的正文」在后续正文出现后才变成
+    过程块（要随过程区一起收起），此时内容签名不变，控件被复用但分类必须更新。
+    """
+
+    __slots__ = ("kind", "sig", "widget", "spacer", "is_proc")
+
+    def __init__(self, kind: str, sig, widget: QWidget, spacer: QSpacerItem, is_proc: bool):
+        self.kind = kind
+        self.sig = sig
+        self.widget = widget
+        self.spacer = spacer
+        self.is_proc = is_proc
+
+    def gap(self) -> int:
+        return BLOCK_GAP.get(self.kind, SPACING_XS)
+
+
 class ChatTurn(QWidget):
     """AI 回合容器（demo .ai-turn）。
 
     结构：上下 1px 虚线分区 + 左侧竖向虚线 + 耗时徽章（骑线）+ 过程区 + 正文 + 系统时间。
-    过程区（思考/工具/命令/富文本段）在回合完成后整体收起，只留正文与
-    「查看执行过程」开关（demo `.ai-turn.done .ai-proc`）。
+    过程区（思考/工具/命令/富文本段，以及多轮任务里非最终的正文）在回合完成后整体
+    收起，只留最后一段正文与「查看执行过程」开关（demo `.ai-turn.done .ai-proc`）。
     """
 
     def __init__(self, style: ChatStyle, icon_provider: IconProvider,
@@ -866,7 +1043,10 @@ class ChatTurn(QWidget):
         self.style_obj = style
         self._link_handler: Optional[Callable[[str], None]] = None
         self._menu_handler: Optional[Callable[[QPoint], None]] = None
-        self._items: list = []          # [(kind, sig, widget, spacer)]
+        self._items: list = []          # [_BlockRef]，按布局顺序（收起态只含正文块）
+        self._blocks_full: list = []    # 完整区块序列（含过程块），展开时按它补建
+        self._proc_count = 0            # 完整序列里过程块的个数（决定开关是否出现）
+        self._toggle_handler: Optional[Callable[[], None]] = None
         self._done = False
         self._settled = False           # 回合是否已结束过（决定过程区开关是否常驻）
         self._user_open: Optional[bool] = None   # 用户对过程区的手动选择（优先于 done）
@@ -875,7 +1055,9 @@ class ChatTurn(QWidget):
         self._t0 = 0.0
         self._inset = RIBBON_H // 2     # 顶部虚线相对容器顶部的偏移（徽章骑线）
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        pol = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        pol.setHeightForWidth(True)
+        self.setSizePolicy(pol)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(
             lambda pos: self._emit_menu(self.mapToGlobal(pos)))
@@ -932,25 +1114,47 @@ class ChatTurn(QWidget):
         """增量渲染：blocks 为 (kind, payload, sig) 序列。
 
         sig 未变且 kind 相同的段直接复用既有控件（不重建、不重排），因此流式刷新
-        只影响内容变化的那一段。
+        只影响内容变化的那一段。回合已结束时过程块**不建控件**（见 `_apply_done`）。
         """
         blocks = list(blocks)
         self._live = bool(live)
+        self._blocks_full = blocks
+        self._proc_count = sum(1 for kind, payload, _sig in blocks
+                               if self._block_proc(kind, payload))
         self._finalize_ribbon(cost, live)
-        self._rebuild_blocks(blocks)
         self._sys.setText(sys_meta or "")
         self._sys.setVisible(bool(sys_meta))
-        self._set_done(done)
+        self._apply_done(done)
         self._apply_live()
-        self.updateGeometry()
+
+    def set_toggle_handler(self, fn: Callable[[], None]):
+        """过程区展开/收起回调：面板借此重新钉定回合高度（否则收起后会残留
+        展开态的高度，正文下方留一大片空白）。"""
+        self._toggle_handler = fn
 
     # ---------- 过程区收起 / 展开 ----------
-    def _set_done(self, done: bool):
-        """按「回合是否已结束」收放过程区。
+    @staticmethod
+    def _block_proc(kind: str, payload) -> bool:
+        """区块是否属于「过程区」（回合完成后随过程区收起）。
 
-        一旦结束过（settled），开关按钮就常驻：用户手动展开后仍可再收起。
-        用户的手动选择（_user_open）优先于传入的 done，避免窗口缩放等重渲染
-        把用户刚展开的过程区又自动收起。
+        默认按段类型判定；正文(text)段可由调用方用 payload["proc"] 显式标记为过程 ——
+        多轮任务里除**最后一段正文**外，中间轮次的回复文字也属于过程，必须一起收起，
+        否则折叠后仍会残留 AI 文字（用户反馈的「过程未完全折叠」）。
+        """
+        if isinstance(payload, dict) and "proc" in payload:
+            return bool(payload["proc"])
+        return kind in PROC_KINDS
+
+    def _apply_done(self, done: bool):
+        """收敛到目标显隐状态。
+
+        收起态下过程块**根本不创建控件**：一条已结束的回合通常只剩一段正文要显示，
+        若把思考/命令/子 Agent 块都建出来再 hidden，长会话会堆出上万个控件
+        （实测 60 回合 = 1.04 万个子控件、历史重建近 2 秒），滚动与切主题都会发涩。
+        用户点「查看执行过程」时才按原顺序补建（一次性）。
+
+        一旦结束过（settled），开关按钮就常驻，用户手动展开后仍可再收起；用户的手动
+        选择（_user_open）优先于传入的 done，避免窗口缩放等重渲染把它又自动收起。
         """
         done = bool(done)
         if done:
@@ -958,38 +1162,41 @@ class ChatTurn(QWidget):
         if self._user_open is not None:
             done = not self._user_open
         self._done = done
-        has_proc = self._has_proc()
-        for kind, _sig, wid, spacer in self._items:
-            # 用 isHidden()（显式隐藏标记）判定，而非 isVisible()：面板最小化/尚未
-            # 显示时 isVisible() 恒为 False，会误判成「已按期望隐藏」而漏收起过程区。
-            want_visible = not (done and kind in PROC_KINDS)
-            if wid.isHidden() == want_visible:
-                wid.setVisible(want_visible)
-            spacer.changeSize(
-                0, BLOCK_GAP.get(kind, SPACING_XS) if want_visible else 0)
-        show_toggle = self._settled and has_proc
-        self._toggle.setVisible(show_toggle)
-        self._toggle.setText(TOGGLE_CLOSED_TEXT if done else TOGGLE_OPEN_TEXT)
-        self._toggle.setIcon(rotate_icon(
-            self._icon_provider("chev", FONT_SMALL, self._style.accent),
-            0 if done else 180, FONT_SMALL))
+        self._rebuild_blocks(self._visible_specs(done))
+
+        show_toggle = self._settled and self._proc_count > 0
+        if self._toggle.isHidden() == show_toggle:
+            self._toggle.setVisible(show_toggle)
+        text = TOGGLE_CLOSED_TEXT if done else TOGGLE_OPEN_TEXT
+        if self._toggle.text() != text:
+            self._toggle.setText(text)
+            self._toggle.setIcon(rotate_icon(
+                self._icon_provider("chev", FONT_SMALL, self._style.accent),
+                0 if done else 180, FONT_SMALL))
         if show_toggle:
             self._place_toggle()
+        self._refresh_geometry()
+
+    def _visible_specs(self, collapsed: bool) -> list:
+        """当前状态下需要建控件的区块序列（收起时剔除过程块）"""
+        if not collapsed:
+            return list(self._blocks_full)
+        return [(kind, payload, sig) for kind, payload, sig in self._blocks_full
+                if not self._block_proc(kind, payload)]
 
     def _on_toggle(self):
-        self._user_open = self._done      # 展开：记住用户选择（后续重渲染不再自动收起）
-        self._set_done(not self._done)
-        self.updateGeometry()
-
-    def _has_proc(self) -> bool:
-        return any(kind in PROC_KINDS for kind, _s, _w, _sp in self._items)
+        self._user_open = self._done      # 记住用户选择（后续重渲染不再自动收起）
+        self._apply_done(not self._done)
+        if self._toggle_handler is not None:
+            self._toggle_handler()        # 让面板按新高度重新钉定（消除残留空白）
 
     def _place_toggle(self):
-        """把开关放到最后一个过程块之后（demo 中 .proc-ctrl 紧随 .ai-proc）。
-        位置未变时不重复插拔，避免流式刷新期间反复触发布局失效。"""
+        """把开关放到最后一个过程块之后（demo 中 .proc-ctrl 紧随 .ai-proc）；
+        收起态下没有过程块，开关自然落到正文之前。位置未变时不重复插拔，
+        避免流式刷新期间反复触发布局失效。"""
         idx = 0
-        for i, (kind, _s, _w, _sp) in enumerate(self._items):
-            if kind in PROC_KINDS:
+        for i, ref in enumerate(self._items):
+            if ref.is_proc:
                 idx = i * 2 + 2
         idx = min(idx, max(0, self._box_lay.count() - 1))
         if idx == self._toggle_idx and self._toggle.parent() is self._box:
@@ -999,24 +1206,27 @@ class ChatTurn(QWidget):
         self._box_lay.insertWidget(idx, self._toggle)
 
     # ---------- 增量重建 ----------
-    def _rebuild_blocks(self, blocks: list):
+    def _rebuild_blocks(self, specs: list):
         reuse = 0
-        while (reuse < len(blocks) and reuse < len(self._items)
-               and self._items[reuse][0] == blocks[reuse][0]
-               and self._items[reuse][1] == blocks[reuse][2]):
-            reuse += 1      # 签名命中：内容未变，不重建也不重排（流式只处理末段）
+        while (reuse < len(specs) and reuse < len(self._items)
+               and self._items[reuse].kind == specs[reuse][0]
+               and self._items[reuse].sig == specs[reuse][2]):
+            # 签名命中：内容未变，不重建也不重排（流式只处理末段）
+            reuse += 1
         if reuse < len(self._items):
             self._drop_from(reuse)
-        for kind, payload, sig in blocks[reuse:]:
+        for kind, payload, sig in specs[reuse:]:
             self._append_block(kind, payload, sig)
 
     def _drop_from(self, index: int):
-        for _kind, _sig, wid, spacer in self._items[index:]:
-            self._box_lay.removeWidget(wid)
-            self._box_lay.removeItem(spacer)
-            wid.setParent(None)
-            wid.deleteLater()
+        for ref in self._items[index:]:
+            self._box_lay.removeWidget(ref.widget)
+            self._box_lay.removeItem(ref.spacer)
+            ref.widget.setParent(None)
+            ref.widget.deleteLater()
         del self._items[index:]
+        self._toggle_idx = -1
+        self._last_h = -1        # 区块增删：高度缓存失效
 
     def _append_block(self, kind: str, payload: dict, sig):
         wid = self._make_block(kind)
@@ -1024,7 +1234,9 @@ class ChatTurn(QWidget):
                              QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self._box_lay.insertWidget(self._box_lay.count() - 1, wid)
         self._box_lay.insertItem(self._box_lay.count() - 1, spacer)
-        self._items.append((kind, sig, wid, spacer))
+        self._items.append(_BlockRef(kind, sig, wid, spacer,
+                                     self._block_proc(kind, payload)))
+        self._last_h = -1        # 区块增删：高度缓存失效
         self._update_block(wid, kind, payload)
         self._wire(wid)
 
@@ -1100,10 +1312,24 @@ class ChatTurn(QWidget):
         self._box_lay.setContentsMargins(0, inset + AI_TURN_PAD_TOP, 0,
                                          AI_TURN_PAD_BOTTOM + AI_TURN_GAP)
 
+    def _refresh_geometry(self):
+        """仅在高度的确变化时通知布局。
+
+        流式刷新每 ~8ms 一次；无脑 `updateGeometry()` 会让整条消息区反复失效重排，
+        观感就是闪烁 + 掉帧。高度没变（如仅徽章文案变化）时保持几何完全不变。
+        """
+        w = self.width()
+        if w <= 0:
+            return
+        h = self.heightForWidth(w)
+        if h > 0 and abs(h - getattr(self, "_last_h", -1)) >= 2:
+            self._last_h = h
+            self.updateGeometry()
+
     def _apply_live(self):
-        for _kind, _sig, wid, _sp in self._items:
-            if isinstance(wid, ThinkBubble):
-                wid.set_live(self._live)
+        for ref in self._items:
+            if isinstance(ref.widget, ThinkBubble):
+                ref.widget.set_live(self._live)
 
     def start_live(self):
         """任务开始：启动耗时计时（徽章实时刷新）"""
@@ -1155,16 +1381,28 @@ class ChatTurn(QWidget):
         super().showEvent(e)
         self._place_ribbon()
 
+    def sizeHint(self) -> QSize:
+        """整条回合高度 = 内容在当前宽度下的真实高度（与 heightForWidth 一致）"""
+        w = self.width()
+        if w <= 0:
+            return super().sizeHint()
+        return QSize(w, self.heightForWidth(w))
+
     def heightForWidth(self, width: int) -> int:
+        """整条回合在给定宽度下的高度（供消息区钉住最小高度）。
+
+        各区块自身的测量走 _measured_hfw 缓存：内容与宽度都没变的块直接返回旧值，
+        因此流式刷新时只有正在增长的那一块会真正重排富文本。
+        """
         m = self._box_lay.contentsMargins()
         inner = max(1, int(width) - m.left() - m.right())
         h = m.top() + m.bottom()
-        for _kind, _sig, wid, spacer in self._items:
-            if wid.isHidden():
+        for ref in self._items:
+            if ref.widget.isHidden():
                 continue
-            h += _widget_hfw(wid, inner) + spacer.sizeHint().height()
-        if self._toggle.isVisible():
+            h += _widget_hfw(ref.widget, inner) + ref.spacer.sizeHint().height()
+        if not self._toggle.isHidden():
             h += self._toggle.sizeHint().height()
-        if self._sys.isVisible():
+        if not self._sys.isHidden():
             h += _widget_hfw(self._sys, inner)
         return h

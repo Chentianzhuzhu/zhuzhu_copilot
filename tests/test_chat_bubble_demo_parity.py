@@ -193,6 +193,127 @@ def test_think_bubble_folds_over_five_lines_and_expands(host):
     assert tb._folded is True and tb._body.maximumHeight() == line_h * 5
 
 
+def test_fold_button_is_not_squeezed(host):
+    """折叠后正文必须被真正截到 5 行，且「继续查看」按钮保持完整高度。
+
+    历史缺陷：钉高度时用了**全文**高度，超过折叠上限 → minimumHeight > maximumHeight，
+    Qt 以最小值为准 ⇒ 折叠失效（正文全展开），且该块真实高度远超 heightForWidth 的
+    估算，把整条回合的高度预算撑爆、最后一项（按钮）被压扁 —— 即用户报的「按钮被挤压」。
+    """
+    tb = host.add(cb.ThinkBubble(STYLE, ap._line_icon))
+    tb.set_content("PLANNING", f"<div>{LONG_THINK}</div>")
+    host.show()
+    limit = tb._line_height() * 5
+    assert tb._body.minimumHeight() <= tb._body.maximumHeight(), \
+        "最小高度不得超过最大高度（否则折叠失效）"
+    assert tb._body.maximumHeight() == limit, "折叠后正文须截到 5 行"
+    assert tb._body.minimumHeight() == limit, "钉住的高度须与折叠上限一致"
+
+    fb = tb._fold_btn
+    assert fb.height() >= fb.sizeHint().height(), f"折叠按钮被压扁：{fb.size()} < {fb.sizeHint()}"
+    assert fb.width() >= fb.sizeHint().width()
+
+    m = tb.layout().contentsMargins()
+    need = (m.top() + m.bottom() + cb.THINK_ICON + cb.THINK_HEAD_GAP + limit
+            + cb.THINK_HEAD_GAP + fb.sizeHint().height())
+    assert tb.heightForWidth(tb.width()) >= need, \
+        "高度预算未覆盖头行+正文+按钮，布局会压缩最后一个子项"
+
+
+def test_body_marking_keeps_only_last_stream():
+    """正文归属标注：只有最后一段正文算「正文」，其余轮次回复并入过程区。
+
+    同时必须**不就地改写**入参 payload —— 那些 dict 来自段级渲染缓存，就地加键会污染
+    后续所有回合（缓存命中返回同一个 dict）。
+    """
+    blocks = [
+        (cb.KIND_THINK, {"tag": "", "body": ""}, ("1", 0)),
+        (cb.KIND_STREAM, {"html": "中间轮回复"}, ("2", 0)),
+        (cb.KIND_CMD, {"label": "", "cmd": "", "out": ""}, ("3", 0)),
+        (cb.KIND_STREAM, {"html": "最终回答"}, ("4", 0)),
+    ]
+    marked = ap.AgentPanel._mark_body_blocks(blocks)
+    assert [p.get("proc") for k, p, _s in marked if k == cb.KIND_STREAM] == [True, False]
+    assert [k for k, _p, _s in marked] == [b[0] for b in blocks], "不得改变顺序"
+    assert "proc" not in blocks[1][1], "不得就地改写缓存中的 payload"
+
+
+def test_no_stream_block_means_no_body_marking():
+    """没有正文段时不做标注（该回合不参与「只留正文」的收起语义）。"""
+    blocks = [
+        (cb.KIND_THINK, {"tag": "", "body": ""}, ("1", 0)),
+        (cb.KIND_CMD, {"label": "", "cmd": "", "out": ""}, ("2", 0)),
+    ]
+    assert ap.AgentPanel._mark_body_blocks(blocks) == blocks
+
+
+def test_no_extra_blank_space_around_text(host):
+    """文本块高度必须恒等于内容高度，且竖直顶端对齐。
+
+    历史缺陷：只钉了最小高度 → 布局给的多余高度被 QLabel 吸收，而 QLabel 默认
+    AlignVCenter 会把文字垂直居中 ⇒ 每段文字上下各留一大片空白。
+    """
+    turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
+    turn.render([(cb.KIND_STREAM, {"html": "<div>一行简短回答。</div>"}, ("s", 0))],
+                live=True)
+    host.show()
+    blk = turn._items[0].widget
+    lbl = blk._body
+    assert lbl.alignment() & Qt.AlignmentFlag.AlignTop, \
+        "文本必须顶端对齐（否则多余高度会被上下均分）"
+    need = lbl.heightForWidth(lbl.width())
+    assert lbl.minimumHeight() == need, f"最小高度未钉到内容高度：{lbl.minimumHeight()} vs {need}"
+    assert lbl.maximumHeight() == need, f"最大高度未钉到内容高度：{lbl.maximumHeight()} vs {need}"
+    assert lbl.height() == need, f"标签实际高度 {lbl.height()} ≠ 内容高度 {need}"
+    assert blk.height() <= blk.heightForWidth(blk.width()) + 2, \
+        "块高度不应超出内容高度（多余高度必须留在块外）"
+    assert turn.heightForWidth(turn.width()) <= blk.height() + 80, "回合高度应贴合内容"
+
+
+def test_short_think_bubble_shrinks_to_content(host):
+    """思考正文不足 5 行时高度自适应：气泡高度 = 头行 + 正文，绝不预留 5 行。"""
+    tb = host.add(cb.ThinkBubble(STYLE, ap._line_icon))
+    tb.set_content("PLANNING", "<div>一句话思考</div>")
+    host.show()
+    limit = tb._line_height() * 5
+    assert tb._folded is False, "短思考不应判定为可折叠"
+    assert tb._body.maximumHeight() == 16777215, "短思考不得被限制到 5 行高度"
+    assert tb._body.minimumHeight() < limit, "短思考不得被钉到 5 行高度"
+    m = tb.layout().contentsMargins()
+    need = (m.top() + m.bottom() + cb.THINK_ICON + cb.THINK_HEAD_GAP
+            + tb._body.minimumHeight())
+    assert tb.heightForWidth(tb.width()) == need, "气泡应恰为头行 + 正文高度"
+    assert tb.height() <= need + 2, f"气泡实际高度 {tb.height()} 超出内容 {need}"
+    assert tb._fold_btn.isHidden(), "短思考不应出现折叠按钮"
+
+
+def test_stream_refresh_tick_is_small_and_fixed(monkeypatch):
+    """流式刷新节拍固定为小间隔（≈30fps）而不是随正文增长放宽到数百毫秒 ——
+    后者观感是一跳一跳，用户要求「丝滑连贯」。超长正文仍保留兜底间隔。"""
+    delays = []
+
+    class _FakeTimer:
+        @staticmethod
+        def singleShot(ms, cb):
+            delays.append(ms)
+
+    monkeypatch.setattr(ap, "QTimer", _FakeTimer)
+    p = ap.AgentPanel.__new__(ap.AgentPanel)
+    p._segments = [{"type": "text", "raw": "x" * 100, "streaming": True}]
+    p._ai_bubble = object()
+    p._html_dirty = False
+    p._refresh_ai_html()
+    assert delays == [ap._STREAM_TICK_MS], f"普通正文节拍异常：{delays}"
+    assert ap._STREAM_TICK_MS <= 40, "节拍应足够小才能连续落字"
+
+    delays.clear()
+    p._html_dirty = False
+    p._segments = [{"type": "text", "raw": "x" * (ap._STREAM_BIG_CHARS + 1),
+                    "streaming": True}]
+    p._refresh_ai_html()
+    assert delays == [60], f"超大正文应走兜底间隔：{delays}"
+
+
 def test_short_think_bubble_has_no_fold_button(host):
     tb = host.add(cb.ThinkBubble(STYLE, ap._line_icon))
     tb.set_content("EXEC", "<div>很短的一句思考。</div>")
@@ -216,7 +337,11 @@ def test_multi_round_think_bubbles_fold_independently(host):
 
 def test_process_area_collapses_after_done_and_can_reopen(host):
     """AI 完成汇报后过程区整体收起，只留正文与「查看执行过程」（demo .ai-turn.done
-    .ai-proc）；点击开关可再展开，且用户选择不被后续重渲染覆盖。"""
+    .ai-proc）；点击开关可再展开，且用户选择不被后续重渲染覆盖。
+
+    收起态**不创建过程控件**（长会话实测 60 回合会堆出上万个控件，历史重建近 2 秒），
+    因此断言的是「过程块不存在」而不是「被隐藏」。
+    """
     turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
     blocks = [
         (cb.KIND_THINK, {"tag": "PLANNING", "body": "<div>思考</div>"}, ("k0", 0)),
@@ -225,13 +350,14 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
     ]
     turn.render(blocks, live=True, done=False)
     host.show()
-    assert all(not w.isHidden() for _k, _s, w, _sp in turn._items), "进行中：过程区展开"
+    assert [r.kind for r in turn._items] == [cb.KIND_THINK, cb.KIND_TOOL, cb.KIND_STREAM], \
+        "进行中：过程区全部建出并可见"
+    assert all(not r.widget.isHidden() for r in turn._items)
 
     turn.render(blocks, cost=12.4, live=False, sys_meta="14:02:31 → 14:02:43", done=True)
     app.processEvents()
-    hidden = {k: w.isHidden() for k, _s, w, _sp in turn._items}
-    assert hidden[cb.KIND_THINK] and hidden[cb.KIND_TOOL], "完成后过程类区块须收起"
-    assert not hidden[cb.KIND_STREAM], "正文永不收起（demo .stream）"
+    assert [r.kind for r in turn._items] == [cb.KIND_STREAM], \
+        "完成后过程类区块不应再存在（只留正文）"
     assert not turn._toggle.isHidden() and turn._toggle.text() == "查看执行过程"
     assert turn._ribbon._text.text() == "12.4s"
     assert turn._sys.text() == "14:02:31 → 14:02:43"
@@ -241,14 +367,41 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
     turn._toggle.click()
     app.processEvents()
     expanded_h = turn.heightForWidth(760)
+    assert [r.kind for r in turn._items] == [cb.KIND_THINK, cb.KIND_TOOL, cb.KIND_STREAM], \
+        "展开后按原顺序补建过程块"
     assert turn._toggle.text() == "收起执行过程"
     assert collapsed_h < expanded_h, f"折叠后高度未收缩：{collapsed_h} vs {expanded_h}"
 
     # 用户手动展开后，后续重渲染（如窗口缩放）不得自动收起
     turn.render(blocks, cost=12.4, live=False, sys_meta="14:02:31 → 14:02:43", done=True)
     app.processEvents()
-    assert all(not w.isHidden() for _k, _s, w, _sp in turn._items), \
-        "重渲染不得覆盖用户手动展开的选择"
+    assert len(turn._items) == 3, "重渲染不得覆盖用户手动展开的选择"
+
+    # 再收起：过程控件应被真正释放（控件数量回落）
+    turn._toggle.click()
+    app.processEvents()
+    assert len(turn._items) == 1 and turn._toggle.text() == "查看执行过程"
+
+
+def test_earlier_round_text_becomes_process_block(host):
+    """多轮任务：AI 在工具循环之间的中间回复属过程，回合结束后必须一并收起，
+    只留最后一段正文（否则折叠后仍残留 AI 文字）。"""
+    turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
+    blocks = [
+        (cb.KIND_THINK, {"tag": "PLANNING", "body": "<div>思考</div>"}, ("a", 0)),
+        (cb.KIND_STREAM, {"html": "<div>第一轮回复</div>", "proc": True}, ("b", 0)),
+        (cb.KIND_CMD, {"label": "run_command", "cmd": "dir", "out": "ok"}, ("c", 0)),
+        (cb.KIND_STREAM, {"html": "<div>最终回答</div>", "proc": False}, ("d", 0)),
+    ]
+    turn.render(blocks, live=True, done=False)
+    host.show()
+    assert len(turn._items) == 4, "进行中：中间回复也要显示"
+
+    turn.render(blocks, cost=1.0, live=False, done=True)
+    app.processEvents()
+    remaining = [r.sig for r in turn._items]
+    assert remaining == [("d", 0)], f"折叠后只应留最终正文，实际 {remaining}"
+    assert "最终回答" in turn._items[0].widget._body.text()
 
 
 def test_incremental_render_only_rebuilds_changed_block(host):
@@ -259,18 +412,23 @@ def test_incremental_render_only_rebuilds_changed_block(host):
         (cb.KIND_CMD, {"label": "run_command", "cmd": "dir", "out": "ok"}, ("b", 0)),
         (cb.KIND_STREAM, {"html": "<div>正文</div>"}, ("c", 0)),
     ]
+    # 用「标记」而不是 id() 判身份：deleteLater 后新控件可能复用同一内存地址，
+    # id() 会给出假相等（测试会偶发失败）。
     turn.render(blocks, live=True)
     host.show()
-    before = [id(w) for _k, _s, w, _sp in turn._items]
+    for n, ref in enumerate(turn._items):
+        ref.widget._reuse_mark = n
 
     turn.render(blocks, live=True)
-    assert [id(w) for _k, _s, w, _sp in turn._items] == before, "同签名不得重建控件"
+    assert [getattr(r.widget, "_reuse_mark", None) for r in turn._items] == [0, 1, 2], \
+        "同签名不得重建控件"
 
     grown = blocks[:2] + [(cb.KIND_STREAM, {"html": "<div>正文 + 追加</div>"}, ("c", 1))]
     turn.render(grown, live=True)
-    after = [id(w) for _k, _s, w, _sp in turn._items]
-    assert after[:2] == before[:2], "未变化的块应复用"
-    assert after[2] != before[2], "内容变化的末块应重建"
+    marks = [getattr(r.widget, "_reuse_mark", None) for r in turn._items]
+    assert marks[:2] == [0, 1], "未变化的块应复用同一控件"
+    assert marks[2] is None, "内容变化的末块应重建（新控件）"
+    assert [r.sig for r in turn._items] == [("a", 0), ("b", 0), ("c", 1)]
 
 
 def test_cmd_block_structure_matches_demo(host):

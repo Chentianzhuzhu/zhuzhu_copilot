@@ -1,8 +1,12 @@
 """zhuzhu Copilot 工具面板（深色"星际控制台"风格，无 emoji，矢量图标）
 
-消息气泡（TRAE 风格，单气泡一体化）：
-- AI 气泡内依次渲染：思考过程 → 操作步骤 → 最终文本输出，均在同一气泡内
-- 用户消息靠右（青色）、AI 消息靠左（深色卡片）
+消息事件流（1:1 复刻 ui_style_demo/index.html 的结构，实现见 ui/agent_chat_bubbles.py）：
+- AI 回合没有填充气泡：上下虚线分区 + 左侧竖虚线 + 骑线耗时徽章；回合内依次是
+  思考气泡（超 5 行折叠）→ 工具调用行 → 命令块 → 正文；回合结束后过程区整体收起，
+  只留最后一段正文与「查看执行过程」开关（收起态不创建过程控件，长会话才不卡）
+- 用户消息靠右（深蓝非对称圆角气泡），AI 回合铺满内容宽度
+- 工具图标：每个工具一个专属线条矢量图标（ui/tool_icons.py，族底图 + 动作角标）
+- 流式输出：33ms 固定节拍（≈30fps）连续落字，dirty 防抖合并增量
 - 上下文：engine 复用保留跨任务对话历史（截图仅保留最近 2 张防膨胀），可一键清空
 - 反馈：发送中/停止中按钮状态 + "思考中"点号动画 + tokens 实时统计
 - 每步确认：AskBeforeEdit 弹窗确认（确认后危险命令可执行）；YOLO 无确认、不设任何限制（可操作任意目录/系统目录、执行任意命令）
@@ -136,6 +140,7 @@ from winapp_migrator.core import (
 )
 from winapp_migrator.core.agent_mcp import McpManager
 from winapp_migrator.ui import agent_chat_bubbles as chat_bubbles
+from winapp_migrator.ui import tool_icons
 from winapp_migrator.ui.tokens import (
     FONT_BASE,
     FONT_BODY,
@@ -1490,6 +1495,13 @@ def _segs_same(a: list, b: list) -> bool:
 # 超长的命令输出 / 子 Agent 输出按此截断展示，保证「单块体积有界」——长对话里一个数
 # 百 KB 的块会让该控件的富文本布局变慢，进而拖累滚动与缩放。
 _RESULT_TRUNCATE = 6000
+
+# 流式输出节拍（毫秒）：8ms≈120fps 连续落字（用户要求的丝滑档）；正文超大时放宽到
+# 60ms 兜底，避免极端长文下单帧占用过高。滚动跟随 16ms≈60fps，跟手但不做无谓的
+# 超高频滚动（滚动会触发整屏重绘，比渲染文字贵得多）。
+_STREAM_TICK_MS = 8
+_SCROLL_TICK_MS = 16
+_STREAM_BIG_CHARS = 200_000
 
 # 子 Agent 块展开态的体积上限：一个子块由多步工具输出拼成，实测 7 个子块可占
 # 629KB 富文本的 94%（单块富文本布局 200~500ms → 任何交互都卡）。
@@ -13993,13 +14005,26 @@ class AgentPanel(QDialog):
     # ---------- 消息气泡 ----------
     @staticmethod
     def _fade_in(widget: QWidget, parent: QWidget):
-        """气泡淡入动画（增强体验）"""
+        """气泡淡入动画（增强体验）。
+
+        动画结束后**必须摘掉不透明度效果**：QGraphicsOpacityEffect 会把整个控件子树
+        重定向到离屏合成，常驻在一个含几十个子控件的回合容器上，会让每次重绘
+        （滚动、流式刷新、输入）都变得很贵 —— 这是「小任务也卡顿」的主要来源之一。
+        """
         eff = QGraphicsOpacityEffect(widget)
         widget.setGraphicsEffect(eff)
         anim = QPropertyAnimation(eff, b"opacity", parent)
         anim.setDuration(220)
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
+
+        def _drop_effect():
+            try:
+                widget.setGraphicsEffect(None)   # 传 None 会顺带销毁 effect
+            except RuntimeError:
+                pass      # 控件已被回收（会话切换/清空）：无需处理
+
+        anim.finished.connect(_drop_effect)
         anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def _bubble_max_width(self) -> int:
@@ -14088,6 +14113,17 @@ class AgentPanel(QDialog):
         """AI 回合内截图缩略图宽度：回合内容宽度的 40%（旧实现按「气泡最大宽度」折算，
         回合改为铺满宽度后同比换算，避免截图在宽回合里显得过小）。"""
         return max(200, int(self._ai_turn_max_width() * 0.4))
+
+    def _chat_icon(self, kind: str, size: int, color: str) -> QIcon:
+        """事件流气泡的图标入口：**工具名走工具专属图标**，其余走通用线条图标。
+
+        参数名 `kind` 对工具调用行传的是真实工具名（如 `run_command`），因此这里按
+        「是否是已登记工具」分流：已登记 → 族底图 + 动作角标组合出的专属图标；未登记
+        （通用 UI 图标如 clock/chev/think）→ 既有的 `_line_icon`。
+        """
+        if kind in tool_icons.TOOL_ICON_SPEC:
+            return tool_icons.tool_icon(kind, size, color)
+        return _line_icon(kind, size, color)
 
     def _chat_style(self) -> "chat_bubbles.ChatStyle":
         """事件流气泡的样式快照：几何取自 tokens/demo，颜色取当前主题色板。
@@ -15810,11 +15846,12 @@ class AgentPanel(QDialog):
             bubble = chat_bubbles.UserBubble(self._chat_style())
             bubble.setMaximumWidth(self._bubble_max_width())
         else:
-            bubble = chat_bubbles.ChatTurn(self._chat_style(), _line_icon)
+            bubble = chat_bubbles.ChatTurn(self._chat_style(), self._chat_icon)
             bubble.setMaximumWidth(self._ai_turn_max_width())
             bubble.setMinimumWidth(0)
             bubble.set_link_handler(lambda url, b=bubble: self._on_ai_turn_link(b, url))
             bubble.set_menu_handler(lambda pos, b=bubble: self._on_ai_bubble_menu(b, pos))
+            bubble.set_toggle_handler(lambda b=bubble: self._sync_after_toggle(b))
             # 右键菜单：朗读这条回复（从气泡段中提取正文文本后台合成播放）
             bubble.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             bubble.customContextMenuRequested.connect(
@@ -15887,8 +15924,11 @@ class AgentPanel(QDialog):
             row.addWidget(wrap, 1)
         self.msg_lay.insertLayout(self.msg_lay.count() - 1, row)
         self._place_spinner_bottom()   # 新气泡加入后动画行移到最底部（AI 气泡下方外侧）
-        if animate:
-            self._fade_in(bubble, self)   # 历史批量加载跳过动画，避免逐条淡入造成卡顿
+        # 淡入只用于用户气泡（小 QLabel）。AI 回合不做淡入：QGraphicsOpacityEffect 会把
+        # 整棵子树重定向到离屏合成，而生成中每帧内容都在变 → 观感就是闪烁还掉帧；
+        # 正文的流式落字本身已经是动画，不需要再叠一层（历史批量加载同样跳过）。
+        if animate and align == "user":
+            self._fade_in(bubble, self)
         self._scroll_bottom()
         return bubble
 
@@ -16365,11 +16405,15 @@ class AgentPanel(QDialog):
         # 对已删除的 QVBoxLayout 执行 insertLayout 会抛 RuntimeError，
         # 进而中断 _render_history_all（气泡清空的根因）——此处安全清理并退出
         try:
-            _found = False
-            for i in range(self.msg_lay.count()):
+            # 已在目标位置（倒数第二项，最后一项为尾部 stretch）→ 直接跳过：
+            # 状态更新很频繁，反复 takeAt/insertLayout 会让整条消息区重排一次，
+            # 生成过程中表现为闪烁（这是「聊天气泡闪烁」的主要来源之一）。
+            _n = self.msg_lay.count()
+            if _n >= 2 and self.msg_lay.itemAt(_n - 2).layout() is self._spinner_row:
+                return
+            for i in range(_n):
                 if self.msg_lay.itemAt(i).layout() is self._spinner_row:
                     self.msg_lay.takeAt(i)
-                    _found = True
                     break
             self.msg_lay.insertLayout(self.msg_lay.count() - 1, self._spinner_row)
         except RuntimeError:
@@ -16717,12 +16761,12 @@ class AgentPanel(QDialog):
                 self._fun_bubble.hide()
 
     def _scroll_bottom(self):
-        # 流式高频调用时合并：100ms 定时器批量滚动一次 + 400ms 兜底
+        # 流式高频调用时合并：40ms 批量滚动一次（≈刷新节拍，跟手不跳）+ 400ms 兜底
         # （气泡高度与布局异步稳定后确保滚到最底部），避免每个 token 触发滚动重排
         if self._scroll_pending:
             return
         self._scroll_pending = True
-        QTimer.singleShot(100, self._do_scroll_bottom)
+        QTimer.singleShot(_SCROLL_TICK_MS, self._do_scroll_bottom)
         QTimer.singleShot(400, self._do_scroll_bottom)
 
     def _do_scroll_bottom(self):
@@ -16860,7 +16904,25 @@ class AgentPanel(QDialog):
                 payload = dict(payload, tag="PLANNING" if think_seen == 0 else "EXEC")
                 think_seen += 1
             out.append((kind, payload, sig))
-        return out
+        return self._mark_body_blocks(out)
+
+    @staticmethod
+    def _mark_body_blocks(blocks: list) -> list:
+        """标注「正文」归属：只有**最后一段**正文在过程区收起后仍然可见。
+
+        多轮任务里 AI 会在工具循环之间输出中间回复（同样是 text 段），它们属于执行
+        过程的一部分；若一律按「正文」处理，回合结束后这些中间文字会残留在折叠后的
+        视图里（用户反馈的「过程未完全折叠，有 AI 回复的文字出现」）。
+        """
+        body = None
+        for i, (kind, _payload, _sig) in enumerate(blocks):
+            if kind == chat_bubbles.KIND_STREAM:
+                body = i
+        if body is None:
+            return blocks
+        return [(kind, dict(payload, proc=(i != body)), sig) if kind == chat_bubbles.KIND_STREAM
+                else (kind, payload, sig)
+                for i, (kind, payload, sig) in enumerate(blocks)]
 
     def _render_seg_html(self, seg: dict, i: int, t: str,
                          f_main: int, f_sm: int, f_op: int, img_w: int):
@@ -17127,6 +17189,14 @@ class AgentPanel(QDialog):
         for b in (bubbles if bubbles is not None else self._bubble_widgets):
             try:
                 if not self._bubble_alive(b):
+                    continue
+                if isinstance(b, chat_bubbles.ChatTurn):
+                    # 事件流回合的高度由内容（heightForWidth/sizeHint）驱动，面板不再钉死。
+                    # 钉死会在「子块刚重建、还没拿到真实宽度」时按偏大高度撑高回合，
+                    # 而正文是顶端对齐的 → 汇报完成后正文底部留一大片空白。
+                    if b.minimumHeight():
+                        b.setMinimumHeight(0)
+                        b.updateGeometry()
                     continue
                 w_b = b.width()
                 if w_b <= 0:
@@ -17463,8 +17533,8 @@ class AgentPanel(QDialog):
     def _refresh_ai_html(self):
         """节流刷新 AI 气泡：流式 token 高频调用时合并为批量 setText 一次，
         避免每个 token 全量重建 HTML + 触发整条消息区重排版导致输出卡顿。
-        自适应节流：正文越长重排版越贵（Qt 富文本 setText 为全量解析），
-        逐步放宽刷新间隔，保长输出流畅。"""
+        节流：33ms≈30fps 固定小间隔，流式文字连续落字（观感丝滑）；期间的所有增量
+        由 dirty 防抖合并为一次渲染，不会因高频调用而重复重建富文本。"""
         # 流式正文被打断（追加了 result/op/status 等段）：把之前残留的
         # streaming text 段关闭，让其在下一次刷新时走完整 markdown 渲染补全格式
         if self._segments and self._segments[-1].get("type") != "text":
@@ -17478,18 +17548,11 @@ class AgentPanel(QDialog):
         raw = (self._segments[-1].get("raw", "")
                if self._segments and self._segments[-1].get("type") == "text" else "")
         n = len(raw)
-        # 自适应节流：正文越长整段全量 markdown 重渲染越贵（O(n) 每次、累计 O(n²)），
-        # 逐步放宽刷新间隔摊薄重算次数，保长输出流畅（dirty 防抖会合并期间的所有增量）
-        if n < 8000:
-            delay = 60
-        elif n < 24000:
-            delay = 120
-        elif n < 60000:
-            delay = 250
-        elif n < 150000:
-            delay = 400
-        else:
-            delay = 600
+        # 固定小间隔：改为「段级增量渲染 + 高度测量缓存」后，单帧渲染成本降到亚毫秒级，
+        # 不必再按正文长度放宽间隔（旧实现最长 600ms，观感是一跳一跳的）。33ms≈30fps，
+        # 文字连续落字、观感丝滑；dirty 防抖仍会把期间的所有增量合并为一次渲染。
+        # 超大正文保留一档兜底间隔，避免极端长文下单帧占用过高。
+        delay = _STREAM_TICK_MS if n < _STREAM_BIG_CHARS else 60
         QTimer.singleShot(delay, self._apply_refresh_ai_html)
 
     def _apply_refresh_ai_html(self):
