@@ -437,7 +437,10 @@ class OnboardingWizard(QDialog):
         self._stack.setCurrentIndex(self._idx)
 
     # ---------------- 翻页动画（上一步 / 下一步） ----------------
-    _PAGE_ANIM_MS = 170        # 单段时长：滑出、滑入各一段
+    # 时长是唯一的"速率"调节杆：QPropertyAnimation 由 Qt 内部的统一 16ms 定时器驱动（≈60Hz），
+    # PyQt6 没有公开的帧率/定时器间隔 API；且本项目此前实测过 8ms 节拍反而更卡
+    # （主线程被排满、帧间隔不匀），已改回 16ms——均匀的帧间隔才是真的丝滑。
+    _PAGE_ANIM_MS = 260        # 单段时长：滑出、滑入各一段（合计约 0.5s）
     _PAGE_BLUR_MAX = 14.0      # 滑出到最远处时的模糊半径（像素）
 
     def _animate_page_change(self, new_idx: int, forward: bool) -> None:

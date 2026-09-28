@@ -268,6 +268,19 @@ def _pos_anim(wizard):
     return wizard._page_anim.animationAt(0).animationAt(0)
 
 
+def test_transition_duration_comes_from_constant():
+    """时长取自 _PAGE_ANIM_MS（调快慢只改这一个常量），不得写死。"""
+    w = _shown_wizard()
+    try:
+        w._on_next()
+        assert _pos_anim(w).duration() == onboarding.OnboardingWizard._PAGE_ANIM_MS, \
+            "翻页时长必须引用 _PAGE_ANIM_MS"
+        assert onboarding.OnboardingWizard._PAGE_ANIM_MS >= 200, \
+            "翻页过快会看不清滑动与模糊过程"
+    finally:
+        w.close()
+
+
 def test_next_transition_slides_left_out():
     """下一步：旧页向左滑出（模糊递增、淡出），播完后新页归位、特效全部复位。"""
     w = _shown_wizard()
