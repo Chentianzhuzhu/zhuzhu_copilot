@@ -9,14 +9,19 @@ g9_study_helper / sansheng_liubu 等）连同团队配置快照到 build/workflo
 用法：
     python scripts/prepare_workflow_seed.py
 """
-from zhuzhu_Copilot import app_identity
 import json
 import os
 import shutil
 import sys
 from pathlib import Path
 
+# 包在 src/ 下（不装进 site-packages），脚本被构建流水线直接执行时必须先补 sys.path，
+# 否则 `from zhuzhu_Copilot import ...` 直接 ModuleNotFoundError（构建 [5/11] 会失败）。
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from zhuzhu_Copilot import app_identity   # noqa: E402
+
 SRC = app_identity.data_root() / "workflows"
 DST = ROOT / "build" / "workflows_seed"
 
@@ -56,12 +61,17 @@ def main() -> int:
             continue
         shutil.copytree(d, DST / d.name, dirs_exist_ok=True)
         copied.append(d.name)
+    # 快照来自**用户数据目录**，里面的工作流脚本很可能还写着旧包名
+    # （winapp_migrator.*）—— 随包分发前必须换成当前身份，否则新装机器上
+    # agent.py / tools.py / llm.py 一律 ModuleNotFoundError、自定义静默失效。
+    fixed = app_identity.rewrite_legacy_names_in_tree(DST)
     # 团队配置种子（新机首启落盘为 ~/.zhuzhu_Copilot/team.json）
     (DST / "team.json").write_text(
         json.dumps(_team_config(), ensure_ascii=False, indent=2),
         encoding="utf-8")
     print(f"工作流种子已生成: {DST}")
     print(f"  工作流 {len(copied)} 个: {', '.join(copied)}")
+    print(f"  旧包名改写: {fixed} 个文件")
     print("  团队配置: leader=" + str(_team_config().get("leader") or ""))
     return 0
 

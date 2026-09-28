@@ -127,6 +127,72 @@ def test_qsettings_uses_current_scope(isolated):
     assert app_identity.qsettings().applicationName() == app_identity.APP_SLUG
 
 
+# ---------------- 用户工作流脚本里的旧包名改写 ----------------
+# 改名只覆盖了随包分发的代码，工作流/插件/技能脚本是**用户数据**（家目录下），
+# 没人改写它们。不改写就会在加载时 ModuleNotFoundError → 静默回退内置实现，
+# 用户自定义全部失效；同一批文件还会被快照成随包分发的种子，新装机器同样踩到。
+
+def _make_legacy_workflow(home: Path) -> Path:
+    wf = home / app_identity.DATA_DIR_NAME / "workflows" / "my_flow"
+    wf.mkdir(parents=True)
+    (wf / "agent.py").write_text(
+        "from winapp_migrator.core import agent_subagent\n"
+        "UA = 'WinAppMigrator/CordisWorkflow'\n"
+        "DIR = '~/.winapp_migrator/plugins/'\n", encoding="utf-8")
+    (wf / "workflow.json").write_text('{"name": "my_flow"}', encoding="utf-8")
+    return wf
+
+
+def test_rewrite_legacy_names_replaces_both_spellings():
+    old = app_identity.legacy_package_name()
+    src = f"{old}.core + {app_identity.LEGACY_SLUG} + .{old}"
+    out = app_identity.rewrite_legacy_names(src)
+    assert old not in out and app_identity.LEGACY_SLUG not in out
+    assert out == (f"{app_identity.APP_SLUG}.core + {app_identity.APP_SLUG}"
+                   f" + .{app_identity.APP_SLUG}")
+    # 幂等：再改一次不变
+    assert app_identity.rewrite_legacy_names(out) == out
+
+
+def test_migrates_legacy_package_names_in_user_workflows(isolated):
+    wf = _make_legacy_workflow(isolated)
+    app_identity.ensure_migrated()
+
+    agent = (wf / "agent.py").read_text(encoding="utf-8")
+    assert app_identity.legacy_package_name() not in agent
+    assert app_identity.LEGACY_SLUG not in agent
+    assert f"from {app_identity.APP_SLUG}.core import agent_subagent" in agent
+    assert f"~/.{app_identity.APP_SLUG}/plugins/" in agent, "数据目录引用也要跟着换名"
+    # 不含旧名的文件不得被无谓改写
+    assert (wf / "workflow.json").read_text(encoding="utf-8") == '{"name": "my_flow"}'
+
+
+def test_rewrite_preserves_line_endings(isolated):
+    """改写旧包名不得顺带改掉文件行尾风格。
+
+    曾经的坑：用 Path.write_text 默认行为写回，会把 LF 文件整体写成 CRLF（Windows），
+    一个词级改动就变成整文件 diff，也会粗暴改掉用户文件的行尾。
+    """
+    root = isolated / app_identity.DATA_DIR_NAME / "workflows" / "lf_flow"
+    root.mkdir(parents=True)
+    fp = root / "agent.py"
+    fp.write_bytes(b"from winapp_migrator.core import x\nfrom winapp_migrator import y\n")
+
+    n = app_identity.rewrite_legacy_names_in_tree(isolated / app_identity.DATA_DIR_NAME
+                                                / "workflows")
+
+    raw = fp.read_bytes()
+    assert n == 1
+    assert b"\r\n" not in raw, "LF 文件被写成了 CRLF"
+    assert raw.count(b"\n") == 2
+    assert app_identity.legacy_package_name().encode() not in raw
+
+
+def test_workflow_code_migration_survives_missing_dirs(isolated):
+    """数据目录里没有 workflows/plugins/skills 时不得抛错（全新安装即如此）。"""
+    app_identity.ensure_migrated()          # 不应抛异常
+
+
 # ---------------- 入口顺序契约 ----------------
 
 def test_main_migrates_before_onboarding_sampling():

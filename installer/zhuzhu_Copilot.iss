@@ -6,7 +6,7 @@
 ; ╚══════════════════════════════════════════════════════════╝
 
 #define MyAppName "zhuzhu Copilot"
-#define MyAppVersion "5.1.3"
+#define MyAppVersion "5.1.4"
 #define MyAppPublisher "zhutianliang"
 #define MyAppExeName "zhuzhu Copilot.exe"
 ; 旧版标识（WinAppMigrator）：仅用于卸载时清理遗留的注册表分支与用户数据目录
