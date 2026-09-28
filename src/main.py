@@ -84,6 +84,8 @@ SPLASH_RADIUS = 18
 # 右下角署名到窗口右 / 下边缘的距离（署名绝对定位，不参与主布局）
 SPLASH_SUB_INSET_X = 14
 SPLASH_SUB_INSET_Y = 10
+# 标题字号（单一数据源：调大小只改这里）
+SPLASH_TITLE_PX = 30
 
 
 def _resolve_theme_mode() -> str:
@@ -143,7 +145,7 @@ class SplashWindow(QWidget):
         title = QLabel("zhuzhu Copilot")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
-            f"color: {self._title_c}; font-size: 26px; font-weight: 700;"
+            f"color: {self._title_c}; font-size: {SPLASH_TITLE_PX}px; font-weight: 700;"
             "font-family: 'Microsoft YaHei UI','Segoe UI'; letter-spacing: 1px;"
             "background: transparent;")
         lay.addWidget(title)

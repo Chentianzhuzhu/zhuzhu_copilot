@@ -152,6 +152,23 @@ def test_title_uses_capitalized_brand():
     assert 'QLabel("zhuzhu copilot")' not in src, "启动窗标题遗留了全小写写法"
 
 
+def test_title_font_size_from_single_source():
+    """标题字号取自 SPLASH_TITLE_PX（调大小只改常量），且确实渲染生效。"""
+    m = _splash_mod()
+    src = open(m.__file__, encoding="utf-8").read()
+    assert "font-size: {SPLASH_TITLE_PX}px" in src, "标题字号必须引用常量，不得再写死数字"
+
+    w = m.SplashWindow()
+    try:
+        w.show()
+        QTest.qWait(60)
+        title = next(c for c in w.findChildren(QLabel) if c.text() == "zhuzhu Copilot")
+        assert title.font().pixelSize() == m.SPLASH_TITLE_PX, \
+            f"标题实际字号应为 {m.SPLASH_TITLE_PX}px，实际 {title.font().pixelSize()}"
+    finally:
+        w.close()
+
+
 def test_title_centered_and_sub_absolute():
     """标题在整窗高度上居中（不被署名顶偏），署名绝对定位在右下角。
 
