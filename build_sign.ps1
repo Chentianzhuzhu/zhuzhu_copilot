@@ -10,12 +10,11 @@
 #   .\build_sign.ps1 -NoSign               # 不签名（本地验证）
 #   .\build_sign.ps1 -DryRun               # 只体检环境，不构建
 #   .\build_sign.ps1 -SkipRuntime -NoSign  # 复用运行时、不签名，快速出安装包
-[CmdletBinding()]
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [object[]]$Args
-)
-
+# 【不要给本脚本加 param(...) 块】一旦显式声明形参，`-DryRun` 这类开关会被收进一个
+# [object[]]，splat 出去时 PowerShell 只按**位置**绑定 —— 开关会被当成某个参数的值
+# （实测 `-DryRun` 被绑到 -Version，报「版本号格式应为 x.y.z（收到：-DryRun）」，
+# `-Version 5.1.4` 亦无法透传）。不声明 param 时，未绑定的实参原样留在自动变量
+# $args 里，`@args` 才能正确按名/按开关绑定，透传才成立。
 $target = Join-Path $PSScriptRoot 'build_release.ps1'
 if (-not (Test-Path $target)) {
     Write-Host "[FAIL] 找不到主流水线脚本: $target" -ForegroundColor Red
@@ -23,5 +22,5 @@ if (-not (Test-Path $target)) {
 }
 
 Write-Host "[提示] build_sign.ps1 已重构为薄壳，实际执行: build_release.ps1" -ForegroundColor DarkGray
-& $target @Args
+& $target @args
 exit $LASTEXITCODE
