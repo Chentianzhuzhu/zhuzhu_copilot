@@ -107,8 +107,11 @@ class SplashWindow(QWidget):
     主面板就绪后调用 finish_and_close() 淡出并关闭。
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, hold=False):
         super().__init__(parent)
+        # hold=True（评审模式，见 WINAPP_SPLASH_HOLD）：窗口一直显示不自动淡出，
+        # 点击画面或按 Esc 收起；正常启动恒为 False，行为不变。
+        self._hold = bool(hold)
         mode = _resolve_theme_mode()
         if mode == "dark":
             self._bg, self._title_c, self._sub_c = \
@@ -123,6 +126,8 @@ class SplashWindow(QWidget):
         # 尺寸沿用既有启动窗大小（不改变窗口大小），仅四角做圆角
         self.setFixedSize(SPLASH_W, SPLASH_H)
         self._center_on_screen()
+        if self._hold:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -199,6 +204,19 @@ class SplashWindow(QWidget):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(self._bg))
         p.end()
+
+    def mousePressEvent(self, ev):
+        """评审模式：点一下收起，避免始终置顶的窗口一直挡住面板。"""
+        if self._hold:
+            self.hide()
+            return
+        super().mousePressEvent(ev)
+
+    def keyPressEvent(self, ev):
+        if self._hold and ev.key() == Qt.Key.Key_Escape:
+            self.hide()
+            return
+        super().keyPressEvent(ev)
 
     def start(self):
         """显示并播放淡入动画"""
@@ -408,12 +426,14 @@ def main():
     # 主窗口已移除：启动即进入 AI 面板（zhuzhu Copilot 浮层由面板顶栏按钮或托盘唤起）。
     # 启动动画：先显示圆角矩形动画窗口（尺寸不变，仅四角圆角），
     # 面板就绪后淡出（界面不再"空白卡顿"）。
-    splash = SplashWindow()
+    #
+    # WINAPP_SPLASH_HOLD=1（评审启动画面用）：动画窗口不再 2 秒后淡出而是一直显示，
+    # 面板照常弹出（窗口始终置顶便于比对）；点画面或按 Esc 收起。
+    hold = os.environ.get("WINAPP_SPLASH_HOLD", "").strip() == "1"
+    splash = SplashWindow(hold=hold)
     splash.start()
 
-    def _close_splash_then_open_panel():
-        # 先关闭启动动画窗口，再弹出 AI 面板（避免面板先出、启动窗还在的重叠感）
-        splash.finish_and_close()
+    def _open_panel():
         panel = _open_agent_panel(app)
         # 预创建 Copilot 浮层（不显示）：桌宠 / 托盘 / 首次应用扫描随程序启动，保持原有启动行为
         panel.prewarm_copilot_panel()
@@ -423,8 +443,16 @@ def main():
         threading.Thread(target=_preload_agent_panel_ready,
                          daemon=True, name="agent_panel_preload").start()
 
-    # 启动动画展示 2 秒后立即关闭启动窗口，再弹出 AI 面板。
-    QTimer.singleShot(2000, _close_splash_then_open_panel)
+    if hold:
+        _open_panel()
+    else:
+        def _close_splash_then_open_panel():
+            # 先关闭启动动画窗口，再弹出 AI 面板（避免面板先出、启动窗还在的重叠感）
+            splash.finish_and_close()
+            _open_panel()
+
+        # 启动动画展示 2 秒后立即关闭启动窗口，再弹出 AI 面板。
+        QTimer.singleShot(2000, _close_splash_then_open_panel)
     sys.exit(app.exec())
 
 
