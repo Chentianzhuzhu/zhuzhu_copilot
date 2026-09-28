@@ -18,7 +18,6 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel
 
@@ -94,54 +93,20 @@ def test_splash_shape_is_single_source():
     assert "SPLASH_SIDE" not in src, "不应再保留等边（正方形）语义的常量"
 
 
-# ---------------- 评审模式（启动画面一直显示） ----------------
+# ---------------- 启动时序 ----------------
 
-def test_hold_mode_is_opt_in():
-    """默认仍是「2 秒后淡出」，只有显式开启评审模式才一直显示（不得写死）。"""
-    m = _splash_mod()
-    assert m.SplashWindow()._hold is False, "默认不得进入评审模式"
-    assert m.SplashWindow(hold=True)._hold is True
-    src = open(m.__file__, encoding="utf-8").read()
-    assert 'os.environ.get("WINAPP_SPLASH_HOLD", "").strip() == "1"' in src, \
-        "评审模式必须由 WINAPP_SPLASH_HOLD 显式开启"
+def test_splash_auto_closes_after_2s_and_has_no_review_switch():
+    """启动画面固定「2 秒后自动淡出」；评审用的「一直显示」开关应已移除。
 
-
-def test_hold_branch_never_auto_closes():
-    """评审分支必须「打开面板但不注册自动关闭」，否则窗口会自己消失。"""
+    评审开关（WINAPP_SPLASH_HOLD / hold 参数）是为逐项看细节临时加的，
+    按「恢复 2 秒展示后自动关闭」移除，这里钉住避免回潮。
+    """
     m = _splash_mod()
     src = open(m.__file__, encoding="utf-8").read()
-    assert src.count("QTimer.singleShot(2000, _close_splash_then_open_panel)") == 1, \
-        "2 秒自动关闭应只注册一次（位于非评审分支）"
-    hold_branch = src.split("if hold:")[1].split("else:")[0]
-    assert "_open_panel()" in hold_branch, "评审分支仍需照常打开面板"
-    assert "QTimer.singleShot(2000" not in hold_branch, "评审分支不得注册自动关闭"
-
-
-def test_hold_mode_click_dismisses():
-    """评审窗口始终置顶，必须可收起，否则会一直挡住面板。"""
-    m = _splash_mod()
-    w = m.SplashWindow(hold=True)
-    try:
-        w.start()
-        QTest.qWait(40)
-        assert w.isVisible()
-        QTest.mouseClick(w, Qt.MouseButton.LeftButton)
-        assert not w.isVisible(), "评审模式下点击应能收起启动画面"
-    finally:
-        w.close()
-
-
-def test_default_mode_click_keeps_splash():
-    """正常启动下点击不应改变启动画面（评审交互不得外溢到发布行为）。"""
-    m = _splash_mod()
-    w = m.SplashWindow()
-    try:
-        w.start()
-        QTest.qWait(40)
-        QTest.mouseClick(w, Qt.MouseButton.LeftButton)
-        assert w.isVisible(), "正常模式下点击不应收起启动画面"
-    finally:
-        w.close()
+    assert "QTimer.singleShot(2000, _close_splash_then_open_panel)" in src, \
+        "启动画面必须 2 秒后自动关闭"
+    assert "WINAPP_SPLASH_HOLD" not in src, "评审开关应已移除"
+    assert not hasattr(m.SplashWindow(), "_hold"), "SplashWindow 不应再保留 hold 模式"
 
 
 def test_title_uses_capitalized_brand():

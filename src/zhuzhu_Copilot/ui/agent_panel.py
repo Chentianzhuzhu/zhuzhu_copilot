@@ -15873,30 +15873,17 @@ class AgentPanel(QDialog):
     def _open_onboarding(self):
         """打开新手指南向导（首次运行或设置里「重新查看」入口共用）。"""
         try:
-            from zhuzhu_Copilot.ui.onboarding import (
-                OnboardingWizard, mark_first_run_done, is_first_run)
+            from zhuzhu_Copilot.ui.onboarding import build_wizard, mark_first_run_done
         except Exception as _e:
             print(f"[onboarding] 加载向导失败: {_e!r}", flush=True)
             return
         try:
-            dlg = OnboardingWizard(parent=self)
+            # 外观（毛玻璃 / 尺寸下限 / 居中）统一由 build_wizard 处理，
+            # 与启动流程里「首次安装先走指南」那一次保持完全一致
+            dlg = build_wizard(parent=self)
         except Exception as _e:
             print(f"[onboarding] 构造向导失败: {_e!r}", flush=True)
             return
-        try:
-            agent_ui_ux.glassify_dialog(dlg)
-        except Exception:
-            pass
-
-        def _normalize():
-            try:
-                dlg.adjustSize()
-                if dlg.width() < 700:
-                    dlg.resize(760, max(dlg.height(), 560))
-            except Exception:
-                pass
-            _center_dialog_on_screen(dlg)
-        QTimer.singleShot(0, _normalize)
 
         self._onboarding_opened = True   # 自动弹出的一次性守卫（设置里「重新查看」不受限制）
         if dlg.exec():

@@ -26,13 +26,6 @@ set "QTWEBENGINE_CHROMIUM_FLAGS="
 set "QTWEBENGINE_DISABLE_SANDBOX="
 set "QT_QPA_PLATFORM="
 
-rem 可选参数：splash
-rem   启动画面一直显示，便于逐项评审细节（点画面或按 Esc 收起）。
-rem   用法：scripts\启动源码版.bat splash
-if /i "%~1"=="splash" (
-  set "WINAPP_SPLASH_HOLD=1"
-  echo   [评审模式] 启动画面将一直显示，点画面或按 Esc 收起
-)
 
 cd /d "%REPO%"
 echo 正在启动源码版 zhuzhu Copilot ...

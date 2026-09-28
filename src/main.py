@@ -112,11 +112,8 @@ class SplashWindow(QWidget):
     主面板就绪后调用 finish_and_close() 淡出并关闭。
     """
 
-    def __init__(self, parent=None, hold=False):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        # hold=True（评审模式，见 WINAPP_SPLASH_HOLD）：窗口一直显示不自动淡出，
-        # 点击画面或按 Esc 收起；正常启动恒为 False，行为不变。
-        self._hold = bool(hold)
         mode = _resolve_theme_mode()
         if mode == "dark":
             self._bg, self._title_c, self._sub_c = \
@@ -131,8 +128,6 @@ class SplashWindow(QWidget):
         # 尺寸沿用既有启动窗大小（不改变窗口大小），仅四角做圆角
         self.setFixedSize(SPLASH_W, SPLASH_H)
         self._center_on_screen()
-        if self._hold:
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -222,19 +217,6 @@ class SplashWindow(QWidget):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(self._bg))
         p.end()
-
-    def mousePressEvent(self, ev):
-        """评审模式：点一下收起，避免始终置顶的窗口一直挡住面板。"""
-        if self._hold:
-            self.hide()
-            return
-        super().mousePressEvent(ev)
-
-    def keyPressEvent(self, ev):
-        if self._hold and ev.key() == Qt.Key.Key_Escape:
-            self.hide()
-            return
-        super().keyPressEvent(ev)
 
     def start(self):
         """显示并播放淡入动画"""
@@ -377,6 +359,61 @@ def _open_agent_panel(app):
     return panel
 
 
+def _show_onboarding_first(app) -> None:
+    """首次安装：在打开主面板之前，先把新手指南单独走完（模态阻塞）。
+
+    指南是模态的：若与面板同时弹出，两个窗口会一并出现在屏幕上、主次混乱。
+    这里把启动顺序钉成「启动动画 → 新手指南 → 主面板」——指南结束后
+    （完成 / 跳过 / 直接关窗）一律写入「已看过」标记，面板自身的自动弹出判定
+    （AgentPanel._maybe_show_onboarding）随之落空，因此不会二次弹出。
+    """
+    try:
+        from zhuzhu_Copilot.ui.onboarding import (
+            build_wizard, is_first_run, mark_first_run_done)
+    except Exception as _e:
+        print(f"[onboarding] 加载向导失败: {_e!r}", flush=True)
+        return
+    try:
+        if not is_first_run():
+            return
+    except Exception as _e:
+        print(f"[onboarding] 首次运行判定失败: {_e!r}", flush=True)
+        return
+    try:
+        dlg = build_wizard()
+    except Exception as _e:
+        print(f"[onboarding] 构造向导失败: {_e!r}", flush=True)
+        return
+    try:
+        dlg.exec()
+    except Exception as _e:
+        print(f"[onboarding] 向导执行异常: {_e!r}", flush=True)
+    finally:
+        # 无论「完成 / 跳过 / 关窗」都要落标记，否则面板打开后会再弹一次
+        try:
+            mark_first_run_done()
+        except Exception:
+            pass
+    if getattr(dlg, "_theme_changed", False):
+        _reapply_theme(app)
+
+
+def _reapply_theme(app) -> None:
+    """指南里改了主题时，把新配色重新应用到应用调色板与 agent_panel 的模块色板。
+
+    agent_panel 的模块级颜色常量是**导入时**绑定的，而指南构造时已经把它导了进来；
+    不显式重绑，紧随其后创建的面板会沿用旧配色。
+    """
+    try:
+        from zhuzhu_Copilot.ui import agent_panel as _ap
+        from zhuzhu_Copilot.ui import styles as _styles
+        _styles.set_palette(_ap._resolve_theme())
+        _styles.apply_palette(app)
+        _ap.apply_theme()
+    except Exception as _e:
+        print(f"[onboarding] 主题重应用失败: {_e!r}", flush=True)
+
+
 def main():
     # 旧版（WinAppMigrator）遗留数据迁移：注册表设置 + 用户数据目录。
     # 必须早于「新手指南判定取样」，否则老用户升级会被误判为全新安装而重复弹指南。
@@ -444,11 +481,7 @@ def main():
     # 主窗口已移除：启动即进入 AI 面板（zhuzhu Copilot 浮层由面板顶栏按钮或托盘唤起）。
     # 启动动画：先显示圆角矩形动画窗口（尺寸不变，仅四角圆角），
     # 面板就绪后淡出（界面不再"空白卡顿"）。
-    #
-    # WINAPP_SPLASH_HOLD=1（评审启动画面用）：动画窗口不再 2 秒后淡出而是一直显示，
-    # 面板照常弹出（窗口始终置顶便于比对）；点画面或按 Esc 收起。
-    hold = os.environ.get("WINAPP_SPLASH_HOLD", "").strip() == "1"
-    splash = SplashWindow(hold=hold)
+    splash = SplashWindow()
     splash.start()
 
     def _open_panel():
@@ -461,16 +494,15 @@ def main():
         threading.Thread(target=_preload_agent_panel_ready,
                          daemon=True, name="agent_panel_preload").start()
 
-    if hold:
+    def _close_splash_then_open_panel():
+        # 先关闭启动动画窗口，再进入后续流程（避免面板先出、启动窗还在的重叠感）
+        splash.finish_and_close()
+        # 首次安装：先把新手指南走完，再打开 AI 面板（顺序见该函数说明）
+        _show_onboarding_first(app)
         _open_panel()
-    else:
-        def _close_splash_then_open_panel():
-            # 先关闭启动动画窗口，再弹出 AI 面板（避免面板先出、启动窗还在的重叠感）
-            splash.finish_and_close()
-            _open_panel()
 
-        # 启动动画展示 2 秒后立即关闭启动窗口，再弹出 AI 面板。
-        QTimer.singleShot(2000, _close_splash_then_open_panel)
+    # 启动动画展示 2 秒后自动关闭，之后依次进入新手指南（仅首次运行）与 AI 面板。
+    QTimer.singleShot(2000, _close_splash_then_open_panel)
     sys.exit(app.exec())
 
 

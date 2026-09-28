@@ -184,3 +184,71 @@ def test_onboarding_scheduled_at_show_event_head():
     assert idx - head <= 10, "新手指南调度应放在 showEvent 开头，不能放在方法尾部"
     tail = next(i for i, ln in enumerate(lines) if i > idx and "_apply_window_round()" in ln)
     assert idx < tail, "调度须先于 showEvent 中的原生初始化调用"
+
+
+# ---------------- 启动时序：指南先于面板 ----------------
+
+def _main_src() -> str:
+    return (Path(__file__).resolve().parents[1] / "src" / "main.py").read_text(encoding="utf-8")
+
+
+def test_startup_order_is_splash_then_guide_then_panel():
+    """启动顺序钉死为「启动动画 → 新手指南 → 主面板」。
+
+    此前是面板先弹、指南再盖上去，两个窗口一并出现在屏幕上，主次混乱。
+    """
+    block = _main_src().split("def _close_splash_then_open_panel")[1]
+    assert "splash.finish_and_close()" in block, "应先关闭启动动画窗口"
+    assert block.index("_show_onboarding_first(app)") < block.index("_open_panel()"), \
+        "必须先把新手指南走完，再打开 AI 面板"
+
+
+def test_show_onboarding_first_runs_guide_and_marks_done(monkeypatch):
+    """首次运行：指南先单独走完并立刻落标记（面板的自动弹出判定随之落空，不会二次弹）。"""
+    import main
+
+    events = []
+
+    class _StubDlg:
+        _theme_changed = False
+
+        def exec(self):
+            events.append("guide")
+            return 1
+
+    monkeypatch.setattr(onboarding, "is_first_run", lambda: True)
+    monkeypatch.setattr(onboarding, "build_wizard", lambda parent=None: _StubDlg())
+    monkeypatch.setattr(onboarding, "mark_first_run_done", lambda: events.append("mark"))
+
+    main._show_onboarding_first(None)
+
+    assert events == ["guide", "mark"], f"应先弹指南、结束后立刻落标记，实际 {events}"
+
+
+def test_show_onboarding_first_skips_existing_user(monkeypatch):
+    """非首次运行不得再弹指南（老用户升级 / 已看过）。"""
+    import main
+
+    built = []
+    monkeypatch.setattr(onboarding, "is_first_run", lambda: False)
+    monkeypatch.setattr(onboarding, "build_wizard", lambda parent=None: built.append(1))
+
+    main._show_onboarding_first(None)
+
+    assert built == [], "非首次运行不应构造指南"
+
+
+# ---------------- 卡片外观 ----------------
+
+def test_guide_line_cards_have_no_border():
+    """引导页的文字卡片不描边。
+
+    用户反馈：每行说明各套一层边框，整页被切得很碎、影响美观。
+    """
+    from PyQt6.QtWidgets import QWidget
+    # 父控件必须留引用：临时 QWidget() 被回收时会连带销毁子卡片
+    parent = QWidget()
+    card = onboarding._build_card(parent, "标题", ["一行说明"])
+    qss = card.styleSheet()
+    assert "border" not in qss.replace("border-radius", ""), f"卡片不应有描边：{qss}"
+

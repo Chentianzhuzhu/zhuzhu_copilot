@@ -18,7 +18,7 @@
 """
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget,
     QWidget, QComboBox, QCheckBox, QFrame,
@@ -123,14 +123,17 @@ def _ap(*names):
 # ---------------- 工具：把一组文本渲染成带标题的卡片 ----------------
 def _build_card(parent: QWidget, title: str, lines, *, accent: bool = False) -> QWidget:
     """渲染一张「标题 + 若干行说明」卡片。
-    lines: list[str]，每个元素作为一行富文本（支持简单 <b>/<br>）。"""
+
+    lines: list[str]，每个元素作为一行富文本（支持简单 <b>/<br>）。
+
+    刻意不加描边：一块一行说明、每行都套一层边框会把整页切得零碎，
+    只用底色分组即可（简约优先）。
+    """
     _m = _ap()
     TEXT = _m.TEXT
     CARD = _m.PANEL if not accent else _m.CARD
-    BORDER = _m.BORDER
     card = QWidget(parent)
-    card.setStyleSheet(
-        f"background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px;")
+    card.setStyleSheet(f"background: {CARD}; border-radius: 12px;")
     lay = QVBoxLayout(card)
     lay.setContentsMargins(20, 16, 20, 16)
     lay.setSpacing(8)
@@ -417,3 +420,33 @@ class OnboardingWizard(QDialog):
 
     def preferences_applied(self) -> bool:
         return self._apply_requested
+
+
+def build_wizard(parent=None) -> OnboardingWizard:
+    """构造向导并套上应用统一的弹窗外观（毛玻璃 + 尺寸下限 + 居中）。
+
+    启动流程（首次安装先走指南）与设置里「重新查看」共用同一套外观，
+    否则同一个向导会在两处呈现出不同大小。返回值由调用方负责 exec()。
+    """
+    dlg = OnboardingWizard(parent)
+    try:
+        from zhuzhu_Copilot.core import agent_ui_ux
+        agent_ui_ux.glassify_dialog(dlg)
+    except Exception:
+        pass
+
+    def _normalize():
+        try:
+            dlg.adjustSize()
+            if dlg.width() < 700:
+                dlg.resize(760, max(dlg.height(), 560))
+        except Exception:
+            pass
+        try:
+            from zhuzhu_Copilot.ui.agent_panel import _center_dialog_on_screen
+            _center_dialog_on_screen(dlg)
+        except Exception:
+            pass
+
+    QTimer.singleShot(0, _normalize)
+    return dlg
