@@ -15,7 +15,7 @@ sys.path.insert(0, "src")
 from PyQt6.QtWidgets import QApplication   # noqa: E402
 
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap   # noqa: E402
+from zhuzhu_Copilot.ui import agent_panel as ap   # noqa: E402
 
 NAMES = ("wt_win", "git_win", "todos_win", "code_win")
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from winapp_migrator.core import agent_git, agent_tools
+from zhuzhu_Copilot.core import agent_git, agent_tools
 
 
 def _git(dir, *args):

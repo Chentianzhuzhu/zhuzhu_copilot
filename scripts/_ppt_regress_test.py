@@ -68,7 +68,7 @@ STYLE = {"theme": "business", "transition": "push", "animation": True,
 
 
 def main():
-    from winapp_migrator.office.pptx_builder import build_pptx
+    from zhuzhu_Copilot.office.pptx_builder import build_pptx
     build_pptx(OUT, "2026 Q1 市场分析报告", SLIDES, STYLE)
     print("[ok] 生成:", OUT)
     failures = check_content(OUT)

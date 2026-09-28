@@ -14,10 +14,10 @@
 
 ## 文件结构
 
-- Create: `src/winapp_migrator/core/agent_web_llm.py` — 浏览器桥（凭证检查/对话执行）+ 本地中转代理
+- Create: `src/zhuzhu_Copilot/core/agent_web_llm.py` — 浏览器桥（凭证检查/对话执行）+ 本地中转代理
 - Create: `scripts/test_web_llm.py` — 单元测试（prompt 序列化 / 杂音清洗 / /v1/models）
-- Modify: `src/winapp_migrator/core/agent_llm.py` — 预设服务商 + load_model_config 注入
-- Modify: `src/winapp_migrator/ui/agent_panel.py` — ProviderDialog 网页版支持
+- Modify: `src/zhuzhu_Copilot/core/agent_llm.py` — 预设服务商 + load_model_config 注入
+- Modify: `src/zhuzhu_Copilot/ui/agent_panel.py` — ProviderDialog 网页版支持
 
 ## PoC 已确认事实（Task 1 已完成，commit 6933075）
 
@@ -27,14 +27,14 @@
 - 浏览器桥可行：`Input.insertText` 键入（len 15 确认）+ Enter `dispatchKeyEvent` 发送 → 输入框清空即发送成功 → `main.innerText` diff 提取回复（实测 40 字符）
 - 回复尾部杂音：「深度思考」「智能搜索」「内容由 AI 生成，请仔细甄别」等 UI 标签，需清洗
 - 每轮对话前需新建会话（reload 首页默认新对话），保证上下文干净
-- 浏览器 profile 持久化登录态（`~/.winapp_migrator/browser_profile`），重启免重复登录
+- 浏览器 profile 持久化登录态（`~/.zhuzhu_Copilot/browser_profile`），重启免重复登录
 
 ---
 
 ## Task 2: agent_web_llm.py 基座（常量/凭证/桥骨架）
 
 **Files:**
-- Create: `src/winapp_migrator/core/agent_web_llm.py`（本任务实现常量 + 浏览器就绪 + 对话执行骨架）
+- Create: `src/zhuzhu_Copilot/core/agent_web_llm.py`（本任务实现常量 + 浏览器就绪 + 对话执行骨架）
 - Test: `scripts/test_web_llm.py`（纯函数段：serialize_prompt / strip_ui_noise）
 
 - [ ] **Step 1: 写失败测试**
@@ -48,7 +48,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from winapp_migrator.core import agent_web_llm as W
+from zhuzhu_Copilot.core import agent_web_llm as W
 
 
 def test_serialize_prompt():
@@ -96,11 +96,11 @@ for _n in ("test_serialize_prompt", "test_serialize_skips_tool_messages",
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `python scripts/test_web_llm.py`
-Expected: FAIL（`No module named 'winapp_migrator.core.agent_web_llm'`）
+Expected: FAIL（`No module named 'zhuzhu_Copilot.core.agent_web_llm'`）
 
 - [ ] **Step 3: 实现基座**
 
-`src/winapp_migrator/core/agent_web_llm.py`（Task 2 部分，Task 3 在此基础上追加代理）：
+`src/zhuzhu_Copilot/core/agent_web_llm.py`（Task 2 部分，Task 3 在此基础上追加代理）：
 
 ```python
 """DeepSeek 网页版接入：CDP 浏览器桥 + 本地 OpenAI 兼容代理。
@@ -110,7 +110,7 @@ PoC 实证（2026-08-30）：网页版接口需要页面 JS 动态生成的 PoW 
 读回流式渲染的回复文本。本模块把该流程封装为 OpenAI 兼容的本地代理，引擎零改动。
 
 实现要点：
-- 浏览器即凭证：登录态持久化在 ~/.winapp_migrator/browser_profile，无额外凭证文件
+- 浏览器即凭证：登录态持久化在 ~/.zhuzhu_Copilot/browser_profile，无额外凭证文件
 - 每次对话前 reload 首页新建会话，保证上下文干净（历史由上层拼接进 prompt）
 - 全标准库实现，兼容 Cython 打包
 """
@@ -121,7 +121,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from winapp_migrator.core import agent_browser
+from zhuzhu_Copilot.core import agent_browser
 
 WEB_KIND = "deepseek_web"
 MODELS = ["deepseek-chat"]          # 对外暴露的模型名（网页版无深度思考开关名）
@@ -311,7 +311,7 @@ def bridge() -> WebBridge:
 
 def has_valid_credentials() -> bool:
     """轻量登录态探测：已曾启动过浏览器桥且登录过即视为有效（细粒度由 ensure_ready 判定）。"""
-    return (Path.home() / ".winapp_migrator" / "browser_profile").exists()
+    return (Path.home() / ".zhuzhu_Copilot" / "browser_profile").exists()
 
 
 def login_now() -> tuple:
@@ -330,7 +330,7 @@ Expected: PASS（4 项全过）
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/winapp_migrator/core/agent_web_llm.py scripts/test_web_llm.py
+git add src/zhuzhu_Copilot/core/agent_web_llm.py scripts/test_web_llm.py
 git commit -m "feat(web-llm): DeepSeek 网页版浏览器桥基座（序列化/清洗/键入发送）"
 ```
 
@@ -339,7 +339,7 @@ git commit -m "feat(web-llm): DeepSeek 网页版浏览器桥基座（序列化/�
 ## Task 3: 本地中转代理（OpenAI 兼容 SSE 组装）
 
 **Files:**
-- Modify: `src/winapp_migrator/core/agent_web_llm.py`（追加 `start_proxy/stop_proxy/ensure_web_proxy/_Handler`）
+- Modify: `src/zhuzhu_Copilot/core/agent_web_llm.py`（追加 `start_proxy/stop_proxy/ensure_web_proxy/_Handler`）
 - Modify: `scripts/test_web_llm.py`（追加 /v1/models 测试）
 
 - [ ] **Step 1: 追加失败测试**
@@ -514,13 +514,13 @@ Expected: PASS（6 项全过）
 
 - [ ] **Step 5: 人工复核浏览器桥行为**
 
-Run: `python -c "import sys; sys.path.insert(0,'src'); from winapp_migrator.core import agent_web_llm as W; ok,msg=W.bridge().ensure_ready(); print(ok,msg); print(W.bridge().ask('只回复：桥测试OK', wait=90))"`
+Run: `python -c "import sys; sys.path.insert(0,'src'); from zhuzhu_Copilot.core import agent_web_llm as W; ok,msg=W.bridge().ensure_ready(); print(ok,msg); print(W.bridge().ask('只回复：桥测试OK', wait=90))"`
 Expected: 输出 `桥测试OK` 相关回复（需浏览器可见，登录态已持久化）。
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/winapp_migrator/core/agent_web_llm.py scripts/test_web_llm.py
+git add src/zhuzhu_Copilot/core/agent_web_llm.py scripts/test_web_llm.py
 git commit -m "feat(web-llm): OpenAI 兼容本地代理 + SSE 流式组装"
 ```
 
@@ -529,17 +529,17 @@ git commit -m "feat(web-llm): OpenAI 兼容本地代理 + SSE 流式组装"
 ## Task 4: 引擎接入（preset + load_model_config 注入）
 
 **Files:**
-- Modify: `src/winapp_migrator/core/agent_llm.py`
+- Modify: `src/zhuzhu_Copilot/core/agent_llm.py`
 - Test: `scripts/test_web_llm.py`（追加断言）
 
 - [ ] **Step 1: 追加失败测试**
 
-向 `scripts/test_web_llm.py` 顶部 import 区改为 `from winapp_migrator.core import agent_web_llm as W, agent_skills as S`，并追加：
+向 `scripts/test_web_llm.py` 顶部 import 区改为 `from zhuzhu_Copilot.core import agent_web_llm as W, agent_skills as S`，并追加：
 
 ```python
 def test_load_config_injects_proxy():
     """kind=deepseek_web 服务商被注入为本地代理 base_url（不依赖已登录，代理恒可启）。"""
-    import winapp_migrator.core.agent_llm as L
+    import zhuzhu_Copilot.core.agent_llm as L
 
     orig = S.load_settings
 
@@ -615,7 +615,7 @@ Expected: FAIL（`No name 'agent_web_llm'` 或断言失败）
 ```python
 def _ensure_web_proxy():
     try:
-        from winapp_migrator.core import agent_web_llm
+        from zhuzhu_Copilot.core import agent_web_llm
         return agent_web_llm.ensure_web_proxy()
     except Exception as e:
         return {"ok": False, "base_url": "", "msg": str(e)}
@@ -624,12 +624,12 @@ def _ensure_web_proxy():
 - [ ] **Step 6: 运行测试确认通过 + 回归**
 
 Run: `python scripts/test_web_llm.py` → 全 PASS
-Run: `python -c "import sys; sys.path.insert(0,'src'); from winapp_migrator.core import agent_llm; c=agent_llm.load_model_config(); print(c['base_url'][:60])"` → 非网页版服务商时行为不变
+Run: `python -c "import sys; sys.path.insert(0,'src'); from zhuzhu_Copilot.core import agent_llm; c=agent_llm.load_model_config(); print(c['base_url'][:60])"` → 非网页版服务商时行为不变
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/winapp_migrator/core/agent_llm.py scripts/test_web_llm.py
+git add src/zhuzhu_Copilot/core/agent_llm.py scripts/test_web_llm.py
 git commit -m "feat(llm): DeepSeek 网页版预设与 load_model_config 代理注入"
 ```
 
@@ -638,7 +638,7 @@ git commit -m "feat(llm): DeepSeek 网页版预设与 load_model_config 代理�
 ## Task 5: UI（ProviderDialog 登录入口与状态）
 
 **Files:**
-- Modify: `src/winapp_migrator/ui/agent_panel.py`
+- Modify: `src/zhuzhu_Copilot/ui/agent_panel.py`
 
 - [ ] **Step 1: 预设填充携带 kind**
 
@@ -680,7 +680,7 @@ git commit -m "feat(llm): DeepSeek 网页版预设与 load_model_config 代理�
         if not vis:
             return
         try:
-            from winapp_migrator.core import agent_web_llm
+            from zhuzhu_Copilot.core import agent_web_llm
             st = ("已登录" if agent_web_llm.has_valid_credentials() else "未登录")
             self.web_status.setText(st)
             self.web_status.setStyleSheet(
@@ -699,7 +699,7 @@ git commit -m "feat(llm): DeepSeek 网页版预设与 load_model_config 代理�
 
     def _web_login_worker(self):
         try:
-            from winapp_migrator.core import agent_web_llm
+            from zhuzhu_Copilot.core import agent_web_llm
             ok, msg = agent_web_llm.login_now()
             self.ai_done.emit("web_login|" + ("1" if ok else "0") + "|" + msg)
         except Exception as e:
@@ -737,7 +737,7 @@ git commit -m "feat(llm): DeepSeek 网页版预设与 load_model_config 代理�
             name_text += "（内置 · 锁定）"
         if p.get("kind") == "deepseek_web":
             try:
-                from winapp_migrator.core import agent_web_llm
+                from zhuzhu_Copilot.core import agent_web_llm
                 name_text += (" · 已登录" if agent_web_llm.has_valid_credentials()
                               else " · 未登录")
             except Exception:
@@ -747,12 +747,12 @@ git commit -m "feat(llm): DeepSeek 网页版预设与 load_model_config 代理�
 
 - [ ] **Step 5: 语法自检 + 冒烟**
 
-Run: `python -c "import ast; ast.parse(open('src/winapp_migrator/ui/agent_panel.py', encoding='utf-8').read()); print('OK')"`
+Run: `python -c "import ast; ast.parse(open('src/zhuzhu_Copilot/ui/agent_panel.py', encoding='utf-8').read()); print('OK')"`
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/winapp_migrator/ui/agent_panel.py
+git add src/zhuzhu_Copilot/ui/agent_panel.py
 git commit -m "feat(panel): ProviderDialog 网页版 DeepSeek 登录入口与状态"
 ```
 
@@ -772,7 +772,7 @@ git commit -m "feat(panel): ProviderDialog 网页版 DeepSeek 登录入口与状
 
 - [ ] **Step 3: 过期/未登录路径演练**
 
-删除 `~/.winapp_migrator/browser_profile`（模拟未登录）→ 发消息 Expected: 回复含「未检测到登录态…请完成登录」提示；重登后恢复。
+删除 `~/.zhuzhu_Copilot/browser_profile`（模拟未登录）→ 发消息 Expected: 回复含「未检测到登录态…请完成登录」提示；重登后恢复。
 
 - [ ] **Step 4: 重启持久性**
 
@@ -785,7 +785,7 @@ git commit -m "feat(panel): ProviderDialog 网页版 DeepSeek 登录入口与状
 - [ ] **Step 6: Commit（若产生代码改动）**
 
 ```bash
-git add src/winapp_migrator/core/agent_web_llm.py src/winapp_migrator/ui/agent_panel.py
+git add src/zhuzhu_Copilot/core/agent_web_llm.py src/zhuzhu_Copilot/ui/agent_panel.py
 git commit -m "fix(web-llm): 端到端验证修复"
 ```
 

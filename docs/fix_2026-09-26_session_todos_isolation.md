@@ -5,7 +5,7 @@
 上游返回 HTTP 400 上下文超限（示例：`deepseek-flash` 报 `maximum context length is 1048576
 tokens, however you requested 1395754 tokens`，1076 条消息 / 1934510 字符）。
 
-排查结论：任务清单原先落在**单一全局文件** `~/.winapp_migrator/agent/todos.json`，并且被引擎
+排查结论：任务清单原先落在**单一全局文件** `~/.zhuzhu_Copilot/agent/todos.json`，并且被引擎
 作为对话末尾的独立 todo 消息**注入每一个会话的上下文**（`agent_engine._todo_text`）。于是
 
 - 任一会话写下的清单会被**所有**会话读到并注入 → 多会话并发时互相覆盖进度、任务串台；
@@ -21,7 +21,7 @@ tokens, however you requested 1395754 tokens`，1076 条消息 / 1934510 字符�
 
 | 维度 | 改动后 |
 | --- | --- |
-| 存储位置 | 每会话一份 `~/.winapp_migrator/agent/todos/<会话 slug>.json` |
+| 存储位置 | 每会话一份 `~/.zhuzhu_Copilot/agent/todos/<会话 slug>.json` |
 | 作用域解析 | 显式传入会话 > 当前会话（线程局部 → UI 当前会话）> 空 |
 | 无会话作用域 | 无 UI 进程 / 单元测试沿用兼容文件 `todos.json`（不注入任何会话） |
 | 缓存 | 从「单文件一份」改为**按文件分键** + 加锁，多会话并发各读各写各的 |

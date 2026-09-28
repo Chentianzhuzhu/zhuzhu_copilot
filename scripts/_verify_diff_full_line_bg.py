@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtGui import QTextBlockFormat, QColor
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 tmpf = pathlib.Path(tempfile.mkdtemp()) / "demo.py"
 new_content = "def add(a, b):\n    return a + b\n"

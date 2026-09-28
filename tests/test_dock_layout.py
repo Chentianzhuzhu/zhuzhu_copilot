@@ -6,6 +6,7 @@
         ② 左栏高度封顶（_apply_dock_height_caps）把工作树定在其名义份额、Git 不封顶，
            释放的余量全部由 Git 面板吸收。
 """
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 from itertools import pairwise
@@ -13,13 +14,13 @@ from itertools import pairwise
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from PyQt6.QtCore import QEvent, QPointF, QSettings, Qt
+from PyQt6.QtCore import QEvent, QPointF, Qt
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 TODOS = [{"title": f"任务 {i}", "status": "pending"} for i in range(1, 7)]
 
@@ -257,7 +258,7 @@ def test_panel_resize_drag_does_not_raise():
     每次拖动都弹崩溃框（崩溃日志已记录）。
     注：拖拽松手会把尺寸写入 QSettings（真实行为），测试结束必须清掉这些键，
     否则会污染用户实际使用的面板尺寸。"""
-    q = QSettings("WinAppMigrator", "WinAppMigrator")
+    q = app_identity.qsettings()
     for cls in (ap.WorktreeWindow, ap.GitLogWindow, ap.TodosWindow):
         win = _fresh(cls)
         win.resize(300, 320)

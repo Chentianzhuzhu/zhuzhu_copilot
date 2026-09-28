@@ -14,7 +14,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_tools, agent_workflow
+from zhuzhu_Copilot.core import agent_tools, agent_workflow
 
 # 棋类措辞（"棋盘" 不列入：PPT 动画名 checkerboard 的中文名合法使用该词）
 BANNED_CHESS_WORDS = ("围棋", "五子棋", "棋牌", "对弈", "落子", "棋面")
@@ -48,7 +48,7 @@ def test_resolve_workflow_validates_and_falls_back(tmp_path, monkeypatch):
 
 # ---------- 2. 新建对话沿用工作流 ----------
 def test_new_session_inherits_previous_workflow_source_guard():
-    from winapp_migrator.ui.agent_panel import AgentPanel
+    from zhuzhu_Copilot.ui.agent_panel import AgentPanel
     src = inspect.getsource(AgentPanel._new_session)
     # 必须在切换 self._session_id 之前取上一对话的工作流
     assert "prev_wf" in src, "新对话应计算并沿用上一对话的工作流"
@@ -66,7 +66,7 @@ def test_new_session_inherits_previous_workflow_source_guard():
 def test_engine_drops_stale_workflow_binding(tmp_path, monkeypatch):
     """引擎在系统提示阶段发现工作流已不存在时，须清除绑定并回退默认人设。"""
     _tmp_root(tmp_path, monkeypatch)
-    from winapp_migrator.core import agent_engine
+    from zhuzhu_Copilot.core import agent_engine
     prompt = agent_engine.AgentEngine._system_prompt
     src = inspect.getsource(prompt)
     assert "is_workflow(wf)" in src, "派生工作流人设前必须校验工作流存在"
@@ -108,14 +108,14 @@ def test_no_chess_examples_in_tool_prompts():
 
 
 def test_no_chess_examples_in_builtin_skill_texts():
-    from winapp_migrator.core import agent_skills
+    from zhuzhu_Copilot.core import agent_skills
     for key in ("plugin-create", "skill-create"):
         text = json.dumps(agent_skills._BUILTIN_MD_SKILLS[key], ensure_ascii=False)
         for w in BANNED_CHESS_WORDS:
             assert w not in text, f"内置技能 {key} 仍含棋类措辞「{w}」"
 
     root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "src", "winapp_migrator", "skills", "plugin-create", "SKILL.md")
+                        "src", "zhuzhu_Copilot", "skills", "plugin-create", "SKILL.md")
     with open(root, encoding="utf-8") as f:
         md = f.read()
     for w in BANNED_CHESS_WORDS:
@@ -126,7 +126,7 @@ def test_plugin_prompt_templates_have_no_chess_examples():
     """插件生成提示词模板（web 型 / 非 web 型）不得含棋类范例。"""
     import re
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "src", "winapp_migrator", "core", "agent_plugins.py")
+                        "src", "zhuzhu_Copilot", "core", "agent_plugins.py")
     with open(path, encoding="utf-8") as f:
         src = f.read()
     # 仅检查提示词字面量区段（去除注释与代码），避免误伤变量名

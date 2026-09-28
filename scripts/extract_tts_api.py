@@ -2,7 +2,7 @@
 """查看 agent_tts.py 完整接口"""
 import sys
 
-p = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tts.py'
+p = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tts.py'
 try:
     src = open(p, encoding='utf-8').read()
 except Exception as e:

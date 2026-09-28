@@ -15,11 +15,11 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_context, agent_subagent, agent_tools
+from zhuzhu_Copilot.core import agent_context, agent_subagent, agent_tools
 
 
 def _setup(tmp_path, monkeypatch, wf="wf_x"):
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     wf_dir = tmp_path / wf
     wf_dir.mkdir(exist_ok=True)
     monkeypatch.setattr(agent_workflow, "workflow_dir", lambda name: wf_dir)
@@ -90,7 +90,7 @@ def test_legacy_subagents_migrated_open_once(tmp_path, monkeypatch):
 
 # ---------- 4. 主引擎任务开始自动开空间（源码守卫） ----------
 def test_engine_task_start_auto_opens_space_guard():
-    from winapp_migrator.core import agent_engine
+    from zhuzhu_Copilot.core import agent_engine
     src = inspect.getsource(agent_engine.AgentEngine._run_inner)
     assert "open_space(" in src, "任务开始需按共享全开自动开启共同上下文空间"
     assert 'owner="main"' in src, "自动开启的空间属主必须是 main"

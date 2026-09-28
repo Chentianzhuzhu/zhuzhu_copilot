@@ -9,10 +9,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-import winapp_migrator.core.agent_subagent as agent_subagent
-import winapp_migrator.core.agent_ui_ux as agent_ui_ux
-import winapp_migrator.core.agent_llm as agent_llm
-from winapp_migrator.ui import agent_panel as ap
+import zhuzhu_Copilot.core.agent_subagent as agent_subagent
+import zhuzhu_Copilot.core.agent_ui_ux as agent_ui_ux
+import zhuzhu_Copilot.core.agent_llm as agent_llm
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 print("=== 1) 子 Agent 人格 ===")
 persona = "你是一位资深教师，负责辅导用户学习 C 语言，请用耐心、循序渐进的方式讲解。"

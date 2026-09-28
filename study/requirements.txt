@@ -1,4 +1,4 @@
-# WinAppMigrator 运行时依赖（Python 3.13）
+# zhuzhu Copilot 运行时依赖（Python 3.13）
 PyQt6>=6.7
 PyQt6-WebEngine>=6.7
 Pillow>=10.0

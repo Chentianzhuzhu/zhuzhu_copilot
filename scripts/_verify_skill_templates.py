@@ -1,6 +1,6 @@
 """一致性校验：_BUILTIN_MD_SKILLS 内置模板 vs 随包 skills/<名>/SKILL.md。
 
-为何需要：`ensure_md_skills()` 每次启动都会把 ~/.winapp_migrator/agent/skills/<名>/SKILL.md
+为何需要：`ensure_md_skills()` 每次启动都会把 ~/.zhuzhu_Copilot/agent/skills/<名>/SKILL.md
 覆写为内置模板内容（模板是权威来源）。若只改随包文件而漏改模板，技能读到的仍是旧文本 ——
 表现为「技能里写的规则 AI 完全没遵守」。本脚本按模板口径逐字重建期望文本并比对。
 
@@ -17,10 +17,10 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_skills
+from zhuzhu_Copilot.core import agent_skills
 
 SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "..", "src", "winapp_migrator", "skills")
+                          "..", "src", "zhuzhu_Copilot", "skills")
 
 KNOWN_DIVERGENT = {"doc-gen", "web-search", "system-admin", "skill-create",
                    "browser-control", "custom-ui-ux"}

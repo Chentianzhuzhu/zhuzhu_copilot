@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """生成 doc-gen 技能的资源与示例文件（真实产出，供技能复用与回归测试）。
 
-产物目录：~/.winapp_migrator/agent/skills/doc-gen/
+产物目录：~/.zhuzhu_Copilot/agent/skills/doc-gen/
 - assets/theme_guide.md        配色方案选择速查
 - assets/style_cheatsheet.md   三类文档 style 参数速查
 - examples/sample_report.docx  带封面/目录/表格/页眉的报告
@@ -11,15 +11,16 @@
 
 幂等：重复运行会覆盖产物；示例文件同时作为 office 能力的真实回归样本。
 """
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from winapp_migrator.office import docx_builder, pptx_builder, xlsx_builder  # noqa: E402
+from zhuzhu_Copilot.office import docx_builder, pptx_builder, xlsx_builder  # noqa: E402
 
-SKILL_DIR = os.path.join(os.path.expanduser("~"), ".winapp_migrator", "agent", "skills", "doc-gen")
+SKILL_DIR = os.path.join(str(app_identity.data_root()), "agent", "skills", "doc-gen")
 ASSETS = os.path.join(SKILL_DIR, "assets")
 EXAMPLES = os.path.join(SKILL_DIR, "examples")
 
@@ -79,7 +80,7 @@ def sync_skill_md():
     内置模板只在「首次运行」生成 SKILL.md，已存在的不会自动更新；本步骤保证
     技能规范升级后用户目录立即生效（技能系统实时扫描，改完即用）。
     """
-    from winapp_migrator.core import agent_skills
+    from zhuzhu_Copilot.core import agent_skills
     cfg = agent_skills._BUILTIN_MD_SKILLS["doc-gen"]
     md = (f"---\nname: doc-gen\ndescription: {cfg['description']}\n---\n\n"
           f"{cfg['instruction'].strip()}\n")

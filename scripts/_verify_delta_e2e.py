@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from winapp_migrator.core import agent_engine, agent_tools
+from zhuzhu_Copilot.core import agent_engine, agent_tools
 
 
 class _StubLLM:
@@ -63,7 +63,7 @@ stub = _StubLLM([
 ])
 
 # 直接模式 + 禁 TTS + 禁网络 LLM：仅验证工具执行与变更统计链路
-import winapp_migrator.core.agent_tts as _tts
+import zhuzhu_Copilot.core.agent_tts as _tts
 _orig_cfg = _tts.load_config
 _tts.load_config = lambda: {"auto_read": False, "voice_id": "", "api_key": ""}
 tid = threading.get_ident()

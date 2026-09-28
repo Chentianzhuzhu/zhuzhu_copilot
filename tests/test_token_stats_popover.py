@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QPushButton, QWidg
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.core import agent_engine
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.core import agent_engine
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 
 class _FakeLLM:

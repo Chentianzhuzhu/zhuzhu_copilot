@@ -22,7 +22,7 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import (agent_context, agent_subagent, agent_team_run)
+from zhuzhu_Copilot.core import (agent_context, agent_subagent, agent_team_run)
 
 
 def _reset():
@@ -162,7 +162,7 @@ def test_bind_shared_context_sets_conversation():
 def _make_engine(monkeypatch, conversation="", text_only=True):
     from PyQt6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    from winapp_migrator.core import agent_engine
+    from zhuzhu_Copilot.core import agent_engine
 
     class _EngineLLM:
         model = "test-model"
@@ -264,7 +264,7 @@ def test_team_stop_all_scoped_by_conversation(monkeypatch):
 
 # ---------- 5. UI 接线（源码守卫） ----------
 def test_ui_wiring_guards():
-    from winapp_migrator.ui import agent_panel
+    from zhuzhu_Copilot.ui import agent_panel
     src = inspect.getsource(agent_panel)
     assert "conversation=sid" in src, "引擎须携带所属会话（对话隔离）"
     assert "set_conversation_global(sid)" in inspect.getsource(

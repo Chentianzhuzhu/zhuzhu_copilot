@@ -1,4 +1,4 @@
-"""本地 MCP server（stdio 传输）：供 WinAppMigrator 的 agent_mcp 客户端连接调用测试
+"""本地 MCP server（stdio 传输）：供 zhuzhu_Copilot 的 agent_mcp 客户端连接调用测试
 
 协议：newline-delimited JSON-RPC 2.0，stdin 读请求 / stdout 写响应（UTF-8 二进制流）。
 工具均为真实系统操作（标准库实现，零第三方依赖）：

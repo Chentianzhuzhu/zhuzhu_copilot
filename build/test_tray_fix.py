@@ -9,8 +9,8 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
 app = QApplication(sys.argv)
-import winapp_migrator.ui.main_window as mw
-from winapp_migrator.ui.main_window import MainWindow
+import zhuzhu_Copilot.ui.main_window as mw
+from zhuzhu_Copilot.ui.main_window import MainWindow
 
 # 1. 枚举名断言
 assert hasattr(QSystemTrayIcon.ActivationReason, "DoubleClick"), "PyQt6 缺少 DoubleClick"

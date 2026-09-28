@@ -1,4 +1,4 @@
-# 项目长期约定（zhuzhu Copilot / winapp_migrator）
+# 项目长期约定（zhuzhu Copilot）
 
 ## 架构（2026-09-25 起）
 - **不存在独立主窗口**：唯一界面是 `AgentPanel`（AI 面板）。

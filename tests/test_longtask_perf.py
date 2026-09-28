@@ -18,10 +18,10 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_llm
-from winapp_migrator.core import agent_skills as sk
-from winapp_migrator.core import agent_tools as at
-from winapp_migrator.core import agent_workflow as aw
+from zhuzhu_Copilot.core import agent_llm
+from zhuzhu_Copilot.core import agent_skills as sk
+from zhuzhu_Copilot.core import agent_tools as at
+from zhuzhu_Copilot.core import agent_workflow as aw
 
 # ---------- token 估算：C 层正则计数必须与逐字符语义完全一致 ----------
 
@@ -141,7 +141,7 @@ def test_read_meta_cache_write_refresh_and_copy(monkeypatch, tmp_path):
 # ---------- 工具 schema：缓存深拷贝不得被调用方破坏 ----------
 
 def test_tool_schemas_returns_independent_list():
-    from winapp_migrator.core.agent_workflow import DEFAULT_WORKFLOW
+    from zhuzhu_Copilot.core.agent_workflow import DEFAULT_WORKFLOW
     base = at.tool_schemas(DEFAULT_WORKFLOW)
     names = {t["function"]["name"] for t in base}
     assert "read_file" in names and "run_command" in names

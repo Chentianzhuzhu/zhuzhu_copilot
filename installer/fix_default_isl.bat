@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  WinAppMigrator - Inno Setup Default.isl repair script
+rem  zhuzhu_Copilot - Inno Setup Default.isl repair script
 rem  Replaces the broken Default.isl with the official full
 rem  Chinese Simplified translation shipped with this project.
 rem  Run: right-click this file -> Run as administrator

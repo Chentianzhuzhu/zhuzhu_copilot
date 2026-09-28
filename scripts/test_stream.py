@@ -2,7 +2,7 @@
 """真实测试：DashScope multimodal-generation 是否支持 stream 流式返回音频分片"""
 import sys, json, urllib.request, urllib.error, os
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tts
+from zhuzhu_Copilot.core import agent_tts
 
 key = agent_tts.load_api_key()
 if not key:

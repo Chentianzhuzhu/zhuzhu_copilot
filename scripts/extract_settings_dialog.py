@@ -2,7 +2,7 @@
 """提取 _AgentSettingsDialog 类完整结构（agent_panel.py 681 行起）"""
 import sys
 
-p = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+p = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(p, encoding='utf-8').read().splitlines()
 
 # 找类开始与结束

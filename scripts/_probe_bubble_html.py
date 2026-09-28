@@ -3,6 +3,7 @@
 输出：HTML 相对原文的放大倍率、setText / heightForWidth / resize 的单次耗时。
 用 os._exit(0) 跳过 Qt 退出期（离屏下大窗口析构偶发崩溃，与结论无关）。
 """
+from zhuzhu_Copilot import app_identity
 import json
 import os
 import pathlib
@@ -16,9 +17,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QLabel
 
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
-SESS = pathlib.Path.home() / ".winapp_migrator" / "agent" / "sessions"
+SESS = app_identity.data_root() / "agent" / "sessions"
 f = max(SESS.glob("*.ui.json"), key=lambda p: p.stat().st_size)
 d = json.loads(f.read_text(encoding="utf-8"))
 segs = d.get("segments") or []

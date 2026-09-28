@@ -2,7 +2,7 @@
 
 打包流程：先运行本脚本把运行时下载到构建目录，再由 PyInstaller spec 的 datas
 打进主程序目录；安装后 AI 首次执行 node/python 命令时从安装目录本地复制到
-~/.winapp_migrator/runtime/，无需联网下载。已就绪的运行时会被跳过（缓存复用）。
+~/.zhuzhu_Copilot/runtime/，无需联网下载。已就绪的运行时会被跳过（缓存复用）。
 
 用法：
     python scripts/prepare_runtime_bundle.py
@@ -15,7 +15,7 @@ from pathlib import Path
 
 # 复用 agent_runtime 的下载/解压/引导逻辑（避免重复实现）
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from winapp_migrator.core import agent_runtime  # noqa: E402
+from zhuzhu_Copilot.core import agent_runtime  # noqa: E402
 
 BUNDLE_ROOT = Path(__file__).resolve().parents[1] / "build" / "runtime_bundle" / "runtime"
 

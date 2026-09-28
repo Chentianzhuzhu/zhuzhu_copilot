@@ -9,6 +9,7 @@
     python scripts/export_preview_html.py <文档路径> [输出路径]
     python scripts/export_preview_html.py            # 导出 doc-gen 全部示例文件
 """
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 
@@ -16,9 +17,9 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from winapp_migrator.office import preview  # noqa: E402
+from zhuzhu_Copilot.office import preview  # noqa: E402
 
-EX = os.path.join(os.path.expanduser("~"), ".winapp_migrator", "agent", "skills",
+EX = os.path.join(str(app_identity.data_root()), "agent", "skills",
                   "doc-gen", "examples")
 OUT = os.path.join(os.path.expanduser("~"), "Desktop", "office_preview")
 THEMES = {

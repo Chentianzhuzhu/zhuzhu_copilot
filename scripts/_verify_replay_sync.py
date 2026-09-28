@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
 
-import winapp_migrator.core.music_player as mp
+import zhuzhu_Copilot.core.music_player as mp
 
 _FAIL = []
 TMP = tempfile.mkdtemp(prefix="replay_test_")
@@ -68,7 +68,7 @@ def main():
     # ---- 临时库：真实播放器 ----
     mp.MUSIC_DIR = TMP
     mp.STATE_FILE = os.path.join(TMP, "player.json")
-    import winapp_migrator.core.lyrics_engine as le
+    import zhuzhu_Copilot.core.lyrics_engine as le
     le.MUSIC_DIR = TMP
     le.LYRICS_STATE_FILE = os.path.join(TMP, "lyrics.json")
 
@@ -87,7 +87,7 @@ def main():
     check("库扫描两首测试音频", sorted(p.library()) == ["A.wav", "B.wav"],
           str(p.library()))
 
-    from winapp_migrator.ui.desktop_lyrics import DesktopLyrics
+    from zhuzhu_Copilot.ui.desktop_lyrics import DesktopLyrics
     dl = DesktopLyrics()
     dl.set_state("预唱", "当前", 1.0)   # 污染初始态，验证逐步被覆盖
     dl.bind(p)

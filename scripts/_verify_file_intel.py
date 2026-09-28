@@ -43,7 +43,7 @@ def make_test_pe(path):
         f.write(raw)
 
 
-from winapp_migrator.core.security_engine import file_intel
+from zhuzhu_Copilot.core.security_engine import file_intel
 
 tmp = tempfile.mkdtemp(prefix="fileintel_")
 try:

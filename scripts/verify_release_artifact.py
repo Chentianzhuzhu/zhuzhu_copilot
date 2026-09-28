@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 r"""发布产物自检：确认打包出来的 exe 里「确实含有」关键模块。
 
-背景（真实缺陷）：Cython/打包环节一旦漏掉某个 ui 子模块（如 winapp_migrator.ui.onboarding），
+背景（真实缺陷）：Cython/打包环节一旦漏掉某个 ui 子模块（如 zhuzhu_Copilot.ui.onboarding），
 程序不会报错，只是对应功能静默失效 —— 曾导致「首次安装打开程序新手指南不弹」，
 排查成本很高。此脚本在打包后立刻核对，把这类问题拦在发布之前。
 
@@ -10,7 +10,7 @@ r"""发布产物自检：确认打包出来的 exe 里「确实含有」关键�
 
 用法：
     python scripts/verify_release_artifact.py "dist\zhuzhu Copilot\zhuzhu Copilot.exe"
-    python scripts/verify_release_artifact.py <exe> --require winapp_migrator.ui.onboarding
+    python scripts/verify_release_artifact.py <exe> --require zhuzhu_Copilot.ui.onboarding
 退出码：0 = 全部通过；1 = 有缺失（并打印缺失清单）。
 """
 import argparse
@@ -20,23 +20,23 @@ import sys
 
 # 默认必查模块：覆盖「漏打包即静默失效」的关键功能入口
 DEFAULT_REQUIRED = [
-    "winapp_migrator.ui.onboarding",       # 首次安装新手指南（本脚本的由来）
-    "winapp_migrator.ui.agent_panel",      # 主面板
-    "winapp_migrator.ui.main_window",      # Copilot 浮层宿主
-    "winapp_migrator.core.agent_engine",   # Agent 引擎
-    "winapp_migrator.core.agent_tools",    # 工具层
-    "winapp_migrator.core.agent_skills",   # 技能
-    "winapp_migrator.core.agent_llm",      # 模型接入
-    "winapp_migrator.core.agent_ui_ux",    # UI/UX 包
-    "winapp_migrator.core.agent_workflow", # 工作流
-    "winapp_migrator.core.agent_team",     # 团队
-    "winapp_migrator.core.security_engine.engine",   # 安全引擎
-    "winapp_migrator.core.music_player",   # 音乐播放
-    "winapp_migrator.core.lyrics_engine",  # 歌词引擎
-    "winapp_migrator.office.docx_builder", # 办公三件套
-    "winapp_migrator.office.pptx_builder",
-    "winapp_migrator.office.xlsx_builder",
-    "winapp_migrator.update_check",        # 自动更新（版本号所在模块）
+    "zhuzhu_Copilot.ui.onboarding",       # 首次安装新手指南（本脚本的由来）
+    "zhuzhu_Copilot.ui.agent_panel",      # 主面板
+    "zhuzhu_Copilot.ui.main_window",      # Copilot 浮层宿主
+    "zhuzhu_Copilot.core.agent_engine",   # Agent 引擎
+    "zhuzhu_Copilot.core.agent_tools",    # 工具层
+    "zhuzhu_Copilot.core.agent_skills",   # 技能
+    "zhuzhu_Copilot.core.agent_llm",      # 模型接入
+    "zhuzhu_Copilot.core.agent_ui_ux",    # UI/UX 包
+    "zhuzhu_Copilot.core.agent_workflow", # 工作流
+    "zhuzhu_Copilot.core.agent_team",     # 团队
+    "zhuzhu_Copilot.core.security_engine.engine",   # 安全引擎
+    "zhuzhu_Copilot.core.music_player",   # 音乐播放
+    "zhuzhu_Copilot.core.lyrics_engine",  # 歌词引擎
+    "zhuzhu_Copilot.office.docx_builder", # 办公三件套
+    "zhuzhu_Copilot.office.pptx_builder",
+    "zhuzhu_Copilot.office.xlsx_builder",
+    "zhuzhu_Copilot.update_check",        # 自动更新（版本号所在模块）
 ]
 
 
@@ -77,7 +77,7 @@ def main() -> int:
 
     if missing:
         print("[FAIL] 产物缺少 %d 个关键模块：%s" % (len(missing), ", ".join(missing)))
-        print("       请检查 build/WinAppMigrator.spec 的 hiddenimports（"
+        print("       请检查 build/zhuzhu_Copilot.spec 的 hiddenimports（"
               "ui 子模块由 *_ui_modules 自动枚举，见 scripts/generate_spec.py）。")
         return 1
 

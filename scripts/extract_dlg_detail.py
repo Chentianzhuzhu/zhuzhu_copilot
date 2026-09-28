@@ -2,7 +2,7 @@
 """提取 _AgentSettingsDialog __init__ 导航构建 + _save + _build_general_page 示例 + tts_speak 工具"""
 import sys
 
-p = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+p = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(p, encoding='utf-8').read().splitlines()
 
 def show(a, b, label):

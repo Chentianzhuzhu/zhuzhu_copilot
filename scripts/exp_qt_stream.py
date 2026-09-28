@@ -46,7 +46,7 @@ player.setSourceDevice(dev, QUrl())
 
 # 拉取真实 SSE 分片
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tts
+from zhuzhu_Copilot.core import agent_tts
 key = agent_tts.load_api_key()
 payload = {
     "model": agent_tts.DEFAULT_TARGET_MODEL,

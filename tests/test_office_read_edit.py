@@ -11,7 +11,7 @@
 import os
 import pytest
 
-from winapp_migrator.office import (docx_builder, editor, pptx_builder, preview,
+from zhuzhu_Copilot.office import (docx_builder, editor, pptx_builder, preview,
                                     reader, xlsx_builder)
 
 
@@ -216,7 +216,7 @@ def test_compat_xlsx_keeps_fills_fonts_borders(sample):
     回归点：历史上降级路径只输出纯文本表格（无边框、无配色），用户反馈
     "预览面板看不到样式"。
     """
-    from winapp_migrator.office import render_office_compat_html
+    from zhuzhu_Copilot.office import render_office_compat_html
     html = render_office_compat_html(sample["xlsx"],
                                      theme={"text": "#1A1A1A", "dim": "#6B7280"})
     assert html, "降级渲染不应返回空"
@@ -227,7 +227,7 @@ def test_compat_xlsx_keeps_fills_fonts_borders(sample):
 
 
 def test_compat_docx_keeps_heading_color(sample):
-    from winapp_migrator.office import render_office_compat_html
+    from zhuzhu_Copilot.office import render_office_compat_html
     html = render_office_compat_html(sample["docx"])
     assert html
     assert "color:#" in html, "段落/标题颜色丢失"
@@ -235,7 +235,7 @@ def test_compat_docx_keeps_heading_color(sample):
 
 
 def test_compat_pptx_keeps_text_and_position(sample):
-    from winapp_migrator.office import render_office_compat_html
+    from zhuzhu_Copilot.office import render_office_compat_html
     html = render_office_compat_html(sample["pptx"])
     assert html
     assert "第 1 页" in html and "要点一" in html, "幻灯片文本丢失"
@@ -243,7 +243,7 @@ def test_compat_pptx_keeps_text_and_position(sample):
 
 
 def test_compat_unknown_type_returns_empty(tmp_path):
-    from winapp_migrator.office import render_office_compat_html
+    from zhuzhu_Copilot.office import render_office_compat_html
     p = tmp_path / "a.txt"
     p.write_text("x", encoding="utf-8")
     assert render_office_compat_html(str(p), "txt") == ""
@@ -253,7 +253,7 @@ def test_compat_unknown_type_returns_empty(tmp_path):
 def test_preview_fallback_hint_reports_reason():
     """show_office 的降级分支必须给出可见原因（不得静默回退）。"""
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "src", "winapp_migrator", "ui", "agent_panel.py"),
+                            "src", "zhuzhu_Copilot", "ui", "agent_panel.py"),
                encoding="utf-8").read()
     assert "office_preview_diag" in src, "缺少诊断日志留痕"
     assert "简化渲染（未启用保真预览）" in src, "降级时应向用户显示原因"
@@ -302,7 +302,7 @@ def test_screen_mode_and_fullscreen_controls(sample):
 def test_slideshow_window_contract():
     """全屏放映窗口模块契约：模式选择 + 键盘/滚轮控制齐全。"""
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "src", "winapp_migrator", "ui", "slideshow.py"),
+                            "src", "zhuzhu_Copilot", "ui", "slideshow.py"),
                encoding="utf-8").read()
     assert "class SlideShowWindow" in src
     assert "def make_slideshow" in src
@@ -317,7 +317,7 @@ def test_slideshow_window_contract():
 
 def test_panel_has_fullscreen_button():
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "src", "winapp_migrator", "ui", "agent_panel.py"),
+                            "src", "zhuzhu_Copilot", "ui", "agent_panel.py"),
                encoding="utf-8").read()
     assert "全屏放映" in src and "全屏查看" in src, "缺少全屏按钮"
     assert "_open_fullscreen" in src and "_set_slide_bar" in src
@@ -359,7 +359,7 @@ NEW_TOOLS = ("read_docx", "read_pptx", "read_xlsx", "read_pdf",
 
 
 def test_tools_registered_with_schemas():
-    from winapp_migrator.core import agent_tools
+    from zhuzhu_Copilot.core import agent_tools
     names = {t["function"]["name"] for t in agent_tools.TOOLS}
     missing = [n for n in NEW_TOOLS if n not in names]
     assert not missing, f"未注册工具: {missing}"
@@ -379,20 +379,20 @@ def test_sandbox_permission_levels():
     注：assess_tool 的返回级别表达「是否需要用户确认」（工作目录内读写均为 safe），
     系统目录的硬拦截在 execution_guard 层，故此处校验映射契约本身。
     """
-    from winapp_migrator.core import agent_sandbox
+    from zhuzhu_Copilot.core import agent_sandbox
     src = open(agent_sandbox.__file__, encoding="utf-8").read()
     for n in ("read_docx", "read_pptx", "read_xlsx", "read_pdf"):
         assert f'"{n}": "read"' in src, f"sandbox 未登记 {n} 为读取级"
     for n in ("edit_docx", "edit_pptx", "edit_xlsx"):
         assert f'"{n}": "write"' in src, f"sandbox 未登记 {n} 为写入级"
     # 写类工具必须进 _CUSTOM_SANDBOX_NAMES：自定义实现不得绕过内置沙盒评估
-    from winapp_migrator.core import agent_tools
+    from zhuzhu_Copilot.core import agent_tools
     for n in ("edit_docx", "edit_pptx", "edit_xlsx"):
         assert n in agent_tools._CUSTOM_SANDBOX_NAMES, f"{n} 未纳入沙盒约束名单"
 
 
 def test_subagent_whitelist_and_task_group():
-    from winapp_migrator.core import agent_engine, agent_subagent
+    from zhuzhu_Copilot.core import agent_engine, agent_subagent
     for n in NEW_TOOLS:
         assert n in agent_subagent.SUB_AGENT_WHITELIST, f"子 Agent 白名单缺少 {n}"
     doc_group = [g for g in agent_engine._TASK_GROUPS if g[0] == "doc"]
@@ -403,7 +403,7 @@ def test_subagent_whitelist_and_task_group():
 
 def test_preview_tool_paths_mapped():
     """读取/编辑也应触发右侧预览面板刷新"""
-    from winapp_migrator.core import agent_engine
+    from zhuzhu_Copilot.core import agent_engine
     src = open(agent_engine.__file__, encoding="utf-8").read()
     for n in NEW_TOOLS:
         assert f'"{n}": "path"' in src, f"_PREVIEW_TOOLS 未登记 {n}"

@@ -11,8 +11,8 @@
          不再各自维护一套流程（此前两者步骤不一致：.bat 不签名、不生成工作流种子）。
       2. 构建解释器自动探测：不再盲信 PATH 上的 python（沙盒/系统里可能装着缺少
          PyInstaller 的解释器），自动挑选同时具备 PyInstaller + PyQt6 的解释器。
-      3. 版本号一处生效：-Version 5.1.2 自动同步 installer\WinAppMigrator.iss、
-         src\winapp_migrator\update_check.py（APP_VERSION）、build\version_info.txt
+      3. 版本号一处生效：-Version 5.1.2 自动同步 installer\zhuzhu_Copilot.iss、
+         src\zhuzhu_Copilot\update_check.py（APP_VERSION）、build\version_info.txt
          （exe 文件属性版本），并回读校验。
       4. 产物自检：打包后核对 exe 内是否含关键模块（含 ui.onboarding —— 曾漏打包导致
          「首次安装新手指南不弹」）与文件属性版本号，不合格即刻失败。
@@ -24,7 +24,7 @@
       · 代码签名证书（CurrentUser\My 内 Subject 含 zhutianliang 且带私钥）
 
 .PARAMETER Version
-    目标版本号，如 5.1.2。提供则同步三处版本号；省略则沿用 installer\WinAppMigrator.iss 现值。
+    目标版本号，如 5.1.2。提供则同步三处版本号；省略则沿用 installer\zhuzhu_Copilot.iss 现值。
 
 .PARAMETER DryRun
     只做体检（工具链/证书/前置文件）+ 版本同步，不执行任何构建。
@@ -169,10 +169,10 @@ function Invoke-NativeCapture {
 
 # ---------------------------------------------------------------- 版本号
 function Get-ProjectVersion {
-    $iss = Join-Path $ProjectDir 'installer\WinAppMigrator.iss'
+    $iss = Join-Path $ProjectDir 'installer\zhuzhu_Copilot.iss'
     $m = Select-String -Path $iss -Pattern '^#define\s+MyAppVersion\s+"([^"]+)"' |
         Select-Object -First 1
-    if (-not $m) { Fail "无法从 installer\WinAppMigrator.iss 读取 MyAppVersion" }
+    if (-not $m) { Fail "无法从 installer\zhuzhu_Copilot.iss 读取 MyAppVersion" }
     return $m.Matches[0].Groups[1].Value
 }
 
@@ -214,13 +214,13 @@ function Set-ProjectVersion([string]$v) {
     $quad = "$($parts[0]), $($parts[1]), $($parts[2]), 0"   # x.y.z -> x, y, z, 0（四段文件版本）
 
     # 1) Inno Setup 安装包版本（向导/控制面板显示）
-    Update-VersionFile -RelPath 'installer\WinAppMigrator.iss' -Wanted $v `
+    Update-VersionFile -RelPath 'installer\zhuzhu_Copilot.iss' -Wanted $v `
         -ReadPattern '(?m)^#define\s+MyAppVersion\s+"([^"]+)"' `
         -Rules @(@{ Pattern = '(?m)^(#define\s+MyAppVersion\s+")[^"]+(")'
                    Replace = ('${1}' + $v + '${2}') })
 
     # 2) 客户端运行时版本（自动更新与服务器比对的关键字段）
-    Update-VersionFile -RelPath 'src\winapp_migrator\update_check.py' -Wanted $v `
+    Update-VersionFile -RelPath 'src\zhuzhu_Copilot\update_check.py' -Wanted $v `
         -ReadPattern '(?m)^APP_VERSION\s*=\s*"([^"]+)"' `
         -Rules @(@{ Pattern = '(?m)^(APP_VERSION\s*=\s*")[^"]+(")'
                    Replace = ('${1}' + $v + '${2}') })
@@ -279,10 +279,10 @@ function Test-Prereq($PyInfo) {
 
     foreach ($p in @(
         'src\main.py',
-        'build\WinAppMigrator.spec',
+        'build\zhuzhu_Copilot.spec',
         'scripts\generate_spec.py',
         'scripts\verify_release_artifact.py',
-        'installer\WinAppMigrator.iss',
+        'installer\zhuzhu_Copilot.iss',
         'assets\icon.ico',
         'assets\admin.manifest')) {
         if (Test-Path (Join-Path $ProjectDir $p)) {
@@ -464,11 +464,11 @@ try {
         # spec 由 scripts/generate_spec.py 单一来源生成，避免外部写回的中间态参与构建
         $rc = Invoke-Exe -Exe $PyInfo.Exe -Arguments (@($PyInfo.Pre) + @('scripts\generate_spec.py'))
         if ($rc -ne 0) { Fail "generate_spec.py 失败（退出码 $rc）" }
-        Write-Ok 'build\WinAppMigrator.spec 已按仓库配置重新生成'
+        Write-Ok 'build\zhuzhu_Copilot.spec 已按仓库配置重新生成'
 
         $t = Get-Date
         $rc = Invoke-Exe -Exe $PyInfo.Exe -Arguments (@($PyInfo.Pre) +
-            @('-m', 'PyInstaller', '--clean', '--noconfirm', 'build\WinAppMigrator.spec'))
+            @('-m', 'PyInstaller', '--clean', '--noconfirm', 'build\zhuzhu_Copilot.spec'))
         if ($rc -ne 0) { Fail "PyInstaller 打包失败（退出码 $rc）" }
         $mainExe = Join-Path $ProjectDir 'dist\zhuzhu Copilot\zhuzhu Copilot.exe'
         if (-not (Test-Path $mainExe)) { Fail "未生成主程序: $mainExe" }
@@ -506,7 +506,7 @@ try {
     # ---- 9. 编译安装包 -------------------------------------------------
     if (-not $SkipInstaller) {
         Write-Stage '编译安装包（Inno Setup 7）'
-        $iss = Join-Path $ProjectDir 'installer\WinAppMigrator.iss'
+        $iss = Join-Path $ProjectDir 'installer\zhuzhu_Copilot.iss'
         $rc = Invoke-Exe -Exe $Iscc -Arguments @($iss, "/DMyAppPwd=$PfxPassword") -ViaCmd
         if ($rc -ne 0) { Fail "ISCC 编译失败（退出码 $rc）" }
         $setup = Join-Path $ProjectDir 'dist\zhuzhu Copilot Setup.exe'

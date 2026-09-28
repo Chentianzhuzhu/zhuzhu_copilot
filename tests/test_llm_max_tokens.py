@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_llm  # noqa: E402
+from zhuzhu_Copilot.core import agent_llm  # noqa: E402
 
 RECEIVED = {}
 

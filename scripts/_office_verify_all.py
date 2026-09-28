@@ -21,7 +21,7 @@ check("PPT 全布局回归(含 hero_stats/radar/timeline/combo 新能力)", r.re
       (r.stdout + r.stderr).strip().splitlines()[-1] if r.returncode else "PowerPoint 打开成功")
 
 # 2. Word 水印 + band 封面
-from winapp_migrator.office.docx_builder import build_docx  # noqa
+from zhuzhu_Copilot.office.docx_builder import build_docx  # noqa
 wpath = os.path.join(ROOT, "build", "vfy.docx")
 try:
     build_docx(wpath, title="验证文档", style={"theme": "business",
@@ -37,7 +37,7 @@ except Exception as e:
     check("Word 文字水印生成", False, repr(e))
 
 # 3. Excel 条件格式
-from winapp_migrator.office.xlsx_builder import build_xlsx  # noqa
+from zhuzhu_Copilot.office.xlsx_builder import build_xlsx  # noqa
 xpath = os.path.join(ROOT, "build", "vfy.xlsx")
 try:
     build_xlsx(xpath, [{"name": "数据", "rows": [["店", "v1", "v2"],
@@ -52,14 +52,14 @@ except Exception as e:
     check("Excel 条件格式(数据条/高亮/色阶)", False, repr(e))
 
 # 4. skill 结构校验
-from winapp_migrator.core import agent_skills as AS  # noqa
+from zhuzhu_Copilot.core import agent_skills as AS  # noqa
 w = AS._skill_structure_warning("当用户要求做文档时使用本技能。流程：1、规划 2、生成。")
 check("SKILL 结构校验(缺参数契约/缺禁用 → 告警)", w == ["参数契约", "禁用约束"], str(w))
 w2 = AS._skill_structure_warning("触发：做PPT。步骤：规划→生成。参数：path必填。禁止编造数据。")
 check("SKILL 结构校验(齐全 → 无告警)", w2 == [], str(w2))
 
 # 5. 自定义工具保活：注册后 custom_tool_names 可见，且模拟 engine 裁剪保留
-from winapp_migrator.core import agent_tools as AT  # noqa
+from zhuzhu_Copilot.core import agent_tools as AT  # noqa
 try:
     AT.register_custom_tools([{"function": {"name": "my_custom_x", "parameters": {"type": "object", "properties": {}}}}],
                              handler=lambda *a, **k: {"text": "ok"}, source="_default")

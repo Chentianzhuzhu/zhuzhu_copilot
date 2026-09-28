@@ -1,7 +1,7 @@
 """验证：多模态模型以用户设置为准（禁私自判断）+ 上游拉取自动检测多模态。"""
 import os, sys, json
 sys.path.insert(0, os.path.abspath("src"))
-from winapp_migrator.core import agent_llm as al
+from zhuzhu_Copilot.core import agent_llm as al
 
 # 1. is_vision_model 仅以用户设置的多模态模型列表为准
 cfg = {"providers": [

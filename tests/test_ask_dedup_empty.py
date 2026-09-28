@@ -8,7 +8,7 @@
 """
 import json
 
-from winapp_migrator.core import agent_engine
+from zhuzhu_Copilot.core import agent_engine
 
 
 class _SeqLLM:

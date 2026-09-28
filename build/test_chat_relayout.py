@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 app = QApplication(sys.argv)
 
-from winapp_migrator.ui.agent_panel import AgentPanel  # noqa: E402
+from zhuzhu_Copilot.ui.agent_panel import AgentPanel  # noqa: E402
 
 panel = AgentPanel(None)
 # 面板初始化会后台异步加载最近会话历史（_load→switch_ready→_finish_switch→_render_history_all），

@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap  # noqa: E402
+from zhuzhu_Copilot.ui import agent_panel as ap  # noqa: E402
 
 KEYS = ("bg", "card", "text", "dim", "border", "accent")
 
@@ -56,7 +56,7 @@ def test_theme_reflects_module_colors(monkeypatch):
 
 @pytest.fixture(scope="module")
 def xlsx_file(tmp_path_factory):
-    from winapp_migrator.office import xlsx_builder
+    from zhuzhu_Copilot.office import xlsx_builder
     p = str(tmp_path_factory.mktemp("fx") / "s.xlsx")
     xlsx_builder.build_xlsx(p, [{"name": "表一", "rows": [["标题", "值"], ["甲", 1]]}],
                             style={})

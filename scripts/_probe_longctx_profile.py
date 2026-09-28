@@ -1,4 +1,5 @@
 """长会话渲染路径 cProfile：定位 _render_history_all 的数秒耗时构成。"""
+from zhuzhu_Copilot import app_identity
 import cProfile
 import io
 import json
@@ -14,9 +15,9 @@ sys.path.insert(0, "src")
 from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
-SESS = pathlib.Path.home() / ".winapp_migrator" / "agent" / "sessions"
+SESS = app_identity.data_root() / "agent" / "sessions"
 f = max(SESS.glob("*.ui.json"), key=lambda p: p.stat().st_size)
 data = json.loads(f.read_text(encoding="utf-8"))
 rows = data.get("rows") or []

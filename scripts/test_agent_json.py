@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from winapp_migrator.core.agent_json import parse_tool_args
+from zhuzhu_Copilot.core.agent_json import parse_tool_args
 
 
 def test_valid():

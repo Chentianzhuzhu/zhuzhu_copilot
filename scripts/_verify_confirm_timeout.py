@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 p = ap.AgentPanel.__new__(ap.AgentPanel)
 p._sess = {"s1": {"title": "前台"}, "s2": {"title": "后台A"}, "s3": {"title": "后台B"}}

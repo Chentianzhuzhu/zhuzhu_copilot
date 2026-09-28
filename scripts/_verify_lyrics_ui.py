@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
 
-from winapp_migrator.ui import lyrics_view as lyrics_module
-from winapp_migrator.ui.lyrics_view import LyricsView
+from zhuzhu_Copilot.ui import lyrics_view as lyrics_module
+from zhuzhu_Copilot.ui.lyrics_view import LyricsView
 
 FAIL = []
 
@@ -104,9 +104,9 @@ check("不加粗渲染不崩溃", True)
 
 # ---- 桌面歌词窗口 ----
 from PyQt6.QtCore import QSettings as QS
-from winapp_migrator.ui.desktop_lyrics import (DesktopLyrics, FILLED, PENDING,
+from zhuzhu_Copilot.ui.desktop_lyrics import (DesktopLyrics, FILLED, PENDING,
                                                get_desktop_lyrics, _FONT_KEY)
-QS("WinAppMigrator", "WinAppMigrator").remove(_FONT_KEY)  # 清污染，取默认字号
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").remove(_FONT_KEY)  # 清污染，取默认字号
 dl = get_desktop_lyrics()
 check("桌面歌词单例", dl is get_desktop_lyrics() and isinstance(dl, DesktopLyrics))
 check("默认字号 17", dl.font_size() == 17, f"font={dl.font_size()}")
@@ -140,7 +140,7 @@ dl.adjust_font(999)
 check("字号上限钳制 40", dl.font_size() <= 40, f"font={dl.font_size()}")
 dl.adjust_font(-999)
 check("字号下限钳制 10", dl.font_size() >= 10, f"font={dl.font_size()}")
-check("字号持久化已写入", int(QS("WinAppMigrator", "WinAppMigrator").value(_FONT_KEY, -1)) >= 10)
+check("字号持久化已写入", int(QS("zhuzhu_Copilot", "zhuzhu_Copilot").value(_FONT_KEY, -1)) >= 10)
 
 # ---- 悬停背景版 + 当前句在上（像素扫描验证行序） ----
 def row_has_white(img, y):
@@ -178,7 +178,7 @@ check("无背景态渲染不崩溃", True)
 # ---- 自治驱动：bind/ensure_enabled/内部跟随（不需音乐页参与） ----
 from PyQt6.QtCore import QObject as QObj
 from PyQt6.QtCore import pyqtSignal as _sig
-from winapp_migrator.ui.desktop_lyrics import _ENABLED_KEY
+from zhuzhu_Copilot.ui.desktop_lyrics import _ENABLED_KEY
 
 
 class _FakePlayer(QObj):
@@ -208,11 +208,11 @@ fp = _FakePlayer()
 dl2.bind(fp)
 check("绑定后创建跟随定时器", dl2._timer is not None)
 check("绑定幂等", dl2.bind(fp) is dl2)
-QS("WinAppMigrator", "WinAppMigrator").setValue(_ENABLED_KEY, "1")
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").setValue(_ENABLED_KEY, "1")
 check("开关开启时 ensure 返回真", dl2.ensure_enabled() is True)
 check("开关开启时窗口显示", dl2.isVisible())
 # 注入歌词后自治跟随立即填充当前句/下一句
-from winapp_migrator.core.lyrics_engine import LyricsEngine as LE
+from zhuzhu_Copilot.core.lyrics_engine import LyricsEngine as LE
 _eng = LE()
 _eng._lines = [(0, "第一句"), (2000, "第二句")]
 _eng._meta = {"bpm": 60.0}
@@ -220,19 +220,19 @@ dl2._lyrics = _eng
 dl2._step()
 check("自治跟随填充当前句", dl2._current == "第一句", f"cur={dl2._current}")
 check("自治跟随预唱下一句", dl2._pending == "第二句", f"pend={dl2._pending}")
-QS("WinAppMigrator", "WinAppMigrator").setValue(_ENABLED_KEY, "0")
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").setValue(_ENABLED_KEY, "0")
 dl3 = DesktopLyrics()
 check("开关关闭时不显示", dl3.ensure_enabled() is False and not dl3.isVisible())
 
 # ---- 位置 / 字号记忆链路：拖拽+调字号 → save_state → 重建实例恢复 ----
-from winapp_migrator.ui.desktop_lyrics import _POS_KEY
-QS("WinAppMigrator", "WinAppMigrator").remove(_POS_KEY)   # 清位置记录
-QS("WinAppMigrator", "WinAppMigrator").remove(_FONT_KEY)  # 清字号记录
+from zhuzhu_Copilot.ui.desktop_lyrics import _POS_KEY
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").remove(_POS_KEY)   # 清位置记录
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").remove(_FONT_KEY)  # 清字号记录
 dl.move(333, 222)
 expect_font = dl.font_size() + 3     # 之前字号段可能已被钳制，取其当前值
 dl.adjust_font(3)                     # 触发字号写盘
 check("拖拽释放统一保存", dl.save_state() is None and
-      int(QS("WinAppMigrator", "WinAppMigrator").value(_FONT_KEY, -1)) == expect_font,
+      int(QS("zhuzhu_Copilot", "zhuzhu_Copilot").value(_FONT_KEY, -1)) == expect_font,
       f"expect={expect_font}")
 fresh = DesktopLyrics()   # 模拟程序重启：新实例自动恢复
 p = fresh.pos()
@@ -241,9 +241,9 @@ check("重启恢复字号大小", fresh.font_size() == expect_font,
       f"font={fresh.font_size()}")
 
 # 清理持久化，避免污染真实用户设置
-QS("WinAppMigrator", "WinAppMigrator").remove(_POS_KEY)
-QS("WinAppMigrator", "WinAppMigrator").remove(_FONT_KEY)
-QS("WinAppMigrator", "WinAppMigrator").remove(_ENABLED_KEY)
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").remove(_POS_KEY)
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").remove(_FONT_KEY)
+QS("zhuzhu_Copilot", "zhuzhu_Copilot").remove(_ENABLED_KEY)
 fresh.close()
 
 if FAIL:

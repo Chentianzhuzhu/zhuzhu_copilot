@@ -1,7 +1,7 @@
 """文件隔离区测试：隔离 / 恢复 往返（临时隔离根）"""
 import pytest
 
-from winapp_migrator.core.security_engine.quarantine import Quarantine
+from zhuzhu_Copilot.core.security_engine.quarantine import Quarantine
 
 
 @pytest.fixture()
@@ -41,7 +41,7 @@ def test_restore_conflict_appends_suffix(q, tmp_path):
 
 
 def test_singleton_uses_configured_root(monkeypatch):
-    from winapp_migrator.core.security_engine.config import config
+    from zhuzhu_Copilot.core.security_engine.config import config
     monkeypatch.setitem(config.data.setdefault("quarantine", {}),
                         "root", "%TEMP%/winapp_q_singleton_test")
     inst = Quarantine()

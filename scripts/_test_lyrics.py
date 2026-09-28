@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from winapp_migrator.core import lyrics_engine as le
+from zhuzhu_Copilot.core import lyrics_engine as le
 
 _TMP = tempfile.mkdtemp(prefix="lyrics_test_")
 le.MUSIC_DIR = _TMP

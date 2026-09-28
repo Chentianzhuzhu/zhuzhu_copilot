@@ -20,7 +20,7 @@ import pytest
 from pptx import Presentation
 from pptx.util import Emu
 
-from winapp_migrator.office import pptx_builder, preview
+from zhuzhu_Copilot.office import pptx_builder, preview
 
 SW, SH = 13.333, 7.5
 MD_RE = re.compile(r"(^|\s)#{1,6}\s|\*\*")

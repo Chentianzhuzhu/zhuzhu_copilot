@@ -3,6 +3,7 @@
 模拟真实启动顺序：构造 AgentPanel（_build_ui 内即应用 dock 偏好，此时窗口几何尚未落定）
 → show → 事件循环推进 → 检查 todos 窗口高 / 内层面板高 / 空白带。
 """
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 
@@ -13,10 +14,10 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 print("panel_pref_mode =",
-      QSettings("WinAppMigrator", "WinAppMigrator").value("panel_pref_mode"), flush=True)
+      app_identity.qsettings().value("panel_pref_mode"), flush=True)
 
 
 def pump(n=10):

@@ -5,7 +5,7 @@ import tempfile, pathlib
 
 # 隔离崩溃目录
 _crash_dir = pathlib.Path(tempfile.mkdtemp()) / "crashes"
-import winapp_migrator.utils.helpers as h
+import zhuzhu_Copilot.utils.helpers as h
 h._CRASH_DIR = _crash_dir
 
 # 1. 后台线程异常捕获
@@ -43,7 +43,7 @@ import textwrap
 sub = textwrap.dedent(r'''
     import sys, os, ctypes, tempfile, pathlib, threading, time
     sys.path.insert(0, r"%s")
-    import winapp_migrator.utils.helpers as h
+    import zhuzhu_Copilot.utils.helpers as h
     _cd = pathlib.Path(tempfile.mkdtemp()) / "crashes"
     h._CRASH_DIR = _cd
     h.install_native_crash_hook()

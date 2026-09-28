@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """验证 agent_panel.py 第 2275-2300 行"""
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
 out = []
 for i in range(2274, 2305):

@@ -17,9 +17,9 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QLabel
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
-from winapp_migrator.ui import styles as st
-from winapp_migrator.ui import tokens
+from zhuzhu_Copilot.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import styles as st
+from zhuzhu_Copilot.ui import tokens
 
 
 def test_tokens_positive_and_ordered():

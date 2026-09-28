@@ -10,8 +10,8 @@ from PyQt6.QtCore import Qt
 
 app = QApplication([])
 
-from winapp_migrator.ui.main_window import MainWindow
-from winapp_migrator.core import agent_tools
+from zhuzhu_Copilot.ui.main_window import MainWindow
+from zhuzhu_Copilot.core import agent_tools
 
 
 def _collect(item):

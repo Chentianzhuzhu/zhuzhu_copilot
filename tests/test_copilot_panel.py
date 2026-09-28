@@ -3,6 +3,7 @@
 覆盖：四个分组页与关键控件齐备、分组切换、浮层动画接口可用、对外信号齐备。
 所有副作用（真实磁盘扫描 / 托盘 / 桌宠 / 管理员告警）在 fixture 中隔离。
 """
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest                                                    # noqa: E402
 from PyQt6.QtCore import QRect, Qt                                # noqa: E402
 from PyQt6.QtWidgets import QApplication, QPushButton             # noqa: E402
 
-from winapp_migrator.ui import main_window as mw                  # noqa: E402
+from zhuzhu_Copilot.ui import main_window as mw                  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
@@ -38,7 +39,7 @@ def panel(monkeypatch):
     monkeypatch.setattr(mw.CopilotPanel, "_init_update_check", lambda self: None)
     monkeypatch.setattr(mw.CopilotPanel, "_check_admin", lambda self: None)
     monkeypatch.setattr(mw.CopilotPanel, "_setup_tray", lambda self: None)
-    monkeypatch.setattr("winapp_migrator.ui.desktop_pet.ensure_pet", lambda w: None)
+    monkeypatch.setattr("zhuzhu_Copilot.ui.desktop_pet.ensure_pet", lambda w: None)
     p = mw.CopilotPanel(None)
     yield p
     p.deleteLater()
@@ -239,8 +240,7 @@ def test_signals_available(panel):
 def test_theme_pick_persists_setting(panel):
     """通用页切换主题：写入 agent_theme 并发出 theme_changed（两界面同源）。
     测试结束后恢复原值，避免污染用户真实主题设置。"""
-    from PyQt6.QtCore import QSettings
-    s = QSettings("WinAppMigrator", "WinAppMigrator")
+    s = app_identity.qsettings()
     old = s.value("agent_theme")
     try:
         fired = []

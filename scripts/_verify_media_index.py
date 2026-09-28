@@ -5,7 +5,7 @@ os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 pre = ap.CodePreviewWindow(None)
 pre.resize(441, 500)

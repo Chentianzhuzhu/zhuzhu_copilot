@@ -18,8 +18,8 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QTextCursor
 
 app = QApplication(sys.argv)
-from winapp_migrator.ui import agent_panel
-from winapp_migrator.core import agent_ui_ux
+from zhuzhu_Copilot.ui import agent_panel
+from zhuzhu_Copilot.core import agent_ui_ux
 
 agent_panel.apply_theme()
 _orig_wea = agent_ui_ux.web_engine_available

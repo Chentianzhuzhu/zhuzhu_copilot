@@ -2,7 +2,7 @@
 
 - **审查日期**：2026-08-29
 - **审查对象**（两个未提交的工作区变更）：
-  1. `src/winapp_migrator/ui/desktop_pet.py`（桌宠：QMovie → PIL 逐帧预加载 + 定时器驱动，新增每 60 秒自动播一轮）
+  1. `src/zhuzhu_Copilot/ui/desktop_pet.py`（桌宠：QMovie → PIL 逐帧预加载 + 定时器驱动，新增每 60 秒自动播一轮）
   2. `update-server/src/main/java/com/zhuzhu/update/web/UpdateController.java`（下载重定向改为按 `X-Forwarded-Proto` + `Host` 动态拼绝对 URL）
 - **审查维度**：逻辑正确性 / 安全与权限 / 错误处理 / 可维护性
 - **结论**：两处改动整体方向正确、注释到位，无阻塞级缺陷；存在 2 个中等问题（Java 重定向 host 信任、PIL 内存峰值）、若干低风险问题与 1 处建议优化。
@@ -139,7 +139,7 @@ String downloadUrl = (scheme != null ? scheme : "http") + "://"
 ### 3.2 依赖声明核对（desktop_pet.py）
 
 - `requirements.txt:4` 含 `Pillow>=10.0` ✅
-- `build/WinAppMigrator.spec` 的 `hiddenimports` 含 `'PIL'`，`datas` 含 `(assets, 'assets')` → `_pet_gif_path()` 的 `_MEIPASS/assets/pet.gif` 路径假设与打包配置一致 ✅
+- `build/zhuzhu_Copilot.spec` 的 `hiddenimports` 含 `'PIL'`，`datas` 含 `(assets, 'assets')` → `_pet_gif_path()` 的 `_MEIPASS/assets/pet.gif` 路径假设与打包配置一致 ✅
 
 ### 3.3 调用方核对
 

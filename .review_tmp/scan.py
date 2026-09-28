@@ -21,9 +21,9 @@ TARGETS = {
         ["address:", "password", "ddl-auto", "max-file-size", "useSSL"],
     r"update-server\deploy\nginx.conf":
         ["location", "proxy_set_header", "server_name"],
-    r"src\winapp_migrator\update_check.py":
+    r"src\zhuzhu_Copilot\update_check.py":
         ["APP_VERSION", "POLL_INTERVAL", "DEFAULT_SERVER", "Chrome/", "self.server +", "urlopen"],
-    r"installer\WinAppMigrator.iss":
+    r"installer\zhuzhu_Copilot.iss":
         ["MyAppPwd", "pfx", "addstore", "sign_uninstaller", "MyAppVersion"],
     r"build_sign.ps1":
         ["PfxPassword", "Export-PfxCertificate"],

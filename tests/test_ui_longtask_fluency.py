@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 
 def _panel():
@@ -211,7 +211,7 @@ def test_op_status_text_covers_every_registered_tool():
     新增工具若忘记登记、且族兜底也没覆盖，本用例会失败并点名该工具，
     保证文案表跟得上工具集（避免界面上出现生硬的「正在调用工具 xxx」）。
     """
-    from winapp_migrator.core import agent_tools
+    from zhuzhu_Copilot.core import agent_tools
     fallback = [t["function"]["name"] for t in agent_tools.TOOLS
                 if ap._op_status_text(t["function"]["name"]).startswith("正在调用工具")]
     assert fallback == [], f"以下工具未登记状态文案（族兜底也未覆盖）：{fallback}"
@@ -256,3 +256,247 @@ def test_reply_body_syncs_spinner_text():
     p._segments = [{"type": "text", "raw": "", "streaming": True}]
     p._on_delta("你好")
     assert p._spinner_lbl.text() == "正在回复正文"
+
+
+# ---------- 4. 长回合增量重排 / 内容节拍自适应 ----------
+# 背景：「区块一多就特别卡」的本质是「每 tick 的 O(区块数) 工作 × 极高频节拍」。
+# 下面几条契约分别锁住：每 tick 只重测变化的那一块、什么都没变时不作废高度缓存、
+# 长回合放宽内容节拍（短回合不受影响）、非流式区块的浮现层零测量。
+
+from PyQt6.QtGui import QColor, QIcon, QPixmap                       # noqa: E402
+from PyQt6.QtWidgets import QVBoxLayout, QWidget                     # noqa: E402
+
+from zhuzhu_Copilot.ui import agent_chat_bubbles as cb               # noqa: E402
+
+_STYLE = cb.ChatStyle(
+    card="#1F232C", border="#272C36", border_soft="#333A46", dash="#333A46",
+    text="#F3F5F9", text_dim="#9BA3B0", accent="#2F52D8", muted="#9BA3B0",
+    icon_shell="#272C36", icon_color="#2F52D8", tag_bg="#2A3040", tag_fg="#9BA3B0",
+    user_bg="#2F52D8", user_fg="#FFFFFF", cmd_fg="#F3F5F9", ok_fg="#5B82F6",
+    hover="#272C36", panel="#181B21", bg="#101216",
+)
+
+
+def _icon(_kind, size, color):
+    pm = QPixmap(size, size)
+    pm.fill(QColor(color))
+    return QIcon(pm)
+
+
+def _long_turn(n: int = 30):
+    """一条含 n 个区块的真实回合（离屏宿主 → 真实宽度与真实布局）"""
+    host = QWidget()
+    lay = QVBoxLayout(host)
+    lay.setContentsMargins(0, 0, 0, 0)
+    turn = cb.ChatTurn(_STYLE, _icon)
+    lay.addWidget(turn)
+    lay.addStretch(1)
+    host.resize(760, 600)
+    host.show()
+    specs = []
+    for i in range(n):
+        tail = (i == n - 1)
+        if i % 4 == 0:
+            specs.append((cb.KIND_THINK, {"tag": "EXEC", "body": f"<div>思考 {i}</div>"},
+                          ("think", i)))
+        elif i % 4 == 1:
+            specs.append((cb.KIND_TOOL, {"name": "read_file", "meta": "", "params": {}},
+                          ("tool", i)))
+        elif i % 4 == 2:
+            specs.append((cb.KIND_CMD, {"label": "命令", "cmd": "ls", "out": "a"},
+                          ("cmd", i)))
+        else:
+            specs.append((cb.KIND_STREAM, {"html": f"<div>正文 {i}</div>", "proc": not tail},
+                          ("stream", i)))
+    turn.render(specs, live=True)
+    for _ in range(3):
+        _app.processEvents()
+    return host, turn, specs
+
+
+def test_long_turn_streaming_tick_measures_only_changed_block(monkeypatch):
+    """长回合流式刷新只重测内容变化的那一块：否则每 tick 都是 O(区块数) 全量测量。"""
+    host, turn, specs = _long_turn(32)      # 末块为正文块（便于模拟流式增长）
+    try:
+        calls = []
+        orig = cb.ChatTurn._measure_block
+
+        def spy(self, ref, inner, monotonic):
+            calls.append(ref)
+            return orig(self, ref, inner, monotonic)
+
+        monkeypatch.setattr(cb.ChatTurn, "_measure_block", spy)
+        kind, payload, _sig = specs[-1]
+        grown = list(specs)
+        grown[-1] = (kind, dict(payload, html=payload["html"] + "<div>新增一行</div>"),
+                     ("stream", "grown"))
+        turn.render(grown, live=True)
+        assert len(calls) <= 1, f"流式刷新只应重测变化的那一块，实际重测 {len(calls)} 块"
+    finally:
+        host.hide()
+        host.deleteLater()
+        _app.processEvents()
+
+
+def test_unchanged_tick_keeps_turn_height_cache():
+    """什么都没变的 tick 不得作废回合级高度缓存（否则外层每次询问都要全量重测）。"""
+    host, turn, specs = _long_turn(24)
+    try:
+        turn.render(specs, live=True)          # 同样内容再渲染一次
+        assert turn._hfw_cache is not None, "回合高度缓存被无谓作废"
+        assert turn._hfw_cache[0] == turn.width()
+    finally:
+        host.hide()
+        host.deleteLater()
+        _app.processEvents()
+
+
+def test_long_turn_relaxes_stream_tick(monkeypatch):
+    """长回合（区块多）必须放宽内容节拍：4ms × 大 N 等于把主线程排满。"""
+    delays = []
+    monkeypatch.setattr(ap.QTimer, "singleShot",
+                        staticmethod(lambda ms, fn: delays.append(ms)))
+    p = _panel()
+    p._ai_bubble = type("T", (), {"_items": [object()] * (ap._STREAM_TICK_BLOCKS + 1)})()
+    p._segments = [{"type": "text", "raw": "x" * 10, "streaming": True}]
+    p._refresh_ai_html()
+    assert delays and delays[-1] == ap._STREAM_TICK_LONG_MS
+
+
+def test_short_turn_keeps_fast_stream_tick(monkeypatch):
+    """短回合保持快节拍：落字响应不受长任务优化影响。"""
+    delays = []
+    monkeypatch.setattr(ap.QTimer, "singleShot",
+                        staticmethod(lambda ms, fn: delays.append(ms)))
+    p = _panel()
+    p._ai_bubble = type("T", (), {"_items": [object()]})()
+    p._segments = [{"type": "text", "raw": "x" * 10, "streaming": True}]
+    p._refresh_ai_html()
+    assert delays and delays[-1] == ap._STREAM_TICK_MS
+
+
+def test_inactive_emerge_band_does_no_measurement():
+    """非流式区块的浮现层在几何变化时不得做文本测量：长会话上百个块各测一次即卡顿。"""
+    block = cb.StreamBlock(_STYLE)
+    block.set_html("<div>x</div>")
+    band = block._emerge
+    calls = []
+    band._area = lambda: (calls.append(1), block._emerge_area())[1]
+    block._emerge_touch(by_geometry=True)          # 模拟布局/缩放重排
+    assert calls == [], "非流式块不得因几何变化做正文测量"
+    block.set_live(True)
+    block._emerge_touch(by_geometry=True)
+    assert calls, "流式期间几何变化仍需同步浮现层"
+
+
+# ---------- 5. 长思考：折叠态每 tick 成本恒定（气泡抖动 / 指示器下移的根因） ----------
+
+def _think_host():
+    """离屏宿主 + 单个思考气泡（真实宽度与几何）"""
+    host = QWidget()
+    lay = QVBoxLayout(host)
+    lay.setContentsMargins(0, 0, 0, 0)
+    tb = cb.ThinkBubble(_STYLE, _icon)
+    lay.addWidget(tb)
+    host.resize(760, 800)
+    host.show()
+    for _ in range(3):
+        _app.processEvents()
+    return host, tb
+
+
+def test_long_thinking_stops_repaving_once_preview_is_saturated():
+    """折叠态前缀已饱和后，继续流式追加**不得**再重排富文本。
+
+    历史缺陷：思考正文全文每次都铺进 QLabel，长推理下每 tick 都要重排整篇文档
+    （实测单 tick 由 8ms 涨到 60ms+），主线程被排满 → 气泡与打字指示器剧烈抖动、
+    消息区上下反复出现大片空白。判据用「内容版本 + 标签文字 + 块高」三项都不变。
+    """
+    host, tb = _think_host()
+    try:
+        tb.set_content("PLANNING", "推" * (cb.THINK_PREVIEW_CHARS + 200))
+        _app.processEvents()
+        ver, text, h = tb._content_ver, tb._body.text(), tb.height()
+        assert ver > 0 and text
+
+        for extra in (400, 900, 2000, 5000):     # 继续流式追加
+            tb.set_content("PLANNING", "推" * (cb.THINK_PREVIEW_CHARS + extra))
+            _app.processEvents()
+            assert tb._content_ver == ver, \
+                "折叠态可见正文没变却仍走了重排（每 tick 重排整篇文档 → 卡顿抖动）"
+            assert tb._body.text() == text
+        assert tb.height() == h
+    finally:
+        host.hide()
+        host.deleteLater()
+
+
+def test_folded_long_thinking_paves_preview_then_full_on_expand():
+    """折叠态只铺前缀（成本有界），展开必须铺**全文**（不得仍是残文）。"""
+    host, tb = _think_host()
+    try:
+        full = "推" * (cb.THINK_PREVIEW_CHARS * 3)
+        tb.set_content("PLANNING", full)
+        _app.processEvents()
+
+        assert tb._body_html == full, "全文必须留在块内，供展开时使用"
+        assert len(tb._body.text()) <= cb.THINK_PREVIEW_CHARS + 1, "折叠态铺了全文（每 tick 重排）"
+        assert not tb._fold_btn.isHidden(), "长思考必须给出展开入口"
+
+        tb._fold_btn.click()
+        _app.processEvents()
+        assert tb._folded is False
+        assert tb._body.text() == full, "展开后仍是前缀 = 用户报的「展开被截断」"
+        assert tb._body.minimumHeight() > tb._limit_h(), "展开态必须钉到全文高度"
+
+        tb._fold_btn.click()
+        _app.processEvents()
+        assert tb._folded is True
+        assert len(tb._body.text()) <= cb.THINK_PREVIEW_CHARS + 1, "收起后应回到有界前缀"
+    finally:
+        host.hide()
+        host.deleteLater()
+
+
+def test_think_preview_does_not_shrink_the_fold_decision():
+    """前缀本身仍必须被判定为可折叠：否则展开入口会消失、长文被压缩展示。"""
+    host, tb = _think_host()
+    try:
+        tb.set_content("PLANNING", "推" * (cb.THINK_PREVIEW_CHARS + 3000))
+        _app.processEvents()
+        assert tb._is_foldable(), "前缀必须仍超过折叠行数上限"
+        assert not tb._fold_btn.isHidden()
+    finally:
+        host.hide()
+        host.deleteLater()
+
+
+def test_turn_height_does_not_stick_after_width_change():
+    """宽度变化后不得沿用「只增不减」的旧高度（正文下方会留大片空白）。
+
+    长任务里滚动条会随内容增长而出现：回合变窄 → 正文换行更多 → 高度变大；
+    滚动条消失/面板变宽后，若仍把窄宽度时的偏高值当上界，正文上下就会持续留白。
+    """
+    host = QWidget()
+    lay = QVBoxLayout(host)
+    lay.setContentsMargins(0, 0, 0, 0)
+    turn = cb.ChatTurn(_STYLE, _icon)
+    lay.addWidget(turn)
+    host.resize(760, 400)
+    host.show()
+    try:
+        text = "这是一段会随宽度换行的正文。" * 8
+        turn.render([(cb.KIND_STREAM, {"html": f"<div>{text}</div>", "proc": False},
+                      ("s", len(text)))], live=True)
+        _app.processEvents()
+        wide = turn.relayout_heights(700, monotonic=True)
+        narrow = turn.relayout_heights(430, monotonic=True)
+        assert narrow > wide, "前提校验：变窄后换行更多，高度应变大"
+        back = turn.relayout_heights(700, monotonic=True)
+        assert back == wide, \
+            f"宽度回到 700 后仍停在窄宽度时的偏高值（{back} vs {wide}）→ 正文下方留白"
+    finally:
+        host.hide()
+        host.deleteLater()
+
+

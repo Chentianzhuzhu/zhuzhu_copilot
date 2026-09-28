@@ -2,7 +2,7 @@
 """搜索全项目中的设置面板/设置对话框/设置按钮类"""
 import os, re, sys
 
-base = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator'
+base = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot'
 pat = re.compile(r'class\s+(\w*[Ss]etting\w*)|\b(\w*[Ss]etting\w*Panel\w*)\b|设置面板|设置按钮|settings_btn|SettingsDialog|SettingsPanel')
 hits = []
 for root, dirs, files in os.walk(base):

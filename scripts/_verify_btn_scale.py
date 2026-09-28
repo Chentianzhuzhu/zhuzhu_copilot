@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication, QPushButton, QPlainTextEdit
 app = QApplication([])
-import winapp_migrator.ui.agent_panel as ap
+import zhuzhu_Copilot.ui.agent_panel as ap
 
 # 1. 样式常量：发送按钮 radius=17（34/2 正圆）、DIM 同
 assert "border-radius: 17px" in ap._BTN_PRIMARY, "发送按钮应为正圆"

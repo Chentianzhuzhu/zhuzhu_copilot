@@ -10,7 +10,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from winapp_migrator.office import editor, preview, reader  # noqa: E402
+from zhuzhu_Copilot.office import editor, preview, reader  # noqa: E402
 
 DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")
 SAMPLE = ["产品介绍PPT.pptx", "大学毕业感言.pptx", "学生暑假满意度评价表.docx",
@@ -35,7 +35,7 @@ def probe(path):
 
 def roundtrip(tmp):
     """编辑闭环：生成 → 读 → 改 → 回读断言"""
-    from winapp_migrator.office import docx_builder, pptx_builder, xlsx_builder
+    from zhuzhu_Copilot.office import docx_builder, pptx_builder, xlsx_builder
     d = os.path.join(tmp, "t.docx")
     p = os.path.join(tmp, "t.pptx")
     x = os.path.join(tmp, "t.xlsx")

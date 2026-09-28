@@ -1,6 +1,6 @@
 """深度分析流水线测试：文件/进程/脚本 判定 + 低置信样本 LLM 升级链路"""
-from winapp_migrator.core.security_engine.config import config
-from winapp_migrator.core.security_engine.deep_analyze import DeepAnalyzer
+from zhuzhu_Copilot.core.security_engine.config import config
+from zhuzhu_Copilot.core.security_engine.deep_analyze import DeepAnalyzer
 
 
 def test_script_malicious():
@@ -39,7 +39,7 @@ def test_llm_escalation(monkeypatch):
     d = DeepAnalyzer()
     script = "Q" * 300   # 高 base64 占比 + 超长 → script.obfuscation(55) → suspicious，不触发高置信规则
     # 先禁用 LLM（resolve_cfg=None）：确定性回到规则判定 suspicious，不发起真实网络请求
-    monkeypatch.setattr("winapp_migrator.core.security_engine.llm_analyzer.resolve_cfg",
+    monkeypatch.setattr("zhuzhu_Copilot.core.security_engine.llm_analyzer.resolve_cfg",
                         lambda: None)
     res = d.analyze_script(script)
     assert res["verdict"] == "suspicious", res
@@ -51,8 +51,8 @@ def test_llm_escalation(monkeypatch):
     def fake_analyze(sample, cfg):
         return {"verdict": "malicious", "confidence": 90, "reason": "测试判定"}
 
-    monkeypatch.setattr("winapp_migrator.core.security_engine.llm_analyzer.analyze", fake_analyze)
-    monkeypatch.setattr("winapp_migrator.core.security_engine.llm_analyzer.resolve_cfg", fake_cfg)
+    monkeypatch.setattr("zhuzhu_Copilot.core.security_engine.llm_analyzer.analyze", fake_analyze)
+    monkeypatch.setattr("zhuzhu_Copilot.core.security_engine.llm_analyzer.resolve_cfg", fake_cfg)
     res2 = d.analyze_script(script)
     assert res2["verdict"] == "malicious"
     assert "LLM" in res2["reason"]
@@ -60,7 +60,7 @@ def test_llm_escalation(monkeypatch):
 
 def test_trusted_signer_skips_llm(tmp_path, monkeypatch):
     """签名厂商可信 → 直接 clean，不触发 LLM"""
-    signature = __import__("winapp_migrator.core.security_engine.signature",
+    signature = __import__("zhuzhu_Copilot.core.security_engine.signature",
                            fromlist=["signer_subject"])
     monkeypatch.setattr(signature, "signer_subject", lambda p: "Microsoft Corporation")
     p = tmp_path / "app.exe"
@@ -86,8 +86,8 @@ def test_budget_limits_llm(monkeypatch):
         calls["n"] += 1
         return {"verdict": "malicious", "confidence": 90, "reason": "x"}
 
-    monkeypatch.setattr("winapp_migrator.core.security_engine.llm_analyzer.analyze", fake_analyze)
-    monkeypatch.setattr("winapp_migrator.core.security_engine.llm_analyzer.resolve_cfg", fake_cfg)
+    monkeypatch.setattr("zhuzhu_Copilot.core.security_engine.llm_analyzer.analyze", fake_analyze)
+    monkeypatch.setattr("zhuzhu_Copilot.core.security_engine.llm_analyzer.resolve_cfg", fake_cfg)
     monkeypatch.setitem(config.data.setdefault("llm", {}), "max_calls_per_scan", 1)
     d = DeepAnalyzer()
     script = "Q" * 300

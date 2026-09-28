@@ -2,7 +2,7 @@
 """验证修改结果"""
 import sys
 
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(path, encoding='utf-8').read().split('\n')
 
 out = []

@@ -4,7 +4,7 @@ import sys, io
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
 out = io.StringIO()
 
-with open(r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py', encoding='utf-8') as f:
+with open(r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py', encoding='utf-8') as f:
     lines = f.readlines()
 
 # 找 __init__ 函数结束位置

@@ -11,8 +11,8 @@ import time
 
 sys.path.insert(0, "src")
 
-from winapp_migrator.core import agent_engine   # noqa: E402
-from winapp_migrator.core import agent_workflow  # noqa: E402
+from zhuzhu_Copilot.core import agent_engine   # noqa: E402
+from zhuzhu_Copilot.core import agent_workflow  # noqa: E402
 
 ROUNDS = 120
 

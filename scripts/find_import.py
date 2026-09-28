@@ -2,7 +2,7 @@
 """在 agent_panel.py 添加 TTS 按钮和 _open_tts_panel 方法"""
 import sys, io
 
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(path, encoding='utf-8').read().split('\n')
 
 # 找 import agent_tools 附近

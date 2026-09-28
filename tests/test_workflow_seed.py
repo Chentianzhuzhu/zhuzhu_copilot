@@ -12,7 +12,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_workflow
+from zhuzhu_Copilot.core import agent_workflow
 
 
 def _mk_workflow(d, name, extra="agent.py"):
@@ -58,7 +58,7 @@ def test_seed_missing_copies_workflows_and_team(tmp_path, monkeypatch):
     # 已存在不覆盖
     assert json.loads((root / "frontend_design" / "workflow.json").read_text())["custom"] == 1
     # team.json 落盘（home 隔离）
-    tgt = home / ".winapp_migrator" / "team.json"
+    tgt = home / ".zhuzhu_Copilot" / "team.json"
     assert tgt.is_file()
     assert json.loads(tgt.read_text(encoding="utf-8"))["leader"] == "product_manager"
 
@@ -71,7 +71,7 @@ def test_seed_missing_no_seed_ok(tmp_path, monkeypatch):
     root.mkdir()
     home = tmp_path / "home"
     agent_workflow._seed_missing(root, home)
-    assert not (home / ".winapp_migrator").exists()
+    assert not (home / ".zhuzhu_Copilot").exists()
 
 
 def test_prepare_seed_snapshot(tmp_path, monkeypatch):

@@ -29,7 +29,7 @@ def _no_onboarding_modal():
     """
     mp = pytest.MonkeyPatch()
     try:
-        from winapp_migrator.ui.agent_panel import AgentPanel
+        from zhuzhu_Copilot.ui.agent_panel import AgentPanel
         mp.setattr(AgentPanel, "_maybe_show_onboarding", lambda self: None)
     except Exception:
         pass   # 无 PyQt6 / 非 UI 场景：不影响其余用例

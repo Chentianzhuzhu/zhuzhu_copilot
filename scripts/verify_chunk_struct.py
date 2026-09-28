@@ -2,7 +2,7 @@
 """验证流式分片结构：首片 WAV 头 / 后续分片格式 / 采样率位深 / 帧对齐"""
 import sys, json, base64, urllib.request, struct
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tts
+from zhuzhu_Copilot.core import agent_tts
 
 key = agent_tts.load_api_key()
 payload = {

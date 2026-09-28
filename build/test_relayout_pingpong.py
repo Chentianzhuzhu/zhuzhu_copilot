@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from PyQt6.QtWidgets import QApplication
 
 app = QApplication(sys.argv)
-from winapp_migrator.ui.agent_panel import AgentPanel
+from zhuzhu_Copilot.ui.agent_panel import AgentPanel
 
 panel = AgentPanel(None)
 t0 = time.time()

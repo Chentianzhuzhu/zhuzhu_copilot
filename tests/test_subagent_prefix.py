@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.core import agent_subagent, agent_workflow
+from zhuzhu_Copilot.core import agent_subagent, agent_workflow
 
 
 def _setup(tmp_path, monkeypatch):
@@ -69,7 +69,7 @@ def test_subagent_schemas_no_double_prefix(tmp_path, monkeypatch):
 def test_at_route_resolves_prefixed_subagent(tmp_path, monkeypatch):
     """面板 @路由：@sub_coding_agent → (subagent, 直呼) 直接调用，不再报未知。"""
     _setup(tmp_path, monkeypatch)
-    from winapp_migrator.ui import agent_panel
+    from zhuzhu_Copilot.ui import agent_panel
     # __new__ 构造（不跑完整 __init__，避免后台 git 加载线程崩溃），装配最小属性
     p = agent_panel.AgentPanel.__new__(agent_panel.AgentPanel)
     p._sess = {"t": p._new_sess_state("t")}

@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import QApplication                     # noqa: E402
 
 app = QApplication([])
 
-import winapp_migrator.ui.main_window as mw                  # noqa: E402
+import zhuzhu_Copilot.ui.main_window as mw                  # noqa: E402
 
 # 隔离 CopilotPanel 构造副作用（避免真实扫描 / 弹窗 / 托盘 / 桌宠）
 mw.CopilotPanel._start_scan = lambda self, *a: None
@@ -29,12 +29,12 @@ mw.CopilotPanel._init_update_check = lambda self: None
 mw.CopilotPanel._check_admin = lambda self: None
 mw.CopilotPanel._setup_tray = lambda self: None
 try:
-    import winapp_migrator.ui.desktop_pet as dp
+    import zhuzhu_Copilot.ui.desktop_pet as dp
     dp.ensure_pet = lambda w: None
 except Exception:
     pass
 
-from winapp_migrator.ui.agent_panel import AgentPanel         # noqa: E402
+from zhuzhu_Copilot.ui.agent_panel import AgentPanel         # noqa: E402
 
 FAILS = []
 

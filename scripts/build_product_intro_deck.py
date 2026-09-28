@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from winapp_migrator.office import pptx_builder, preview  # noqa: E402
+from zhuzhu_Copilot.office import pptx_builder, preview  # noqa: E402
 
 DECK_TITLE = "智能产品发布会"
 DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")

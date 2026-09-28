@@ -5,6 +5,7 @@
 
 用法：python scripts/_probe_longctx_ui.py [会话名，默认取最大 ui.json]
 """
+from zhuzhu_Copilot import app_identity
 import json
 import os
 import pathlib
@@ -16,11 +17,11 @@ sys.path.insert(0, "src")
 
 from PyQt6.QtWidgets import QApplication
 
-SESS = pathlib.Path.home() / ".winapp_migrator" / "agent" / "sessions"
+SESS = app_identity.data_root() / "agent" / "sessions"
 
 app = QApplication([])
-from winapp_migrator.core import agent_llm, agent_skills
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.core import agent_llm, agent_skills
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 agent_skills.load_settings()
 agent_llm.load_model_config()

@@ -3,9 +3,9 @@
 import sys, os, py_compile
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
-for f in (r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tts.py',
-          r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tools.py',
-          r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'):
+for f in (r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tts.py',
+          r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tools.py',
+          r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'):
     try:
         py_compile.compile(f, doraise=True)
         sys.stdout.write('COMPILE_OK: %s\n' % os.path.basename(f))
@@ -13,7 +13,7 @@ for f in (r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\cor
         sys.stdout.write('COMPILE_FAIL: %s -> %s\n' % (f, e))
 
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tools
+from zhuzhu_Copilot.core import agent_tools
 
 out = agent_tools.execute_tool("tts_speak", {"text": "自动播放测试，流式合成语音。", "play": True})
 sys.stdout.write('TTS_PLAY: %s\n' % out.get('text'))

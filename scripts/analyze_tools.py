@@ -2,7 +2,7 @@
 """分析 agent_tools.py 工具注册机制"""
 import re
 
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tools.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tools.py'
 src = open(path, encoding='utf-8', errors='ignore').read()
 lines = src.split('\n')
 out = []

@@ -8,7 +8,7 @@ import tempfile
 import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MD = os.path.join(ROOT, "src", "winapp_migrator", "skills", "feature-panel",
+MD = os.path.join(ROOT, "src", "zhuzhu_Copilot", "skills", "feature-panel",
                   "references", "panel-templates.md")
 md = open(MD, encoding="utf-8").read()
 

@@ -18,13 +18,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PyQt6.QtWidgets import QApplication                            # noqa: E402
 
-from winapp_migrator.core import agent_tools                        # noqa: E402
-from winapp_migrator.ui import agent_panel as ap                    # noqa: E402
-from winapp_migrator.ui import tool_icons as ti                     # noqa: E402
+from zhuzhu_Copilot.core import agent_tools                        # noqa: E402
+from zhuzhu_Copilot.ui import agent_panel as ap                    # noqa: E402
+from zhuzhu_Copilot.ui import tool_icons as ti                     # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
-MODULE = (Path(__file__).resolve().parents[1] / "src" / "winapp_migrator"
+MODULE = (Path(__file__).resolve().parents[1] / "src" / "zhuzhu_Copilot"
           / "ui" / "tool_icons.py")
 EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
 COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
@@ -120,14 +120,14 @@ def test_panel_dispatches_tool_names_to_dedicated_icons():
 
 def test_tool_row_shows_the_tool_specific_icon():
     """工具调用行的图标壳会随工具名刷新为专属图标（而非通用扳手）。"""
-    from winapp_migrator.ui import agent_chat_bubbles as cb
+    from zhuzhu_Copilot.ui import agent_chat_bubbles as cb
     p = ap.AgentPanel.__new__(ap.AgentPanel)
     style = cb.ChatStyle(
         card="#1F232C", border="#272C36", border_soft="#333A46", dash="#333A46",
         text="#F3F5F9", text_dim="#9BA3B0", accent="#2F52D8", muted="#9BA3B0",
         icon_shell="#272C36", icon_color="#2F52D8", tag_bg="#2A3040", tag_fg="#9BA3B0",
         user_bg="#2F52D8", user_fg="#FFFFFF", cmd_fg="#F3F5F9", ok_fg="#5B82F6",
-        hover="#272C36", panel="#181B21")
+        hover="#272C36", panel="#181B21", bg="#101216")
     row = cb.ToolCallRow(style, p._chat_icon)
     def _tile_sig() -> tuple:
         img = row._icon.pixmap().toImage()
@@ -138,3 +138,55 @@ def test_tool_row_shows_the_tool_specific_icon():
     read_sig = _tile_sig()
     row.set_content("write_file", "", {})
     assert read_sig != _tile_sig(), "工具行图标未随工具名切换"
+
+
+def test_ui_pseudo_kind_icons_are_visible():
+    """技能调用 / 并行执行等伪 kind 行也要有可见图标（防止图标壳内空白）。"""
+    p = ap.AgentPanel.__new__(ap.AgentPanel)
+    for kind in ("正在调用技能 lark-base", "skill", "正在并行执行 3 个工具"):
+        assert _opaque_pixels(p._chat_icon(kind, ICON_SIZE, "#9BA3B0")) >= 8, kind
+
+
+def test_ui_icon_spec_parts_are_registered():
+    """UI_ICON_SPEC 每个取值里的底图/角标都必须真实存在（写错 key 会画出空图标）。"""
+    for kind, (base, orna) in ti.UI_ICON_SPEC.items():
+        assert base in ti._ICON_BASE, f"{kind} 的底图 {base} 未实现"
+        assert orna in ti._ICON_ORNAMENT, f"{kind} 的角标 {orna} 未实现"
+
+
+def test_tool_row_uses_explicit_ico_kind():
+    """payload 带的 ico 决定图标壳：技能行（ico=skill）不再落到展示文案的兜底图标上。"""
+    from zhuzhu_Copilot.ui import agent_chat_bubbles as cb
+    p = ap.AgentPanel.__new__(ap.AgentPanel)
+    style = cb.ChatStyle(
+        card="#1F232C", border="#272C36", border_soft="#333A46", dash="#333A46",
+        text="#F3F5F9", text_dim="#9BA3B0", accent="#2F52D8", muted="#9BA3B0",
+        icon_shell="#272C36", icon_color="#2F52D8", tag_bg="#2A3040", tag_fg="#9BA3B0",
+        user_bg="#2F52D8", user_fg="#FFFFFF", cmd_fg="#F3F5F9", ok_fg="#5B82F6",
+        hover="#272C36", panel="#181B21", bg="#101216")
+    row = cb.ToolCallRow(style, p._chat_icon)
+
+    def _tile_sig() -> tuple:
+        img = row._icon.pixmap().toImage()
+        return tuple((img.pixelColor(x, y).alpha(), img.pixelColor(x, y).rgb())
+                     for y in range(img.height()) for x in range(img.width()))
+
+    row.set_content("调用技能", "lark-base", {}, ico="skill")
+    assert row._title.text() == "调用技能"
+    assert row._meta.text() == "lark-base"
+    skill_sig = _tile_sig()
+    row.set_content("未知展示文案", "", {})
+    assert skill_sig != _tile_sig(), "ico 未参与图标解析（仍按 name 兜底）"
+
+
+def test_skill_op_segment_carries_ico_and_meta():
+    """技能 op 段的 KIND_TOOL payload 必须带 ico=skill 与技能名 meta（供图标壳与副标题）。"""
+    p = ap.AgentPanel.__new__(ap.AgentPanel)
+    from zhuzhu_Copilot.ui import agent_chat_bubbles as cb
+    kind, payload = p._seg_block(
+        {"type": "op", "name": "调用技能", "meta": "lark-base", "ico": "skill",
+         "html": "▎调用技能 lark-base"}, 0, "op", 14, 11, 13, 400)
+    assert kind == cb.KIND_TOOL
+    assert payload["name"] == "调用技能"
+    assert payload["meta"] == "lark-base"
+    assert payload["ico"] == "skill"

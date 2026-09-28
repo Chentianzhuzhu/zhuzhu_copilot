@@ -13,6 +13,7 @@
 - 不写 agent_first_run_done 标记（避免影响应用后续真正的首次启动引导）；
 - 向导内点击「完成」才会按其自身逻辑写入偏好（与应用内行为一致，属用户主动选择）。
 """
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 
@@ -26,8 +27,8 @@ from PyQt6.QtCore import Qt, QSettings  # noqa: E402
 from PyQt6.QtGui import QFont, QFontDatabase, QIcon  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from winapp_migrator.ui.main_window import _app_icon_path  # noqa: E402
-from winapp_migrator.ui.onboarding import OnboardingWizard  # noqa: E402
+from zhuzhu_Copilot.ui.main_window import _app_icon_path  # noqa: E402
+from zhuzhu_Copilot.ui.onboarding import OnboardingWizard  # noqa: E402
 
 
 def main() -> int:
@@ -42,20 +43,20 @@ def main() -> int:
     app.setFont(QFont(fam, 10))
 
     # 主题：临时写入以驱动模块级颜色常量绑定，退出时还原（无持久副作用）
-    q = QSettings("WinAppMigrator", "WinAppMigrator")
+    q = app_identity.qsettings()
     original = q.value("agent_theme", None)
     if want:
         q.setValue("agent_theme", want)
     try:
         # 先按主题刷新内存色板，再导入 agent_panel（其模块级颜色常量在导入时绑定）
-        from winapp_migrator.ui import styles as _styles
+        from zhuzhu_Copilot.ui import styles as _styles
         theme = str(q.value("agent_theme", "light") or "light")
         if theme == "auto":
             import datetime
             theme = "light" if 8 <= datetime.datetime.now().hour < 20 else "dark"
         _styles.set_palette(theme)
         _styles.apply_palette(app)
-        from winapp_migrator.ui import agent_panel as _ap
+        from zhuzhu_Copilot.ui import agent_panel as _ap
         try:
             if _ap._APPLIED_THEME != theme:
                 _ap.apply_theme()

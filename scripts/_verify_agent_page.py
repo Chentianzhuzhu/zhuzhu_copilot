@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication, QComboBox, QListWidget, QLabel
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 src = open(os.path.join(os.path.dirname(ap.__file__), "agent_panel.py"),
            encoding="utf-8").read()
@@ -38,7 +38,7 @@ print("4c. 子 Agent 列表:", d.agent_sub_list.count(), "条（真实读取）"
 # 注册/删除 API 签名可调用（隔离目录模拟）
 import tempfile
 import pathlib
-import winapp_migrator.core.agent_subagent as submod
+import zhuzhu_Copilot.core.agent_subagent as submod
 _tmp = tempfile.mkdtemp()
 _tf = pathlib.Path(_tmp) / "subagents.json"
 submod._subagent_file = lambda workflow="": _tf

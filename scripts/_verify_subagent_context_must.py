@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-from winapp_migrator.core import agent_tools, agent_engine
+from zhuzhu_Copilot.core import agent_tools, agent_engine
 
 # 1) 工具 schema：context 已强提示为“必须”（模型可见的成文约束）
 schemas = agent_tools.tool_schemas(None)

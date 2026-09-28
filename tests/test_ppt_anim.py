@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import pytest
 
-from winapp_migrator.office.pptx_builder import (
+from zhuzhu_Copilot.office.pptx_builder import (
     _ANIM, _anim_preset, _page_steps, _shape_bbox, _shape_text, build_pptx,
 )
 from pptx import Presentation

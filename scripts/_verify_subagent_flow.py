@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-import winapp_migrator.core.agent_subagent as agent_subagent
+import zhuzhu_Copilot.core.agent_subagent as agent_subagent
 
 # ---------------- 1. 事件映射 + 历史写回/注入（_subagent_worker） ----------------
 events = []
@@ -22,7 +22,7 @@ class _Sig:
         events.append((kind, payload))
 
 def agent_panel_patched():
-    import winapp_migrator.ui.agent_panel as ap
+    import zhuzhu_Copilot.ui.agent_panel as ap
     p = ap.AgentPanel.__new__(ap.AgentPanel)
     p._sess = {"sid": {"workflow": "default"}}
     p.evt_signal = _Sig()

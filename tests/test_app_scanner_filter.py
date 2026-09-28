@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from winapp_migrator.core.app_scanner import AppScanner, ScanFilter  # noqa: E402
+from zhuzhu_Copilot.core.app_scanner import AppScanner, ScanFilter  # noqa: E402
 
 MB = 1024 * 1024
 

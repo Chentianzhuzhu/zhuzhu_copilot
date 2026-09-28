@@ -8,7 +8,7 @@ def ts(): return time.perf_counter()
 
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-import winapp_migrator.ui.agent_panel as M
+import zhuzhu_Copilot.ui.agent_panel as M
 
 # 阻止 _init_sessions 真正的会话恢复? 不——我们需要看全貌。先原样构造，但把
 # _finish_startup_init 拆开逐段计时：构造后用信号/单发不可行，直接手动调用各步骤。

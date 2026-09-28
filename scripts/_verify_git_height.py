@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
 
-from winapp_migrator.core import agent_git, agent_tools
-from winapp_migrator.ui.agent_panel import GitLogWindow
+from zhuzhu_Copilot.core import agent_git, agent_tools
+from zhuzhu_Copilot.ui.agent_panel import GitLogWindow
 
 
 def _git(d, *args):

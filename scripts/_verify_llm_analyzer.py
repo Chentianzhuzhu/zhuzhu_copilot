@@ -10,7 +10,7 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.llm_analyzer import analyze, _parse
+from zhuzhu_Copilot.core.security_engine.llm_analyzer import analyze, _parse
 
 # 1) 关闭/缺配置 → 直接返回 None（不请求网络）
 check("未启用返回None", analyze({"a": 1}, {"enabled": False}) is None)

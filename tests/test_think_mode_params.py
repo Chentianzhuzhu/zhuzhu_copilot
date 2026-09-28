@@ -9,7 +9,7 @@
 
 import pytest
 
-from winapp_migrator.core import agent_llm
+from zhuzhu_Copilot.core import agent_llm
 
 
 def _thinking_type(params: dict):
@@ -101,7 +101,7 @@ def test_invalid_think_mode_falls_back_to_auto():
 
 def test_load_model_config_passthrough(monkeypatch):
     """load_model_config 透传 think_mode / force_think（含默认值与异常兜底）"""
-    from winapp_migrator.core import agent_skills as _sk
+    from zhuzhu_Copilot.core import agent_skills as _sk
 
     fake = {
         "model": {

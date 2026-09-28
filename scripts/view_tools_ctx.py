@@ -2,7 +2,7 @@
 """查看 agent_tools.py 头部 import + tts_speak 描述块 + threading 是否已导入"""
 import sys
 
-P = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tools.py'
+P = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tools.py'
 lines = open(P, encoding='utf-8').read().splitlines()
 out = []
 out.append('===== 前 40 行 =====')

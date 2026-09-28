@@ -2,9 +2,9 @@
 """首次安装新手指南弹出的回归测试。
 
 真实缺陷（用户报「首次安装打开程序新手指南无法弹出」）：
-  「已看过指南」标记此前只写注册表 `HKCU\\Software\\WinAppMigrator\\WinAppMigrator`
-  的 `agent_first_run_done`，而卸载流程只清用户数据目录 `%USERPROFILE%\\.winapp_migrator`
-  （见 installer/WinAppMigrator.iss）——注册表残留使「卸载 → 重新安装」被判定为
+  「已看过指南」标记此前只写注册表 `HKCU\\Software\\zhuzhu_Copilot\\zhuzhu_Copilot`
+  的 `agent_first_run_done`，而卸载流程只清用户数据目录 `%USERPROFILE%\\.zhuzhu_Copilot`
+  （见 installer/zhuzhu_Copilot.iss）——注册表残留使「卸载 → 重新安装」被判定为
   「已看过」，指南从此永不弹出（已用安装版程序实测：清掉该标记即可正常弹出）。
 
 修法：标记改存用户数据目录内的文件（随卸载一起删除），并以「进程启动时数据目录是否存在」
@@ -20,12 +20,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest                                       # noqa: E402
 from PyQt6.QtWidgets import QApplication            # noqa: E402
 
-from winapp_migrator.ui import onboarding           # noqa: E402
+from zhuzhu_Copilot import app_identity            # noqa: E402
+from zhuzhu_Copilot.ui import onboarding           # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
 # 在 conftest 的会话级打桩（把 _maybe_show_onboarding 换成 no-op）之前抓住原函数
-from winapp_migrator.ui.agent_panel import AgentPanel  # noqa: E402
+from zhuzhu_Copilot.ui.agent_panel import AgentPanel  # noqa: E402
 
 _MAYBE_SHOW = AgentPanel._maybe_show_onboarding
 _IS_REAL = getattr(getattr(_MAYBE_SHOW, "__code__", None), "co_argcount", 0) >= 2
@@ -41,7 +42,7 @@ def _pump(ms: int):
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """数据目录指向临时目录，并屏蔽真实注册表读写。"""
-    data_root = tmp_path / ".winapp_migrator"
+    data_root = tmp_path / app_identity.DATA_DIR_NAME
     monkeypatch.setattr(onboarding, "_DATA_ROOT", data_root)
     state = {"legacy_done": False, "writes": 0}
 
@@ -59,7 +60,8 @@ def home(tmp_path, monkeypatch):
             state["legacy_done"] = str(val) == "1"
             state["writes"] += 1
 
-    monkeypatch.setattr(onboarding, "QSettings", _StubSettings)
+    # 注册表访问统一经 app_identity.qsettings()，此处整体打桩
+    monkeypatch.setattr(app_identity, "qsettings", _StubSettings)
     return data_root, state
 
 
@@ -172,7 +174,7 @@ def test_onboarding_scheduled_at_show_event_head():
     此前它在 showEvent 末尾（前面是 DWM 圆角/任务栏图标/停靠面板同步/管理员拖放等原生调用），
     任一环节抛异常，引导调度就被跳过 → 安装后指南静默不弹。
     """
-    src = (Path(__file__).resolve().parents[1] / "src" / "winapp_migrator" / "ui"
+    src = (Path(__file__).resolve().parents[1] / "src" / "zhuzhu_Copilot" / "ui"
            / "agent_panel.py").read_text(encoding="utf-8")
     needle = "QTimer.singleShot(650, self._maybe_show_onboarding)"
     lines = src.splitlines()

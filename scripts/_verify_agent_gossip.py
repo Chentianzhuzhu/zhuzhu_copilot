@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import (agent_bus, agent_context, agent_control,
+from zhuzhu_Copilot.core import (agent_bus, agent_context, agent_control,
                                   agent_subagent, agent_tools, agent_workflow)
 
 

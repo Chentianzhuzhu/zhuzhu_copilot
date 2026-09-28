@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import (
+from zhuzhu_Copilot.core import (
     agent_context,
     agent_subagent,
     agent_tools,
@@ -218,7 +218,7 @@ def test_ui_preset_combo_lists_builtin(tmp_path, monkeypatch):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication, QComboBox
     QApplication.instance() or QApplication([])
-    from winapp_migrator.ui import agent_panel
+    from zhuzhu_Copilot.ui import agent_panel
 
     dlg = agent_panel._AgentSettingsDialog.__new__(agent_panel._AgentSettingsDialog)
     dlg.wf_preset_combo = QComboBox()

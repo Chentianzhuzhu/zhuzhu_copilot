@@ -2,7 +2,7 @@
 """诊断1：窗口/菜单标题设置位置 + tts.json 当前内容"""
 import sys, re
 
-base = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator'
+base = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot'
 for f in ('ui/main_window.py', 'ui/agent_panel.py'):
     p = base + '\\' + f
     try:
@@ -14,7 +14,7 @@ for f in ('ui/main_window.py', 'ui/agent_panel.py'):
             sys.stdout.write('%s:%d: %s\n' % (f, i + 1, l.rstrip()[:130]))
 
 import json, pathlib
-cfg = pathlib.Path.home() / '.winapp_migrator' / 'agent' / 'tts.json'
+cfg = pathlib.Path.home() / '.zhuzhu_Copilot' / 'agent' / 'tts.json'
 sys.stdout.write('\n--- tts.json ---\n')
 try:
     d = json.loads(cfg.read_text(encoding='utf-8'))

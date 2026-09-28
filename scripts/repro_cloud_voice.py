@@ -3,7 +3,7 @@
 import sys, os, json
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tts, agent_tools
+from zhuzhu_Copilot.core import agent_tts, agent_tools
 
 # 1) list_voices 返回结构
 sys.stdout.write('===== list_voices =====\n')

@@ -3,6 +3,7 @@
 v7 教训：类名选择器不可靠；输入框真实键入成功但回复未提取到，可能未发送或
 选择器不匹配。v8 用 main 容器 innerText diff + 发送按钮点击兜底 + 截屏留证。
 """
+from zhuzhu_Copilot import app_identity
 import base64
 import json
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from winapp_migrator.core import agent_browser
+from zhuzhu_Copilot.core import agent_browser
 
 LOGIN_WAIT = 180
 _LG = ("(!!document.querySelector('[class*=textarea], [class*=input-area], "
@@ -65,7 +66,7 @@ def main():
     base_text = ev(ctrl, _MAIN_TEXT)
     print("main 基础文本长度:", len(base_text), flush=True)
     print("复制基础文本到哨兵文件", flush=True)
-    seed = str(Path.home() / ".winapp_migrator" / "web_credentials")
+    seed = str(app_identity.data_root() / "web_credentials")
     Path(seed).mkdir(parents=True, exist_ok=True)
     (Path(seed) / "poc_base.txt").write_text(base_text, encoding="utf-8")
 

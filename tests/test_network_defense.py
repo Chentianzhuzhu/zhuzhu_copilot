@@ -1,7 +1,7 @@
 """网络防御测试：IP 工具函数 / 回环判定 / 阈值配置驱动（不触碰真实网卡）"""
 import time
 
-from winapp_migrator.core import network_defense as nd
+from zhuzhu_Copilot.core import network_defense as nd
 
 
 def test_fmt_ip_roundtrip():

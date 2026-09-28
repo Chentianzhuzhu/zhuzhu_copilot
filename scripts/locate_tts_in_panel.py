@@ -2,7 +2,7 @@
 """1) _line_icon 支持的 kind；2) agent_panel 中 tts 相关行位置；3) agent_panel import 区"""
 import sys, re
 
-p = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+p = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(p, encoding='utf-8').read().splitlines()
 out = []
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """检查 core 目录加载机制：.py / .c / .pyd 共存时实际加载哪个"""
 import os, sys
-core_dir = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core'
+core_dir = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core'
 out = []
 out.append('=== core 目录文件样本 ===')
 for f in sorted(os.listdir(core_dir)):

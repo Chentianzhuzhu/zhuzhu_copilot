@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QEvent, QPointF
 from PyQt6.QtGui import QMouseEvent
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 pre = ap.CodePreviewWindow(None)
 pre.resize(441, 500)

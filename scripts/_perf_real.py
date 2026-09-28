@@ -9,7 +9,7 @@ import os, sys, time, json, pathlib, threading
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-SESS = pathlib.Path.home() / '.winapp_migrator' / 'agent' / 'sessions'
+SESS = pathlib.Path.home() / '.zhuzhu_Copilot' / 'agent' / 'sessions'
 BIG = SESS / 'f56ddc08604d.ui.json'
 
 def ts(): return time.perf_counter()
@@ -18,12 +18,12 @@ t0 = ts()
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
 t1 = ts()
-import winapp_migrator.ui.agent_panel as M
+import zhuzhu_Copilot.ui.agent_panel as M
 t2 = ts()
 print(f'[real] QApp={t1-t0:.2f}s import={t2-t1:.2f}s')
 
 # 预热解密（模拟 main.py 后台预热线程效果）
-from winapp_migrator.core import agent_llm, agent_skills
+from zhuzhu_Copilot.core import agent_llm, agent_skills
 agent_skills.load_settings(); agent_llm.load_model_config()
 
 t3 = ts()

@@ -1,7 +1,7 @@
 """文件静态分析测试：SHA256 / 信息熵 / 可打印字符串 / PE 节区与导入表解析"""
 import struct
 
-from winapp_migrator.core.security_engine import file_intel
+from zhuzhu_Copilot.core.security_engine import file_intel
 
 
 def _fake_pe(tmp_path) -> str:

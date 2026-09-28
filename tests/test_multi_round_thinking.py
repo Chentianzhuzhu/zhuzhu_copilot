@@ -19,11 +19,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from PyQt6.QtWidgets import QApplication
 
-from winapp_migrator.ui import agent_chat_bubbles
+from zhuzhu_Copilot.ui import agent_chat_bubbles
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 
 def _panel():

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """查看 agent_tts.py 的 synthesize / list_voices / 音色解析相关代码"""
 import sys
-p = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tts.py'
+p = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tts.py'
 src = open(p, encoding='utf-8').read()
 lines = src.splitlines()
 

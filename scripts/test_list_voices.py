@@ -2,7 +2,7 @@
 """临时验证：DashScope customization 是否支持 action=list（真实 API）"""
 import sys, json
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tts
+from zhuzhu_Copilot.core import agent_tts
 
 payload = {
     "model": agent_tts.ENROLL_MODEL,

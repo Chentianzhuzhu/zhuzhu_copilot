@@ -1,4 +1,4 @@
-"""构建入口：按当前仓库配置实时生成 build/WinAppMigrator.spec。
+"""构建入口：按当前仓库配置实时生成 build/zhuzhu_Copilot.spec。
 
 背景：编辑工具与外部进程（IDE/监视器）对该文件的并发写回会把 spec 覆盖成
 中间状态（曾两次导致打包失败：_d3d_datas 未定义 / datas 元组被拆坏）。
@@ -19,7 +19,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-# 确保 spec 顶部 collect_submodules('winapp_migrator.core') 能发现子模块：
+# 确保 spec 顶部 collect_submodules('zhuzhu_Copilot.core') 能发现子模块：
 # PyInstaller 加载 spec 时 cwd 为项目根，sys.path 默认不含 ../src，
 # 若不显式加入，collect_submodules 会因导入失败返回空列表，导致 agent_find 等
 # 动态导入模块仍漏打包（运行时报 ModuleNotFoundError）。
@@ -40,8 +40,8 @@ if _src not in _sys.path:
 # 首次安装打开程序新手指南静默不弹）。
 import glob as _glob
 _ui_modules = [
-    'winapp_migrator.ui.' + _os.path.splitext(_os.path.basename(_p))[0]
-    for _p in sorted(_glob.glob(_os.path.join(_src, 'winapp_migrator', 'ui', '*.py')))
+    'zhuzhu_Copilot.ui.' + _os.path.splitext(_os.path.basename(_p))[0]
+    for _p in sorted(_glob.glob(_os.path.join(_src, 'zhuzhu_Copilot', 'ui', '*.py')))
     if not _os.path.basename(_p).startswith('__')
 ]
 
@@ -67,9 +67,9 @@ a = Analysis(
     pathex=[_src],
     binaries=[],
     datas=[(_os.path.join(_root, 'assets'), 'assets'),
-           (_os.path.join(_root, 'src/winapp_migrator/skills'), 'skills'),
-           (_os.path.join(_root, 'src/winapp_migrator/plugins'), 'plugins'),
-           (_os.path.join(_root, 'src/winapp_migrator/core/workflow_templates'), 'workflow_templates'),
+           (_os.path.join(_root, 'src/zhuzhu_Copilot/skills'), 'skills'),
+           (_os.path.join(_root, 'src/zhuzhu_Copilot/plugins'), 'plugins'),
+           (_os.path.join(_root, 'src/zhuzhu_Copilot/core/workflow_templates'), 'workflow_templates'),
            # 安全引擎数据文件（config/security.json、security_rules.json、yara/ 规则库）：
            # 引擎在打包态按 _MEIPASS/config 解析，缺失则回退内置默认导致规则库/特征库不生效
            (_os.path.join(_root, 'config'), 'config')]
@@ -78,56 +78,56 @@ a = Analysis(
         # agent_tools 通过 importlib 动态导入 core 子模块（agent_find/agent_tts/
         # agent_subagent/agent_panels/agent_deps 等），PyInstaller 静态分析发现不了，
         # 必须全量收集 core 包，否则打包后运行时报 ModuleNotFoundError（如 search_files
-        # 报 No module named 'winapp_migrator.core.agent_find'）。
-        *collect_submodules('winapp_migrator.core'),
-        'winapp_migrator.core.app_scanner',
-        'winapp_migrator.core.agent_workflow',
-        'winapp_migrator.core.migration',
-        'winapp_migrator.core.registry',
-        'winapp_migrator.core.uwp',
-        'winapp_migrator.core.orchestrator',
-        'winapp_migrator.core.permissions',
-        'winapp_migrator.core.data_dirs',
-        'winapp_migrator.core.shortcut',
-        'winapp_migrator.core.uninstaller',
-        'winapp_migrator.core.memory_optimizer',
-        'winapp_migrator.core.security',
-        'winapp_migrator.core.network_defense',
-        'winapp_migrator.core.execution_guard',
-        'winapp_migrator.ui.main_window',
-        'winapp_migrator.ui.styles',
-        'winapp_migrator.ui.widgets',
-        'winapp_migrator.ui.agent_panel',
+        # 报 No module named 'zhuzhu_Copilot.core.agent_find'）。
+        *collect_submodules('zhuzhu_Copilot.core'),
+        'zhuzhu_Copilot.core.app_scanner',
+        'zhuzhu_Copilot.core.agent_workflow',
+        'zhuzhu_Copilot.core.migration',
+        'zhuzhu_Copilot.core.registry',
+        'zhuzhu_Copilot.core.uwp',
+        'zhuzhu_Copilot.core.orchestrator',
+        'zhuzhu_Copilot.core.permissions',
+        'zhuzhu_Copilot.core.data_dirs',
+        'zhuzhu_Copilot.core.shortcut',
+        'zhuzhu_Copilot.core.uninstaller',
+        'zhuzhu_Copilot.core.memory_optimizer',
+        'zhuzhu_Copilot.core.security',
+        'zhuzhu_Copilot.core.network_defense',
+        'zhuzhu_Copilot.core.execution_guard',
+        'zhuzhu_Copilot.ui.main_window',
+        'zhuzhu_Copilot.ui.styles',
+        'zhuzhu_Copilot.ui.widgets',
+        'zhuzhu_Copilot.ui.agent_panel',
         # ui 包子模块全量声明：Cython 加固后 ui/*.py 会编译成 .pyd，PyInstaller 无法分析
         # 二进制模块内部的（函数内）延迟导入 —— 未在此声明的 ui 子模块会被整包漏掉，
         # 表现为「功能静默失效」（如漏掉 ui.onboarding → 首次安装打开程序新手指南不弹，
         # 仅打印一行异常）。这里按包内实际 *.py 文件自动枚举，新增 ui 子模块无需改 spec。
         *_ui_modules,
-        'winapp_migrator.core.agent_llm',
-        'winapp_migrator.core.agent_screen',
-        'winapp_migrator.core.agent_sandbox',
-        'winapp_migrator.core.agent_tools',
+        'zhuzhu_Copilot.core.agent_llm',
+        'zhuzhu_Copilot.core.agent_screen',
+        'zhuzhu_Copilot.core.agent_sandbox',
+        'zhuzhu_Copilot.core.agent_tools',
         # office 办公三件套高质量生成包（execute_tool 函数内延迟导入，显式声明防遗漏）
-        'winapp_migrator.office',
-        'winapp_migrator.office.theme',
-        'winapp_migrator.office.utils',
-        'winapp_migrator.office.docx_builder',
-        'winapp_migrator.office.pptx_builder',
-        'winapp_migrator.office.xlsx_builder',
-        'winapp_migrator.office.beautify',
-        'winapp_migrator.core.agent_browser',
-        'winapp_migrator.core.agent_mcp',
-        'winapp_migrator.core.agent_skills',
-        'winapp_migrator.core.agent_engine',
-        'winapp_migrator.core.agent_tts',
-        'winapp_migrator.core.agent_plugins',
+        'zhuzhu_Copilot.office',
+        'zhuzhu_Copilot.office.theme',
+        'zhuzhu_Copilot.office.utils',
+        'zhuzhu_Copilot.office.docx_builder',
+        'zhuzhu_Copilot.office.pptx_builder',
+        'zhuzhu_Copilot.office.xlsx_builder',
+        'zhuzhu_Copilot.office.beautify',
+        'zhuzhu_Copilot.core.agent_browser',
+        'zhuzhu_Copilot.core.agent_mcp',
+        'zhuzhu_Copilot.core.agent_skills',
+        'zhuzhu_Copilot.core.agent_engine',
+        'zhuzhu_Copilot.core.agent_tts',
+        'zhuzhu_Copilot.core.agent_plugins',
         # 设置页音乐播放（pygame.mixer 单例）：agent_panel 函数内动态导入，显式声明防打包遗漏
-        'winapp_migrator.core.music_player',
+        'zhuzhu_Copilot.core.music_player',
         # 歌词引擎与桌面歌词（音乐页/主面板函数内动态导入，显式声明防打包遗漏）
-        'winapp_migrator.core.lyrics_engine',
-        'winapp_migrator.ui.lyrics_view',
-        'winapp_migrator.ui.desktop_lyrics',
-        'winapp_migrator.utils.helpers',
+        'zhuzhu_Copilot.core.lyrics_engine',
+        'zhuzhu_Copilot.ui.lyrics_view',
+        'zhuzhu_Copilot.ui.desktop_lyrics',
+        'zhuzhu_Copilot.utils.helpers',
         # TTS 自动朗读播放器（函数内动态 import pygame，显式声明防打包遗漏）
         'pygame',
         # 内置浏览器（CodePreviewWindow/AI browser 工具）依赖 QtWebEngine：
@@ -218,7 +218,7 @@ coll = COLLECT(
 
 
 def main():
-    dest = os.path.join(ROOT, "build", "WinAppMigrator.spec")
+    dest = os.path.join(ROOT, "build", "zhuzhu_Copilot.spec")
     import io
     import ast
     ast.parse(SPEC_TEXT)  # 生成前自检语法

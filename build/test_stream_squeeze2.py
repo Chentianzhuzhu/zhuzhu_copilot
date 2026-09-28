@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from PyQt6.QtWidgets import QApplication
 
 app = QApplication(sys.argv)
-from winapp_migrator.ui.agent_panel import AgentPanel
+from zhuzhu_Copilot.ui.agent_panel import AgentPanel
 
 panel = AgentPanel(None)
 # 先等后台会话加载稳定（避免异步 _render_history_all 竞赛破坏待测气泡）

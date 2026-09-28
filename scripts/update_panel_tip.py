@@ -2,7 +2,7 @@
 """直接修改 agent_panel.py 中 _build_tts_page 的提示文案（自动播放）"""
 import sys
 
-P = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+P = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 src = open(P, encoding='utf-8').read()
 
 old = ('tip = QLabel("音色选择：AI 使用 tts_speak 直接调用 DashScope API 合成语音，"\n'

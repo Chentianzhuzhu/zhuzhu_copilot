@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """分析 agent_sandbox.assess_tool 与配置机制"""
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_sandbox.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_sandbox.py'
 lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
 out = []
 out.append('===== assess_tool 相关 =====')

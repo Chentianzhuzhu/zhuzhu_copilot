@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from winapp_migrator.core import agent_web_llm as W, agent_skills as S
+from zhuzhu_Copilot.core import agent_web_llm as W, agent_skills as S
 
 
 def test_serialize_prompt():
@@ -81,7 +81,7 @@ def test_models_endpoint():
 
 def test_load_config_injects_proxy():
     """kind=deepseek_web 服务商被注入为本地代理 base_url（不依赖已登录，代理恒可启）。"""
-    import winapp_migrator.core.agent_llm as L
+    import zhuzhu_Copilot.core.agent_llm as L
 
     orig = S.load_settings
 

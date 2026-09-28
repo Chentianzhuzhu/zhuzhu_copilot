@@ -6,6 +6,7 @@
 3. 任务结束（_show_end_badge）清理确认缓存，下个任务重新弹窗
 """
 
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 
@@ -18,11 +19,11 @@ from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 
 def main() -> int:
-    q = QSettings("WinAppMigrator", "WinAppMigrator")
+    q = app_identity.qsettings()
     for k in ("dock_state/todosWin", "dock_state/gitLogWin",
               "dock_state/wtWin", "dock_state/codeWin"):
         q.remove(k)

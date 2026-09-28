@@ -20,8 +20,8 @@ from PyQt6.QtWidgets import (                            # noqa: E402
 
 app = QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap         # noqa: E402
-from winapp_migrator.ui.agent_panel import _ContentSelectionDelegate  # noqa: E402
+from zhuzhu_Copilot.ui import agent_panel as ap         # noqa: E402
+from zhuzhu_Copilot.ui.agent_panel import _ContentSelectionDelegate  # noqa: E402
 
 ROW_W, ROW_H = 640, 26
 NAMES = ("a", "docs", "a_medium_directory_name", "a_very_long_directory_name_example_here")

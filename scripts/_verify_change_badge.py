@@ -17,7 +17,7 @@ from PyQt6.QtCore import Qt as _Qt
 from PyQt6.QtWidgets import QApplication, QLabel, QHBoxLayout, QSizePolicy, QPushButton
 app = QApplication([])
 
-import winapp_migrator.ui.agent_panel as ap
+import zhuzhu_Copilot.ui.agent_panel as ap
 
 
 def make_fake():

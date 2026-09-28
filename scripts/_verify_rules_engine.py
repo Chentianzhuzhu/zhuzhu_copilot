@@ -8,7 +8,7 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.rules import RuleEngine
+from zhuzhu_Copilot.core.security_engine.rules import RuleEngine
 
 eng = RuleEngine()
 check("默认规则库加载", len(eng._rules) >= 8, f"rules={len(eng._rules)}")

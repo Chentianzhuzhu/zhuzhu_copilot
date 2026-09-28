@@ -1,7 +1,7 @@
 """确保默认工作团（6 个工作流）在用户工作流目录真实存在。
 
 预设（workflow_templates/presets/*）只是模板，必须经 create_builtin_workflow 复制到
-~/.winapp_migrator/workflows/ 才会出现在界面上。本脚本按团队配置缺什么补什么：
+~/.zhuzhu_Copilot/workflows/ 才会出现在界面上。本脚本按团队配置缺什么补什么：
   product_manager（领导者）/ zhuzhu_copilot / frontend_design / product_dev /
   backend_dev / product_debug
 并确保 team.json（团队配置：领导者 + 成员）落盘。全部为真实 API 调用。
@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_team, agent_workflow
+from zhuzhu_Copilot.core import agent_team, agent_workflow
 
 # 默认团队：预设 id → 展示名
 TEAM_PRESETS = [

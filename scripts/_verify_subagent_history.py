@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-import winapp_migrator.core.agent_subagent as agent_subagent
+import zhuzhu_Copilot.core.agent_subagent as agent_subagent
 
 # ---------------- 1. 修复 A：最终文本回复必须进历史 ----------------
 class _FakeLLM:
@@ -51,7 +51,7 @@ assert "我们说了什么" in str(msgs2[3].get("content") or ""), "新 goal 应
 print("RESULT: 修复A（最终文本回复入历史 + 追问可复用）PASS")
 
 # ---------------- 2. 修复 B：@子Agent 回合同步进主 Agent 引擎上下文 ----------------
-import winapp_migrator.ui.agent_panel as ap
+import zhuzhu_Copilot.ui.agent_panel as ap
 p = ap.AgentPanel.__new__(ap.AgentPanel)
 
 class _FakeEngine:

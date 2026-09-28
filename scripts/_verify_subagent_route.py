@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.core import (
+from zhuzhu_Copilot.core import (
     agent_engine,
     agent_llm,
     agent_skills,
@@ -117,7 +117,7 @@ def _verify_assignment(llm, system: str) -> int:
 
     按真实多轮流程走：准备性工具（读文件/记忆等）真执行，直到模型发出目标派发工具，
     此时只检查其参数、不真跑子 Agent（避免真起子 Agent 循环）。"""
-    from winapp_migrator.core import agent_subagent
+    from zhuzhu_Copilot.core import agent_subagent
     ok_reg, msg = agent_subagent.register_subagent(
         "menxia", "封驳审议", "审议所付方案并指出风险", workflow=WF)
     assert ok_reg, msg

@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from winapp_migrator.core import agent_git, agent_tools
+from zhuzhu_Copilot.core import agent_git, agent_tools
 
 
 def _has_git() -> bool:

@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 TODO6 = [{"title": f"任务 {i}", "status": "pending"} for i in range(1, 7)]
 

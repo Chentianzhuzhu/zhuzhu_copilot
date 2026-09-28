@@ -3,21 +3,21 @@
 import sys, py_compile
 
 files = [
-    r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tts.py',
-    r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py',
+    r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tts.py',
+    r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py',
 ]
 for f in files:
     try:
         py_compile.compile(f, doraise=True)
-        sys.stdout.write('COMPILE_OK: %s\n' % f.split('winapp_migrator')[-1])
+        sys.stdout.write('COMPILE_OK: %s\n' % f.split('zhuzhu_Copilot')[-1])
     except Exception as e:
         sys.stdout.write('COMPILE_FAIL: %s -> %s\n' % (f, e))
 
-P = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+P = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 src = open(P, encoding='utf-8').read()
 checks = [
-    ('import TtsPanel 已移除', 'from winapp_migrator.ui.tts_panel import TtsPanel' not in src),
-    ('agent_tts 已引入', 'agent_tts' in src.split('from winapp_migrator.ui.tts_panel')[0] or 'agent_tts' in src),
+    ('import TtsPanel 已移除', 'from zhuzhu_Copilot.ui.tts_panel import TtsPanel' not in src),
+    ('agent_tts 已引入', 'agent_tts' in src.split('from zhuzhu_Copilot.ui.tts_panel')[0] or 'agent_tts' in src),
     ('tts_btn 已移除', 'tts_btn' not in src),
     ('_open_tts_panel 已移除', '_open_tts_panel' not in src),
     ('mic 图标已加', 'kind == "mic"' in src),
@@ -33,7 +33,7 @@ for name, ok in checks:
     sys.stdout.write('%s: %s\n' % ('PASS' if ok else 'FAIL', name))
 
 # agent_tts 检查
-T = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tts.py'
+T = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tts.py'
 tsrc = open(T, encoding='utf-8').read()
 tchecks = [
     ('list_voices 已加', 'def list_voices' in tsrc),

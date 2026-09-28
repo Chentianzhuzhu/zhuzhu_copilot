@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """找到 AgentPanel 类末尾，以便添加 _open_tts_panel 方法"""
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
 out = []
 # 找最后几个方法

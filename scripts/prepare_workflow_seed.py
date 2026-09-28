@@ -1,7 +1,7 @@
 """构建期：把当前机器「现成工作流」快照成种子目录，随安装包分发。
 
 背景：内置预设（workflow_templates/presets/）是模板，安装后要手动创建工作流；
-本脚本把 ~/.winapp_migrator/workflows/ 下全部已实例化工作流（含自定义
+本脚本把 ~/.zhuzhu_Copilot/workflows/ 下全部已实例化工作流（含自定义
 g9_study_helper / sansheng_liubu 等）连同团队配置快照到 build/workflows_seed/，
 打包进 setup。新机器安装完成后，agent_workflow 首启自动把缺失工作流补到
 用户目录，做到「安装完成即 @ 调用」。
@@ -9,6 +9,7 @@ g9_study_helper / sansheng_liubu 等）连同团队配置快照到 build/workflo
 用法：
     python scripts/prepare_workflow_seed.py
 """
+from zhuzhu_Copilot import app_identity
 import json
 import os
 import shutil
@@ -16,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = Path.home() / ".winapp_migrator" / "workflows"
+SRC = app_identity.data_root() / "workflows"
 DST = ROOT / "build" / "workflows_seed"
 
 
@@ -24,7 +25,7 @@ def _team_config() -> dict:
     """团队配置：优先用户 team.json，缺省用内置默认团队（与 agent_team 一致）。"""
     try:
         sys.path.insert(0, str(ROOT / "src"))
-        from winapp_migrator.core import agent_team
+        from zhuzhu_Copilot.core import agent_team
         f = agent_team._team_path()
         if f.is_file():
             data = json.loads(f.read_text(encoding="utf-8", errors="replace"))
@@ -35,7 +36,7 @@ def _team_config() -> dict:
                                     if str(m).strip()]}
     except Exception:
         pass
-    from winapp_migrator.core import agent_team
+    from zhuzhu_Copilot.core import agent_team
     return dict(agent_team.DEFAULT_TEAM)
 
 
@@ -55,7 +56,7 @@ def main() -> int:
             continue
         shutil.copytree(d, DST / d.name, dirs_exist_ok=True)
         copied.append(d.name)
-    # 团队配置种子（新机首启落盘为 ~/.winapp_migrator/team.json）
+    # 团队配置种子（新机首启落盘为 ~/.zhuzhu_Copilot/team.json）
     (DST / "team.json").write_text(
         json.dumps(_team_config(), ensure_ascii=False, indent=2),
         encoding="utf-8")

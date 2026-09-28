@@ -4,7 +4,7 @@
 2. product_manager/agent.py 的 on_task_start 钩子真实激活团队（开启共同上下文空间）
 3. zhuzhu_copilot 预设复制出的 subagents.json 含 explorer_project_agent / sub_coding_agent
 4. 注册式子 Agent 读取出的 allow_chat / share_context 权限字段真实生效
-运行目录被重定向到临时沙箱，不触碰用户真实 ~/.winapp_migrator。
+运行目录被重定向到临时沙箱，不触碰用户真实 ~/.zhuzhu_Copilot。
 """
 import os
 import sys
@@ -12,7 +12,7 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import (agent_context, agent_skills, agent_subagent,
+from zhuzhu_Copilot.core import (agent_context, agent_skills, agent_subagent,
                                   agent_team, agent_workflow)
 
 

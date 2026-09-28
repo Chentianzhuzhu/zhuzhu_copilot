@@ -15,7 +15,7 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_subagent, agent_tools, agent_workflow
+from zhuzhu_Copilot.core import agent_subagent, agent_tools, agent_workflow
 
 
 def _mk_wf(tmp_path, monkeypatch, name, llm_custom=False):
@@ -102,7 +102,7 @@ def test_run_agent_llm_uses_custom_client_when_customized(tmp_path, monkeypatch)
 # ---------- 3. look_context 状态可诊断 ----------
 def test_look_context_appends_error_reason(tmp_path, monkeypatch):
     """成员异常时 look_context 附失败原因（监督可诊断，而非只看状态名）。"""
-    from winapp_migrator.core import agent_bus, agent_team_run
+    from zhuzhu_Copilot.core import agent_bus, agent_team_run
     _mk_wf(tmp_path, monkeypatch, "backend_dev")   # 真实工作流目录，_resolve_agent_id 可解析
 
     class _FakeTeamRun:
@@ -129,7 +129,7 @@ def test_look_context_appends_error_reason(tmp_path, monkeypatch):
 
 def test_look_context_appends_started_when_running(tmp_path, monkeypatch):
     """成员运行中时 look_context 附开始时间。"""
-    from winapp_migrator.core import agent_bus, agent_team_run
+    from zhuzhu_Copilot.core import agent_bus, agent_team_run
     _mk_wf(tmp_path, monkeypatch, "backend_dev")   # 真实工作流目录，_resolve_agent_id 可解析
 
     class _FakeTeamRun:
@@ -157,7 +157,7 @@ def test_look_context_appends_started_when_running(tmp_path, monkeypatch):
 # ---------- 4. 成员 client 与主 Agent 同配置 + 失败续跑 ----------
 def test_client_from_derives_same_config_instance(monkeypatch):
     """client_from 派生与主 Agent 同配置的独立 LLMClient（base_url/model 一致）。"""
-    from winapp_migrator.core import agent_llm, agent_team_run
+    from zhuzhu_Copilot.core import agent_llm, agent_team_run
     main = agent_llm.LLMClient(base_url="http://my/v1", api_key="k1",
                                model="my-pro", protocol="responses")
     mem = agent_team_run.client_from(main)
@@ -169,7 +169,7 @@ def test_client_from_derives_same_config_instance(monkeypatch):
 
 def test_team_start_keeps_passed_client(tmp_path, monkeypatch):
     """team_start 传入 client 时成员沿用（run_agent_llm 实际使用），不再 settings 重建。"""
-    from winapp_migrator.core import agent_team_run, agent_subagent, agent_bus, \
+    from zhuzhu_Copilot.core import agent_team_run, agent_subagent, agent_bus, \
         agent_context
     _mk_wf(tmp_path, monkeypatch, "backend_dev")
     seen = {}
@@ -182,7 +182,7 @@ def test_team_start_keeps_passed_client(tmp_path, monkeypatch):
     agent_context.reset_all()
     agent_bus.reset_bus()
     agent_team_run.team_reset()
-    from winapp_migrator.core import agent_llm
+    from zhuzhu_Copilot.core import agent_llm
     main = agent_llm.LLMClient(base_url="http://my/v1", api_key="k1",
                                model="my-pro")
     ok, _ = agent_team_run.team_start("wf:backend_dev", "backend_dev", "任务",
@@ -199,7 +199,7 @@ def test_team_start_keeps_passed_client(tmp_path, monkeypatch):
 
 def test_run_loop_reruns_on_inbox_after_failure(tmp_path, monkeypatch):
     """成员执行失败但收件箱有催促消息时：续跑一轮处理消息（chat_with 可唤起）。"""
-    from winapp_migrator.core import agent_team_run, agent_subagent, agent_bus, \
+    from zhuzhu_Copilot.core import agent_team_run, agent_subagent, agent_bus, \
         agent_context
     _mk_wf(tmp_path, monkeypatch, "frontend_design")
     goals = []

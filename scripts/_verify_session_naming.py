@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication([])
 
-from winapp_migrator.core import agent_llm
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.core import agent_llm
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 TMP = Path(tempfile.mkdtemp(prefix="sessname_"))
 agent_llm.generate_session_title = lambda *a, **k: "快速排序实现"   # 替身：不联网

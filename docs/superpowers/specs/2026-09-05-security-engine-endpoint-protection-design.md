@@ -19,7 +19,7 @@
 
 ## 2. 总体架构
 
-新建目录 `src/winapp_migrator/core/security_engine/`，作为统一防护引擎。
+新建目录 `src/zhuzhu_Copilot/core/security_engine/`，作为统一防护引擎。
 现有 `core/security.py`（进程/启动项扫描、签名校验、隔离区）与 `core/execution_guard.py`（格机/无文件攻击拦截）保留，作为底层工具被新引擎复用。
 
 ```
@@ -109,7 +109,7 @@ security_engine/
 
 * 构建期编译为 `amsi_provider.dll`：优先复用项目现有 Cython 编译链；本机无 C 编译器时构建脚本自动下载便携 MinGW（沿用沙盒运行时自动下载的既有模式）
 
-* 随包打包（WinAppMigrator.spec data 项），并走现有 zhutianliang 证书签名
+* 随包打包（zhuzhu_Copilot.spec data 项），并走现有 zhutianliang 证书签名
 
 ### 4.2 职责
 
@@ -237,7 +237,7 @@ security_engine/
 
 ## 10. 构建集成
 
-* `WinAppMigrator.spec`：加入 `security_engine/` 模块 + `amsi_provider.dll` 数据文件
+* `zhuzhu_Copilot.spec`：加入 `security_engine/` 模块 + `amsi_provider.dll` 数据文件
 
 * 构建期 Cython 全模块编译流程自动覆盖新目录；AMSI DLL 无编译器时自动下载便携 MinGW 构建
 

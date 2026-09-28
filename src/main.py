@@ -2,12 +2,13 @@ import sys
 import os
 import ctypes
 import faulthandler
-import tempfile as _tempfile
 import multiprocessing
 import threading
 multiprocessing.freeze_support()
 
-# 确保从 src/ 目录运行时能找到同级的 winapp_migrator 包
+from zhuzhu_Copilot import app_identity
+
+# 确保从 src/ 目录运行时能找到同级的 zhuzhu_Copilot 包
 _src_dir = os.path.dirname(os.path.abspath(__file__))
 if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
@@ -57,21 +58,20 @@ except Exception:
 # 崩溃诊断：进程级崩溃（C 层 segfault/abort）时把全部线程 Python 堆栈写入日志，
 # 便于抓取 Windows 报错弹窗背后的真实崩溃点（普通 excepthook 抓不到 C 层崩溃）。
 try:
-    _fh_path = os.path.join(_tempfile.gettempdir(), "WinAppMigrator",
-                            f"faulthandler_{os.getpid()}.log")
+    _fh_path = os.path.join(str(app_identity.temp_dir()), f"faulthandler_{os.getpid()}.log")
     os.makedirs(os.path.dirname(_fh_path), exist_ok=True)
     faulthandler.enable(open(_fh_path, "w", encoding="utf-8"))
 except Exception:
     pass
 
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout
-from PyQt6.QtCore import Qt, QSettings, QTimer, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont, QFontDatabase, QIcon, QColor, QPainter
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 
-from winapp_migrator.ui.main_window import _app_icon_path
-from winapp_migrator.ui.styles import apply_palette
-from winapp_migrator.utils.helpers import (
+from zhuzhu_Copilot.ui.main_window import _app_icon_path
+from zhuzhu_Copilot.ui.styles import apply_palette
+from zhuzhu_Copilot.utils.helpers import (
     install_excepthook, install_thread_excepthook, install_native_crash_hook)
 
 
@@ -86,7 +86,7 @@ SPLASH_RADIUS = 18
 def _resolve_theme_mode() -> str:
     """启动动画深浅色自适应：与 agent_panel 的主题解析保持一致（dark/light/auto）。"""
     try:
-        v = str(QSettings("WinAppMigrator", "WinAppMigrator").value("agent_theme", "light"))
+        v = str(app_identity.qsettings().value("agent_theme", "light"))
     except Exception:
         v = "light"
     if v == "auto":
@@ -183,7 +183,7 @@ class SplashWindow(QWidget):
         故在 showEvent + 延时两档中重复套用（与 _RoundedFloatWindow 的既有做法一致）。
         """
         try:
-            from winapp_migrator.core.agent_ui_ux import apply_rounded_window
+            from zhuzhu_Copilot.core.agent_ui_ux import apply_rounded_window
             apply_rounded_window(self, SPLASH_RADIUS)
         except Exception:
             pass
@@ -316,11 +316,11 @@ def _preload_agent_panel_ready():
     与主线程唯一的交互是 sys.modules 写入（Python import 锁保证原子）。
     """
     try:
-        import winapp_migrator.ui.agent_panel  # noqa: F401
+        import zhuzhu_Copilot.ui.agent_panel  # noqa: F401
     except Exception:
         pass
     try:
-        from winapp_migrator.core import agent_llm, agent_skills
+        from zhuzhu_Copilot.core import agent_llm, agent_skills
         agent_skills.load_settings()          # 填充 settings 解密缓存
         agent_llm.load_model_config()         # 填充模型配置解密缓存
     except Exception:
@@ -332,7 +332,7 @@ def _open_agent_panel(app):
 
     引用挂在 QApplication 上：面板 parent=None 且无其他持有者，否则可能被 GC 回收。
     """
-    from winapp_migrator.ui.agent_panel import AgentPanel
+    from zhuzhu_Copilot.ui.agent_panel import AgentPanel
     panel = AgentPanel(None)
     app._agent_panel = panel
     panel.show()
@@ -342,10 +342,13 @@ def _open_agent_panel(app):
 
 
 def main():
+    # 旧版（WinAppMigrator）遗留数据迁移：注册表设置 + 用户数据目录。
+    # 必须早于「新手指南判定取样」，否则老用户升级会被误判为全新安装而重复弹指南。
+    app_identity.ensure_migrated()
     # 新手指南判定取样：必须在任何「首次运行自动生成文件」动作之前记录用户数据目录是否已存在，
-    # 否则程序启动自身创建的 ~/.winapp_migrator 会让「全新安装」被误判为「老用户升级」→ 指南不弹。
+    # 否则程序启动自身创建的 ~/.zhuzhu_Copilot 会让「全新安装」被误判为「老用户升级」→ 指南不弹。
     try:
-        from winapp_migrator.ui.onboarding import capture_startup_state
+        from zhuzhu_Copilot.ui.onboarding import capture_startup_state
         capture_startup_state()
     except Exception:
         pass
@@ -372,7 +375,7 @@ def main():
     app.setApplicationDisplayName("zhuzhu Copilot")
 
     # 确保默认 UI/UX 包与主题持久化（仅首次写入，已存在则不覆盖用户选择）
-    _qs = QSettings("WinAppMigrator", "WinAppMigrator")
+    _qs = app_identity.qsettings()
     if not _qs.contains("agent_uiux"):
         _qs.setValue("agent_uiux", "default")
     if not _qs.contains("agent_theme"):

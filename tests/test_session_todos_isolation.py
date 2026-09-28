@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.core import agent_context, agent_engine, agent_tools
+from zhuzhu_Copilot.core import agent_context, agent_engine, agent_tools
 
 
 @pytest.fixture(autouse=True)
@@ -196,7 +196,7 @@ def test_todo_slug_is_filesystem_safe_and_unique():
 
 # ---------- 6. 源码守卫：UI / 引擎接线 ----------
 def test_engine_and_ui_use_session_scoped_todo_api():
-    pkg = os.path.dirname(os.path.dirname(inspect.getfile(agent_engine)))   # winapp_migrator 包目录
+    pkg = os.path.dirname(os.path.dirname(inspect.getfile(agent_engine)))   # zhuzhu_Copilot 包目录
     panel = open(os.path.join(pkg, "ui", "agent_panel.py"), encoding="utf-8").read()
     assert "agent_tools.TODO_FILE.write_text" not in panel, \
         "UI 清空清单必须走会话级 API，禁止直写全局文件"

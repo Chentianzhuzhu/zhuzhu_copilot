@@ -10,8 +10,8 @@
 
 import pytest
 
-from winapp_migrator.core import agent_engine, agent_llm, agent_skills
-from winapp_migrator.core import agent_sandbox as sb
+from zhuzhu_Copilot.core import agent_engine, agent_llm, agent_skills
+from zhuzhu_Copilot.core import agent_sandbox as sb
 
 
 @pytest.fixture

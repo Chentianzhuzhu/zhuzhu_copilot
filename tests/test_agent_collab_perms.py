@@ -12,7 +12,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_bus, agent_context, agent_subagent, agent_tools
+from zhuzhu_Copilot.core import agent_bus, agent_context, agent_subagent, agent_tools
 
 
 def _clean():
@@ -24,7 +24,7 @@ def _clean():
 
 
 def test_whitelist_extra_from_workflow(tmp_path, monkeypatch):
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     monkeypatch.setattr(agent_workflow, "workflow_dir", lambda name: tmp_path / "wf_custom")
     wf_dir = tmp_path / "wf_custom"
     wf_dir.mkdir(exist_ok=True)
@@ -43,7 +43,7 @@ def test_whitelist_extra_from_workflow(tmp_path, monkeypatch):
 
 def test_register_subagent_perms(tmp_path, monkeypatch):
     """注册子 Agent 的 allow_chat / share_context 字段写入并回读（缺省全开）。"""
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     wf_dir = tmp_path / "wf_perms"
     wf_dir.mkdir(exist_ok=True)
     (wf_dir / "tools.py").write_text(
@@ -83,7 +83,7 @@ def test_register_subagent_perms(tmp_path, monkeypatch):
 
 def test_chat_with_permission_gate(tmp_path, monkeypatch):
     """chat_with 对未开 allow_chat 的子 Agent 拒绝；开启后放行（真实工具调用）。"""
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     wf_dir = tmp_path / "wf_chat"
     wf_dir.mkdir(exist_ok=True)
     (wf_dir / "tools.py").write_text(
@@ -114,7 +114,7 @@ def test_chat_with_permission_gate(tmp_path, monkeypatch):
 
 def test_look_context_permission_gate(tmp_path, monkeypatch):
     """look_context 对未开 share_context 的子 Agent 拒绝；开启后可看轨迹。"""
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     wf_dir = tmp_path / "wf_look"
     wf_dir.mkdir(exist_ok=True)
     (wf_dir / "tools.py").write_text(
@@ -144,7 +144,7 @@ def test_look_context_permission_gate(tmp_path, monkeypatch):
 
 def test_dispatch_survives_task_cut(monkeypatch):
     """团队派发常驻：任务类别裁剪后 dispatch_sub_agents 仍可用（_CORE_TOOLS）。"""
-    from winapp_migrator.core import agent_engine, agent_llm
+    from zhuzhu_Copilot.core import agent_engine, agent_llm
     eng = agent_engine.AgentEngine(llm=agent_llm.LLMClient())
     eng._task_groups = ["browser"]   # 模拟命中「浏览器」类别裁剪
     names = {t["function"]["name"] for t in eng._all_tools()}
@@ -156,7 +156,7 @@ def test_dispatch_survives_task_cut(monkeypatch):
 
 def test_run_agent_llm_injects_inbox(tmp_path, monkeypatch):
     """chat_with 发给跨工作流主 Agent 的消息，在其任务开始时注入上下文。"""
-    from winapp_migrator.core import agent_engine, agent_subagent, agent_workflow
+    from zhuzhu_Copilot.core import agent_engine, agent_subagent, agent_workflow
     wf_dir = tmp_path / "backend_dev"
     wf_dir.mkdir(exist_ok=True)
     (wf_dir / "workflow.json").write_text(

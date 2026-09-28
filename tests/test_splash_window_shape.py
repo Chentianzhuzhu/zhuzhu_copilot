@@ -48,7 +48,7 @@ def test_splash_size_unchanged_rectangle():
 def test_splash_rounding_reuses_shared_helper(monkeypatch):
     """圆角走应用统一机制：apply_rounded_window 必须被按 SPLASH_RADIUS 调用。"""
     m = _splash_mod()
-    from winapp_migrator.core import agent_ui_ux
+    from zhuzhu_Copilot.core import agent_ui_ux
 
     calls = []
     real = agent_ui_ux.apply_rounded_window

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from winapp_migrator.core.security_engine.rules import RuleEngine
+from zhuzhu_Copilot.core.security_engine.rules import RuleEngine
 
 
 @pytest.fixture()

@@ -26,8 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_engine, agent_tools, agent_find, agent_edit
-from winapp_migrator.ui import agent_panel
+from zhuzhu_Copilot.core import agent_engine, agent_tools, agent_find, agent_edit
+from zhuzhu_Copilot.ui import agent_panel
 
 
 # ---------- 引擎并发文本编辑 ----------

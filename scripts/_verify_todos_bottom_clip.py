@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtCore import QPoint
 from PyQt6.QtWidgets import QApplication, QLabel
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 todos = [
     {"title": "分析用户需求，制定学习计划框架，需要注意各个阶段的衔接与节奏把控", "status": "in_progress"},

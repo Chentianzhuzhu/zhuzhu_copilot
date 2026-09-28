@@ -1,8 +1,8 @@
-# WinAppMigrator（zhuzhu Copilot）项目概览
+# zhuzhu Copilot 项目概览
 
 ## 基本信息
 
-- **项目名称**：WinAppMigrator（zhuzhu Copilot）
+- **项目名称**：zhuzhu Copilot
 - **项目类型**：Windows 桌面 AI Agent 应用
 - **技术栈**：Python 3.13 + PyQt6 + QtWebEngine
 - **入口文件**：`src/main.py`
@@ -14,11 +14,11 @@
 | 目录/文件 | 说明 |
 |-----------|------|
 | `src/main.py` | 程序入口，初始化 Qt 应用、预热面板 |
-| `src/winapp_migrator/core/` | 核心逻辑（83个文件）：Agent引擎、工具、技能、安全、迁移等 |
-| `src/winapp_migrator/ui/` | PyQt6 界面（主窗口、Agent面板、桌宠、歌词、语音面板等） |
-| `src/winapp_migrator/office/` | 办公模块 |
-| `src/winapp_migrator/plugins/` | 插件系统 |
-| `src/winapp_migrator/utils/` | 工具函数 |
+| `src/zhuzhu_Copilot/core/` | 核心逻辑（83个文件）：Agent引擎、工具、技能、安全、迁移等 |
+| `src/zhuzhu_Copilot/ui/` | PyQt6 界面（主窗口、Agent面板、桌宠、歌词、语音面板等） |
+| `src/zhuzhu_Copilot/office/` | 办公模块 |
+| `src/zhuzhu_Copilot/plugins/` | 插件系统 |
+| `src/zhuzhu_Copilot/utils/` | 工具函数 |
 | `mcp_servers/local_mcp_server.py` | 本地 MCP 服务器 |
 | `installer/` | Inno Setup 安装脚本 |
 | `update-server/` | Spring Boot 更新服务器 |

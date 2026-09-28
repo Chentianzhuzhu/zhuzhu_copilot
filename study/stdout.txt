@@ -2,7 +2,7 @@
 5542:         # Ĭ��չʾ Bing
 5543:         if agent_ui_ux.web_engine_available():
 5544:             try:
-5545:                 from winapp_migrator.core import agent_browser_web
+5545:                 from zhuzhu_Copilot.core import agent_browser_web
 5546:                 agent_browser_web.wire_downloads(self)
 5547:             except Exception:
 5548:                 pass

@@ -1,10 +1,10 @@
-"""工作流激活生效 + 生成反馈回归验证（临时根目录，不污染真实 ~/.winapp_migrator）"""
+"""工作流激活生效 + 生成反馈回归验证（临时根目录，不污染真实 ~/.zhuzhu_Copilot）"""
 import sys, tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from winapp_migrator.core import agent_workflow as aw
+from zhuzhu_Copilot.core import agent_workflow as aw
 
 TMP = Path(tempfile.mkdtemp())
 aw.workflows_root = lambda: TMP  # 重定向根目录，避免改动真实环境

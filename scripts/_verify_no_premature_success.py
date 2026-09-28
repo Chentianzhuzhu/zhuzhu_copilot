@@ -15,8 +15,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-import winapp_migrator.core.agent_llm as agent_llm
-from winapp_migrator.core import agent_engine
+import zhuzhu_Copilot.core.agent_llm as agent_llm
+from zhuzhu_Copilot.core import agent_engine
 
 class _FakeResp:
     def __init__(self, lines):

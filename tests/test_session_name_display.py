@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 
 def _combo(cap: int, floor: int = 150, name: str = "") -> QComboBox:

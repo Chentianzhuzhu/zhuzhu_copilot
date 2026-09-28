@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from winapp_migrator.core import agent_tools
+from zhuzhu_Copilot.core import agent_tools
 
 
 def test_diff_line_delta_replace():
@@ -128,7 +128,7 @@ def test_engine_run_pattern_bucket_shared():
 def _import_diff_helper():
     """agent_panel._build_diff_lines 依赖 PyQt6（模块初始化），无 PyQt6 时跳过"""
     pytest.importorskip("PyQt6")
-    from winapp_migrator.ui import agent_panel as ap
+    from zhuzhu_Copilot.ui import agent_panel as ap
     return ap
 
 

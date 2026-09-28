@@ -6,8 +6,8 @@ import sys
 
 import pytest
 
-from winapp_migrator.core import agent_mcp
-from winapp_migrator.core.agent_mcp import McpError, McpManager
+from zhuzhu_Copilot.core import agent_mcp
+from zhuzhu_Copilot.core.agent_mcp import McpError, McpManager
 
 
 class _FakeTransport:
@@ -59,7 +59,7 @@ def test_safe_stdio_command_not_frozen():
 
 def test_safe_stdio_command_frozen_replaces_self_exe(monkeypatch):
     monkeypatch.setattr(agent_mcp.sys, "frozen", True, raising=False)
-    monkeypatch.setattr("winapp_migrator.core.agent_runtime.python_interpreter",
+    monkeypatch.setattr("zhuzhu_Copilot.core.agent_runtime.python_interpreter",
                         lambda: "python-test")
     cfg = {"command": os.path.realpath(sys.executable), "args": ["plugin/server.py"]}
     assert agent_mcp._safe_stdio_command(cfg) == "python-test"

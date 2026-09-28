@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """分析 main_window.py 的 tab/面板结构"""
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\main_window.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\main_window.py'
 lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
 out = []
 out.append('总行数: %d' % len(lines))

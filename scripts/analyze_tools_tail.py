@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """定位 TOOLS 列表结尾与 create_skill schema 位置 + main_window imports"""
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tools.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tools.py'
 lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
 out = []
 # 找 create_skill / web_search / fast_download 等 schema 在 TOOLS 中的位置

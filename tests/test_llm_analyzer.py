@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from winapp_migrator.core.security_engine import llm_analyzer
+from zhuzhu_Copilot.core.security_engine import llm_analyzer
 
 RECEIVED = {}
 
@@ -74,7 +74,7 @@ def test_degrade_on_bad_cfg():
 
 
 def test_resolve_cfg_respects_explicit_disable(monkeypatch):
-    from winapp_migrator.core.security_engine.config import config
+    from zhuzhu_Copilot.core.security_engine.config import config
     monkeypatch.setitem(config.data.setdefault("llm", {}), "enabled", False)
     assert llm_analyzer.resolve_cfg() is None
     monkeypatch.setitem(config.data["llm"], "enabled", True)

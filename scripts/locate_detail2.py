@@ -2,7 +2,7 @@
 """看 _line_icon 剩余 kind + tts_btn 完整块 + 4339 上下文"""
 import sys
 
-p = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+p = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(p, encoding='utf-8').read().splitlines()
 
 out = ['===== _line_icon 234~330 =====']

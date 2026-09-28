@@ -3,6 +3,7 @@
 阶段 0：仅 DOM 探测 + 登录态（不发消息，零风险）。
 用法：python scripts/dbg_web_llm_live.py [--ask "prompt"]   （加 --ask 才发一条真实消息）
 """
+from zhuzhu_Copilot import app_identity
 import base64
 import json
 import sys
@@ -10,10 +11,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from winapp_migrator.core import agent_web_llm as W
-from winapp_migrator.core import agent_browser
+from zhuzhu_Copilot.core import agent_web_llm as W
+from zhuzhu_Copilot.core import agent_browser
 
-OUT = Path.home() / ".winapp_migrator" / "web_credentials"
+OUT = app_identity.data_root() / "web_credentials"
 OUT.mkdir(parents=True, exist_ok=True)
 
 

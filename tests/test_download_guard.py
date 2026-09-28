@@ -1,16 +1,16 @@
 """下载目录防护测试：增量扫描 / 脚本内容分析 / 节流 / 隔离动作"""
-from winapp_migrator.core.security_engine.config import config
-from winapp_migrator.core.security_engine.download_guard import DownloadGuard
+from zhuzhu_Copilot.core.security_engine.config import config
+from zhuzhu_Copilot.core.security_engine.download_guard import DownloadGuard
 
 
 def _make_guard(tmp_path, monkeypatch, action="notify", interval=1.0):
-    monkeypatch.setattr("winapp_migrator.core.security_engine.download_guard.scan_dirs",
+    monkeypatch.setattr("zhuzhu_Copilot.core.security_engine.download_guard.scan_dirs",
                         lambda: [str(tmp_path)])
     dl = config.data.setdefault("download_guard", {})
     monkeypatch.setitem(dl, "scan_interval_s", interval)
     monkeypatch.setitem(dl, "action", action)
     # 测试期内禁用 LLM 二次判定：规则判定即确定性结果，不发起真实网络请求
-    monkeypatch.setattr("winapp_migrator.core.security_engine.llm_analyzer.resolve_cfg",
+    monkeypatch.setattr("zhuzhu_Copilot.core.security_engine.llm_analyzer.resolve_cfg",
                         lambda: None)
     return DownloadGuard()
 
@@ -48,7 +48,7 @@ def test_quarantine_action(tmp_path, monkeypatch):
     g = _make_guard(tmp_path, monkeypatch, action="quarantine")
     evil = tmp_path / "evil.bat"
     evil.write_text("powershell -enc " + "A" * 120)
-    from winapp_migrator.core.security_engine.quarantine import quarantine
+    from zhuzhu_Copilot.core.security_engine.quarantine import quarantine
     monkeypatch.setattr(quarantine, "files_dir", tmp_path / "q" / "files")
     monkeypatch.setattr(quarantine, "meta_dir", tmp_path / "q" / "meta")
     records = g.check()

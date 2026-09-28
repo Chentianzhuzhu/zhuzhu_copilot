@@ -1,12 +1,12 @@
 """本地 SMB 等端口误报修复测试：本地服务端口不判为暴露，真实高危端口仍提示"""
 from unittest.mock import patch
 
-from winapp_migrator.core.security import SecurityScanner
+from zhuzhu_Copilot.core.security import SecurityScanner
 
 
 def _check(listening, fw_off=()):
-    with patch("winapp_migrator.core.security._listening_ports", lambda: listening), \
-         patch("winapp_migrator.core.security._firewall_off_profiles", lambda: list(fw_off)):
+    with patch("zhuzhu_Copilot.core.security._listening_ports", lambda: listening), \
+         patch("zhuzhu_Copilot.core.security._firewall_off_profiles", lambda: list(fw_off)):
         return SecurityScanner().check_network()
 
 
@@ -30,7 +30,7 @@ def test_real_risk_ports_still_flagged():
 
 def test_override_via_config(monkeypatch):
     """配置可覆盖本地服务白名单：把 3389 加入 local_allowed_ports 后不再提示"""
-    from winapp_migrator.core.security_engine.config import config
+    from zhuzhu_Copilot.core.security_engine.config import config
     original = list(config.list_of("network.local_allowed_ports", []))
     try:
         config.data["network"]["local_allowed_ports"] = original + [3389]

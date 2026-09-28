@@ -1,4 +1,5 @@
 """气泡 HTML 体积归因：按段类型 / 折叠态统计生成的富文本体积与耗时。"""
+from zhuzhu_Copilot import app_identity
 import json
 import os
 import pathlib
@@ -12,9 +13,9 @@ sys.path.insert(0, "src")
 from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
-SESS = pathlib.Path.home() / ".winapp_migrator" / "agent" / "sessions"
+SESS = app_identity.data_root() / "agent" / "sessions"
 f = max(SESS.glob("*.ui.json"), key=lambda p: p.stat().st_size)
 data = json.loads(f.read_text(encoding="utf-8"))
 segs = data.get("segments") or []

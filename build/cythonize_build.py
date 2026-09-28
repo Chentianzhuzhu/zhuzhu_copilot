@@ -1,9 +1,9 @@
-"""Cython 加固：将 winapp_migrator 包内所有模块就地编译为 .pyd（防反编译）。
+"""Cython 加固：将 zhuzhu_Copilot 包内所有模块就地编译为 .pyd（防反编译）。
 就地编译后 PyInstaller 的 Analysis 会识别扩展模块并将其作为 binaries 收集，
 对应源码不会进入 PYZ，运行时优先加载 .pyd。
 
-注意：必须显式指定完整点分模块名（winapp_migrator.core.xxx），
-否则 cythonize 会剥掉公共前缀 winapp_migrator/ 导致 .pyd 命名错误。
+注意：必须显式指定完整点分模块名（zhuzhu_Copilot.core.xxx），
+否则 cythonize 会剥掉公共前缀 zhuzhu_Copilot/ 导致 .pyd 命名错误。
 """
 import os
 import sys
@@ -17,12 +17,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 os.chdir(SRC)
 
-mods = [f.replace("\\", "/") for f in glob.glob("winapp_migrator/**/*.py", recursive=True)
+mods = [f.replace("\\", "/") for f in glob.glob("zhuzhu_Copilot/**/*.py", recursive=True)
         if not f.endswith("__init__.py")]  # 保留 __init__.py 支撑包结构
 if not mods:
     raise SystemExit("未找到可编译模块")
 
-# 完整点分模块名：winapp_migrator/core/agent_tts.py -> winapp_migrator.core.agent_tts
+# 完整点分模块名：zhuzhu_Copilot/core/agent_tts.py -> zhuzhu_Copilot.core.agent_tts
 extensions = [
     Extension(name=f[:-3].replace("/", "."), sources=[f])
     for f in mods

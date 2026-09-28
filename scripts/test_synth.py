@@ -2,7 +2,7 @@
 """端到端验证：synthesize 不传 voice_id -> 回退设置面板音色 -> 真实 API 合成"""
 import sys, os
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tts
+from zhuzhu_Copilot.core import agent_tts
 
 try:
     out = agent_tts.synthesize("语音合成测试", "")

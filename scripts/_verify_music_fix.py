@@ -66,7 +66,7 @@ from PyQt6.QtWidgets import QApplication, QCheckBox
 app = QApplication([])
 
 import tempfile
-import winapp_migrator.core.music_player as mp_mod
+import zhuzhu_Copilot.core.music_player as mp_mod
 _tmp = tempfile.mkdtemp()
 mp_mod.MUSIC_DIR = _tmp
 mp_mod.STATE_FILE = os.path.join(_tmp, "player.json")

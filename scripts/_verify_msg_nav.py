@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
 app = QApplication([])
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 # 0. 源码检查：锐评气泡小熊贴纸已删除
 src = open(os.path.join(os.path.dirname(ap.__file__), "agent_panel.py"),

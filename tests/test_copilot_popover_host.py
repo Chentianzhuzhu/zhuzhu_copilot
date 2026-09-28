@@ -21,8 +21,8 @@ from PyQt6.QtWidgets import QApplication            # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.ui import main_window as mw    # noqa: E402
-from winapp_migrator.ui.agent_panel import AgentPanel  # noqa: E402
+from zhuzhu_Copilot.ui import main_window as mw    # noqa: E402
+from zhuzhu_Copilot.ui.agent_panel import AgentPanel  # noqa: E402
 
 
 def _pump(ms: int):
@@ -42,7 +42,7 @@ def host():
     mp.setattr(mw.CopilotPanel, "_check_admin", lambda self: None)
     mp.setattr(mw.CopilotPanel, "_setup_tray", lambda self: None)
     try:
-        mp.setattr("winapp_migrator.ui.desktop_pet.ensure_pet", lambda w: None)
+        mp.setattr("zhuzhu_Copilot.ui.desktop_pet.ensure_pet", lambda w: None)
     except Exception:
         pass
     panel = AgentPanel(None)

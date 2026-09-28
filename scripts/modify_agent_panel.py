@@ -9,7 +9,7 @@
 """
 import sys
 
-P = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+P = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 src = open(P, encoding='utf-8').read()
 lines = src.splitlines(keepends=True)
 
@@ -28,10 +28,10 @@ def bare(l):
 log = []
 
 # ---------- 1. import ----------
-i = line_index(lambda l: 'from winapp_migrator.ui.tts_panel import TtsPanel' in l)
+i = line_index(lambda l: 'from zhuzhu_Copilot.ui.tts_panel import TtsPanel' in l)
 assert i >= 0, 'import TtsPanel not found'
 del lines[i]
-j = line_index(lambda l: bare(l).startswith('from winapp_migrator.core import agent_llm'))
+j = line_index(lambda l: bare(l).startswith('from zhuzhu_Copilot.core import agent_llm'))
 assert j >= 0, 'agent core import not found'
 if 'agent_tts' not in lines[j]:
     lines[j] = bare(lines[j]) + ', agent_tts' + lines[j][len(bare(lines[j])):]

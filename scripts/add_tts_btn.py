@@ -2,7 +2,7 @@
 """在 agent_panel.py 添加 TTS 按钮和 _open_tts_panel 方法"""
 import sys
 
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\ui\agent_panel.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\ui\agent_panel.py'
 lines = open(path, encoding='utf-8').read().split('\n')
 
 # 1. 在 import 区添加 tts_panel 导入（在 agent_tools 那行之后）
@@ -11,7 +11,7 @@ for i, l in enumerate(lines):
         insert_pos = i
         break
 
-new_import = 'from winapp_migrator.ui.tts_panel import TtsPanel'
+new_import = 'from zhuzhu_Copilot.ui.tts_panel import TtsPanel'
 lines.insert(insert_pos + 1, new_import)
 
 # 2. 在 bottom.addWidget(self.input, 1) 后插入 tts_btn
@@ -41,7 +41,7 @@ for i, l in enumerate(lines):
     def _open_tts_panel(self):
         """打开 TTS 语音合成面板"""
         try:
-            from winapp_migrator.ui.tts_panel import TtsPanel
+            from zhuzhu_Copilot.ui.tts_panel import TtsPanel
             if not hasattr(self, '_tts_panel') or self._tts_panel is None:
                 self._tts_panel = TtsPanel(self)
             self._tts_panel.show()

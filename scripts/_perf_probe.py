@@ -21,7 +21,7 @@ t0 = ts()
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
 t_qapp = ts()
-import winapp_migrator.ui.agent_panel as M
+import zhuzhu_Copilot.ui.agent_panel as M
 t_import = ts()
 print(f'[probe] QApplication init: {t_qapp-t0:.3f}s')
 print(f'[probe] agent_panel import: {t_import-t_qapp:.3f}s  (module={M.__file__})')

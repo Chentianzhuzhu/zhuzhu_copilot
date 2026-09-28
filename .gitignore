@@ -8,14 +8,14 @@ __pycache__/
 *.log
 
 # Cython build artifacts (.c generated from .py)
-src/winapp_migrator/**/*.c
+src/zhuzhu_Copilot/**/*.c
 
 # Code-signing private key (public .cer / bat are committed)
 build/certs/*.pfx
 
 # PyInstaller
 build/__pycache__/
-build/WinAppMigrator/
+build/zhuzhu_Copilot/
 build/setup/
 build/uninstall/
 build/build/
@@ -27,7 +27,7 @@ build/redist/
 dist/
 dist_new/
 *.spec
-!build/WinAppMigrator.spec
+!build/zhuzhu_Copilot.spec
 
 # Inno Setup
 Output/

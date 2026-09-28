@@ -12,7 +12,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 # 用 __new__ 构造（不跑完整 __init__，避免启动后台 git 加载线程在测试进程内触发
 # "wrapped C/C++ object has been deleted" 崩溃），仅装配被测方法依赖的最小属性。

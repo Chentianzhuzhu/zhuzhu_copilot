@@ -11,7 +11,7 @@
 ### 1. 工作流
 - 名称: `g9_study_helper`
 - 状态: 已激活
-- 路径: `C:/Users/zhuzhu/.winapp_migrator/workflows/g9_study_helper/`
+- 路径: `C:/Users/zhuzhu/.zhuzhu_Copilot/workflows/g9_study_helper/`
 
 ### 2. 子 Agent 注册表
 七位学科老师已全部注册（shared_context 默认 true）：
@@ -84,7 +84,7 @@ sub_teacher_math(
 ## 📁 相关文件
 - 任务快照: `study_plan/TASK_SNAPSHOT.md`
 - 配置状态: `study_plan/status.md`
-- 工作流: `C:/Users/zhuzhu/.winapp_migrator/workflows/g9_study_helper/`
+- 工作流: `C:/Users/zhuzhu/.zhuzhu_Copilot/workflows/g9_study_helper/`
 - 记忆文件: `memory.md`
 
 ---

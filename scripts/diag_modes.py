@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from winapp_migrator.core import agent_browser
+from zhuzhu_Copilot.core import agent_browser
 
 _LG = ("(!!document.querySelector('[class*=textarea], [class*=input-area], "
        'textarea, [contenteditable="true"]\'))')

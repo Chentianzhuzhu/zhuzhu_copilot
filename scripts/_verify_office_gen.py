@@ -32,10 +32,10 @@ def check(name, cond, extra=""):
 
 
 def main():
-    from winapp_migrator.office import (beautify_docx, beautify_pptx,
+    from zhuzhu_Copilot.office import (beautify_docx, beautify_pptx,
                                         beautify_xlsx, build_docx,
                                         build_pptx, build_xlsx)
-    from winapp_migrator.core import agent_tools
+    from zhuzhu_Copilot.core import agent_tools
 
     # ---------- 1. Word：项目方案（tech 主题，封面/目录/表格/引用） ----------
     docx_path = OUT / "智慧校园解决方案.docx"

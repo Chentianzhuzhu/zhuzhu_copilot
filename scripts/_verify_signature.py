@@ -8,8 +8,8 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-from winapp_migrator.core.security_engine.signature import signer_subject
-from winapp_migrator.core import security as _sec
+from zhuzhu_Copilot.core.security_engine.signature import signer_subject
+from zhuzhu_Copilot.core import security as _sec
 
 # Windows 系统自带签名文件的真实验证（kernel32.dll 恒为 Microsoft 签名）
 k32 = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "kernel32.dll")

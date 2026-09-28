@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import agent_llm
+from zhuzhu_Copilot.core import agent_llm
 
 CJK_KEY = "这是我的密钥请勿粘贴中文" * 4      # 与用户现场一致：长中文串
 ASCII_KEY = "sk-1234567890abcdef"

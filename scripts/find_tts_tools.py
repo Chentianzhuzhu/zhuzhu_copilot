@@ -2,7 +2,7 @@
 """查找 agent_tools.py 中 tts_speak / tts 相关工具定义与 agent_tts 导入"""
 import sys, re
 
-p = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_tools.py'
+p = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_tools.py'
 lines = open(p, encoding='utf-8').read().splitlines()
 out = []
 for i, l in enumerate(lines):

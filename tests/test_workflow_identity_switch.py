@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.core import agent_bus, agent_context, agent_engine, agent_workflow
+from zhuzhu_Copilot.core import agent_bus, agent_context, agent_engine, agent_workflow
 
 _IDENTITY_ENTRY = "我是产品经理，负责需求拆解与验收，语气务实"
 _QUESTION = "你是谁？请说明你的身份与职责"

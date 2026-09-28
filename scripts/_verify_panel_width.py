@@ -7,6 +7,7 @@
 4. 重置（_reset_panel_poses）清 dock_state/dock_order/panel_size 并全部浮出
 """
 
+from zhuzhu_Copilot import app_identity
 import os
 import sys
 
@@ -19,7 +20,7 @@ from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 app = QApplication([])
 
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 
 
 class StubHost(ap._RoundedFloatWindow):
@@ -40,7 +41,7 @@ def _make_dock_column(side: str) -> QWidget:
 
 
 def _clean_all():
-    q = QSettings("WinAppMigrator", "WinAppMigrator")
+    q = app_identity.qsettings()
     for key in ("panel_size/todosWin", "panel_size/gitLogWin", "panel_size/wtWin",
                 "panel_size/codeWin", "dock_state/todosWin", "dock_state/gitLogWin",
                 "dock_state/wtWin", "dock_state/codeWin", "dock_order/left",
@@ -65,7 +66,7 @@ def main() -> int:
     # 2) 独立尺寸持久化（拖动面板宽高并存，各面板互不影响）
     for p, w, h in ((wt, 360, 420), (git, 320, 380), (td, 300, 500), (code, 520, 640)):
         # 模拟 _panel_size_changed(persist=True)
-        QSettings("WinAppMigrator", "WinAppMigrator").setValue(
+        app_identity.qsettings().setValue(
             f"panel_size/{p.objectName()}", f"{w},{h}")
         p._set_panel_size(w, h)
         assert (p.width(), p.height()) == (w, h)
@@ -107,7 +108,7 @@ def main() -> int:
         p._set_panel_size(280, 320)
         p.setParent(None)
     code._set_panel_size(441, 600)
-    q = QSettings("WinAppMigrator", "WinAppMigrator")
+    q = app_identity.qsettings()
     assert not q.value("dock_order/left") and not q.value("dock_order/right")
     print("4) 重置清理 OK: left wt", wt.width(), "code", code.width())
 

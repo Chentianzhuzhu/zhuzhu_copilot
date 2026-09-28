@@ -14,7 +14,7 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import (
+from zhuzhu_Copilot.core import (
     agent_bus,
     agent_context,
     agent_engine,
@@ -35,7 +35,7 @@ def _clean():
 
 def _fake_wf(tmp_path, monkeypatch, name="frontend_design"):
     """构造一个真实可用工作流目录并接入 workflow_dir 路由。"""
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     wf_dir = tmp_path / name
     wf_dir.mkdir(exist_ok=True)
     (wf_dir / "workflow.json").write_text(
@@ -118,7 +118,7 @@ def test_team_start_no_dup_when_running(tmp_path, monkeypatch):
 def test_team_start_unlimited_concurrent_members(tmp_path, monkeypatch):
     """跨工作流主 Agent 派发数量不限：一次派发 8 个成员全部同时后台运行，
     不再受此前成员线程池 max_workers=4 的并发上限约束。"""
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     wfs = [f"wf{i}" for i in range(8)]
     for name in wfs:
         d = tmp_path / name
@@ -180,7 +180,7 @@ def test_message_driven_rerun(tmp_path, monkeypatch):
 
 def test_run_agent_llm_writes_ledger(tmp_path, monkeypatch):
     """跨工作流主 Agent 工具轨迹写入 ContextLedger（look_context 数据源）。"""
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     _fake_wf(tmp_path, monkeypatch)
     monkeypatch.setattr(agent_workflow, "load_llm_client",
                         lambda cfg, workflow=None: (None, ""))

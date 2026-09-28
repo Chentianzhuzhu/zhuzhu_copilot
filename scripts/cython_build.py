@@ -1,7 +1,7 @@
 """Cython 混淆加固：把 core/ 核心模块编译为 .pyd，生成无源码的构建树。
 
-- 把 src/winapp_migrator/ 完整复制到 build/stage_src/winapp_migrator/
-- 用 Cython 把 stage_src/winapp_migrator/core/*.py 就地编译为 .pyd，再删除对应 .py/.c
+- 把 src/zhuzhu_Copilot/ 完整复制到 build/stage_src/zhuzhu_Copilot/
+- 用 Cython 把 stage_src/zhuzhu_Copilot/core/*.py 就地编译为 .pyd，再删除对应 .py/.c
 - 保留 __init__.py、skills/、workflow_templates/，以及 UI/工具层为可读 .py（加固核心逻辑）
 
 用法：
@@ -16,9 +16,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src" / "winapp_migrator"
+SRC = ROOT / "src" / "zhuzhu_Copilot"
 STAGE = ROOT / "build" / "stage_src"
-CORE = STAGE / "winapp_migrator" / "core"
+CORE = STAGE / "zhuzhu_Copilot" / "core"
 CORE_SRC = SRC / "core"
 
 # 所有需要编译为 .pyd 的核心模块（排除 __init__.py）
@@ -40,8 +40,8 @@ def _setup_py(targets: list) -> str:
         "from setuptools.extension import Extension\n",
         "import glob, os\n",
         "mods = %r\n" % targets,
-        "exts = [Extension(os.path.join('winapp_migrator', 'core', m),\n",
-        "                  [os.path.join('winapp_migrator', 'core', m + '.py')])\n",
+        "exts = [Extension(os.path.join('zhuzhu_Copilot', 'core', m),\n",
+        "                  [os.path.join('zhuzhu_Copilot', 'core', m + '.py')])\n",
         "         for m in mods]\n",
         "setup(ext_modules=cythonize(\n",
         "    exts,\n",
@@ -59,7 +59,7 @@ def _probe() -> bool:
     probe_dir = ROOT / target
     if probe_dir.exists():
         shutil.rmtree(probe_dir, ignore_errors=True)
-    pkg = probe_dir / "winapp_migrator" / "core"
+    pkg = probe_dir / "zhuzhu_Copilot" / "core"
     pkg.mkdir(parents=True, exist_ok=True)
     (pkg / "__init__.py").write_text("")
     shutil.copy(CORE_SRC / "agent_json.py", pkg / "agent_json.py")
@@ -94,7 +94,7 @@ def main():
     # 1. 复制整个包到 staging，得到可读脚手架的干净副本
     if STAGE.exists():
         shutil.rmtree(STAGE, ignore_errors=True)
-    shutil.copytree(SRC, STAGE / "winapp_migrator",
+    shutil.copytree(SRC, STAGE / "zhuzhu_Copilot",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copy(ROOT / "src" / "main.py", STAGE / "main.py")
 

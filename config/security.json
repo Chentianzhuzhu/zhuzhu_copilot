@@ -13,7 +13,7 @@
     "scan_on_start": false
   },
   "quarantine": {
-    "root": "%ProgramData%/WinAppMigrator/Quarantine"
+    "root": "%ProgramData%/zhuzhu_Copilot/Quarantine"
   },
   "ransomware": {
     "canary_dirs": [
@@ -28,7 +28,7 @@
       "_important_notes.pdf",
       "_customer_data.xlsx"
     ],
-    "canary_content": "WinAppMigrator canary file. Do not edit.",
+    "canary_content": "zhuzhu_Copilot canary file. Do not edit.",
     "extensions": [
       ".locked", ".encrypted", ".crypt", ".crypted", ".crypto",
       ".locky", ".zepto", ".wncry", ".wcry", ".cerber",

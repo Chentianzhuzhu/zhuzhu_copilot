@@ -2,7 +2,7 @@
 """测量 stream 流式节奏：首片耗时、分片数、总耗时、总字节"""
 import sys, json, time, base64, urllib.request, urllib.error
 sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
-from winapp_migrator.core import agent_tts
+from zhuzhu_Copilot.core import agent_tts
 
 key = agent_tts.load_api_key()
 payload = {

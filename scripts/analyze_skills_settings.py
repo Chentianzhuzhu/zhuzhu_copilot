@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """提取 agent_skills.py 的 load_settings / save_settings"""
-path = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator\core\agent_skills.py'
+path = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot\core\agent_skills.py'
 lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
 out = []
 out.append('总行数: %d' % len(lines))

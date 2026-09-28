@@ -2,8 +2,8 @@
 """事件流聊天气泡「1:1 复刻 demo」的结构 / 样式 / 行为回归。
 
 被测对象：
-- `src/winapp_migrator/ui/agent_chat_bubbles.py`：事件流气泡组件（外形与排版）
-- `src/winapp_migrator/ui/agent_panel.py`：段 → 区块的结构映射与回合渲染入口
+- `src/zhuzhu_Copilot/ui/agent_chat_bubbles.py`：事件流气泡组件（外形与排版）
+- `src/zhuzhu_Copilot/ui/agent_panel.py`：段 → 区块的结构映射与回合渲染入口
 
 守护三类契约：
 1. 结构对应：demo（ui_style_demo/index.html）的每个可见节点都有明确对应的组件，
@@ -25,13 +25,13 @@ import pytest                                                        # noqa: E40
 from PyQt6.QtCore import Qt                                          # noqa: E402
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget  # noqa: E402
 
-from winapp_migrator.ui import agent_chat_bubbles as cb              # noqa: E402
-from winapp_migrator.ui import agent_panel as ap                     # noqa: E402
+from zhuzhu_Copilot.ui import agent_chat_bubbles as cb              # noqa: E402
+from zhuzhu_Copilot.ui import agent_panel as ap                     # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
 DEMO_HTML = Path(__file__).resolve().parents[1] / "ui_style_demo" / "index.html"
-MODULE_PATH = (Path(__file__).resolve().parents[1] / "src" / "winapp_migrator"
+MODULE_PATH = (Path(__file__).resolve().parents[1] / "src" / "zhuzhu_Copilot"
                / "ui" / "agent_chat_bubbles.py")
 EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
 COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
@@ -48,7 +48,7 @@ STYLE = cb.ChatStyle(
     text="#F3F5F9", text_dim="#9BA3B0", accent="#2F52D8", muted="#9BA3B0",
     icon_shell="#272C36", icon_color="#2F52D8", tag_bg="#2A3040", tag_fg="#9BA3B0",
     user_bg="#2F52D8", user_fg="#FFFFFF", cmd_fg="#F3F5F9", ok_fg="#5B82F6",
-    hover="#272C36", panel="#181B21",
+    hover="#272C36", panel="#181B21", bg="#101216",
 )
 
 LONG_THINK = "用户要求扫描全盘部署包并生成迁移清单，先枚举安装产物再按指纹过滤。" * 24
@@ -133,7 +133,7 @@ def test_component_module_has_no_emoji():
 
 def test_tokens_carry_demo_geometry():
     """demo 派生的几何常量落在 tokens（禁止散落魔法数值）。"""
-    from winapp_migrator.ui import tokens as tk
+    from zhuzhu_Copilot.ui import tokens as tk
     assert (tk.BUBBLE_RADIUS_USER, tk.BUBBLE_RADIUS_USER_TAIL) == (18, 6)   # .msg
     assert tk.BUBBLE_RADIUS_THINK_TAIL == 6                                # .think-bubble
     assert (tk.RADIUS_CMD, tk.RADIUS_TILE, tk.RADIUS_CHIP) == (10, 9, 7)   # .cmd/.tc-icon/.kv
@@ -283,9 +283,12 @@ def test_short_think_bubble_shrinks_to_content(host):
     assert tb._body.maximumHeight() == 16777215, "短思考不得被限制到 5 行高度"
     assert tb._body.minimumHeight() < limit, "短思考不得被钉到 5 行高度"
     m = tb.layout().contentsMargins()
-    need = (m.top() + m.bottom() + cb.THINK_ICON + cb.THINK_HEAD_GAP
+    # QFrame 的 1px 描边会把布局内区整体内缩：高度预算必须含上下两条描边，
+    # 漏算会让真高比估算多 2px —— 展开长思考时最后一项（折叠按钮）被压掉两像素。
+    bd = 2 * tb.frameWidth()
+    need = (bd + m.top() + m.bottom() + cb.THINK_ICON + cb.THINK_HEAD_GAP
             + tb._body.minimumHeight())
-    assert tb.heightForWidth(tb.width()) == need, "气泡应恰为头行 + 正文高度"
+    assert tb.heightForWidth(tb.width()) == need, "气泡应恰为描边 + 头行 + 正文高度"
     assert tb.height() <= need + 2, f"气泡实际高度 {tb.height()} 超出内容 {need}"
     assert tb._fold_btn.isHidden(), "短思考不应出现折叠按钮"
 

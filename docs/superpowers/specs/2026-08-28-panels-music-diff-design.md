@@ -20,12 +20,12 @@
 ## 2. 音乐播放器（设置页新页签）
 
 ### 存储
-- 上传的 MP3/WAV 复制到 `~/.winapp_migrator/music/`
-- 歌单：扫描该目录（按名排序）；播放状态写入 `~/.winapp_migrator/music/player.json`：
+- 上传的 MP3/WAV 复制到 `~/.zhuzhu_Copilot/music/`
+- 歌单：扫描该目录（按名排序）；播放状态写入 `~/.zhuzhu_Copilot/music/player.json`：
   `{current_index, position_seconds{文件名:秒}, volume, mode, autoplay}`
 
 ### 播放内核
-- 新建 `src/winapp_migrator/core/music_player.py`，基于 pygame.mixer（项目已依赖 pygame 且随包发布）
+- 新建 `src/zhuzhu_Copilot/core/music_player.py`，基于 pygame.mixer（项目已依赖 pygame 且随包发布）
 - 封装：load/play/pause/resume/stop/set_position/set_volume/next/prev、信号（位置更新、结束、出错）
 - 模式：顺序 / 随机 / 单曲循环（enum）
 - 异步：pygame 在低层线程，UI 通过 QTimer(500ms) 轮询 `get_pos()+base` 更新进度条

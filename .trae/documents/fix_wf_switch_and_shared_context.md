@@ -12,7 +12,7 @@
 
 ## 阶段 A：@工作流 永久切换（移除 wf_return 自动切回）
 
-文件：`src/winapp_migrator/ui/agent_panel.py`
+文件：`src/zhuzhu_Copilot/ui/agent_panel.py`
 
 - `_new_sess_state`（约 L10971）：删除 `"wf_return": ""` 键。
 - `_send`（约 L15947-15951）：删除 `kind == "workflow" and (text or images)` 时记录 `st["wf_return"]` 的整块代码与注释；@工作流 一律走 `_switch_session_workflow` 持久切换，带正文则正常发送任务。
@@ -21,7 +21,7 @@
 
 ## 阶段 B：sub_coding_agent 前缀归属修复
 
-文件：`src/winapp_migrator/core/agent_subagent.py`
+文件：`src/zhuzhu_Copilot/core/agent_subagent.py`
 
 - `subagent_tool()`（约 L917-920）：命中条件改为 `it["name"] == n or it["name"] == cand`（先直接命中，再匹配去前缀候选），修复自带 `sub_` 前缀注册名的永不可达问题。
 - `subagent_schemas()`（约 L971）：工具名改为 `n if n.startswith("sub_") else "sub_" + n`（与 `register_subagent`（L860）tool_name 逻辑对齐），消除 `sub_sub_coding_agent` 双前缀。
@@ -29,29 +29,29 @@
 
 ## 阶段 C：共享上下文默认全开 + 存量迁移
 
-文件：`src/winapp_migrator/core/agent_subagent.py`
+文件：`src/zhuzhu_Copilot/core/agent_subagent.py`
 
 - `register_subagent()`（L813-816）：参数默认改为 `shared_context=True, allow_chat=True, share_context=True`；同步 docstring 与 tips 文案（L862-879）。
 - `registered_subagents()`（L805-806）：解析缺省值改为开启（字段缺失按 True），并新增幂等迁移 `_migrate_shared_defaults(f, data)`：对每条目将 `allow_chat/share_context/shared_context` 显式补为 true，有变更则以 `json.dumps(data, ensure_ascii=False, indent=2)` 回写文件，回写后重读 `f.stat()` 刷新 `_SUB_CACHE` 指纹（避免下次重复迁移/缓存失效问题）。注意：显式 false 按决定也翻转为 true（存量全部迁移）。
 - `run_sub_agent()`（L200）/ `run_agent_llm()`（L495）/ `dispatch_sub_agents()`（L401）：`shared_context` 默认值 False → True。
 
-文件：`src/winapp_migrator/core/agent_tools.py`
+文件：`src/zhuzhu_Copilot/core/agent_tools.py`
 
 - `_register_sub_agent`（L5051-5053）：`allow_chat/share_context` 不再用 `bool(args.get(...) or False)` 强制关，改为 `args.get("allow_chat")` 缺省 None 方式让 `register_subagent` 新默认生效（shared_context 已直传 None）。
 - `register_sub_agent` 工具 schema（约 L1753-1790）：`allow_chat/shared_context/share_context` 参数 description 改为"缺省全开"，与实现一致。
 
-文件：`src/winapp_migrator/core/agent_engine.py`
+文件：`src/zhuzhu_Copilot/core/agent_engine.py`
 
 - `_run_subagent_tool`（L863）：`batch_shared = bool(args.get("shared_context", True))`（默认开启整批共享）。
 - 任务开始处（L1508-1525）：`agent_context.active_space()` 为空时先 `open_space(seed=user_input 前 200 字, owner="main", activate=True)` 再拉快照注入；子 Agent 侧 `bind_shared_context` 已自带自动建空间（DEFAULT_SPACE），无需改动。
 
-文件：`src/winapp_migrator/ui/agent_panel.py`
+文件：`src/zhuzhu_Copilot/ui/agent_panel.py`
 
 - `_subagent_worker`（L16185）：`shared_context=bool(conf.get("shared_context"))` 已随注册默认值生效（迁移后为 True），无需改动，仅确认注释同步（可选）。
 
-文件：`src/winapp_migrator/core/workflow_templates/presets/zhuzhu_copilot/subagents.json`
+文件：`src/zhuzhu_Copilot/core/workflow_templates/presets/zhuzhu_copilot/subagents.json`
 
-- `explorer_project_agent` / `sub_coding_agent` 两条 `shared_context: false` 显式改为 `true`（sansheng_liubu 预设已全 true）。用户副本（`%USERPROFILE%\.winapp_migrator\workflows\*\subagents.json`）由阶段 C 的迁移函数处理。
+- `explorer_project_agent` / `sub_coding_agent` 两条 `shared_context: false` 显式改为 `true`（sansheng_liubu 预设已全 true）。用户副本（`%USERPROFILE%\.zhuzhu_Copilot\workflows\*\subagents.json`）由阶段 C 的迁移函数处理。
 
 `_chat_with` / `_look_context` 权限门（agent_tools.py L5121/L5144）保留：显式 false 仍拒绝，默认随注册开启。
 

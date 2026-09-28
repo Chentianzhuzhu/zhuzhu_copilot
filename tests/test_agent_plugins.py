@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 
-from winapp_migrator.core import agent_plugins, agent_runtime, agent_skills
+from zhuzhu_Copilot.core import agent_plugins, agent_runtime, agent_skills
 
 
 @pytest.fixture()

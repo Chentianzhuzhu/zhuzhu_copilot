@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
 
-import winapp_migrator.core.music_player as mp
+import zhuzhu_Copilot.core.music_player as mp
 
 _FAIL = []
 TMP = tempfile.mkdtemp(prefix="progress_test_")

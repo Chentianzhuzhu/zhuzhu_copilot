@@ -19,7 +19,7 @@
 
 ## 3. 架构总览
 
-新增模块 `src/winapp_migrator/core/agent_web_llm.py`，三块职责：
+新增模块 `src/zhuzhu_Copilot/core/agent_web_llm.py`，三块职责：
 
 ```
 用户消息 → agent_llm.py (OpenAI 兼容 SSE, 零改动)
@@ -37,7 +37,7 @@
 ### 4.1 凭证管理（引导登录 + Cookie 持久化）
 
 - 复用 `agent_browser` 启动独立 Edge 实例 → 导航 `https://chat.deepseek.com` → 用户在程序内手动扫码/登录 → 登录完成后从 DevTools 读登录态 Cookie
-- Cookie 保存：`~/.winapp_migrator/web_credentials/deepseek_web_cookies.json`（含过期时间去重）
+- Cookie 保存：`~/.zhuzhu_Copilot/web_credentials/deepseek_web_cookies.json`（含过期时间去重）
 - 过期检测：透传响应 401/403，或/和请求前 timestamp 校验超过保鲜期 → 抛「凭证过期」错误，UI 提示重新登录
 - 提供 `login_now()`（引导重新登录）与 `has_valid_credentials()` 供 UI 显示状态
 

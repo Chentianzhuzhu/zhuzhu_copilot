@@ -7,7 +7,7 @@ sys.path.insert(0, r'C:\Users\zhuzhu\Desktop\my first android app\src')
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
 
-import winapp_migrator.ui.agent_panel as M
+import zhuzhu_Copilot.ui.agent_panel as M
 
 pr = cProfile.Profile()
 pr.enable()

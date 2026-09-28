@@ -2,7 +2,7 @@
 """诊断2：主窗口菜单栏/托盘名称 + 设置面板音色删除/刷新逻辑"""
 import sys, re
 
-base = r'C:\Users\zhuzhu\Desktop\my first android app\src\winapp_migrator'
+base = r'C:\Users\zhuzhu\Desktop\my first android app\src\zhuzhu_Copilot'
 
 # A) 主窗口菜单栏 / 托盘
 p = base + r'\ui\main_window.py'

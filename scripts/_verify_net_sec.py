@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from winapp_migrator.core import network_defense as nd
-from winapp_migrator.core.security import SecurityScanner
+from zhuzhu_Copilot.core import network_defense as nd
+from zhuzhu_Copilot.core.security import SecurityScanner
 
 # 纯逻辑单元：IP 转换 / 回环判定
 assert nd._fmt_ip(0) == "0.0.0.0"
@@ -18,7 +18,7 @@ assert d.udp_threshold == 4000, d.udp_threshold
 print("[OK] network_defense 纯逻辑")
 
 # SMB 本地端口误报修复：构造监听端口集，校验判定策略
-import winapp_migrator.core.security as sec
+import zhuzhu_Copilot.core.security as sec
 from unittest.mock import patch
 scanner = SecurityScanner()
 with patch.object(sec, "_listening_ports", lambda: {445, 139, 3389, 3306}):

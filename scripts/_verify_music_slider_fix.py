@@ -46,7 +46,7 @@ from PyQt6.QtCore import Qt
 app = QApplication([])
 
 import tempfile
-import winapp_migrator.core.music_player as mp_mod
+import zhuzhu_Copilot.core.music_player as mp_mod
 _tmp = tempfile.mkdtemp()
 mp_mod.MUSIC_DIR = _tmp
 mp_mod.STATE_FILE = os.path.join(_tmp, "player.json")
@@ -64,7 +64,7 @@ assert cur == 30, f"current_position 应返回实时位置30, got {cur}"
 print("current_position 实时位置:", cur)
 
 # 绑定 _AgentSettingsDialog._music_tick 到 stub，验证刷新不会跳 0
-from winapp_migrator.ui import agent_panel as ap
+from zhuzhu_Copilot.ui import agent_panel as ap
 stub = types.SimpleNamespace()
 stub.music_slider = QSlider(Qt.Orientation.Horizontal)
 stub.music_slider.setRange(0, 0)

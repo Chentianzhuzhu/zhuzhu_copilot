@@ -6,6 +6,7 @@
 4) 预览面板（CodePreviewWindow，禁用 WebEngine）地址栏样式 + 标签页栏 QSS 源码断言
 5) MainWindow 无头构建 + _apply_theme 浅/深换肤不报错
 """
+from zhuzhu_Copilot import app_identity
 import contextlib
 import io
 import os
@@ -35,7 +36,7 @@ def check(name, ok, detail=""):
 
 def main():
     # ---------- 1) styles.set_palette ----------
-    from winapp_migrator.ui import styles
+    from zhuzhu_Copilot.ui import styles
     styles.set_palette("dark")
     assert styles.PALETTE["bg_top"] == "#000000"
     styles.set_palette("light")
@@ -46,7 +47,7 @@ def main():
     check("apply_palette 可用(live 读取 PALETTE)", callable(styles.apply_palette))
 
     # ---------- 2) _filter_by_keyword ----------
-    from winapp_migrator.core import agent_tools as at
+    from zhuzhu_Copilot.core import agent_tools as at
     body = "第一段：介绍人工智能。\n第二段：Python 教程\n第三段：人工智能的未来发展"
     out, hits = at._filter_by_keyword(body, "人工智能", 8000)
     check("_filter_by_keyword 命中2段", hits == 2 and "Python" not in out and "第一段" in out, f"hits={hits}")
@@ -91,8 +92,8 @@ def main():
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtCore import QSettings
     app = QApplication(sys.argv)
-    from winapp_migrator.ui import agent_panel
-    from winapp_migrator.core import agent_ui_ux
+    from zhuzhu_Copilot.ui import agent_panel
+    from zhuzhu_Copilot.core import agent_ui_ux
     agent_panel.apply_theme()
     _is_light = agent_panel._resolve_theme() == "light"
     # 禁用 WebEngine，避免 offscreen 下 Chromium 挂起
@@ -117,19 +118,19 @@ def main():
 
     # ---------- 5) MainWindow ----------
     try:
-        from winapp_migrator.update_check import UpdateChecker
+        from zhuzhu_Copilot.update_check import UpdateChecker
     except Exception:
         UpdateChecker = None
     if UpdateChecker is not None:
         UpdateChecker.start = lambda self, *a, **k: None
     # 模拟管理员，避免 _check_admin 弹 QMessageBox 阻塞无头测试
-    import winapp_migrator.utils.helpers as _helpers
+    import zhuzhu_Copilot.utils.helpers as _helpers
     _orig_admin = _helpers.is_admin
     _helpers.is_admin = lambda: True
-    _qs_t = QSettings("WinAppMigrator", "WinAppMigrator")
+    _qs_t = app_identity.qsettings()
     _orig_theme = str(_qs_t.value("agent_theme", "light"))
     try:
-        from winapp_migrator.ui import main_window as mw_mod
+        from zhuzhu_Copilot.ui import main_window as mw_mod
         styles.set_palette("light")
         mw_mod._regen_qss()
         mw = mw_mod.MainWindow()
@@ -139,7 +140,7 @@ def main():
         check("MainWindow title 浅色文本", "#1E293B" in mw._title_lbl.styleSheet())
         check("左卡片浅色背景", "background-color: #FFFFFF" in mw._left_card.styleSheet())
         # 深色换肤（_apply_theme 以 QSettings agent_theme 为准，需先持久化 dark）
-        QSettings("WinAppMigrator", "WinAppMigrator").setValue("agent_theme", "dark")
+        app_identity.qsettings().setValue("agent_theme", "dark")
         styles.set_palette("dark")
         mw_mod._regen_qss()
         mw._apply_theme()
@@ -160,7 +161,7 @@ def main():
         _qs_t.setValue("agent_theme", _orig_theme)   # 恢复用户原主题设置
 
     # ---------- 6) 拖拽防抖 hook ----------
-    from winapp_migrator.ui.agent_panel import AgentPanel
+    from zhuzhu_Copilot.ui.agent_panel import AgentPanel
     check("AgentPanel 拖动防抖 hook", callable(getattr(AgentPanel, "_arm_move_side_sync", None))
           and callable(getattr(AgentPanel, "_move_side_flush", None)))
 

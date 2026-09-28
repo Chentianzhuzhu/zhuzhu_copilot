@@ -15,7 +15,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from winapp_migrator.core import (agent_context, agent_subagent, agent_tools,
+from zhuzhu_Copilot.core import (agent_context, agent_subagent, agent_tools,
                                   agent_team_run)
 
 
@@ -196,7 +196,7 @@ def _tmp_workflows_root(tmp_path, monkeypatch):
     root = tmp_path / "workflows"
     (root / "_default").mkdir(parents=True)
     (root / "_default" / "README.md").write_text("default", encoding="utf-8")
-    from winapp_migrator.core import agent_workflow
+    from zhuzhu_Copilot.core import agent_workflow
     monkeypatch.setattr(agent_workflow, "workflows_root", lambda: root)
     return agent_workflow, root
 
@@ -240,7 +240,7 @@ def test_run_agent_llm_shared_guard_for_unknown_workflow(monkeypatch):
 def _make_engine(monkeypatch):
     from PyQt6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    from winapp_migrator.core import agent_engine
+    from zhuzhu_Copilot.core import agent_engine
 
     class _EngineLLM:
         model = "test-model"
@@ -345,7 +345,7 @@ def test_sub_agent_schema_lets_main_agent_assign_context_and_share(tmp_path, mon
 def test_create_agent_result_points_back_to_register_sub_agent(monkeypatch):
     """用户要「创建子 agent」时模型误用 create_agent / op=create_agent：结果文本必须
     回带纠偏提示（人格 Agent 主 Agent 调不到），使下一轮改走 register_sub_agent。"""
-    from winapp_migrator.core import agent_tools
+    from zhuzhu_Copilot.core import agent_tools
 
     class _FakeAgents:
         def save_agent(self, name, prompt, bound):
@@ -363,7 +363,7 @@ def test_create_agent_result_points_back_to_register_sub_agent(monkeypatch):
 def test_prompt_rule_prefers_registered_sub_agent():
     """系统提示的扩展规则：创建子 agent 走 register_sub_agent，并声明主 Agent 的
     共享分配与 context 传参（防止模型用 create_agent 顶替）。"""
-    from winapp_migrator.core import agent_skills
+    from zhuzhu_Copilot.core import agent_skills
     rule = agent_skills._extend_dont_create_rule()
     assert "register_sub_agent" in rule
     assert "create_agent" in rule and "禁止用它顶替" in rule
@@ -374,7 +374,7 @@ def test_creation_tools_survive_task_pruning(monkeypatch, tmp_path):
     """「创建一个子agent（并行处理…）」这类措辞会命中 subagent 任务类别 → 工具集被裁剪；
     创建通道（register_sub_agent/list_sub_agents）与已注册的 sub_<name> 必须仍然暴露，
     否则该轮根本无法把子 Agent 创建出来（用户反馈的「创建不了/建错形态」根因之一）。"""
-    from winapp_migrator.core import agent_engine
+    from zhuzhu_Copilot.core import agent_engine
     _wf, _root = _tmp_workflows_root(tmp_path, monkeypatch)
     ok, _ = agent_subagent.register_subagent("menxia", "封驳审议", "审议产物")
     assert ok

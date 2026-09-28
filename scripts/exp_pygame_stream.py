@@ -24,7 +24,7 @@ except Exception as e:
     sys.stdout.write('MIXER_INIT_FAIL: %s\n' % e); sys.exit()
 
 # 拉真实流式分片
-from winapp_migrator.core import agent_tts
+from zhuzhu_Copilot.core import agent_tts
 key = agent_tts.load_api_key()
 payload = {
     "model": agent_tts.DEFAULT_TARGET_MODEL,

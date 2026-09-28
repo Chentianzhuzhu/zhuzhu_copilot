@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from winapp_migrator.core import agent_engine
+from zhuzhu_Copilot.core import agent_engine
 
 
 class _FakeLLM:
