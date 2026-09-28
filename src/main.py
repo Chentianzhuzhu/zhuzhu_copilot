@@ -81,6 +81,9 @@ from zhuzhu_Copilot.utils.helpers import (
 SPLASH_W = 359
 SPLASH_H = 200
 SPLASH_RADIUS = 18
+# 右下角署名到窗口右 / 下边缘的距离（署名绝对定位，不参与主布局）
+SPLASH_SUB_INSET_X = 14
+SPLASH_SUB_INSET_Y = 10
 
 
 def _resolve_theme_mode() -> str:
@@ -96,7 +99,7 @@ def _resolve_theme_mode() -> str:
 
 
 class SplashWindow(QWidget):
-    """启动动画窗口：359x200 圆角矩形、居中、无边框，显示 zhuzhu copilot，
+    """启动动画窗口：359x200 圆角矩形、居中、无边框，显示 zhuzhu Copilot，
     右下角 powered by xiaozhu 灰色小字；深浅色模式自适应。
 
     形状：尺寸沿用 SPLASH_W x SPLASH_H（不改变窗口大小），四角经
@@ -133,9 +136,11 @@ class SplashWindow(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # 标题：zhuzhu copilot（垂直居中）
+        # 标题：zhuzhu Copilot
+        # 上下两条等分 stretch → 标题在整窗高度上真正居中；
+        # 署名**不进布局**：一旦进布局它就占掉底部空间，标题会被挤得整体偏上。
         lay.addStretch(1)
-        title = QLabel("zhuzhu copilot")
+        title = QLabel("zhuzhu Copilot")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
             f"color: {self._title_c}; font-size: 26px; font-weight: 700;"
@@ -145,14 +150,11 @@ class SplashWindow(QWidget):
 
         lay.addStretch(1)
 
-        # 右下角灰色小字
-        sub = QLabel("powered by xiaozhu")
-        sub.setAlignment(Qt.AlignmentFlag.AlignRight
-                         | Qt.AlignmentFlag.AlignBottom)
-        sub.setStyleSheet(
-            f"color: {self._sub_c}; font-size: 11px; padding: 0 14px 10px 0;"
-            "background: transparent;")
-        lay.addWidget(sub)
+        # 右下角灰色小字：绝对定位到右下角（见 _place_sub），不占用标题的居中空间
+        self._sub = QLabel("powered by xiaozhu", self)
+        self._sub.setStyleSheet(
+            f"color: {self._sub_c}; font-size: 11px; background: transparent;")
+        self._place_sub()
 
         # 淡入动画
         self._eff = QGraphicsOpacityEffect(self)
@@ -181,6 +183,18 @@ class SplashWindow(QWidget):
         except Exception:
             pass
 
+    def _place_sub(self):
+        """把署名贴到右下角（右/下各留 SPLASH_SUB_INSET_*）。
+
+        绝对定位而非放进布局：署名留在布局里会占掉底部空间，把标题的居整体顶偏。
+        """
+        try:
+            self._sub.adjustSize()
+            self._sub.move(self.width() - self._sub.width() - SPLASH_SUB_INSET_X,
+                           self.height() - self._sub.height() - SPLASH_SUB_INSET_Y)
+        except Exception:
+            pass
+
     def _apply_round(self):
         """给等边窗口套圆角（复用应用统一圆角机制，失败静默不影响启动）。
 
@@ -196,6 +210,8 @@ class SplashWindow(QWidget):
     def showEvent(self, ev):
         super().showEvent(ev)
         self._apply_round()
+        # 字体度量到显示时才最终确定，署名位置在此再钉一次
+        self._place_sub()
         # 首帧/尺寸就绪后各补一次，避免初始方角残留（低帧率与驱动差异兜底）
         QTimer.singleShot(30, self._apply_round)
         QTimer.singleShot(180, self._apply_round)

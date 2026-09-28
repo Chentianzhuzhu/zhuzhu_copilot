@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel
 
 _app = QApplication.instance() or QApplication([])
 
@@ -140,5 +140,38 @@ def test_default_mode_click_keeps_splash():
         QTest.qWait(40)
         QTest.mouseClick(w, Qt.MouseButton.LeftButton)
         assert w.isVisible(), "正常模式下点击不应收起启动画面"
+    finally:
+        w.close()
+
+
+def test_title_uses_capitalized_brand():
+    """品牌名大小写需与全应用一致（zhuzhu Copilot，而非 zhuzhu copilot）。"""
+    m = _splash_mod()
+    src = open(m.__file__, encoding="utf-8").read()
+    assert 'QLabel("zhuzhu Copilot")' in src
+    assert 'QLabel("zhuzhu copilot")' not in src, "启动窗标题遗留了全小写写法"
+
+
+def test_title_centered_and_sub_absolute():
+    """标题在整窗高度上居中（不被署名顶偏），署名绝对定位在右下角。
+
+    此前署名与标题同处一个 QVBoxLayout，署名占掉底部空间，
+    标题实际中心比窗口中心高约 12px —— 看起来整体偏上。
+    """
+    m = _splash_mod()
+    w = m.SplashWindow()
+    try:
+        w.show()
+        QTest.qWait(60)
+        labels = {c.text(): c for c in w.findChildren(QLabel)}
+        title, sub = labels["zhuzhu Copilot"], labels["powered by xiaozhu"]
+
+        offset = abs(title.geometry().center().y() - w.height() // 2)
+        assert offset <= 3, \
+            f"标题应垂直居中：标题中心y={title.geometry().center().y()}，窗口中心y={w.height() // 2}，偏差 {offset}px"
+
+        assert sub.parent() is w, "署名不应再挂在布局里（必须绝对定位）"
+        assert abs((w.width() - (sub.x() + sub.width())) - m.SPLASH_SUB_INSET_X) <= 1, "署名右侧间距不符"
+        assert abs((w.height() - (sub.y() + sub.height())) - m.SPLASH_SUB_INSET_Y) <= 1, "署名下方间距不符"
     finally:
         w.close()
