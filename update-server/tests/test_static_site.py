@@ -283,8 +283,45 @@ class TestSeoAssets(unittest.TestCase):
         block = re.search(r"List<SeoSupport\.Entry>\s+entries\s*=\s*List\.of\((.*?)\);", controller, re.S)
         self.assertIsNotNone(block, "未找到 sitemap 条目定义")
         listed = set(re.findall(r'new SeoSupport\.Entry\("([^"]+)"', block.group(1)))
-        self.assertEqual(listed, {"/", "/gallery", "/download", "/faq"},
-                         "sitemap 条目与实际页面路由不一致")
+
+        # 页面路由取自真实的 @GetMapping 注解：sitemap 里不能出现根本没注册的地址
+        registered = set()
+        for chunk in re.findall(r"@GetMapping\(([^)]*)\)", controller):
+            registered.update(re.findall(r'"([/][^"{]*)"', chunk))
+        self.assertEqual(listed - registered, set(), "sitemap 含未注册的页面路由")
+        # 已注册的页面路由必须全部被收录（/about 曾经漏收）
+        self.assertEqual({"/", "/gallery", "/download", "/faq", "/about"} - listed, set(),
+                         "存在未收录到 sitemap 的页面路由")
+
+    def test_head_declares_og_image_metadata(self) -> None:
+        """分享卡片需要宽高与替代文本；宽高只在品牌封面下声明，且必须与封面实际尺寸一致。"""
+        head = read(TEMPLATES / "fragments/head.html")
+        self.assertRegex(head, r'property="og:image:width" content="(\d+)"')
+        self.assertRegex(head, r'property="og:image:height" content="(\d+)"')
+        self.assertIn('property="og:image:alt"', head, "缺少分享图替代文本")
+
+        declared = (
+            int(re.search(r'property="og:image:width" content="(\d+)"', head).group(1)),
+            int(re.search(r'property="og:image:height" content="(\d+)"', head).group(1)),
+        )
+        raw = (STATIC / "og/og-cover.png").read_bytes()[:24]
+        actual = (int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big"))
+        self.assertEqual(declared, actual, f"声明的分享图尺寸与文件不符：{declared} vs {actual}")
+
+    def test_head_declares_sitemap(self) -> None:
+        head = read(TEMPLATES / "fragments/head.html")
+        self.assertIn('rel="sitemap"', head, "head 未声明站点地图，抓取方需要额外发现路径")
+
+    def test_default_seo_covers_both_brands(self) -> None:
+        """默认 SEO 内容必须同时覆盖两个品牌名，否则只改名不换词根就等于放弃一半流量。"""
+        content = read(JAVA / "service/ContentService.java")
+        keywords = re.search(r'm\.put\("keywords",\s*"([^"]+)"\)', content)
+        self.assertIsNotNone(keywords, "默认内容缺少 seo.keywords")
+        for brand in ("zhuzhu Copilot", "WinAppMigrator"):
+            self.assertIn(brand, keywords.group(1), f"默认关键词未覆盖品牌 {brand}")
+        aliases = re.search(r'm\.put\("alternateNames",\s*"([^"]*)"\)', content)
+        self.assertIsNotNone(aliases, "默认内容缺少 seo.alternateNames（结构化数据的副品牌名）")
+        self.assertIn("WinAppMigrator", aliases.group(1))
 
 
 class TestSecurityGuards(unittest.TestCase):

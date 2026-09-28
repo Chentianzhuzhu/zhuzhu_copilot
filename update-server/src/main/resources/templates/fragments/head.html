@@ -16,6 +16,7 @@
   <meta name="author" th:attr="content=${site.title}">
   <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
   <link rel="canonical" th:attr="href=${canonical}">
+  <link rel="sitemap" type="application/xml" href="/sitemap.xml">
 
   <!-- Open Graph -->
   <meta property="og:type" content="website">
@@ -24,6 +25,13 @@
   <meta property="og:description" th:attr="content=${pageDesc}">
   <meta property="og:url" th:attr="content=${canonical}">
   <meta property="og:image" th:attr="content=${ogImage}">
+  <!--
+    尺寸只在用品牌封面时声明：后台换了自定义分享图后尺寸未知，
+    谎报宽高会让分享卡片被裁切。1200×630 是品牌封面本身的实际尺寸（静态回归校验会比对文件）。
+  -->
+  <meta th:if="${ogImageDefault}" property="og:image:width" content="1200">
+  <meta th:if="${ogImageDefault}" property="og:image:height" content="630">
+  <meta property="og:image:alt" th:attr="content=${pageTitle}">
   <meta property="og:locale" content="zh_CN">
 
   <!-- Twitter Card -->

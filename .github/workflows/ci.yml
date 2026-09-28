@@ -19,6 +19,9 @@ jobs:
       - name: Ruff 静态检查
         run: ruff check src mcp_servers --statistics || true
 
+      - name: 静态官网 SEO 产物与配置一致（website/site.seo.json）
+        run: python scripts/gen_site_seo.py --check
+
   security-engine-tests:
     runs-on: windows-latest
     steps:
@@ -27,7 +30,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements.txt pytest
-      - name: 安全引擎/网络防御/Git 数据层 单元测试
+      - name: 安全引擎/网络防御/Git 数据层/静态官网 SEO 单元测试
         run: python -m pytest tests -v
 
   update-server:

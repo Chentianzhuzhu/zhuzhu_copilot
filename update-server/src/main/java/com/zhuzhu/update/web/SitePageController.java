@@ -183,6 +183,7 @@ public class SitePageController {
         model.addAttribute("pageTag", sectionTag(site, sectionKey));
         model.addAttribute("pageSection", sectionTitle(site, sectionKey, crumb));
         model.addAttribute("ogImage", absImage(base, ogImage(site)));
+        model.addAttribute("ogImageDefault", str(seo(site).get("ogImage"), "").isBlank());
         model.addAttribute("keywords", str(seo(site).get("keywords"), ""));
         model.addAttribute("iconPaths", iconPaths());
         model.addAttribute("navItems", navItems(path));
@@ -195,7 +196,7 @@ public class SitePageController {
         model.addAttribute("faqPreview", preview(site.get("faq"), 5));
         model.addAttribute("downloads", downloads);
         model.addAttribute("downloadsText", String.format(java.util.Locale.US, "%,d", downloads));
-        model.addAttribute("jsonLd", jsonLd(base, path, site, pageTitle, pageDesc, latest));
+        model.addAttribute("jsonLd", jsonLd(mapper, base, path, site, pageTitle, pageDesc, latest));
         return view;
     }
 
@@ -311,19 +312,28 @@ public class SitePageController {
         return m;
     }
 
-    /** 结构化数据：软件信息 + 子页面包屑 */
-    private String jsonLd(String base, String path, Map<String, Object> site,
-                          String pageTitle, String pageDesc, AppVersion latest) {
+    /**
+     * 结构化数据：软件信息 + 站点信息 + 面包屑 + 常见问题。
+     *
+     * <p>做成包级静态方法，便于单测直接断言产出的 JSON（渲染测试只验证它被注入页面）。
+     * 两个品牌名通过 {@code alternateName} 一并声明，搜索侧才能把两个词根归到同一个软件。
+     */
+    static String jsonLd(ObjectMapper mapper, String base, String path, Map<String, Object> site,
+                         String pageTitle, String pageDesc, AppVersion latest) {
         String name = str(site.get("title"), "WinAppMigrator");
+        String lang = str(seo(site).get("lang"), "zh-CN");
+        List<String> aliases = alternateNames(site);
+
         Map<String, Object> app = new LinkedHashMap<>();
         app.put("@context", "https://schema.org");
         app.put("@type", "SoftwareApplication");
         app.put("name", name);
+        putAlternateNames(app, aliases);
         app.put("description", str(site.get("description"), pageDesc));
         app.put("applicationCategory", "UtilitiesApplication");
         app.put("operatingSystem", "Windows 10, Windows 11");
         app.put("url", SeoSupport.canonical(base, "/"));
-        app.put("inLanguage", str(seo(site).get("lang"), "zh-CN"));
+        app.put("inLanguage", lang);
         if (latest != null && latest.getVersion() != null) {
             app.put("softwareVersion", latest.getVersion());
         }
@@ -342,20 +352,105 @@ public class SitePageController {
 
         List<Object> graph = new ArrayList<>();
         graph.add(app);
+        graph.add(webSite(base, name, lang, aliases));
         if (!"/".equals(path)) {
-            List<Object> crumbs = new ArrayList<>();
-            crumbs.add(crumb(SeoSupport.canonical(base, "/"), "首页", 1));
-            crumbs.add(crumb(SeoSupport.canonical(base, path), pageTitle, 2));
-            Map<String, Object> bc = new LinkedHashMap<>();
-            bc.put("@context", "https://schema.org");
-            bc.put("@type", "BreadcrumbList");
-            bc.put("itemListElement", crumbs);
-            graph.add(bc);
+            graph.add(breadcrumb(base, path, pageTitle));
+        }
+        Map<String, Object> faq = faqPage(base, path, site);
+        if (faq != null) {
+            graph.add(faq);
         }
         try {
             return SeoSupport.jsonForScript(mapper.writeValueAsString(graph));
         } catch (Exception e) {
             return "[]";
+        }
+    }
+
+    /** 站点级结构化数据：把站名与别名绑在同一个 WebSite 实体上 */
+    private static Map<String, Object> webSite(String base, String name, String lang, List<String> aliases) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("@context", "https://schema.org");
+        m.put("@type", "WebSite");
+        m.put("name", name);
+        putAlternateNames(m, aliases);
+        m.put("url", SeoSupport.canonical(base, "/"));
+        m.put("inLanguage", lang);
+        return m;
+    }
+
+    /** 子页面面包屑 */
+    private static Map<String, Object> breadcrumb(String base, String path, String pageTitle) {
+        List<Object> crumbs = new ArrayList<>();
+        crumbs.add(crumb(SeoSupport.canonical(base, "/"), "首页", 1));
+        crumbs.add(crumb(SeoSupport.canonical(base, path), pageTitle, 2));
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("@context", "https://schema.org");
+        m.put("@type", "BreadcrumbList");
+        m.put("itemListElement", crumbs);
+        return m;
+    }
+
+    /**
+     * 常见问题结构化数据：直接取库内问答，问答为空时不产出空壳。
+     *
+     * <p>只有 /faq 页承载这些问答，其他页面声明会与页面实际内容不符，因此按路径收口。
+     */
+    private static Map<String, Object> faqPage(String base, String path, Map<String, Object> site) {
+        if (!"/faq".equals(path)) {
+            return null;
+        }
+        List<Object> items = new ArrayList<>();
+        if (site.get("faq") instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> entry)) {
+                    continue;
+                }
+                String question = str(entry.get("q"), "");
+                String answer = str(entry.get("a"), "");
+                if (question.isBlank() || answer.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> accepted = new LinkedHashMap<>();
+                accepted.put("@type", "Answer");
+                accepted.put("text", answer);
+                Map<String, Object> node = new LinkedHashMap<>();
+                node.put("@type", "Question");
+                node.put("name", question);
+                node.put("acceptedAnswer", accepted);
+                items.add(node);
+            }
+        }
+        if (items.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("@context", "https://schema.org");
+        m.put("@type", "FAQPage");
+        m.put("url", SeoSupport.canonical(base, path));
+        m.put("inLanguage", str(seo(site).get("lang"), "zh-CN"));
+        m.put("mainEntity", items);
+        return m;
+    }
+
+    /** 副品牌别名（后台按中英文逗号分隔配置），去空白去重后返回 */
+    static List<String> alternateNames(Map<String, Object> site) {
+        List<String> out = new ArrayList<>();
+        for (String item : str(seo(site).get("alternateNames"), "").split("[,，]")) {
+            String trimmed = item.trim();
+            if (!trimmed.isEmpty() && !out.contains(trimmed)) {
+                out.add(trimmed);
+            }
+        }
+        return out;
+    }
+
+    /** 单个别名用字符串、多个用数组（schema.org 两种写法都接受） */
+    private static void putAlternateNames(Map<String, Object> target, List<String> aliases) {
+        if (aliases.size() == 1) {
+            target.put("alternateName", aliases.get(0));
+        } else if (!aliases.isEmpty()) {
+            target.put("alternateName", aliases);
         }
     }
 

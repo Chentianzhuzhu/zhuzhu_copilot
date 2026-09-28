@@ -179,7 +179,9 @@ public class ContentService {
 
     private static Map<String, Object> seo() {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("keywords", "WinAppMigrator,Windows应用迁移,C盘瘦身,系统优化,AI桌面助手,内存优化,软件卸载");
+        // 关键词与别名都覆盖「zhuzhu Copilot」与「WinAppMigrator」两个品牌，避免只被其中一个词根搜到
+        m.put("keywords", "zhuzhu Copilot,WinAppMigrator,Windows应用迁移,C盘瘦身,系统优化,AI桌面助手,内存优化,软件卸载,网络防御,浏览器自动化,MCP客户端");
+        m.put("alternateNames", "WinAppMigrator");
         m.put("ogImage", "");
         m.put("lang", "zh-CN");
         return m;

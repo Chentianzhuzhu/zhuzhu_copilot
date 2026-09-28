@@ -60,7 +60,7 @@ export DB_USER=root
 export DB_PASSWORD='数据库密码'
 export REDIS_HOST=127.0.0.1
 export REDIS_PORT=6379
-# export SITE_BASE_URL=https://example.com   # 官网绝对地址（canonical/sitemap），留空按请求头推导
+# export SITE_BASE_URL=https://chentian.dpdns.org  # 官网绝对地址（canonical / sitemap / robots），留空按请求头推导
 # export UPLOAD_DIR=/opt/update-server/uploads   # 可选，默认 ./uploads
 ```
 
@@ -113,11 +113,16 @@ GET /api/update/check?version=1.0.0&platform=windows
 
 | 项目 | 地址 | 说明 |
 | --- | --- | --- |
-| 站点地图 | `/sitemap.xml` | 由控制器按真实页面生成，`lastmod` 为当天 |
+| 站点地图 | `/sitemap.xml` | 由控制器按真实页面生成，覆盖首页 / 界面实拍 / 下载 / 常见问题 / 关于 |
 | 抓取规则 | `/robots.txt` | 放行全站，屏蔽 `/admin` 与 `/api/`，并声明 Sitemap |
+| 结构化数据 | 页面内嵌 JSON-LD | SoftwareApplication + WebSite + BreadcrumbList，`/faq` 另含 FAQPage |
 | 站点图标 | `/favicon.ico` `/favicon.svg` `/apple-touch-icon.png` | 多尺寸，含 SVG |
 | 应用清单 | `/site.webmanifest` | 按库内站名生成 |
 | 分享主图 | `/og/og-cover.png` | 1200×630，可在后台「SEO → 社交分享图」替换 |
+
+> **双品牌收录**：后台「页脚信息与 SEO」提供 `seo.keywords`（搜索关键词）与 `seo.alternateNames`（副品牌别名）。
+> 后者写入结构化数据的 `alternateName`，让「zhuzhu Copilot」与「WinAppMigrator」被识别为同一款软件，
+> 而不是两个互不相干的站点。改站名时请一并更新这两项。
 
 > **上线后若出现「页面几乎空白 / 只剩一张图标 / 样式与脚本全失效」**，先别改代码 ——
 > 这通常是 CDN 的全站质询，而不是源站问题。用下面两条命令即可在 10 秒内区分：

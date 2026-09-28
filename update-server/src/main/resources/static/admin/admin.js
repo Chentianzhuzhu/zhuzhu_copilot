@@ -244,6 +244,7 @@
 
     var seo = c.seo || {};
     $("seoKeywords").value = seo.keywords || "";
+    $("seoAlternateNames").value = seo.alternateNames || "";
     setMediaValue("seoOgImage", seo.ogImage || "");
   }
 
@@ -587,6 +588,7 @@
       requirements: collectRows("requirements", ["label", "value"]),
       seo: {
         keywords: $("seoKeywords").value.trim(),
+        alternateNames: $("seoAlternateNames").value.trim(),
         ogImage: mediaValue("seoOgImage"),
         lang: prevSeo.lang || "zh-CN"
       },

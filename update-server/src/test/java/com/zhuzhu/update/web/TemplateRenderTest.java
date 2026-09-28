@@ -183,6 +183,7 @@ class TemplateRenderTest {
         ctx.setVariable("pageCrumb", "测试页");
         ctx.setVariable("pageTag", str(pageSection.get("tag")));
         ctx.setVariable("ogImage", "https://example.com/og/og-cover.png");
+        ctx.setVariable("ogImageDefault", true);
         ctx.setVariable("keywords", "关键词");
         ctx.setVariable("iconPaths", iconPaths());
         ctx.setVariable("features", SitePageController.normalizeIcons(site.get("features")));
@@ -292,6 +293,9 @@ class TemplateRenderTest {
         assertTrue(html.contains("rel=\"canonical\""), "缺少 canonical");
         assertTrue(html.contains("application/ld+json"), "缺少结构化数据");
         assertTrue(html.contains("property=\"og:image\""), "缺少 Open Graph 图片");
+        assertTrue(html.contains("property=\"og:image:alt\""), "缺少分享图替代文本");
+        assertTrue(html.contains("property=\"og:image:width\""), "缺少分享图宽度");
+        assertTrue(html.contains("rel=\"sitemap\""), "缺少站点地图声明");
         assertTrue(html.contains("id=\"featuresGrid\""), "缺少功能特性区块");
         assertTrue(html.contains("id=\"galleryGrid\""), "缺少图片墙");
         assertTrue(html.contains("id=\"videoWall\""), "缺少视频墙");
