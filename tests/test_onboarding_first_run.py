@@ -252,3 +252,94 @@ def test_guide_line_cards_have_no_border():
     qss = card.styleSheet()
     assert "border" not in qss.replace("border-radius", ""), f"卡片不应有描边：{qss}"
 
+
+# ---------------- 翻页动画（上一步 / 下一步） ----------------
+
+def _shown_wizard():
+    w = onboarding.OnboardingWizard()
+    w.resize(760, 560)
+    w.show()
+    _pump(100)                      # 让布局生效，舞台拿到真实尺寸
+    return w
+
+
+def _pos_anim(wizard):
+    """翻页动画第一段里的位移动画（_segment 里最先加入的就是 pos）。"""
+    return wizard._page_anim.animationAt(0).animationAt(0)
+
+
+def test_next_transition_slides_left_out():
+    """下一步：旧页向左滑出（模糊递增、淡出），播完后新页归位、特效全部复位。"""
+    w = _shown_wizard()
+    try:
+        assert w._idx == 0
+        assert w._stage.width() > 100, "舞台未拿到尺寸，位移会退化成 1px"
+        w._on_next()
+        # 导航立即响应（不等动画）
+        assert w._idx == 1
+        assert w._back_btn.isVisible(), "第二步应出现「上一步」"
+        assert w._page_anim.state().name == "Running", "应开始播放翻页动画"
+        assert _pos_anim(w).endValue().x() < 0, "下一步应向左滑出"
+        assert w._stage.blur_effect.blurRadius() == 0.0, "起始应为清晰"
+
+        _pump(900)                  # 两段动画跑完
+        assert w._page_anim.state().name != "Running"
+        assert w._stack.currentIndex() == 1, "换页应发生在滑出与滑入之间"
+        assert (w._stack.x(), w._stack.y()) == (0, 0), "动画结束后内容必须归位"
+        assert w._stage.blur_effect.blurRadius() == 0.0, "结束后应恢复清晰"
+        assert abs(w._stage.opacity_effect.opacity() - 1.0) < 1e-6, "结束后应恢复不透明"
+    finally:
+        w.close()
+
+
+def test_back_transition_slides_right_out():
+    """上一步：滑动方向相反（向右滑出），且同样能正确换页。"""
+    w = _shown_wizard()
+    try:
+        w._on_next()
+        _pump(900)
+        assert w._idx == 1
+
+        w._on_back()
+        assert w._idx == 0
+        assert not w._back_btn.isVisible(), "回到第一步应隐藏「上一步」"
+        assert _pos_anim(w).endValue().x() > 0, "上一步应向右滑出"
+
+        _pump(900)
+        assert w._stack.currentIndex() == 0
+        assert (w._stack.x(), w._stack.y()) == (0, 0)
+        assert w._stage.blur_effect.blurRadius() == 0.0
+    finally:
+        w.close()
+
+
+def test_rapid_clicks_do_not_leave_residue():
+    """连点「下一步」：旧动画被终止，最终仍停在正确页且特效复位。"""
+    w = _shown_wizard()
+    try:
+        w._on_next()
+        w._on_next()                # 动画播放中就再点一次
+        assert w._idx == 2
+        _pump(1200)
+        assert w._stack.currentIndex() == 2
+        assert (w._stack.x(), w._stack.y()) == (0, 0)
+        assert w._stage.blur_effect.blurRadius() == 0.0
+        assert abs(w._stage.opacity_effect.opacity() - 1.0) < 1e-6
+    finally:
+        w.close()
+
+
+def test_effects_are_layered_for_fade_and_blur():
+    """淡出与模糊必须分挂两层：一个控件只能有一个 QGraphicsEffect。
+
+    若两者挂到同一个控件上，Qt 会静默丢弃前一个 —— 表现就是「只有模糊没有渐变」。
+    """
+    w = _shown_wizard()
+    try:
+        from PyQt6.QtWidgets import QGraphicsBlurEffect, QGraphicsOpacityEffect
+        outer, inner = w._stage.graphicsEffect(), w._stack.graphicsEffect()
+        assert isinstance(outer, QGraphicsOpacityEffect), "舞台外层应挂不透明度"
+        assert isinstance(inner, QGraphicsBlurEffect), "内层应挂模糊"
+        assert outer is not inner, "不透明度与模糊不能挂在同一控件"
+    finally:
+        w.close()

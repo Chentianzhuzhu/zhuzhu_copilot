@@ -18,10 +18,12 @@
 """
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, \
+    QParallelAnimationGroup, QSequentialAnimationGroup
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget,
     QWidget, QComboBox, QCheckBox, QFrame,
+    QGraphicsOpacityEffect, QGraphicsBlurEffect,
 )
 from PyQt6.QtGui import QFont, QIcon
 
@@ -120,6 +122,59 @@ def _ap(*names):
     return tuple(getattr(_m, n) for n in names)
 
 
+# ---------------- 翻页动画舞台 ----------------
+class _SlideStage(QWidget):
+    """翻页动画的舞台：内层承载内容，位移 + 模糊挂在这里；淡入淡出挂在外层。
+
+    为什么分两层：Qt 里一个控件只能挂一个 QGraphicsEffect，而翻页要同时「渐变（不透明度）」
+    与「模糊」，只能各挂一层：
+
+        stage（不透明度） → content（模糊 + 水平位移）
+
+    内层**不参与任何布局**（几何由本类铺满），否则布局重排会覆盖动画写的位移。
+    """
+
+    def __init__(self, content: QWidget, parent=None):
+        super().__init__(parent)
+        self._content = content
+        content.setParent(self)
+        self._opacity = QGraphicsOpacityEffect(self)
+        self._opacity.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity)
+        self._blur = QGraphicsBlurEffect(content)
+        self._blur.setBlurRadius(0.0)
+        content.setGraphicsEffect(self._blur)
+        self._animating = False
+
+    @property
+    def content(self) -> QWidget:
+        return self._content
+
+    @property
+    def opacity_effect(self) -> QGraphicsOpacityEffect:
+        return self._opacity
+
+    @property
+    def blur_effect(self) -> QGraphicsBlurEffect:
+        return self._blur
+
+    def begin_anim(self) -> None:
+        """进入动画态：期间 resizeEvent 不再把内容位移归零，避免与动画抢几何。"""
+        self._animating = True
+
+    def end_anim(self) -> None:
+        self._animating = False
+        self._content.move(0, 0)
+        self._blur.setBlurRadius(0.0)
+        self._opacity.setOpacity(1.0)
+
+    def resizeEvent(self, ev):
+        self._content.resize(self.size())
+        if not self._animating:
+            self._content.move(0, 0)
+        super().resizeEvent(ev)
+
+
 # ---------------- 工具：把一组文本渲染成带标题的卡片 ----------------
 def _build_card(parent: QWidget, title: str, lines, *, accent: bool = False) -> QWidget:
     """渲染一张「标题 + 若干行说明」卡片。
@@ -188,8 +243,11 @@ class OnboardingWizard(QDialog):
         root.addWidget(self._dots)
 
         # ---------- 内容区 ----------
+        # 栈外面套一层动画舞台：翻页时对「整页内容」做水平位移 + 模糊 + 淡入淡出
         self._stack = QStackedWidget()
-        root.addWidget(self._stack, 1)
+        self._stage = _SlideStage(self._stack)
+        self._page_anim = None          # 正在跑的翻页动画（保持引用，避免被 GC 回收）
+        root.addWidget(self._stage, 1)
 
         # ---------- 底部导航 ----------
         nav = QHBoxLayout()
@@ -357,7 +415,11 @@ class OnboardingWizard(QDialog):
         return cb
 
     # ---------------- 导航 ----------------
-    def _refresh(self):
+    def _sync_nav(self):
+        """标题 / 步骤圆点 / 按钮状态。
+
+        与内容翻页解耦：翻页动画一触发就先切这些，视觉上「导航立刻响应、内容滑过去」。
+        """
         title, _ = self._steps[self._idx]
         self._title.setText(title)
         # 圆点步骤指示：当前步高亮为深蓝实心圆，其余为淡灰圆（颜色随主题，不再硬编码）
@@ -366,15 +428,79 @@ class OnboardingWizard(QDialog):
         _dot_off = f'<span style="color:{self._DIM};">&#9679;</span>'
         self._dots.setText(" ".join(_dot_on if i == self._idx else _dot_off
                                     for i in range(n)) + f"   {self._idx + 1} / {n}")
-        self._stack.setCurrentIndex(self._idx)
         self._back_btn.setVisible(self._idx > 0)
-        is_last = self._idx == n - 1
-        self._next_btn.setText("完成" if is_last else "下一步")
+        self._next_btn.setText("完成" if self._idx == n - 1 else "下一步")
+
+    def _refresh(self):
+        """立即切页（无动画）——仅首次进入时用。"""
+        self._sync_nav()
+        self._stack.setCurrentIndex(self._idx)
+
+    # ---------------- 翻页动画（上一步 / 下一步） ----------------
+    _PAGE_ANIM_MS = 170        # 单段时长：滑出、滑入各一段
+    _PAGE_BLUR_MAX = 14.0      # 滑出到最远处时的模糊半径（像素）
+
+    def _animate_page_change(self, new_idx: int, forward: bool) -> None:
+        """翻页动画：旧页向左（后退时向右）滑出并逐渐模糊、淡出，随后新页从相反一侧滑入、清晰、淡入。
+
+        用「滑出 → 换页 → 滑入」两段式，而不是两页同屏对推：QStackedWidget 一次只显示一页，
+        要对推就得自己接管子页几何与可见性，脆弱且收益不大；而换页点落在旧页已完全不可见时，
+        看不出接缝。
+        """
+        if new_idx == self._idx:
+            return
+        prev = self._page_anim
+        if prev is not None:
+            # 连点按钮：先终止上一段，否则两段动画会抢同一个 pos / 模糊半径
+            try:
+                prev.stop()
+            except Exception:
+                pass
+        self._idx = new_idx
+        self._sync_nav()
+
+        stage, content = self._stage, self._stack
+        width = max(stage.width(), 1)
+        out_dx = -width if forward else width       # 滑出方向
+        in_dx = width if forward else -width        # 滑入起点（与滑出方向相反）
+        ms, blur_max = self._PAGE_ANIM_MS, self._PAGE_BLUR_MAX
+        ease = QEasingCurve.Type.OutCubic if forward else QEasingCurve.Type.InCubic
+
+        stage.begin_anim()
+
+        def _segment(pos_from: int, pos_to: int, blur_from: float, blur_to: float,
+                     op_from: float, op_to: float) -> QParallelAnimationGroup:
+            """一段动画：位移 + 模糊 + 不透明度同步跑。"""
+            grp = QParallelAnimationGroup()
+            pos = QPropertyAnimation(content, b"pos", grp)
+            pos.setDuration(ms)
+            pos.setEasingCurve(ease)
+            pos.setStartValue(QPoint(pos_from, 0))
+            pos.setEndValue(QPoint(pos_to, 0))
+            grp.addAnimation(pos)
+            for target, prop, start, end in (
+                    (stage.blur_effect, b"blurRadius", blur_from, blur_to),
+                    (stage.opacity_effect, b"opacity", op_from, op_to)):
+                anim = QPropertyAnimation(target, prop, grp)
+                anim.setDuration(ms)
+                anim.setStartValue(start)
+                anim.setEndValue(end)
+                grp.addAnimation(anim)
+            return grp
+
+        seq = QSequentialAnimationGroup(self)
+        seq.addAnimation(_segment(0, out_dx, 0.0, blur_max, 1.0, 0.0))     # 滑出（变模糊、淡出）
+        seq.addAnimation(_segment(in_dx, 0, blur_max, 0.0, 0.0, 1.0))      # 滑入（变清晰、淡入）
+        # 换页点：第一段结束（旧页已完全退出）→ 切到新页，第二段再把它送进来
+        seq.animationAt(0).finished.connect(
+            lambda idx=new_idx: self._stack.setCurrentIndex(idx))
+        seq.finished.connect(stage.end_anim)
+        self._page_anim = seq
+        seq.start()
 
     def _on_back(self):
         if self._idx > 0:
-            self._idx -= 1
-            self._refresh()
+            self._animate_page_change(self._idx - 1, forward=False)
 
     def _on_next(self):
         if self._idx == len(self._steps) - 1:
@@ -384,8 +510,7 @@ class OnboardingWizard(QDialog):
             mark_first_run_done()
             self.accept()
             return
-        self._idx += 1
-        self._refresh()
+        self._animate_page_change(self._idx + 1, forward=True)
 
     def _on_skip(self):
         mark_first_run_done()
