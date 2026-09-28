@@ -565,6 +565,13 @@ def apply_theme() -> str:
     cur = _resolve_theme()
     _apply_colors(_THEMES[cur])
     _APPLIED_THEME = cur
+    # 同步应用级色板（styles.PALETTE）：两套色板必须同源，否则会出现
+    # 「对话框按深色默认值出深底 + 本模块按设置出浅色控件」这类混搭。
+    try:
+        from zhuzhu_Copilot.ui import styles as _styles
+        _styles.set_palette(cur)
+    except Exception:
+        pass
     return cur
 
 

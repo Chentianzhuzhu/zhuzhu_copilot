@@ -398,20 +398,36 @@ def _show_onboarding_first(app) -> None:
         _reapply_theme(app)
 
 
-def _reapply_theme(app) -> None:
-    """指南里改了主题时，把新配色重新应用到应用调色板与 agent_panel 的模块色板。
+def _sync_app_palette(app) -> None:
+    """把「设置里的主题」同步到应用级调色板（styles.PALETTE → QApplication 调色板）。
 
-    agent_panel 的模块级颜色常量是**导入时**绑定的，而指南构造时已经把它导了进来；
-    不显式重绑，紧随其后创建的面板会沿用旧配色。
+    必须显式同步：styles.PALETTE 的模块默认值是**深色**，而主窗口移除后已经没有任何地方
+    再调用 set_palette，调色板会一直停在深色 —— agent_panel 按设置出图（可能是浅色）、
+    对话框底色却按深色默认值出图，于是出现「深底 + 白卡片」这类混搭。
+    """
+    try:
+        from zhuzhu_Copilot.ui import styles
+        styles.set_palette(_resolve_theme_mode())
+    except Exception as _e:
+        print(f"[theme] 应用调色板同步失败: {_e!r}", flush=True)
+    try:
+        apply_palette(app)
+    except Exception as _e:
+        print(f"[theme] 应用调色板下发失败: {_e!r}", flush=True)
+
+
+def _reapply_theme(app) -> None:
+    """指南里改了主题时重新应用。
+
+    agent_panel 的模块级颜色常量是**导入时**绑定的，而指南构造时已经把它导了进来，
+    所以先重绑它的色板（内部会一并同步 styles.PALETTE），再把调色板下发给应用。
     """
     try:
         from zhuzhu_Copilot.ui import agent_panel as _ap
-        from zhuzhu_Copilot.ui import styles as _styles
-        _styles.set_palette(_ap._resolve_theme())
-        _styles.apply_palette(app)
         _ap.apply_theme()
     except Exception as _e:
         print(f"[onboarding] 主题重应用失败: {_e!r}", flush=True)
+    _sync_app_palette(app)
 
 
 def main():
@@ -463,7 +479,9 @@ def main():
     family = next((f for f in default_families if f in available_families), "Arial")
     app.setFont(QFont(family, 10))
 
-    apply_palette(app)
+    # 应用级调色板必须跟随「设置里的主题」：styles.PALETTE 的模块默认是深色，
+    # 不同步就会出现「对话框深底 + 面板浅色控件」的混搭（详见 _sync_app_palette）
+    _sync_app_palette(app)
 
     # 媒体解码自检入口（MEDIA_SELFTEST 环境变量或 --media-selftest <file> 参数触发，
     # 仅诊断用）：UAC 提升会丢失环境变量，故同时支持命令行参数方式
