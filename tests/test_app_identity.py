@@ -193,6 +193,24 @@ def test_workflow_code_migration_survives_missing_dirs(isolated):
     app_identity.ensure_migrated()          # 不应抛异常
 
 
+def test_suite_never_points_data_root_at_real_user_dir():
+    """全局隔离契约：测试进程里 data_root() 绝不允许落在**用户真实家目录**下。
+
+    背景（真实缺陷，用户可见）：`test_ai_turn_wrapper.py` 构造真实 AgentPanel，面板会
+    恢复「上次会话」= 用户真实会话，然后用例灌入 `_on_reasoning(CHUNK)`×24 并置
+    `_task_active=True` → 面板自动落盘把这段**测试夹具文本写进用户真实会话文件**，
+    于是用户每次重启应用都看到一段假「思考过程」。隔离由 conftest._isolated_data_root
+    统一提供，这条用例守住那个接缝：一旦有人去掉隔离（或新写用例绕过它），此处立刻变红。
+    """
+    # 不能只判「家目录是否为祖先」：Windows 的临时目录本身就在家目录下
+    # （%LOCALAPPDATA%\Temp），那样判会把正确的隔离误报为污染。直接比对真实数据目录。
+    real_home = Path.home()
+    root = app_identity.data_root()
+    assert root not in (real_home / app_identity.DATA_DIR_NAME,
+                        real_home / app_identity.LEGACY_DATA_DIR_NAME), \
+        f"测试把数据目录指向了用户真实目录：{root}（测试绝不能碰用户数据）"
+
+
 # ---------------- 入口顺序契约 ----------------
 
 def test_main_migrates_before_onboarding_sampling():

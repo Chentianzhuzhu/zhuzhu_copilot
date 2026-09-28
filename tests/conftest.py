@@ -15,6 +15,36 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _isolated_data_root(tmp_path_factory):
+    """把用户数据目录（~/.zhuzhu_Copilot）整体重定向到临时目录（全局，集中一处）。
+
+    背景（真实缺陷，用户可见）：`test_ai_turn_wrapper.py` 的 panel fixture 直接构造
+    **真实 AgentPanel**，而面板构造时会读 last_session.txt 恢复「上次停靠的会话」=
+    用户的真实会话。用例随后置 `_task_active = True` 并灌入 `_on_reasoning(CHUNK)`×24，
+    面板 4 秒自动落盘（`_autosave_flush` 只在 task_active 时写盘）就把这段**测试夹具
+    文本写进了用户的真实会话文件**，还把它记成 last_session —— 于是用户每次重启应用
+    都会看到一段假「思考过程」。
+
+    实测证据：`.zhuzhu_Copilot/agent/sessions/d789d9473a00.ui.json` 里被写入
+    `"用户要求扫描全盘部署包并生成迁移清单，先枚举安装产物再按指纹过滤；" × 24`
+    （= tests 里的 `CHUNK`），而同一会话的引擎记录里根本没有这段文字。
+
+    做法：把 `app_identity._home()`（代码里已声明为「测试可替换的接缝」）指向临时家目录，
+    并把迁移标记置为已完成，避免用例反过来去动真实目录 / 真实注册表。用例若自己要验证
+    迁移流程，仍可像 test_app_identity 那样在用例内覆盖这两个接缝。
+    """
+    from zhuzhu_Copilot import app_identity
+
+    mp = pytest.MonkeyPatch()
+    home = tmp_path_factory.mktemp("home")
+    (home / app_identity.DATA_DIR_NAME).mkdir(parents=True, exist_ok=True)
+    mp.setattr(app_identity, "_home", lambda: home)
+    mp.setattr(app_identity, "_migrated", True)
+    yield home
+    mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _no_onboarding_modal():
     """测试内一律屏蔽新手指南模态向导（全局，集中一处）。
 
