@@ -872,6 +872,36 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "preview_open",
+            "description": "在你的浏览器里打开可视化预览（页面/原型/图表/报告等产物的展示）。"
+                           "凡是「要不要把结果展示给用户看」的判断都由你按任务内容决定："
+                           "只要产出了适合可视化查看的东西（HTML 页面、原型、图表、仪表盘、"
+                           "排版报告、网页效果），收尾前就应当调用本工具展示，不要只贴在对话里。"
+                           "本地 HTML 产物传 path（推荐，支持刷新与自动跟随文件变化）；"
+                           "也可传 url 直接打开网址，或传 html 给一段 HTML 内容。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "path": {"type": "string",
+                                        "description": "（推荐）要展示的本地 HTML 文件路径"},
+                               "url": {"type": "string", "description": "（可选）直接展示的网址"},
+                               "html": {"type": "string", "description": "（可选）直接展示的 HTML 内容"},
+                               "title": {"type": "string", "description": "（可选）预览标题"}},
+                           "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "preview_refresh",
+            "description": "刷新已在用户浏览器中打开的预览页面，让用户看到最新结果。"
+                           "每完成一步（改完页面、补完数据、调完样式）都可调用；"
+                           "也可以不调 —— 托管源文件变化时程序会自动刷新。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "clipboard",
             "description": "读写系统剪贴板：read 读取当前剪贴板文本，write 把指定文本写入剪贴板"
                            "（复制/粘贴场景，或读取用户已复制的内容）。",
@@ -2941,6 +2971,15 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
                               args.get("headers") if isinstance(args.get("headers"), dict) else None,
                               str(args.get("body", "")),
                               _sub("agent_sandbox").to_int(args.get("max_chars", 8000)))
+        # ---- 可视化预览（送到用户自己的浏览器，支持刷新与自动跟随文件变化）----
+        if name == "preview_open":
+            ok, msg = _sub("agent_preview").open_preview(
+                path=str(args.get("path", "")), html=str(args.get("html", "")),
+                url=str(args.get("url", "")), title=str(args.get("title", "")))
+            return {"text": msg if ok else f"[preview_open] {msg}", "images": []}
+        if name == "preview_refresh":
+            ok, msg = _sub("agent_preview").refresh_preview()
+            return {"text": msg if ok else f"[preview_refresh] {msg}", "images": []}
         # ---- 浏览器操控（内置优先，未装配时回退独立外部实例） ----
         if name == "browser_open":
             ok, msg = _browser_ctl().start(

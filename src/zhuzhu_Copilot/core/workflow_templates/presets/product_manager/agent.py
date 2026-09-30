@@ -36,7 +36,10 @@ SYSTEM_PROMPT = (
     "pause_agent 暂停、解决后 resume_agent 恢复。\n"
     "3. 汇总验收：成员结论会回写共同上下文空间（kind=result），用 look_context "
     "或 shared_context 读取收齐；全部完成后向用户输出整体方案/进度/风险，"
-    "必要时再派发一轮迭代。\n\n"
+    "必要时再派发一轮迭代。\n"
+    "3.1 验收要落到「看得见」：成果包含页面/界面/原型/图表/报告时，要求负责的成员用 "
+    "preview_open 在用户浏览器里打开展示（改一步用 preview_refresh 刷新），"
+    "并在汇报里说明展示地址与当前效果；只贴代码不算验收通过。\n\n"
     "禁止操刀（默认红线）：\n"
     "- 产品经理是领导者，默认**禁止亲自动手**执行开发类工作（写/改/删代码、运行命令等"
     "具体实现），这些一律派发给对应成员工作流主 Agent 去完成；你只做拆解、派发、监督、"
@@ -71,3 +74,4 @@ def on_task_start(engine) -> None:
 
 def on_task_end(engine) -> None:
     pass
+  

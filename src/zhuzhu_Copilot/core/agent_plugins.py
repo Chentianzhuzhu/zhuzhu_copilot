@@ -73,6 +73,7 @@ def ensure_shipped_plugins() -> None:
         except OSError:
             continue
         _register_shipped_plugin(name)
+        invalidate_index()   # 新落盘插件要立刻出现在来源索引里（否则升级后本会话看不到它）
 
 
 def _register_shipped_plugin(name: str) -> None:
@@ -153,6 +154,7 @@ def _write_meta(name: str, meta: dict) -> bool:
         d.mkdir(parents=True, exist_ok=True)
         (d / "plugin.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        invalidate_index()      # 插件构成变化 → 来源索引（工具/技能归属）随之失效
         return True
     except OSError:
         return False
@@ -200,6 +202,141 @@ def get_plugin(name: str) -> dict:
         if p.get("name") == name:
             return p
     return {}
+
+
+# ---------------------------------------------------------------------------
+# 插件来源索引：插件登记的 MCP 工具 / 技能 → 归属插件
+#
+# 用途（UI 与提示词都要用，故必须便宜）：聊天流里给「来自插件」的工具行/技能行换插件专属
+# 矢量图标并给出气泡提示；手动调用插件时按插件名取回说明与调用规范。
+# list_plugins() 每次都扫目录，逐次调用会拖慢流式渲染，因此这里做一份按需缓存，
+# 任何写操作（新增/导入/启停/删除）都会失效它。
+# ---------------------------------------------------------------------------
+MCP_SUFFIX = "-mcp"          # 插件登记的 MCP 服务器名固定为「{插件名}-mcp」
+_INDEX_CACHE: dict = {}
+
+
+def invalidate_index() -> None:
+    """插件构成变化后失效来源索引（所有写操作都会调用）"""
+    _INDEX_CACHE.clear()
+
+
+def plugin_index() -> dict:
+    """插件来源索引（缓存）：
+      plugins: {插件名: 元数据}
+      servers: {MCP 服务器名: 插件名}
+      skills:  {技能名: 插件名}
+    """
+    if _INDEX_CACHE:
+        return _INDEX_CACHE
+    plugins, servers, skills = {}, {}, {}
+    try:
+        for p in list_plugins():
+            name = str(p.get("name") or "")
+            if not name:
+                continue
+            plugins[name] = p
+            servers[f"{name}{MCP_SUFFIX}"] = name
+            if p.get("has_skill") or p.get("skill_name"):
+                skills[str(p.get("skill_name") or name)] = name
+    except Exception:
+        pass
+    _INDEX_CACHE.update({"plugins": plugins, "servers": servers, "skills": skills})
+    return _INDEX_CACHE
+
+
+def plugin_of_server(server: str) -> str:
+    """MCP 服务器名 → 归属插件名（非插件服务器返回空串）"""
+    return plugin_index()["servers"].get(str(server or ""), "")
+
+
+def plugin_of_skill(skill: str) -> str:
+    """技能名 → 归属插件名（插件目录名即其技能名；非插件技能返回空串）"""
+    return plugin_index()["skills"].get(str(skill or ""), "")
+
+
+def plugin_names() -> list:
+    """已安装插件名清单（按名称排序）"""
+    return sorted(plugin_index()["plugins"])
+
+
+def list_plugin_calls() -> list:
+    """供输入框斜杠候选：可手动调用的插件 [{name, description}]（停用的插件不可调用）"""
+    out = []
+    for name in plugin_names():
+        meta = plugin_index()["plugins"].get(name) or {}
+        if not meta.get("enabled", True):
+            continue
+        out.append({"name": name, "description": str(meta.get("description") or "")})
+    return out
+
+
+def filter_enabled_plugins(names: list) -> list:
+    """过滤出真实存在且已启用的插件名（去重、保持入参顺序）"""
+    idx = plugin_index()["plugins"]
+    out = []
+    for raw in names or []:
+        n = str(raw or "").strip()
+        if n in idx and idx[n].get("enabled", True) and n not in out:
+            out.append(n)
+    return out
+
+
+def plugin_skill_names_of(names: list) -> list:
+    """这些插件登记的技能名（引擎据此把技能并入本任务技能集 → 覆盖的工具走硬拦截）"""
+    idx = plugin_index()["plugins"]
+    out = []
+    for raw in names or []:
+        skill = str((idx.get(str(raw or "").strip()) or {}).get("skill_name") or "").strip()
+        if skill and skill not in out:
+            out.append(skill)
+    return out
+
+
+def plugin_skill_md(name: str) -> str:
+    """插件自带 SKILL.md 正文（无则空串）"""
+    try:
+        f = plugin_dir(name) / "SKILL.md"
+        if f.is_file():
+            return f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    return ""
+
+
+def plugin_spec_text(names: list) -> str:
+    """手动调用插件时注入模型上下文的完整规范文本。
+
+    插件对模型而言是「黑盒能力」，只说名字没有意义 —— 必须把**插件说明、它提供的
+    MCP 工具、其 SKILL.md 规范、调用方式**一并给出，模型才知道该调哪个工具、按什么
+    流程走。任一节缺失都会退化为「猜」，故这里逐段拼接，缺项自动省略。
+    """
+    idx = plugin_index()["plugins"]
+    blocks = []
+    for raw in names or []:
+        name = str(raw or "").strip()
+        meta = idx.get(name)
+        if not meta:
+            continue
+        parts = [f"### 插件 {name}"]
+        desc = str(meta.get("description") or "").strip()
+        if desc:
+            parts.append(f"用途说明：{desc}")
+        mcp_name = str(meta.get("mcp_name") or f"{name}{MCP_SUFFIX}")
+        if meta.get("has_mcp"):
+            parts.append(
+                f"它提供的 MCP 工具已注册为服务器「{mcp_name}」的工具，"
+                f"按工具清单中的 function 直接调用即可；这些工具是该插件的唯一执行入口。")
+        if meta.get("has_skill"):
+            parts.append(f"它登记的技能名为「{meta.get('skill_name') or name}」，"
+                         f"技能规范（SKILL.md）如下：")
+        body = plugin_skill_md(name).strip()
+        if body:
+            parts.append(body)
+        parts.append("调用规范：先按上述说明与流程确定要调用的工具，再直接调用对应工具；"
+                     "不得用其他工具替代、不得跳过流程，也不得只描述而不真正调用。")
+        blocks.append("\n".join(parts))
+    return "\n\n".join(blocks)
 
 
 def plugin_workflows(name: str) -> list:
@@ -320,6 +457,7 @@ def delete_plugin(name: str) -> tuple:
         shutil.rmtree(d)
     except OSError as e:
         return False, f"删除插件目录失败: {e}"
+    invalidate_index()
     return True, f"已删除插件「{name}」"
 
 

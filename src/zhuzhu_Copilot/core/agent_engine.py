@@ -209,6 +209,7 @@ _CORE_TOOLS = frozenset({
     "chat_with", "look_context",       # 工作团沟通与监督：领导者随时可讨论/查看成员上下文
     "pause_agent", "resume_agent", "warn_agent",  # 工作团管控：暂停/恢复/警告成员
     "dispatch_sub_agents",             # 工作团派发：领导者随时可把任务派发给成员/子 Agent
+    "preview_open", "preview_refresh",  # 可视化预览：把产物送进用户浏览器并刷新（决策由模型做，恒可用）
 })
 # 任务类别 → (触发词, 额外暴露的工具)。触发词命中即裁剪到「核心+该类」，
 # 减小 schema token、降低选错工具概率；未命中任何类别则保留全部（保守）。
@@ -901,9 +902,10 @@ class AgentEngine:
             m["content"] = kept
 
     def start(self, user_input: str, agent_name: str = "", images: list = None,
-              skills: list = None, direct: bool = None):
+              skills: list = None, direct: bool = None, plugins: list = None):
         """后台线程执行一轮任务；images: 用户拖入的图片 data URL 列表；
-        skills: 手动调用的技能名列表（/技能名 提示），其 instruction 注入系统提示词；
+        skills: 手动调用的技能名列表（/技能名 提示），其「说明 + 规范」注入上下文；
+        plugins: 手动调用的插件名列表（/插件名 提示），其说明、SKILL.md 与调用规范同样注入；
         direct: 覆盖直接工作模式（None=沿用构造时设置）"""
         if direct is not None:
             self.direct = direct
@@ -911,7 +913,7 @@ class AgentEngine:
         self._skills_read.clear()      # 每轮任务重置技能读取/注入状态
         self._skill_consulted.clear()
         self._thread = threading.Thread(target=self.run,
-                                        args=(user_input, agent_name, images, skills),
+                                        args=(user_input, agent_name, images, skills, plugins),
                                         daemon=True)
         self._thread.start()
 
@@ -983,6 +985,20 @@ class AgentEngine:
             tools = [t for t in tools
                      if t["function"]["name"].lower() not in self._disabled_tools]
         return tools
+
+    def plugin_of_tool(self, name: str) -> str:
+        """该工具是否由插件提供 → 归属插件名（内置工具/普通 MCP 工具返回空串）。
+
+        插件登记的 MCP 服务器名为「{插件名}-mcp」，而工具名由插件自己决定，静态映射不了，
+        只能走运行期的「工具 → 服务器 → 插件」链路。UI 据此给该行换插件专属矢量图标。
+        """
+        if not self.mcp:
+            return ""
+        try:
+            from zhuzhu_Copilot.core import agent_plugins
+            return agent_plugins.plugin_of_server(self.mcp.server_for_tool(name))
+        except Exception:
+            return ""
 
     def _with_edit_bucket(self, fn):
         """把本轮文件变更桶绑定到工具执行 worker 线程（_call_with_stop 每次派生新线程，
@@ -1645,25 +1661,43 @@ class AgentEngine:
         else:
             self._messages.append({"role": "user", "content": text})
 
-    def _sync_skill_msg(self, manual_skills: list = None):
-        """把当前任务技能指令（自动匹配 + 手动指定）同步为对话末尾独立 user 消息
-        （原位替换，不累积）。
+    def _sync_skill_msg(self, manual_skills: list = None, manual_plugins: list = None):
+        """把当前任务的技能 / 插件规范同步为对话末尾独立 user 消息（原位替换，不累积）。
 
         技能指令按任务（user_input）变化，若注入 system 会让每条新任务都改变
         system → 服务端前缀缓存整段 miss、全量重计费。改为末尾消息后，
         system + 早期历史保持字节级不变，技能变化只 miss 末尾几十 token 的短消息。
-        技能指令内容与路由硬拦截（skills_covering_tools）完全不受影响。"""
+        技能指令内容与路由硬拦截（skills_covering_tools）完全不受影响。
+
+        用户手动调用的技能与插件**必须**把说明与调用规范一并给出，且用强约束措辞
+        （「必须严格…不得跳过…」）—— 只给名字或只给正文时，模型常常按自己的理解自由发挥，
+        表现为「调用了但没按技能流程走」。"""
         merged = list(self._auto_skills or [])
         for s in (agent_skills.filter_enabled_skills(manual_skills) or []):
             if s not in merged:
                 merged.append(s)
-        text = ""
+        parts = []
         if merged:
             inst = agent_skills.skill_instructions(merged)
             if inst:
-                text = (f"{_SKILL_MARK}当前任务已匹配并指定以下技能，"
-                        f"必须严格按各技能 instruction 的规范流程执行，"
-                        f"先按其流程组织步骤再行动，不要跳过技能直接调用底层工具：\n\n{inst}")
+                parts.append("【必须严格遵守的技能规范】\n"
+                             "以下技能由系统匹配或用户手动调用，其说明与规范即为本任务的"
+                             "最高优先执行依据：\n"
+                             "· 必须先按其流程组织步骤再行动，禁止跳过技能直接调用底层工具；\n"
+                             "· 技能规范与其它习惯冲突时，以技能规范为准；\n"
+                             "· 不得只复述规范而不真正执行。\n\n" + inst)
+        plugins = []
+        try:
+            from zhuzhu_Copilot.core import agent_plugins
+            plugins = agent_plugins.filter_enabled_plugins(manual_plugins)
+            spec = agent_plugins.plugin_spec_text(plugins)
+        except Exception:
+            spec = ""
+        if spec:
+            parts.append("【必须严格遵守的插件规范】\n"
+                         "用户手动调用了以下插件，其说明、SKILL.md 规范与调用规范如下，"
+                         "必须按规范真正调用它提供的工具完成任务：\n\n" + spec)
+        text = (f"{_SKILL_MARK}\n" + "\n\n".join(parts)) if parts else ""
         idx = None
         for i in range(len(self._messages) - 1, 0, -1):   # 从末尾向前找（最新一条）
             m = self._messages[i]
@@ -1753,7 +1787,7 @@ class AgentEngine:
             self._messages.insert(idx, msg)
 
     def run(self, user_input: str, agent_name: str = "", images: list = None,
-            skills: list = None):
+            skills: list = None, plugins: list = None):
         # 本任务所属工作流：引擎线程内技能/LLM/工具/钩子按会话工作流隔离
         # （@工作流 切换后各会话独立，互不干扰并发会话）；finally 中复位
         wf = self.workflow or ""
@@ -1774,7 +1808,7 @@ class AgentEngine:
         try:
             # 本轮文件变更统计起始点：重建跨线程共享的累计桶（run 线程自身绑定一份）
             self._edit_bucket = agent_tools.reset_edit_delta()
-            self._run_inner(user_input, agent_name, images, skills)
+            self._run_inner(user_input, agent_name, images, skills, plugins)
         finally:
             # 取快照挂到实例供 UI 主线程读取（worker 线程已把写入累进 _edit_bucket）
             b = self._edit_bucket or {}
@@ -1805,7 +1839,7 @@ class AgentEngine:
             agent_context.set_conversation(_prev_conv or "")
 
     def _run_inner(self, user_input: str, agent_name: str = "", images: list = None,
-                   skills: list = None):
+                   skills: list = None, plugins: list = None):
         self.end_state = ""
         self._rules_confirmed = False   # 每个新任务重新强制规则确认
         self._empty_retries = 0         # 每任务重置上游空响应纠正重试计数
@@ -1823,6 +1857,20 @@ class AgentEngine:
         for _s in (agent_skills.filter_subagent_skills(
                 agent_skills.filter_enabled_skills(skills), self.allow_subagents) or []):
             self._task_skills.add(_s)
+        # 用户手动调用的插件（/插件名）：插件对模型是黑盒，必须把「插件说明 + SKILL.md +
+        # 调用规范」直接注入上下文（见 _sync_skill_msg），并把插件登记的技能并入本任务
+        # 技能集 —— 其覆盖的底层工具走技能路由硬拦截，模型无法绕过技能乱调工具。
+        self._manual_plugins = []
+        try:
+            from zhuzhu_Copilot.core import agent_plugins
+            self._manual_plugins = agent_plugins.filter_enabled_plugins(plugins)
+            for _s in (agent_skills.filter_subagent_skills(
+                    agent_skills.filter_enabled_skills(
+                        agent_plugins.plugin_skill_names_of(self._manual_plugins)),
+                    self.allow_subagents) or []):
+                self._task_skills.add(_s)
+        except Exception:
+            self._manual_plugins = []
         self._task_groups = _detect_task_groups(user_input)
         # 系统层面（sandbox 级）工具硬拦截状态：每任务开始时读取一次，
         # 设置变更下个任务生效；schema 与执行层同时生效，提示词干预无法绕过
@@ -1837,9 +1885,21 @@ class AgentEngine:
                 self._plugin_mcp_names = agent_plugins.plugin_mcp_names()
             except Exception:
                 pass
-        if self._auto_skills and self.on_status:
-            self.on_status(f"正在调用技能: {', '.join(self._auto_skills)}")
-            self.on_status(f"技能已调用: {', '.join(self._auto_skills)}")
+        # 技能状态反馈：自动匹配与用户手动调用（/技能名）都要给出「正在调用/已调用」提示。
+        # 此前只对自动匹配发状态，手动调用在界面上完全没有反馈 —— 用户看不到技能被调用，
+        # 自然认为「手动调用技能没生效」。
+        _invoked = list(self._auto_skills or [])
+        for _s in (agent_skills.filter_enabled_skills(skills) or []):
+            if _s not in _invoked:
+                _invoked.append(_s)
+        if _invoked and self.on_status:
+            self.on_status(f"正在调用技能: {', '.join(_invoked)}")
+            self.on_status(f"技能已调用: {', '.join(_invoked)}")
+        # 插件调用同此：单独一条状态（界面用插件专属矢量图与气泡提示区分于技能行）
+        if self._manual_plugins and self.on_status:
+            _pnames = ", ".join(self._manual_plugins)
+            self.on_status(f"正在调用插件: {_pnames}")
+            self.on_status(f"插件已调用: {_pnames}")
         # 自动朗读：设置中「自动朗读」开关默认开启，或用户明确要求"朗读/语音回复"时开启。
         # AI 流式输出边生成边合成播放；未配置音色或 API Key 时给出提示并自动关闭（避免无声假象）。
         self._tts_finish = False
@@ -1938,8 +1998,8 @@ class AgentEngine:
                 new_prompt = self._system_prompt(agent_name)
                 if self._messages[0].get("content") != new_prompt:
                     self._messages[0]["content"] = new_prompt
-                # 任务技能 + 任务清单同步为末尾独立消息（原位替换，不污染 system 前缀缓存）
-                self._sync_skill_msg(skills)
+                # 任务技能 / 插件规范 + 任务清单同步为末尾独立消息（原位替换，不污染 system 前缀缓存）
+                self._sync_skill_msg(skills, self._manual_plugins)
                 self._sync_todo_msg()
                 if self.on_status:
                     self.on_status("正在思考…")
@@ -2279,6 +2339,15 @@ class AgentEngine:
                         if _pv and self.on_preview:
                             try:
                                 self.on_preview(_pv)
+                            except Exception:
+                                pass
+                        # 可视化预览（用户外部浏览器）兜底自动刷新：AI 重写了正在被预览
+                        # 的那个产物时，浏览器里的页面自动跟上（服务端比对文件指纹，
+                        # 只是读取不会触发，不会打扰用户）。
+                        if _pv:
+                            try:
+                                from zhuzhu_Copilot.core import agent_preview
+                                agent_preview.notify_source_changed(_pv)
                             except Exception:
                                 pass
                     if _looks_failed(text):

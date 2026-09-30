@@ -425,6 +425,9 @@ TOOL_ICON_SPEC = {
     "browser_close": ("browser", "cross"),
     "browser_tabs": ("browser", "list"),
     "browser_switch_tab": ("browser", "swap"),
+    # ---- 可视化预览（用户浏览器）----
+    "preview_open": ("globe", "play"),
+    "preview_refresh": ("globe", "refresh"),
     # ---- 文档与办公 ----
     "extract_text": ("doc", "out"),
     "create_docx": ("doc", "plus"),
@@ -493,6 +496,7 @@ TOOL_ICON_SPEC = {
 # ---------------------------------------------------------------------------
 UI_ICON_SPEC = {
     "skill": ("puzzle", "right"),      # 技能调用行
+    "plugin": ("plug", "right"),       # 插件调用行（插件提供的工具/技能）
     "parallel": ("flow", "right"),     # 并行执行行
 }
 

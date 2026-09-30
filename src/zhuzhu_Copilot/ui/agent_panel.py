@@ -205,6 +205,11 @@ def _resolve_theme() -> str:
 # 随主题实时换色），即使个别路径漏了显式清缓存也不会残留旧色。
 _THEME_VERSION = 0
 
+# 事件流里工具/技能/插件矢量图用的淡灰（随主题的 TEXT_DIM 走：深色 #9BA3B0、浅色 #5F6B7E）。
+# 取名一个专用常量而不是直接用 TEXT_DIM：这三类图标是同一语义层（淡灰矢量图），
+# 将来要单独调色只改这里；同时避免与「正文次要文字色」耦合带来的误改。
+ICON_GRAY = _THEMES["dark"]["TEXT_DIM"]
+
 # 最近一次已应用的色板：_apply_colors 幂等判断用。apply_package_theme 会先 apply_theme
 # 再 apply_theme_custom 连续触发 _apply_colors，色板未变时跳过，避免 _THEME_VERSION 无谓
 # 自增导致渲染缓存整体失效、QSS 字符串重复生成（主题切换/面板重建的卡顿来源之一）。
@@ -241,6 +246,7 @@ def _apply_colors(t: dict) -> None:
     global ACCENT, ACCENT_HOVER, LINK_COLOR, USER_BG, AI_BG, OK, WARN, ERR, HOVER
     global CODE_ACCENT
     global CODE_BG
+    global ICON_GRAY
     global _BTN_GHOST, _BTN_COMPACT, _BTN_GHOST_ACCENT, _BTN_PRIMARY, _BTN_DIM
     global _QCOMBO, _BTN_ICON, _BTN_DANGER
     global _THEME_VERSION, _LAST_PALETTE
@@ -252,6 +258,7 @@ def _apply_colors(t: dict) -> None:
     BG = t["BG"]; BG_BOTTOM = t["BG_BOTTOM"]; PANEL = t["PANEL"]; CARD = t["CARD"]
     BORDER = t["BORDER"]; BORDER_SOFT = t["BORDER_SOFT"]; TEXT = t["TEXT"]
     TEXT_DIM = t["TEXT_DIM"]; ACCENT = t["ACCENT"]; ACCENT_HOVER = t["ACCENT_HOVER"]
+    ICON_GRAY = t["TEXT_DIM"]   # 工具/技能/插件矢量图的淡灰，随主题切换
     LINK_COLOR = t["LINK_COLOR"]; USER_BG = t["USER_BG"]; AI_BG = t["AI_BG"]
     OK = t["OK"]; WARN = t["WARN"]; ERR = t["ERR"]; HOVER = t["HOVER"]
     CODE_ACCENT = t["CODE_ACCENT"]
@@ -1718,6 +1725,8 @@ _OP_STATUS = {
     "set_session_name": "正在命名对话",
     "look_context": "正在读取共享上下文",
     "chat_with": "正在与 Agent 通信",
+    "preview_open": "正在你的浏览器打开预览",
+    "preview_refresh": "正在刷新浏览器预览",
 }
 
 # 正文回复（非工具动作）的状态文案：AI 输出普通正文期间转圈行显示此项
@@ -1805,9 +1814,11 @@ def _seg_sig(seg: dict) -> tuple:
     if t == "op":
         # cmd（AI 输入的命令全文）在工具执行确认后才填充，纳入签名确保填充后重渲染；
         # out（该工具/命令的输出，就地续写在本段）同样纳入 —— 输出到达即在本行下方展开；
-        # name/meta/ico 亦纳入：技能行从「调用技能」翻转为「已调用技能」需触发重渲染。
+        # name/meta/ico 亦纳入：技能行从「调用技能」翻转为「已调用技能」需触发重渲染；
+        # tip 同样纳入：图标气泡提示（工具用途/插件来源）异步判定完成后要能刷到界面上。
         return (t, seg["html"], seg.get("cmd") or "", seg.get("out") or "",
-                seg.get("name") or "", seg.get("meta") or "", seg.get("ico") or "")
+                seg.get("name") or "", seg.get("meta") or "", seg.get("ico") or "",
+                seg.get("tip") or "")
     if t == "mark":
         return (t, seg["html"])
     if t == "ask":
@@ -4670,6 +4681,14 @@ class _AgentSettingsDialog(QDialog):
         imp_skill.setAutoDefault(False)
         imp_skill.setToolTip("导入市场标准 SKILL.md（或含 SKILL.md 的 zip），包装为 skill 型插件")
         imp_skill.clicked.connect(self._on_plugin_import_skill)
+        call_b = QPushButton("调用")
+        call_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                             "padding: 7px 14px; font-weight: 600;")
+        call_b.setAutoDefault(False)
+        call_b.setToolTip("关闭设置并回到对话页，输入框预填「/插件名 」，回车即调用该插件；"
+                          "调用时会把插件说明与调用规范直接交给模型")
+        call_b.clicked.connect(self._on_plugin_call)
         toggle_b = QPushButton("启用/停用")
         toggle_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
@@ -4694,6 +4713,7 @@ class _AgentSettingsDialog(QDialog):
         row.addWidget(imp_zip)
         row.addWidget(imp_skill)
         row.addWidget(toggle_b)
+        row.addWidget(call_b)
         row.addWidget(wf_b)
         row.addWidget(del_b)
         row.addStretch(1)
@@ -4805,6 +4825,28 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers()
         self._reload_mcp_list()
+
+    def _on_plugin_call(self, *_):
+        """插件列表「调用」：关闭设置并回到对话页，输入框预填 `/插件名 `（回车即调用）。
+
+        插件的能力对用户是黑盒，这里只负责把「调用意图」交给面板；真正把插件说明与调用
+        规范送进模型上下文的是引擎（见 agent_engine._sync_skill_msg），因此不需要用户在
+        输入框里再写任何规范内容。
+        """
+        p = self._current_plugin()
+        if p is None:
+            QMessageBox.information(self, "提示", "请先在列表中选择一个插件")
+            return
+        name = str(p.get("name") or "")
+        if not p.get("enabled", True):
+            QMessageBox.warning(self, "调用插件", f"插件「{name}」已停用，请先启用再调用。")
+            return
+        fn = getattr(self.parent(), "request_plugin_call", None)
+        if not callable(fn):
+            QMessageBox.information(self, "调用插件", f"请在输入框输入 /{name} 调用该插件。")
+            return
+        fn(name)
+        self.accept()      # 收起设置页：回到对话页即可直接回车调用
 
     def _on_plugin_delete(self, *_):
         """删除插件：移除插件目录并解绑 MCP/技能"""
@@ -7383,17 +7425,6 @@ def _preview_wrap_html(inner: str, title: str = "") -> str:
             f"pre{{background:{code_bg};border-radius:6px;padding:8px;}} "
             f"table{{border-collapse:collapse;}} th,td{{border:1px solid {BORDER_SOFT};"
             f"padding:3px 8px;}}</style></head><body>{inner}</body></html>")
-# UI/视觉类任务关键词：命中后（WebEngine 可用时）询问是否打开内置浏览器可视化操作。
-# 单一数据源，扩展点：新增判定词直接追加即可（大小写不敏感匹配）。
-_UI_VISUAL_KEYWORDS = (
-    "ui", "界面", "前端", "网页设计", "页面设计", "布局", "样式", "配色", "视觉",
-    "动效", "动画效果", "交互", "组件", "主题", "css", "html", "vue", "react",
-    "tailwind", "响应式", "设计稿", "原型", "可视化面板", "仪表盘", "dashboard",
-    "改版", "美化页面", "美化界面",
-)
-
-
-
 def _office_preview_url(html: str):
     """把预览 HTML 写入临时文件并返回路径（失败返回 None，调用方回退 setHtml）。
 
@@ -12483,6 +12514,7 @@ class AgentPanel(QDialog):
         self._agent_cache = None  # 自定义 Agent 列表缓存（@agent 会话级切换候选）
         self._cmd_cache = None    # "/" 全部命令串缓存（技能集合/工作流变化后失效）
         self._skill_map = None    # 当前工作流技能 {name.lower(): skill} 缓存
+        self._plugin_map = None   # 可手动调用的插件 {name.lower(): plugin} 缓存（/插件名）
         self._cmd_debounce = QTimer(self)
         self._cmd_debounce.setSingleShot(True)
         self._cmd_debounce.setInterval(150)
@@ -12886,7 +12918,7 @@ class AgentPanel(QDialog):
             "think_done": False,
             "think_start": 0.0,
             "task_active": False,
-            "queued": [],         # 排队消息列表（按序发送）：[{text, images, files, ai_text, skill_names, shot}]
+            "queued": [],         # 排队消息列表（按序发送）：[{text, images, files, ai_text, skill_names, plugin_names, shot}]
             "pending_confirm": None,  # 后台待确认命令：{name, args, risk, answered}（不弹窗打扰，切过去处理）
             "confirm_evt": None,      # 该会话确认等待事件
             "confirm_result": False,  # 该会话最近一次确认结果
@@ -13285,19 +13317,31 @@ class AgentPanel(QDialog):
             s = payload
             if s == "正在思考…":
                 return
+            if s.startswith(("正在调用插件:", "插件已调用:")):
+                done = s.startswith("插件已调用:")
+                name = s.split(":", 1)[1].strip()
+                segs.append({"type": "op",
+                             "name": "已调用插件" if done else "调用插件",
+                             "meta": name, "ico": "plugin",
+                             "tip": self._plugin_tip(name, "能力"),
+                             "html": ("✓ 已调用插件 " if done else "▎调用插件 ") + _esc(name)})
+                return
             if s.startswith(("正在调用技能:", "技能已调用:")):
                 name = s.split(":", 1)[1].strip()
                 done = s.startswith("技能已调用:")
                 # 后台会话不渲染转圈行：仅记录操作段，切回前台时统一渲染。
-                # 与前台 _on_status 同构：标题固定、技能名入 meta、ico 稳定为 skill。
-                segs.append({"type": "op",
-                             "name": "已调用技能" if done else "调用技能",
-                             "meta": name, "ico": "skill",
-                             "html": ("✓ 已调用技能 " if done else "▎调用技能 ") + _esc(name)})
+                # 与前台 _on_status 同构：标题固定、技能名入 meta、ico 稳定为 skill/plugin。
+                segs.append(self._skill_op_seg(
+                    "已调用技能" if done else "调用技能", name,
+                    ("✓ 已调用技能 " if done else "▎调用技能 ") + _esc(name), sid))
                 return
             if s.startswith(("待执行工具:", "正在执行:")):
                 name = s.split(":", 1)[1].strip()
-                segs.append({"type": "op", "html": f"▎{_esc(name)}", "name": name})
+                tip, ico = self._tool_op_tip(name, sid)
+                seg = {"type": "op", "html": f"▎{_esc(name)}", "name": name, "tip": tip}
+                if ico:
+                    seg["ico"] = ico
+                segs.append(seg)
                 return
             if s.startswith("正在并行执行"):   # 并发编辑批量状态
                 segs.append({"type": "op", "html": f"▎{_esc(s)}", "name": s,
@@ -13431,10 +13475,16 @@ class AgentPanel(QDialog):
         """解析输入为发送 payload（排队/直接发送共用）；无法解析返回 None"""
         ai_text = text
         skill_names = []
+        plugin_names = []
         skill, skill_prompt = self._match_skill(text)
         if skill:
             skill_names = [skill.get("name")]
             ai_text = skill_prompt or f"请严格按技能「{skill.get('name')}」的流程执行。"
+        plugin, plugin_prompt = self._match_plugin(text)
+        if plugin:
+            pname = plugin.get("name")
+            plugin_names = [pname]
+            ai_text = plugin_prompt or f"请调用插件「{pname}」完成本任务。"
         tool = self._match_tool(text)
         shot = None
         if tool:
@@ -13454,13 +13504,15 @@ class AgentPanel(QDialog):
                 "\n".join(f"- {p}" for p in files)
             ai_text = (ai_text + "\n\n" if ai_text else "") + note
         return {"text": text, "images": images, "files": files,
-                "ai_text": ai_text, "skill_names": skill_names, "shot": shot}
+                "ai_text": ai_text, "skill_names": skill_names,
+                "plugin_names": plugin_names, "shot": shot}
 
     def _do_send(self, p: dict):
         """按已解析的 payload 发送消息（前台：渲染用户气泡 + 启动任务）"""
         text = p.get("text") or ""
         ai_text = p.get("ai_text") or text
         skill_names = p.get("skill_names") or []
+        plugin_names = p.get("plugin_names") or []
         images = list(p.get("images") or [])
         files = list(p.get("files") or [])
         shot = p.get("shot")
@@ -13543,12 +13595,14 @@ class AgentPanel(QDialog):
             # 避免"发送后没跑完就关闭 → 该会话聊天记录丢失"
             self._write_ui_json(self._session_id, self._sess.get(self._session_id))
             if not self._model_override:
-                self._eval_pending = (self._session_id, ai_text, send_images, skill_names)
+                self._eval_pending = (self._session_id, ai_text, send_images,
+                                      skill_names, plugin_names)
                 self._eval_pending_at = time.time()
                 threading.Thread(target=self._assess_worker, daemon=True).start()
             else:
                 self._launch_task(ai_text, send_images, skill_names,
-                                  self._resolve_effort(ai_text), sid=self._session_id)
+                                  self._resolve_effort(ai_text), sid=self._session_id,
+                                  plugin_names=plugin_names)
         except Exception as e:
             import logging
             logging.getLogger(app_identity.APP_SLUG).exception("任务启动失败: %s", e)
@@ -13587,7 +13641,8 @@ class AgentPanel(QDialog):
                 pass
         try:
             self._launch_task(ai_text, send_images, q.get("skill_names") or [],
-                              self._resolve_effort(ai_text), sid=sid)
+                              self._resolve_effort(ai_text), sid=sid,
+                              plugin_names=q.get("plugin_names") or [])
         except Exception as e:
             import logging
             logging.getLogger(app_identity.APP_SLUG).exception("后台会话任务启动失败: %s", e)
@@ -14317,7 +14372,8 @@ class AgentPanel(QDialog):
         「把深蓝或描边色按固定比例压在目标底色上」，模块内依旧没有任何颜色字面量：
         · 思考气泡：底/描边各掺一点深蓝，与正文所在的 BG 面拉开层次、可一眼区分；
         · tag 胶囊：PLANNING 用中性描边色、EXEC 用深蓝 —— 两个阶段不再同色；
-        · 工具图标壳：掺深蓝的 HOVER，与思考图标壳区分；
+        · 工具/技能/插件图标：淡灰（色板里的中性灰 TEXT_DIM），配合中性描边灰微调的图标壳，
+          与深蓝只留给「状态/强调」保持一致；
         · 输出区：淡蓝字（LINK_COLOR）+ 深蓝竖线（ACCENT），让「工具调用 → 输出」有归属感。
         """
         return chat_bubbles.ChatStyle(
@@ -14330,7 +14386,7 @@ class AgentPanel(QDialog):
             accent=ACCENT,
             muted=TEXT_DIM,
             icon_shell=HOVER,
-            icon_color=ACCENT,
+            icon_color=ICON_GRAY,
             tag_bg=_mix_hex(BORDER_SOFT, AI_BG, 0.55),
             tag_fg=TEXT_DIM,
             user_bg=USER_BG,
@@ -14344,7 +14400,7 @@ class AgentPanel(QDialog):
             think_border=_mix_hex(ACCENT, BORDER, 0.30),
             tag_plan_bg=_mix_hex(BORDER_SOFT, AI_BG, 0.55),
             tag_exec_bg=_mix_hex(ACCENT, AI_BG, 0.32),
-            tool_shell=_mix_hex(ACCENT, HOVER, 0.18),
+            tool_shell=_mix_hex(BORDER_SOFT, HOVER, 0.22),
             out_fg=LINK_COLOR,
             out_line=ACCENT,
         )
@@ -16095,10 +16151,9 @@ class AgentPanel(QDialog):
             # 面板只需让滚动区跟手重排（否则展开的长正文被视口几何遮挡）
             bubble.set_block_resize_handler(
                 lambda b=bubble: QTimer.singleShot(0, self._relayout_messages))
-            # 右键菜单：朗读这条回复（从气泡段中提取正文文本后台合成播放）
-            bubble.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            bubble.customContextMenuRequested.connect(
-                lambda pos, b=bubble: self._on_ai_bubble_menu(b, b.mapToGlobal(pos)))
+            # 右键菜单：朗读这条回复（从气泡段中提取正文文本后台合成播放）。
+            # 接线只在 ChatTurn 内部做一次（set_menu_handler → CustomContextMenu 信号）：
+            # 这里若再连一遍同一信号，信号会同时打到两个槽，右键会弹出两次菜单。
             # 重试按钮：透明隐形热区 + 局部 QToolTip（跟随主题色，杜绝浅色下黑字黑底）。
             # 鼠标附着到按钮位置或气泡本体时浮现 retry 矢量图标；点击重新生成。
             retry = QPushButton("")
@@ -17112,7 +17167,9 @@ class AgentPanel(QDialog):
         cb = chat_bubbles
         if t == "think":
             body = self._render_seg_html(seg, i, t, f_main, f_sm, f_op, img_w) or ""
-            return (cb.KIND_THINK, {"tag": "", "body": body})
+            # sid = 段序号：思考气泡据此判断「还是不是同一段思考」。同一段持续落字时
+            # 序号不变，气泡必须保留用户手动展开的折叠态；换段才回到自动折叠判定。
+            return (cb.KIND_THINK, {"tag": "", "body": body, "sid": i})
         if t == "op":
             name = self._op_display(seg)
             cmd = str(seg.get("cmd") or "").strip()
@@ -17121,7 +17178,8 @@ class AgentPanel(QDialog):
                 return (cb.KIND_CMD,
                         {"label": name or "命令", "cmd": _cmd_html(cmd), "out": out})
             return (cb.KIND_TOOL, {"name": name, "meta": seg.get("meta", ""),
-                                   "params": {}, "ico": seg.get("ico"), "out": out})
+                                   "params": {}, "ico": seg.get("ico"), "out": out,
+                                   "tip": seg.get("tip", "")})
         if t == "result":
             out = self._render_seg_html(seg, i, t, f_main, f_sm, f_op, img_w) or ""
             return (cb.KIND_CMD,
@@ -18366,11 +18424,12 @@ class AgentPanel(QDialog):
 
     # ---------- 命令补全（/ 展示全部命令 + 内联预测） ----------
     def _invalidate_cmd_cache(self):
-        """技能集合/工作流/自定义 Agent 变化后清空候选缓存，下次键入自动重建"""
+        """技能/插件集合、工作流、自定义 Agent 变化后清空候选缓存，下次键入自动重建"""
         self._wf_cache = None
         self._agent_cache = None
         self._cmd_cache = None
         self._skill_map = None
+        self._plugin_map = None
 
     def _wf_list(self) -> list:
         """工作流列表（缓存，避免 "@" 每键重读各工作流 meta 造成卡顿）"""
@@ -18392,11 +18451,45 @@ class AgentPanel(QDialog):
                                    workflow=self._effective_workflow())}
         return self._skill_map
 
+    def request_plugin_call(self, name: str):
+        """外部入口（设置页插件列表「调用」）：回到对话页并把 `/插件名 ` 预填进输入框。
+
+        只预填不自动发送：插件调用往往会带一句具体任务（如「/天气插件 明天上海」），
+        由用户补完再回车；调用时引擎会把插件说明与调用规范直接注入模型上下文。
+        """
+        name = str(name or "").strip()
+        if not name:
+            return
+        try:
+            self._invalidate_cmd_cache()   # 插件集合可能刚变化，命令候选重建一次
+            self.input.setPlainText(f"/{name} ")
+            cur = self.input.textCursor()
+            cur.movePosition(QTextCursor.MoveOperation.End)
+            self.input.setTextCursor(cur)
+            self.input.setFocus()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def _cmd_plugins(self) -> dict:
+        """可手动调用的插件 {name.lower(): plugin}（缓存，插件集合变化后失效）。
+
+        插件对模型是黑盒，手动调用走 `/插件名 [提示]`：引擎会把插件说明、SKILL.md 规范与
+        调用规范直接注入上下文，用户无需知道它内部有哪几个工具。
+        """
+        if self._plugin_map is None:
+            self._plugin_map = {str(p.get("name", "")).strip().lower(): p
+                                for p in agent_plugins.list_plugin_calls()
+                                if str(p.get("name") or "").strip()}
+        return self._plugin_map
+
     def _all_commands(self) -> list:
-        """所有可斜杠调用项：系统命令（/clear、/compact）+ 当前工作流启用的技能（隐藏内置工具命令）"""
+        """所有可斜杠调用项：系统命令（/clear、/compact）+ 当前工作流启用的技能 + 插件"""
         if self._cmd_cache is None:
             cmds = ["/compact", "/clear"]
             cmds += [f"/{name}" for name in self._cmd_skills() if name]
+            cmds += [f"/{name}" for name in self._cmd_plugins() if name]
             self._cmd_cache = cmds
         return self._cmd_cache
 
@@ -18428,6 +18521,9 @@ class AgentPanel(QDialog):
         s = self._cmd_skills().get(name)
         if s:
             return s.get("description", "")
+        plugin = self._cmd_plugins().get(name)
+        if plugin:
+            return "插件：" + (str(plugin.get("description") or "").strip() or "可手动调用该插件")
         for t in agent_tools.TOOLS:
             if t["function"]["name"].lower() == name:
                 return t["function"].get("description", "")
@@ -18445,6 +18541,18 @@ class AgentPanel(QDialog):
         s = self._cmd_skills().get(q)
         if s:
             return s, (parts[1].strip() if len(parts) > 1 else "")
+        return None, ""
+
+    def _match_plugin(self, text: str):
+        """解析 /插件名 [提示]：按插件名匹配（仅已启用的插件）；返回 (插件dict, 提示文本)"""
+        if not text.startswith("/"):
+            return None, ""
+        parts = text[1:].split(None, 1)
+        if not parts:
+            return None, ""
+        p = self._cmd_plugins().get(parts[0].strip().lower())
+        if p:
+            return p, (parts[1].strip() if len(parts) > 1 else "")
         return None, ""
 
     def _match_tool(self, text: str):
@@ -18718,59 +18826,6 @@ class AgentPanel(QDialog):
         self._invalidate_cmd_cache()   # 工作流已切换：命令/技能候选缓存随之下次重建
         return True
 
-    def _maybe_ask_visual_browser(self, text: str):
-        """UI/视觉类任务开始时，询问用户是否打开内置浏览器可视化操作。
-
-        触发条件（都满足才问一次，避免打扰）：命中视觉关键词 + WebEngine 可用 +
-        本会话尚未询问过。用户选择「打开内置浏览器」→ 打开预览面板的 Web 页
-        （AI 后续用 browser_* 工具在该内置实例内操作，不碰用户自己的浏览器）；
-        选择「暂不需要」→ 本会话不再提示。登录/验证码等敏感步骤始终由用户本人完成。
-        """
-        try:
-            if not text or not agent_ui_ux.web_engine_available():
-                return
-            asked = getattr(self, "_visual_asked", None)
-            if asked is None:
-                asked = self._visual_asked = set()
-            if self._session_id in asked:
-                return
-            low = text.lower()
-            if not any(k in low for k in _UI_VISUAL_KEYWORDS):
-                return
-            asked.add(self._session_id)
-            box = QMessageBox(self)
-            box.setWindowTitle("可视化操作")
-            box.setText("检测到 UI / 视觉类任务，是否打开内置浏览器可视化操作？")
-            box.setInformativeText(
-                "内置浏览器在应用内的独立标签中打开，AI 可在其中打开页面、验证界面效果，"
-                "不影响你正在使用的浏览器；是否打开由你决定。")
-            open_btn = box.addButton("打开内置浏览器", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("暂不需要", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            if box.clickedButton() is open_btn:
-                self._open_builtin_browser()
-        except Exception:
-            pass
-
-    def _open_builtin_browser(self):
-        """打开内置浏览器（预览面板的 Web 页），供 AI 的 browser_* 工具与用户共同查看"""
-        cw = getattr(self, "code_win", None)
-        if cw is None:
-            return
-        try:
-            cw.show()
-            cw.raise_()
-            if cw._active_web() is None:
-                cw.show_bing()          # 无标签时先建一个 Web 标签页
-            else:
-                cw._switch_mode("web")
-        except Exception:
-            pass
-        try:
-            self._sync_code_win()
-        except Exception:
-            pass
-
     def _send(self):
         """发送消息：任务运行中（含评估阶段）则进入排队，本轮完成后自动发送；
         空闲则直接发送。排队消息可在提示条编辑或删除。"""
@@ -18802,8 +18857,6 @@ class AgentPanel(QDialog):
                 return   # 任务运行中切换被拒绝：不发送，等待本轮完成后重试
             if not text and not images:
                 return   # 仅 @切换 无正文：只切换不发送
-        # UI/视觉类任务：先问是否打开内置浏览器可视化操作（每会话一次）
-        self._maybe_ask_visual_browser(text)
         payload = self._build_payload(text, images, files)
         if payload is None:
             return
@@ -18831,9 +18884,10 @@ class AgentPanel(QDialog):
         self._do_send(payload)
 
     def _launch_task(self, ai_text: str, send_images: list, skill_names: list,
-                     effort: str, sid: str = None):
+                     effort: str, sid: str = None, plugin_names: list = None):
         """按力度/评估结果路由模型并启动任务（评估完成或手动模式时调用）。
-        sid：目标会话（默认当前会话）；后台会话（排队消息）也可启动任务"""
+        sid：目标会话（默认当前会话）；后台会话（排队消息）也可启动任务；
+        plugin_names：用户手动调用的插件（/插件名），其说明与规范一并注入上下文"""
         sid = sid or self._session_id
         engine = self._engine_for(sid)
         cfg = self._llm_config()
@@ -18913,7 +18967,8 @@ class AgentPanel(QDialog):
                 engine.allow_subagents
         except Exception:
             pass
-        engine.start(ai_text, "zhuzhu Copilot", send_images, skills=skill_names)
+        engine.start(ai_text, "zhuzhu Copilot", send_images, skills=skill_names,
+                     plugins=plugin_names or [])
 
     # ---------- @子Agent 直接调用（不经主 Agent 转发，独立 LLM 循环） ----------
     def _launch_subagent(self, name: str, task: str, images: list = None):
@@ -19154,7 +19209,7 @@ class AgentPanel(QDialog):
     def _assess_worker(self):
         """后台线程：用默认 agnes-2.5-flash 评估任务难度（失败回退本地估算）。
         任何异常都保证 emit，避免 _eval_pending 悬挂导致发送按钮无限转圈。"""
-        ai_text = (self._eval_pending or (None, "", [], []))[1]
+        ai_text = (self._eval_pending or (None, "", [], [], []))[1]
         effort = "medium"
         try:
             try:
@@ -19173,7 +19228,7 @@ class AgentPanel(QDialog):
         启动失败兜底复位任务状态与按钮，绝不让发送按钮卡在转圈。"""
         if not self._eval_pending:
             return
-        sid, ai_text, send_images, skill_names = self._eval_pending
+        sid, ai_text, send_images, skill_names, plugin_names = self._eval_pending
         self._eval_pending = None
         if sid == self._session_id and self._user_stopped:
             # 用户已在评估期间点击停止：放弃启动并复位按钮
@@ -19182,7 +19237,8 @@ class AgentPanel(QDialog):
             self._set_action_idle()
             return
         try:
-            self._launch_task(ai_text, send_images, skill_names, effort, sid=sid)
+            self._launch_task(ai_text, send_images, skill_names, effort, sid=sid,
+                              plugin_names=plugin_names)
         except Exception as e:
             import logging
             logging.getLogger(app_identity.APP_SLUG).exception("评估后任务启动失败: %s", e)
@@ -20658,6 +20714,58 @@ class AgentPanel(QDialog):
         self._refresh_ai_html()
         self._scroll_bottom()
 
+    def _plugin_of_tool(self, name: str, sid: str = None) -> str:
+        """该工具是否由插件提供 → 插件名（内置工具/普通 MCP 工具返回空串）。
+
+        插件提供的 MCP 工具名由插件自己决定，无法静态映射，只能走引擎运行期的
+        「工具 → MCP 服务器名（{插件名}-mcp）→ 插件」链路（引擎持有 MCP 管理器）。
+        sid：目标会话（后台会话的事件也要按它自己的引擎判定归属）。
+        """
+        try:
+            st = self._sess.get(sid or self._session_id) or {}
+            getter = getattr(st.get("engine"), "plugin_of_tool", None)
+            if callable(getter):
+                return getter(name) or ""
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _plugin_tip(plugin: str, subject: str) -> str:
+        """插件来源行的图标气泡提示：插件名 + 用途说明 + 来源对象"""
+        try:
+            desc = str(agent_plugins.get_plugin(plugin).get("description") or "").strip()
+        except Exception:
+            desc = ""
+        return f"插件「{plugin}」提供的{subject}" + (f"：{desc}" if desc else "")
+
+    def _tool_op_tip(self, name: str, sid: str = None) -> tuple:
+        """工具调用行 → (图标气泡提示, 图标 kind)。插件提供的工具换插件专属矢量图。
+
+        提示只是锦上添花：任何解析异常都退化为「无提示」，绝不能因此中断状态渲染。
+        """
+        try:
+            plugin = self._plugin_of_tool(name, sid)
+            if plugin:
+                return self._plugin_tip(plugin, "工具"), "plugin"
+            return self._cmd_desc("/" + str(name).lower()), None
+        except Exception:
+            return "", None
+
+    def _skill_op_seg(self, title: str, name: str, html: str, sid: str = None) -> dict:
+        """技能调用行 seg：技能由插件登记（插件目录名即技能名）时换插件矢量图与插件提示。"""
+        seg = {"type": "op", "name": title, "meta": name, "ico": "skill", "html": html}
+        try:
+            plugin = agent_plugins.plugin_of_skill(name)
+            if plugin:
+                seg["ico"] = "plugin"
+                seg["tip"] = self._plugin_tip(plugin, f"技能 {name}")
+            else:
+                seg["tip"] = self._cmd_desc("/" + str(name).lower())
+        except Exception:
+            pass
+        return seg
+
     def _on_status(self, s: str):
         self._stop_send_spin()
         self._last_activity = time.time()
@@ -20671,8 +20779,11 @@ class AgentPanel(QDialog):
             # 同一轮多个工具时文案会依次经过各工具，随后被「正在并行执行」覆盖。
             self._set_spinner_text(_op_status_text(name))
             self._ensure_ai_bubble()
-            self._segments.append({"type": "op", "html": f"▎{_esc(name)}",
-                                   "name": name})
+            tip, ico = self._tool_op_tip(name)
+            seg = {"type": "op", "html": f"▎{_esc(name)}", "name": name, "tip": tip}
+            if ico:
+                seg["ico"] = ico
+            self._segments.append(seg)
             self._refresh_ai_html()
             self._scroll_bottom()
         elif s.startswith("正在执行:"):
@@ -20684,8 +20795,11 @@ class AgentPanel(QDialog):
             if self._segments and self._segments[-1]["type"] == "op":
                 self._segments[-1]["html"] = f"▎{_esc(name)} …"
             else:
-                self._segments.append({"type": "op", "html": f"▎{_esc(name)} …",
-                                       "name": name})
+                tip, ico = self._tool_op_tip(name)
+                seg = {"type": "op", "html": f"▎{_esc(name)} …", "name": name, "tip": tip}
+                if ico:
+                    seg["ico"] = ico
+                self._segments.append(seg)
             self._refresh_ai_html()
             self._scroll_bottom()
         elif s.startswith("正在并行执行"):   # 并发编辑批量状态（引擎侧已带工具名清单）
@@ -20700,11 +20814,10 @@ class AgentPanel(QDialog):
             name = s.split(":", 1)[1].strip()
             self._set_spinner_text(f"正在调用技能 {name}")
             self._ensure_ai_bubble()
-            # 标题固定「调用技能」，技能名放入 meta（不再拼进标题）；ico 稳定为 skill，
+            # 标题固定「调用技能」，技能名放入 meta（不再拼进标题）；ico 稳定为 skill/plugin，
             # 使该行获得专属图标，并作为同一技能行原地更新的识别标记。
-            seg = {"type": "op", "name": "调用技能", "meta": name, "ico": "skill",
-                   "html": f"▎调用技能 {_esc(name)}"}
-            if self._segments and self._segments[-1].get("ico") == "skill":
+            seg = self._skill_op_seg("调用技能", name, f"▎调用技能 {_esc(name)}")
+            if self._segments and self._segments[-1].get("ico") in ("skill", "plugin"):
                 self._segments[-1].update(seg)
             else:
                 self._segments.append(seg)
@@ -20713,9 +20826,26 @@ class AgentPanel(QDialog):
         elif s.startswith("技能已调用:"):
             name = s.split(":", 1)[1].strip()
             self._ensure_ai_bubble()
-            seg = {"type": "op", "name": "已调用技能", "meta": name, "ico": "skill",
-                   "html": f"✓ 已调用技能 {_esc(name)}"}
-            if self._segments and self._segments[-1].get("ico") == "skill":
+            seg = self._skill_op_seg("已调用技能", name, f"✓ 已调用技能 {_esc(name)}")
+            if self._segments and self._segments[-1].get("ico") in ("skill", "plugin"):
+                self._segments[-1].update(seg)
+            else:
+                self._segments.append(seg)
+            self._refresh_ai_html()
+            self._scroll_bottom()
+        elif s.startswith(("正在调用插件:", "插件已调用:")):
+            done = s.startswith("插件已调用:")
+            name = s.split(":", 1)[1].strip()
+            self._finish_thinking()
+            self._set_spinner_text(
+                ("已调用插件 " if done else "正在调用插件 ") + name)
+            self._ensure_ai_bubble()
+            # 插件调用独占一行并带插件专属矢量图：与技能行（拼图图标）区分开，
+            # 图标气泡提示给出插件名与用途，便于用户确认「是哪个插件在干活」。
+            seg = {"type": "op", "name": "已调用插件" if done else "调用插件",
+                   "meta": name, "ico": "plugin", "tip": self._plugin_tip(name, "能力"),
+                   "html": ("✓ 已调用插件 " if done else "▎调用插件 ") + _esc(name)}
+            if self._segments and self._segments[-1].get("ico") == "plugin":
                 self._segments[-1].update(seg)
             else:
                 self._segments.append(seg)

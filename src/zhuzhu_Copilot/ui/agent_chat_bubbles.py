@@ -141,6 +141,12 @@ EMERGE_SAMPLES = 18            # 清晰度曲线采样点数（渐变停靠点�
 EMERGE_WRITING_LINES = 1.2     # 软化范围（行）：覆盖笔尖所在行 + 与上一行的过渡
 EMERGE_WRITING_DROP = 0.50     # 书写期间该区域清晰度的最大降幅
 
+# 高度「只增不减」棘轮的放行阈值（px）：流式期间 markdown 被半解析（代码围栏还没闭合等）
+# 会让行数瞬间变化，小幅（≤ 该值）收缩按抖动处理以保持几何稳定；而**真实收缩**（工具块被
+# 移除、围栏闭合、过程区收起、折叠态切换）一次就掉很多行，必须放行 —— 否则那个偏大的高度
+# 会被永久钉住，多余空间被布局摊到区块里，表现为气泡上下出现大片空白且整个任务期间不自愈。
+HEIGHT_SHRINK_TOL = 24
+
 # 段类型（调用方通过 render() 的 kind 字段指定）
 KIND_THINK = "think"
 KIND_TOOL = "tool"
@@ -585,6 +591,8 @@ class _EmergeBand(QWidget):
         self._hist: list = []      # [(落字时刻, 内容高度)]：清晰度曲线的行龄采样
         self._h = 0                # 最近一次正文内容高度（px）
         self._w = -1               # 最近一次正文宽度（宽度变化 → 历史作废）
+        self._settled_h = 0        # 行龄作废时「已落定内容」的高度基线（防整块重播）
+        self._first_wave = False   # 块刚上屏：本波允许整段可见正文一起浮现（一次性）
         self._rev = 0              # 内容版本：底图缓存的失效依据
         self._live = False         # 流式进行中（仅此时记录落字并播放动效）
         self._failed = False       # 绘制失败即退场（不再绘制，避免异常拖垮进程）
@@ -604,8 +612,12 @@ class _EmergeBand(QWidget):
         """正文内容 / 几何变化后由所属区块调用：记录落字时刻并推进波前。
 
         by_geometry=True 表示只是几何变了（布局生效、窗口缩放、块被拉高）：此时**绝不**
-        把高度变化当成新落下的字，否则每长一行都会被当成新一波浮现的起点。宽度变化则
-        一律作废行龄（换行重算后「第几行」已不是同一批字）。
+        把高度变化当成新落下的字，否则每长一行都会被当成新一波浮现的起点。
+
+        宽度变化（面板缩放、滚动条出现/消失导致的换行重算）一律作废行龄，但**不重播动画**：
+        作废时把当前可见内容记为「已落定」（`_settled_h`），之后只有新增长出来的那部分
+        才浮现 —— 否则每次宽度抖动都会让整块内容重新浮现一遍（用户反馈的「动画重复播放」）。
+        只有「块刚上屏」（本层第一次拿到真实宽度）才把整段可见正文记为刚落下。
         """
         if not self._live and not self._timer.isActive():
             # 非流式块（历史回合 / 已收尾）与动效无关：直接跳过。长会话里上百个区块若
@@ -614,17 +626,24 @@ class _EmergeBand(QWidget):
             return
         rect = self._area()
         height, width = int(rect.height()), int(rect.width())
-        first = self._w < 0          # 本层第一次拿到真实宽度（块刚上屏）
+        if width <= 0 or height <= 0:
+            # 正文区域此刻不可浮现（思考气泡折叠态返回空区域、块被隐藏、尚未布局）：
+            # 不能拿它去改写宽度/高度基线 —— 否则「空区域 → 真实宽度」会被当成一次
+            # 宽度变化，块一恢复可见就把整段内容当成新落下的字重播一遍。
+            self._sync()
+            return
         if width != self._w:
             self._hist = []
             self._w = width
             self._h = height
+            self._settled_h = height
             self._rev += 1
             self._cache = None
-            # 「块刚上屏」（首次建立宽度 / 布局生效后的重排）= 整段可见正文记为「刚落下」，
-            # 于是整块浮现；若只是内容变化顺带换了宽度（流式期间缩放窗口）则不补动画，
-            # 等下一次落字。
-            if self._live and height > 0 and (first or by_geometry):
+            # 只有「块刚上屏」才把整段可见正文记为刚落下（一次成型的内容因此整块浮现）；
+            # 其余宽度变化（面板缩放、滚动条出现/消失）只是换了换行宽度，已显示的内容
+            # 不得被动效重播 —— 这正是「动画重复播放若干遍」的根源。
+            wave_first, self._first_wave = self._first_wave, False
+            if self._live and wave_first:
                 self._start_wave(height)
                 self._timer.start()
             self._sync()
@@ -639,24 +658,39 @@ class _EmergeBand(QWidget):
         self._rev += 1
         self._cache = None
         if height < prev_h:
-            self._hist = []        # 内容收缩（markdown 半解析 / 折叠）→ 历史作废
+            self._hist = []            # 内容收缩（markdown 半解析 / 折叠）→ 历史作废
+            self._settled_h = height   # 收缩后的内容已落定，只有其后的增长才浮现
         if not self._live:
             self._sync()
             return
         now = time.perf_counter()
         if not self._hist:
-            self._start_wave(height)
+            self._start_wave(height, self._settled_h)
         elif (now - self._hist[-1][0]) * 1000.0 >= EMERGE_SAMPLE_MS:
             self._hist.append((now, height))
             self._prune(now)
         self._timer.start()
         self._sync()
 
-    def _start_wave(self, height: int):
-        """起波基线：把「本次之前的内容」放到浮现窗口之外（视作已落定），
-        于是只有本次新增的行处在浮现中；高度基线取 0 → 整段可见正文都算新落下。"""
+    def arm_first_wave(self):
+        """块首次被布局上屏（拿到真实几何）：允许下一波把整段可见正文记为「刚落下」，
+        因此一次成型的内容（工具行 / 命令块 / 刚上屏的正文）会有整块浮现的效果。
+
+        只在**首次**上屏时由区块调用（见 `_EmergeMixin.resizeEvent`）：之后的宽度变化
+        不是「上屏」，不得重播动画 —— 否则面板缩放/滚动条出现都会让整块内容重新浮现。
+        """
+        self._first_wave = True
+
+    def _start_wave(self, height: int, settled: int = 0):
+        """起波基线 (落字时刻, 内容高度)。
+
+        settled = 「本次之前已落定内容」的高度：把它放到浮现窗口之外（视作早已清晰），
+        于是只有其后的**新增行**处在浮现中。settled=0（块刚上屏）时整段可见正文都算
+        新落下 —— 一次成型的内容（工具行/命令块）才有整块浮现的效果。
+        """
         now = time.perf_counter()
-        self._hist = [(now - EMERGE_MS / 1000.0, 0), (now, int(height))]
+        base = max(0, min(int(settled), int(height)))
+        self._hist = [(now - EMERGE_MS / 1000.0, base), (now, int(height))]
 
     def set_live(self, live: bool):
         """流式开关：关闭后不再记录新落字，让**当前这一波自然收尾**（≤EMERGE_MS）后隐藏。
@@ -940,6 +974,12 @@ class _EmergeMixin:
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        # 首次被布局上屏（拿到真实几何）→ 允许下一波「整块浮现」。用一次性标记而不是
+        # 「宽度从 -1 变过来」：块在布局给宽之前就写入了内容，那时读到的高度来自控件
+        # 默认窄宽度，不能算上屏；而流式期间后续的每一次宽度变化都不该重播整块动画。
+        if self._emerge is not None and not getattr(self, "_laid_out", False):
+            self._laid_out = True
+            self._emerge.arm_first_wave()
         self._emerge_touch(by_geometry=True)
 
 
@@ -1100,6 +1140,7 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         self._mask.hide()
         self._folded = None      # 折叠态缓存：仅在状态真正变化时改动几何
         self._body_html = ""     # 思考正文全文（展开时才铺进标签，折叠态只铺前缀）
+        self._seg_id = None      # 已绑定的思考段标识（换段 → 折叠态回到自动判定）
         self._fix_vertical()
         # 正文坐落于卡片底（fill=卡片底），浮现只覆盖思考正文标签那一块（头行图标/胶囊不动）
         self._emerge_init(style.think_bg_of(), self._emerge_area)
@@ -1115,23 +1156,31 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         self._fold_handler = fn
 
     # ---------- 内容 ----------
-    def set_content(self, tag: str, body_html: str):
+    def set_content(self, tag: str, body_html: str, sid=None):
         """写入思考正文（**全文**存入 `_body_html`，标签按折叠态只铺前缀）。
 
         关键：正文没变（长推理折叠后每 tick 前缀都不再变化）时整段短路 —— 既不重设
         富文本、也不重排、也不重复设样式。否则长推理下每 tick 都要重排整篇文档，
         主线程被排满后气泡与打字指示器剧烈抖动、消息区上下反复出现大片空白。
+
+        `sid` 是调用方（面板）下发的**段标识**（同一段思考持续落字时不变）：
+        只有换到另一段思考才复位 `_user_open`（用户点过「继续查看/收起」）。
+        此前每个 tick 无条件复位，用户一展开就被下一 tick 自动收起回去 ——
+        表现为折叠态/动画被反复回放。
         """
+        if sid is not None and self._seg_id is not None and sid != self._seg_id:
+            self._user_open = None
+            if self._fold_btn.text() != "继续查看":
+                self._fold_btn.setText("继续查看")
+                self._fold_btn.setIcon(
+                    self._icon_provider("chev", FONT_SMALL, self._style.accent))
+        if sid is not None:
+            self._seg_id = sid
         self._body_html = body_html or ""
         if self._tag_text.text() != (tag or ""):
             self._tag_text.setText(tag or "")
             self._tag_style(tag or "")   # setStyleSheet 会触发样式重算，仅在阶段变化时做
         self._tag.setVisible(bool(tag))
-        self._user_open = None
-        if self._fold_btn.text() != "继续查看":
-            self._fold_btn.setText("继续查看")
-            self._fold_btn.setIcon(
-                self._icon_provider("chev", FONT_SMALL, self._style.accent))
         if not self._apply_body():
             return                        # 可见正文未变：几何/动效都不需要动
         self._body.setMinimumHeight(0)    # 重测前先解除旧钳制
@@ -1347,14 +1396,17 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
         return QRect(body.x(), body.y(), max(1, body.width()), max(0, body.height()))
 
     def set_content(self, name: str, meta: str, params: dict, *, ico: str = None,
-                    out: str = None):
+                    out: str = None, tip: str = ""):
         self._title.setText(name or "")
-        # 图标 kind 优先取调用方给的 ico（技能/并行等伪 kind），未给则按工具名解析；
+        # 图标 kind 优先取调用方给的 ico（技能/插件/并行等伪 kind），未给则按工具名解析；
         # 每个工具/伪 kind 都有自己的专属图标（tool_icons 表）。
         self._icon.setPixmap(_tile_pixmap(
             self._icon_provider(ico or name or "tool", FONT_BASE + 2,
                                 self._style.icon_color),
             TOOL_ICON, TOOL_GLYPH_RATIO))
+        # 图标气泡提示：说明这一行在调用什么（工具用途 / 技能说明 / 所属插件），
+        # 仅挂在图标壳上，避免覆盖正文的文本选择与链接点击。
+        self._icon.setToolTip(tip or "")
         self._meta.setText(meta or "")
         self._meta.setVisible(bool(meta))
         while self._chip_lay.count():
@@ -2038,11 +2090,12 @@ class ChatTurn(QWidget):
     def _update_block(self, wid: QWidget, kind: str, payload: dict):
         payload = payload or {}
         if kind == KIND_THINK:
-            wid.set_content(payload.get("tag", ""), payload.get("body", ""))
+            wid.set_content(payload.get("tag", ""), payload.get("body", ""),
+                            sid=payload.get("sid"))
         elif kind == KIND_TOOL:
             wid.set_content(payload.get("name", ""), payload.get("meta", ""),
                             payload.get("params") or {}, ico=payload.get("ico"),
-                            out=payload.get("out"))
+                            out=payload.get("out"), tip=payload.get("tip") or "")
         elif kind == KIND_CMD:
             wid.set_content(payload.get("label", ""), payload.get("cmd", ""),
                             payload.get("out", ""))
@@ -2145,7 +2198,9 @@ class ChatTurn(QWidget):
         # 只在**同一宽度**下沿用「只增不减」：宽度一变（滚动条出现/消失、面板缩放），
         # 旧高度是另一个换行宽度的结果，再拿来当上界就会把它永远钉住 ——
         # 长任务里滚动条随内容增长而出现时尤其明显，表现为正文上下不断有大片空白。
-        if monotonic and self._lay_w == w:
+        # 另外小幅收缩（markdown 半解析抖动）继续按只增不减处理，真实收缩（掉超过
+        # HEIGHT_SHRINK_TOL）必须放行，否则多余高度会一直挂在回合里变成大片空白。
+        if monotonic and self._lay_w == w and self.minimumHeight() - total <= HEIGHT_SHRINK_TOL:
             total = max(total, self.minimumHeight())
         self._lay_w = w
         self._hfw_cache = (w, total)   # 刚算准：外层随后询问高度直接命中，不再全量重测
@@ -2187,8 +2242,10 @@ class ChatTurn(QWidget):
         h = _widget_hfw(wdg, inner)
         # 只在**同一宽度**下沿用「只增不减」：宽度变了，旧最小高度是另一个换行宽度的
         # 结果，再拿来当上界就会把它永远钉住（正文上下持续留大片空白）。
-        if monotonic and prev_pin_w == inner:
-            h = max(h, wdg.minimumHeight())
+        # 真实收缩（掉超过 HEIGHT_SHRINK_TOL）同样放行，只有小幅抖动才继续按只增不减处理。
+        prev_min = wdg.minimumHeight()
+        if monotonic and prev_pin_w == inner and prev_min - h <= HEIGHT_SHRINK_TOL:
+            h = max(h, prev_min)
         if _need_resize(wdg.minimumHeight(), h):
             wdg.setMinimumHeight(h)
         return h

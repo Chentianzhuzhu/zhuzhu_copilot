@@ -1886,14 +1886,25 @@ def save_settings(s: dict) -> bool:
 
 
 def skill_instructions(skill_names: list) -> str:
-    """把所选技能的 instruction 拼装成 system prompt 附加段落"""
+    """把所选技能的「说明 + 规范正文」拼装成注入文本。
+
+    说明（description）必须一并给出：模型只看到规范正文时不知道这个技能是干什么用的，
+    判断不了「当前任务是否属于该技能」，于是容易自行解释规范、或只描述不执行。
+    带上说明后，技能的身份、用途与流程在同一段上下文里，模型才可能严格遵守。
+    """
     by_name = {s.get("name"): s for s in load_skills()}
     parts = []
     for n in skill_names or []:
         s = by_name.get(n)
-        if s and s.get("instruction"):
-            parts.append(s["instruction"])
-    return "\n".join(parts)
+        if not s:
+            continue
+        body = str(s.get("instruction") or "").strip()
+        if not body:
+            continue
+        desc = str(s.get("description") or "").strip()
+        head = f"### 技能 {n}" + (f"\n技能说明：{desc}" if desc else "")
+        parts.append(f"{head}\n技能规范：\n{body}")
+    return "\n\n".join(parts)
 
 
 def skill_md_path(name: str) -> str:
@@ -2312,6 +2323,17 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
                "简单单步任务可不调用 todo。"
                "执行过程中每步检查结果，结束后对照计划确认目标是否全部达成，未完成则继续补做；"
                "不要只停留在计划上。")
+    # 可视化预览：是否展示**由你按任务内容自己判断**（没有任何关键词预判替你做决定）。
+    # 目标是让用户「看到」成果，而不是只在对话里读代码/读描述。
+    prompt += ("\n\n可视化预览规范（判断权在你，不要等程序提示）："
+               "只要产出了适合**看**的成果（HTML 页面 / 网页或界面原型 / 图表与仪表盘 / "
+               "排版后的报告、演示稿、图文说明等），收尾前就必须调用 preview_open 把它送到"
+               "用户的浏览器里展示——「能看到」才算交付，只在对话里贴代码或文字描述不算完成；"
+               "纯代码改造、纯数据计算、纯问答类任务不需要预览，不要为了预览而预览。"
+               "展示之后每完成一步（改完样式、补完数据、修完问题）都可调用 preview_refresh，"
+               "让用户立刻看到最新结果；托管源文件变化时程序也会自动刷新，因此刷新不是必做项。"
+               "本地 HTML 产物传 path（推荐，可自动跟随文件变化），外部网址传 url。"
+               "browser_* 系列是网页自动化操作，与预览展示是两件事，不要用 browser_open 代替预览。")
     prompt += _subagent_policy_block(subagents_allowed)
     # 强制提示词兜底：置于末尾，任何自定义规则/系统提示词均不可覆盖。
     # 确保 AI 每次动手前都认真分析需求、约束、风险与上下文，避免盲目执行。
