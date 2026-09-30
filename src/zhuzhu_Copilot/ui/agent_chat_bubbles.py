@@ -30,7 +30,7 @@ import os
 import time
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt, QTimer
+from PyQt6.QtCore import QObject, QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFontMetrics,
@@ -349,6 +349,61 @@ def _widget_hfw(wid: QWidget, width: int) -> int:
     except Exception:
         pass
     return int(wid.sizeHint().height())
+
+
+# ---------------------------------------------------------------------------
+# 历史回合「隐藏过程块收尾」的空闲分摊
+# ---------------------------------------------------------------------------
+# 背景（探针实测）：内层输出标签首次 setVisible 时，Qt 会为整篇富文本做一次排版
+# （2000 字符 ≈ 20ms、2 万字符级可达百毫秒），长对话里上百个过程块累积成秒级
+# 主线程阻塞（切换会话时表现为白屏）。历史回合的过程块默认收起（隐藏），其排版
+# 结果用户当下看不到 —— 故把「让内层控件生效」的收尾动作推迟到事件循环空闲里
+# 分片执行（每片 ≤ _IDLE_SLICE_MS），切换本身只做「建块 + 填内容」（毫秒级）；
+# 某回合在铺完之前被展开时，ChatTurn._resume_deferred() 会先同步补齐，正确性不变。
+_IDLE_SLICE_MS = 6.0
+
+
+class _IdleSpreader(QObject):
+    """空闲切片执行器：把推迟的收尾动作分摊到事件循环空闲里逐个执行。
+
+    调用方只 push 一个无参可调用对象；控件已销毁时其内部抛出的 RuntimeError 被吞掉
+    （回合被移除/重建后残留的任务直接跳过，不影响其余任务）。"""
+
+    def __init__(self):
+        super().__init__()
+        self._queue: list = []
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._tick)
+
+    def push(self, fn: callable):
+        self._queue.append(fn)
+        if not self._timer.isActive():
+            self._timer.start(0)
+
+    def _tick(self):
+        budget = time.perf_counter() + _IDLE_SLICE_MS / 1000.0
+        while self._queue:
+            fn = self._queue.pop(0)
+            try:
+                fn()
+            except RuntimeError:
+                pass                     # 控件已销毁（回合被清空/重建）：跳过
+            if time.perf_counter() >= budget:
+                break
+        if self._queue:
+            self._timer.start(0)
+
+
+_SPREADER: Optional[_IdleSpreader] = None
+
+
+def _spreader() -> _IdleSpreader:
+    """惰性单例：首次需要时创建（此时 QApplication 必然已存在）"""
+    global _SPREADER
+    if _SPREADER is None:
+        _SPREADER = _IdleSpreader()
+    return _SPREADER
 
 
 class PillButton(QPushButton):
@@ -1181,7 +1236,7 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         self._fold_handler = fn
 
     # ---------- 内容 ----------
-    def set_content(self, tag: str, body_html: str, sid=None):
+    def set_content(self, tag: str, body_html: str, sid=None, defer: bool = False):
         """写入思考正文（**全文**存入 `_body_html`，标签按折叠态只铺前缀）。
 
         关键：正文没变（长推理折叠后每 tick 前缀都不再变化）时整段短路 —— 既不重设
@@ -1211,8 +1266,18 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         self._body.setMinimumHeight(0)    # 重测前先解除旧钳制
         self._body.setMaximumHeight(16777215)
         self._bump_content()
-        self._apply_fold()
+        if defer:
+            self._deferred_fold = True    # 见 ToolCallRow.set_content 的 defer 说明
+        else:
+            self._apply_fold()
         self._emerge_touch()
+
+    def resume_deferred(self):
+        """应用被推迟的折叠态收尾（见 ToolCallRow.set_content 的 defer 说明）"""
+        if not getattr(self, "_deferred_fold", False):
+            return
+        self._deferred_fold = False
+        self._apply_fold()
 
     def _shown_html(self) -> str:
         """当前应铺进标签的正文：折叠态只给前缀，展开态给全文。
@@ -1421,7 +1486,7 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
         return QRect(body.x(), body.y(), max(1, body.width()), max(0, body.height()))
 
     def set_content(self, name: str, meta: str, params: dict, *, ico: str = None,
-                    out: str = None, tip: str = ""):
+                    out: str = None, tip: str = "", defer: bool = False):
         self._title.setText(name or "")
         # 图标 kind 优先取调用方给的 ico（技能/插件/并行等伪 kind），未给则按工具名解析；
         # 每个工具/伪 kind 都有自己的专属图标（tool_icons 表）。
@@ -1433,7 +1498,6 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
         # 仅挂在图标壳上，避免覆盖正文的文本选择与链接点击。
         self._icon.setToolTip(tip or "")
         self._meta.setText(meta or "")
-        self._meta.setVisible(bool(meta))
         while self._chip_lay.count():
             item = self._chip_lay.takeAt(0)
             w = item.widget()
@@ -1442,12 +1506,29 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
                 w.deleteLater()
         for key, val in (params or {}).items():
             self._chip_lay.addWidget(self._chip(key, val))
-        self._chips.setVisible(bool(params))
         # 输出正文：空则整块收起，工具行恢复为「一行调用」
         self._out.setText(out or "")
-        self._out_box.setVisible(bool(out))
+        if defer:
+            # 隐藏过程块（历史回合收起态）：先只记下内层可见性，等空闲切片再 setVisible ——
+            # 首次显示输出标签会触发整篇富文本排版，是长对话切换卡顿的大头（见 _IdleSpreader）
+            self._deferred_show = (bool(meta), bool(params), bool(out))
+        else:
+            self._meta.setVisible(bool(meta))
+            self._chips.setVisible(bool(params))
+            self._out_box.setVisible(bool(out))
         self._bump_content()
         self._emerge_touch()
+
+    def resume_deferred(self):
+        """应用被推迟的内层可见性（首次显示的输出标签排版在这里发生，见 set_content）"""
+        st = getattr(self, "_deferred_show", None)
+        if st is None:
+            return
+        self._deferred_show = None
+        meta, chips, out = st
+        self._meta.setVisible(meta)
+        self._chips.setVisible(chips)
+        self._out_box.setVisible(out)
 
     def _chip(self, key: str, value) -> QLabel:
         lbl = QLabel(f"<b>{key}</b>&nbsp;{value}")
@@ -1576,16 +1657,28 @@ class CmdBlock(_PinMixin, _EmergeMixin, QFrame):
         inset = 2
         return QRect(r.x() + inset, r.y(), max(1, r.width() - inset * 2), int(h))
 
-    def set_content(self, label: str, cmd_html: str, out_html: str):
+    def set_content(self, label: str, cmd_html: str, out_html: str, defer: bool = False):
         self._bar_label.setText(label or "")
         self._cmd.setText(f'<span style="color:{self._style.accent};">$&nbsp;</span>'
                           f'{cmd_html}' if cmd_html else "")
         self._body.setText(f'<span style="color:{self._style.muted};">ok</span>&nbsp;&nbsp;'
                            f'{out_html}' if out_html else "")
-        self._cmd.setVisible(bool(cmd_html))
-        self._body.setVisible(bool(out_html))
+        if defer:
+            self._deferred_show = (bool(cmd_html), bool(out_html))   # 见 ToolCallRow.set_content
+        else:
+            self._cmd.setVisible(bool(cmd_html))
+            self._body.setVisible(bool(out_html))
         self._bump_content()
         self._emerge_touch()
+
+    def resume_deferred(self):
+        """应用被推迟的内层可见性（见 ToolCallRow.set_content 的 defer 说明）"""
+        st = getattr(self, "_deferred_show", None)
+        if st is None:
+            return
+        self._deferred_show = None
+        self._cmd.setVisible(st[0])
+        self._body.setVisible(st[1])
 
     def _inner_w(self) -> int:
         return max(1, self.width() - 2)
@@ -1640,12 +1733,22 @@ class RichBlock(_PinMixin, _EmergeMixin, QWidget):
         h = max(int(lbl.height()), _label_hfw(lbl, w, self._content_ver))
         return QRect(lbl.x(), lbl.y(), w, int(h))
 
-    def set_html(self, html: str):
+    def set_html(self, html: str, defer: bool = False):
         self._body.setText(html or "")
         self._body.setMinimumHeight(0)
         self._bump_content()
-        self._pin_wrapping()
+        if defer:
+            self._deferred_pin = True    # 见 ToolCallRow.set_content 的 defer 说明
+        else:
+            self._pin_wrapping()
         self._emerge_touch()
+
+    def resume_deferred(self):
+        """应用被推迟的高度钉定（见 ToolCallRow.set_content 的 defer 说明）"""
+        if not getattr(self, "_deferred_pin", False):
+            return
+        self._deferred_pin = False
+        self._pin_wrapping()
 
     def heightForWidth(self, width: int) -> int:
         m = self.layout().contentsMargins()
@@ -1801,6 +1904,7 @@ class ChatTurn(QWidget):
         self._hfw_cache: Optional[tuple] = None   # (width, height) 回合级高度缓存
         self._layer_dirty = True        # 布局参数（边距/开关/系统行）变了 → 下次必须全量重排
         self._live_applied: Optional[bool] = None  # 已下发的流式开关（未变则不重复遍历）
+        self._deferred: list = []       # 待空闲切片收尾的隐藏过程块（见 _IdleSpreader）
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         pol = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         pol.setHeightForWidth(True)
@@ -1934,6 +2038,9 @@ class ChatTurn(QWidget):
         if self._user_open is not None:
             done = not self._user_open
         self._done = done
+        if not done:
+            # 展开过程区：先把空闲切片里未铺完的隐藏块同步补齐（展开必须立刻看到完整内容）
+            self._resume_deferred()
         # 批量操作期间禁重绘：setVisible/setMinimumHeight 各触发一次失效，
         # 禁重绘后中间状态不 paint，结束后一次 update，减少绘制开销
         self.setUpdatesEnabled(False)
@@ -2094,14 +2201,22 @@ class ChatTurn(QWidget):
         created = []
         for kind, payload, sig in specs:
             wid = self._make_block(kind, parent=None)
-            self._update_block(wid, kind, payload)
+            is_proc = self._block_proc(kind, payload)
+            # 历史回合（已结束）的过程块默认收起隐藏：内层可见性收尾推迟到空闲切片 ——
+            # 隐藏输出的首次显示会为整篇富文本排版，长对话上百块累积成秒级切换阻塞
+            # （见 _IdleSpreader）。进行中的回合（流式）不推迟：内容必须即时可见。
+            defer = is_proc and self._done
+            self._update_block(wid, kind, payload, defer=defer)
+            if defer:
+                self._deferred.append(wid)
+                _spreader().push(wid.resume_deferred)
             # 新块先同步流式状态再交付布局：占位/命令这类「一次成型」的块内容在创建时就
             # 已写入，只有此刻就带上 live，随后的首次布局重排才能把整块记为「刚浮现」。
             wid.set_live(self._live)
             self._wire(wid)
             spacer = QSpacerItem(0, BLOCK_GAP.get(kind, SPACING_XS),
                                  QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-            created.append((kind, sig, wid, spacer, self._block_proc(kind, payload)))
+            created.append((kind, sig, wid, spacer, is_proc))
         for i, (kind, sig, wid, spacer, is_proc) in enumerate(created):
             pos = index * 2 + i * 2
             self._box_lay.insertWidget(pos, wid)
@@ -2129,20 +2244,31 @@ class ChatTurn(QWidget):
             return StreamBlock(self._style, p)
         return RichBlock(self._style, parent=p)
 
-    def _update_block(self, wid: QWidget, kind: str, payload: dict):
+    def _update_block(self, wid: QWidget, kind: str, payload: dict, defer: bool = False):
         payload = payload or {}
         if kind == KIND_THINK:
             wid.set_content(payload.get("tag", ""), payload.get("body", ""),
-                            sid=payload.get("sid"))
+                            sid=payload.get("sid"), defer=defer)
         elif kind == KIND_TOOL:
             wid.set_content(payload.get("name", ""), payload.get("meta", ""),
                             payload.get("params") or {}, ico=payload.get("ico"),
-                            out=payload.get("out"), tip=payload.get("tip") or "")
+                            out=payload.get("out"), tip=payload.get("tip") or "",
+                            defer=defer)
         elif kind == KIND_CMD:
             wid.set_content(payload.get("label", ""), payload.get("cmd", ""),
-                            payload.get("out", ""))
+                            payload.get("out", ""), defer=defer)
         else:
-            wid.set_html(payload.get("html", ""))
+            wid.set_html(payload.get("html", ""), defer=defer)
+
+    def _resume_deferred(self):
+        """把本回合所有推迟收尾的隐藏过程块就地补齐（用户在铺完前展开时同步调用：
+        展开必须先看到完整内容，不能等空闲切片）。已收尾的块 `resume_deferred` 为空操作。"""
+        pending, self._deferred = self._deferred, []
+        for wid in pending:
+            try:
+                wid.resume_deferred()
+            except RuntimeError:
+                pass                     # 控件已销毁：跳过
 
     def _wire(self, wid: QWidget):
         """新块接入链接点击与右键菜单（右键菜单事件按需从子控件冒泡到外层）。"""
