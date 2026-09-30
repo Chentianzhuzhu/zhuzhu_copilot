@@ -26,6 +26,7 @@ import json
 import logging
 import re as _re
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -651,14 +652,15 @@ def _load_module(name: str, file: str):
     内容未变时直接复用同一模块对象；文件被改写（热更新/重新创建）或删除时按新内容
     重新加载，用户自定义的即时生效语义不变。"""
     p = workflow_dir(name) / file
-    if not p.is_file():
-        _MOD_CACHE.pop((name, file), None)
-        return None
     try:
         st = p.stat()
-        fp = (st.st_mtime_ns, st.st_size)
     except OSError:
+        _MOD_CACHE.pop((name, file), None)
         return None
+    if not stat.S_ISREG(st.st_mode):
+        _MOD_CACHE.pop((name, file), None)
+        return None
+    fp = (st.st_mtime_ns, st.st_size)
     hit = _MOD_CACHE.get((name, file))
     if hit is not None and hit[0] == fp:
         return hit[1]

@@ -173,3 +173,91 @@ def test_load_todos_reflects_writes(monkeypatch, tmp_path):
 
     f.unlink()
     assert at.load_todos("") == []
+
+
+# ---------- 单条消息 token 估算：按消息身份缓存，结果必须与全量重算逐字节等价 ----------
+#
+# 背景（探针实测 120 轮循环）：_estimate_tokens 每轮被调用 4 次（发送前预计算 / 占用
+# 判定 ×2 / 压缩判定），全量重算占循环开销 50%+（3.344s → 0.107s）。故按消息对象
+# 身份缓存单条估算 —— 本组测试守护「缓存不得引入陈旧值」：内容被替换、消息被裁剪、
+# 数组内容/工具调用/图片等成分都必须实时反映。
+
+def _perf_engine():
+    """轻量引擎实例：只依赖 stub LLM（不读设置、不起线程），专测估算缓存契约。"""
+    from zhuzhu_Copilot.core import agent_engine as ae
+
+    class _StubLLM:
+        model = "stub"
+        fell_back = False
+        silent_fallback = False
+
+    return ae.AgentEngine(_StubLLM(), text_only=True)
+
+
+def _uncached_estimate(eng) -> int:
+    return sum(eng._msg_estimate(m) for m in eng._messages)
+
+
+def test_estimate_tokens_cache_equals_uncached_sum():
+    eng = _perf_engine()
+    eng._messages = [
+        {"role": "system", "content": "很长的系统提示词" * 50},
+        {"role": "user", "content": "中文与 english mixed 123"},
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "数组文本"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}],
+         "tool_calls": [{"id": "c1", "function": {"name": "read_file",
+                                                  "arguments": '{"path": "a.txt"}'}}]},
+        {"role": "tool", "content": "工具输出" * 20},
+    ]
+    first = eng._estimate_tokens()
+    assert first == _uncached_estimate(eng), "首次估算须与全量重算一致"
+    assert eng._estimate_tokens() == first, "缓存命中路径结果必须相同"
+
+
+def test_estimate_tokens_cache_invalidates_on_content_replacement():
+    eng = _perf_engine()
+    msg = {"role": "system", "content": "短提示"}
+    eng._messages = [msg, {"role": "user", "content": "任务"}]
+    eng._estimate_tokens()
+
+    msg["content"] = "长提示" * 800           # 每轮重建 system 的就地替换路径
+    assert eng._estimate_tokens() == _uncached_estimate(eng), "内容被替换必须重算"
+
+    eng._messages[1]["content"] = [{"type": "text", "text": "换成数组文本"}]
+    assert eng._estimate_tokens() == _uncached_estimate(eng), "content 类型变化必须重算"
+
+    # 工具调用参数改写（tool_calls 列表对象被替换）同样要重算
+    eng._messages.append({"role": "assistant", "content": "",
+                          "tool_calls": [{"id": "c1",
+                                          "function": {"name": "x", "arguments": "{}"}}]})
+    eng._estimate_tokens()
+    eng._messages[-1]["tool_calls"] = [
+        {"id": "c1", "function": {"name": "x", "arguments": '{"path": "' + "y" * 300 + '"}'}}]
+    assert eng._estimate_tokens() == _uncached_estimate(eng), "tool_calls 改写必须重算"
+
+
+def test_estimate_tokens_cache_drops_removed_messages():
+    eng = _perf_engine()
+    eng._messages = [{"role": "system", "content": "sys"}] + \
+        [{"role": "user", "content": f"消息{i}" * 10} for i in range(5)]
+    eng._estimate_tokens()
+
+    del eng._messages[1:4]                    # 压缩/硬裁：丢弃最旧整段
+    assert eng._estimate_tokens() == _uncached_estimate(eng), "已删消息不得滞留缓存"
+
+    eng._messages = [{"role": "system", "content": "sys"}]   # 列表整体重建
+    assert eng._estimate_tokens() == _uncached_estimate(eng)
+
+
+def test_estimate_tokens_cache_is_bounded_after_repeated_trim():
+    from zhuzhu_Copilot.core.agent_engine import _EST_CACHE_SLACK
+    eng = _perf_engine()
+    eng._messages = [{"role": "system", "content": "sys"}]
+    for i in range(300):
+        eng._messages.append({"role": "user", "content": f"n{i}"})
+        eng._estimate_tokens()
+        if len(eng._messages) > 5:
+            del eng._messages[1:4]            # 反复裁剪：缓存不得无限增长
+    assert len(eng._est_cache) <= len(eng._messages) + _EST_CACHE_SLACK
+    assert eng._estimate_tokens() == _uncached_estimate(eng)

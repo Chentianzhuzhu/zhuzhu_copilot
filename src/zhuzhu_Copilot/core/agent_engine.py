@@ -153,6 +153,10 @@ _TODO_MARK = "【当前任务清单】"
 # user 消息注入并原位替换，system 保持稳定 → 前缀缓存持续命中（与 _TODO_MARK 同理）
 _SKILL_MARK = "【任务技能规范】"
 
+# 单条消息 token 估算缓存：允许缓存条目比消息数多出的余量（超过即整体清空重建）。
+# 消息被压缩/裁剪后旧条目会残留，超过余量就重建，避免缓存随长任务无限增长。
+_EST_CACHE_SLACK = 64
+
 
 def _wf_fallback_persona(wf: str) -> str:
     """非默认工作流缺少自定义 agent.py 人设时的兜底：以工作流名派生专属人设，
@@ -459,6 +463,9 @@ class AgentEngine:
         self.on_session_name = on_session_name       # 会话命名回调：Callable[[str], None]（AI 给对话起名，UI 主线程写入）
         self.on_preview = on_preview                 # 文件预览回调：Callable[[str], None]（工具改/读文件时自动下发路径，主线程渲染）
         self._messages: list = []
+        # 单条消息 token 估算缓存（键=id(消息对象)，值=(消息对象, content, tool_calls, 估算)）。
+        # 见 _estimate_tokens：每轮对全量历史多次重算是长任务的主要固定开销。
+        self._est_cache: dict = {}
         self.tokens = _zero_usage()          # 全程累计（跨请求累加，计费/统计口径）
         # 最近一次请求的真实上游 usage（非累加）：上下文占用面板据此判断"当前上下文用了多少"，
         # 比本地估算更准（服务商计费口径）。prompt=0 表示尚无上游数据 → UI 回退本地估算。
@@ -2469,8 +2476,34 @@ class AgentEngine:
         return est
 
     def _estimate_tokens(self) -> int:
-        """估算当前上下文 token（含数组文本/tool_calls 参数/图片）"""
-        return sum(self._msg_estimate(m) for m in self._messages)
+        """估算当前上下文 token（含数组文本/tool_calls 参数/图片）
+
+        性能：本函数每轮被多次调用（发送前预计算 / 占用判定 / 压缩与硬裁判定，实测
+        4 次/轮），而每条消息的估算含 C 层正则扫全文（system 提示词约万字符 → 单次
+        数 ms）。故按**消息对象身份**缓存单条估算：只有新消息或内容被替换过的消息
+        才重新估算，长任务每轮只多算新增的 1~2 条。
+
+        缓存正确性：值里持有 (消息对象, content, tool_calls) 引用一起比对 ——
+        ① 持有消息对象引用可防止其被回收后 id() 复用造成的错配；
+        ② content/tool_calls 被**替换为新对象**（改写/修剪图片/压缩重建）时身份比对
+        立即失效并重算，与不缓存的语义一致（内容字符串不可变，故身份即内容）。
+        消息被压缩/裁剪后缓存里会残留旧条目，超过 _EST_CACHE_SLACK 即整体清空重建。"""
+        cache = self._est_cache
+        msgs = self._messages
+        if len(cache) > len(msgs) + _EST_CACHE_SLACK:
+            cache.clear()
+        total = 0
+        for m in msgs:
+            key = id(m)
+            ent = cache.get(key)
+            if (ent is not None and ent[0] is m and ent[1] is m.get("content")
+                    and ent[2] is m.get("tool_calls")):
+                total += ent[3]
+                continue
+            est = self._msg_estimate(m)
+            cache[key] = (m, m.get("content"), m.get("tool_calls"), est)
+            total += est
+        return total
 
     def _hard_trim(self, limit: int) -> None:
         """硬上限兜底：配对完整地从最旧处丢弃整段（assistant(tool_calls)+tool 回复），
