@@ -24,6 +24,15 @@ def _request_module():
     import urllib.request
     return urllib.request
 
+
+def _stream_open(req, timeout: float):
+    """流式请求打开入口：优先走 agent_http 连接复用池（长任务每轮一次请求，省去重复
+    TCP/TLS 握手；池内含开关/代理判定与 urllib 回退，返回对象与 urlopen 语义一致）。
+    惰性导入：池会拉起 http.client/ssl，只在真正请求时加载，保持启动轻量。"""
+    from zhuzhu_Copilot.core import agent_http
+    return agent_http.open_stream(req, timeout)
+
+
 DEFAULT_BASE_URL = "https://api.agnes-ai.cn/v1"
 DEFAULT_MODEL = "agnes-2.5-flash"
 DEFAULT_API_KEY = "sk-iydeFjzDmQr4Se3N6yxEjRHccWQbhSXLOSp27ZH5qhxathwR"
@@ -1891,7 +1900,7 @@ class LLMClient:
             tool_calls = {}
             usage = None
             try:
-                resp = urllib_request.urlopen(req, timeout=self.timeout)
+                resp = _stream_open(req, self.timeout)
                 # 连接/首包已建立：放宽 socket 读超时到空闲看门狗阈值，
                 # 避免推理模型长时间思考（无增量）被短读超时误杀
                 _relax_socket_timeout(resp, self.idle_timeout)
@@ -2161,7 +2170,7 @@ class LLMClient:
             if stop and stop():
                 raise AgentLLMError("已停止")
             try:
-                resp = urllib_request.urlopen(req, timeout=self.timeout)
+                resp = _stream_open(req, self.timeout)
                 break
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", "replace")
