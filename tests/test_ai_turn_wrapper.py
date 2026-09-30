@@ -44,6 +44,52 @@ def _pump(ms: int = 6):
         time.sleep(0.002)
 
 
+def _snapshot(p):
+    """当前几何指纹（用于判断布局是否已收敛）"""
+    turn = getattr(p, "_ai_bubble", None)
+    if turn is None:
+        return None
+    wrap = turn.parentWidget()
+    return (turn.height(), wrap.height() if wrap is not None else 0,
+            turn._box.height(), turn.minimumHeight(), turn.width())
+
+
+def _settle(p, max_ms: int = 300):
+    """把布局链推到收敛为止 —— 不依赖跑得快。
+
+    背景（CI 实测）：这些断言比的是**已分配几何**（wrap/turn/_box 的高度）与**内容所需**
+    （minimumHeight / 各块最小高之和）。前者由布局系统在事件循环里分配，CI runner 比本机慢，
+    只跑固定几毫秒的 processEvents 时，布局往往只走完一半（LayoutRequest → _TurnWrap.sync_height
+    → 回合重排 → 内层 _box 重新分配），断言就读到上一轮的旧几何：本机全绿、换台机器整片误报
+    （实测 130px vs 483px）。这里显式调用生产路径的入口（sync_height + 各层 layout.activate），
+    再跑到几何连续两轮不变为止；仍然收敛不了的话，断言照旧失败。
+    """
+    end = time.time() + max_ms / 1000.0
+    last, stable = object(), 0
+    while time.time() < end:
+        _app.processEvents()
+        turn = getattr(p, "_ai_bubble", None)
+        wrap = turn.parentWidget() if turn is not None else None
+        if wrap is not None:
+            try:
+                wrap.sync_height()                  # 生产路径入口：按内容钉包裹层高度
+                if wrap.layout() is not None:
+                    wrap.layout().activate()        # 立即分配「回合 + 重试行」几何
+                if turn.layout() is not None:
+                    turn.layout().activate()        # 立即分配回合内层几何
+                turn._box_lay.activate()
+            except Exception:
+                pass
+        cur = _snapshot(p)
+        if cur == last:
+            stable += 1
+            if stable >= 2:
+                return
+        else:
+            stable, last = 0, cur
+        time.sleep(0.004)
+
+
 @pytest.fixture(scope="module")
 def panel():
     mp = pytest.MonkeyPatch()
@@ -82,7 +128,7 @@ def _stream_thinking(p, ticks: int):
     for _ in range(ticks):
         p._on_reasoning(CHUNK)
         p._apply_refresh_ai_html()
-        _pump(4)
+        _settle(p)
         turn = p._ai_bubble
         wrap = turn.parentWidget()
         v = wrap.layout()
@@ -90,6 +136,21 @@ def _stream_thinking(p, ticks: int):
         want = max(int(turn.minimumHeight()), int(turn.height())) + v.spacing() + retry_h
         trace.append((turn.height(), wrap.height(), want, turn.geometry().y(), retry_h))
     return trace
+
+
+def _geom_detail(p) -> str:
+    """失败时把参与判断的几何全打出来（CI 上只有日志能看到现场）"""
+    turn = getattr(p, "_ai_bubble", None)
+    if turn is None:
+        return "（无回合）"
+    wrap = turn.parentWidget()
+    try:
+        hfw = int(turn.heightForWidth(max(1, turn.width())))
+    except Exception:
+        hfw = -1
+    return (f"[宽 {turn.width()} 高 {turn.height()} 最小高 {turn.minimumHeight()} "
+            f"HFW {hfw} 内层 {turn._box.height()} 包裹层 {wrap.height() if wrap else -1} "
+            f"包裹层固定高 {wrap.minimumHeight() if wrap else -1}]")
 
 
 def test_turn_wrapper_hugs_turn_and_never_inflates(panel):
@@ -103,7 +164,8 @@ def test_turn_wrapper_hugs_turn_and_never_inflates(panel):
 
     for i, (h_turn, h_wrap, want, y, retry_h) in enumerate(trace):
         assert abs(h_wrap - want) <= 2, (
-            f"第 {i} tick 包裹层 {h_wrap}px ≠ 回合+重试行 {want}px → 回合上下会留大片空白")
+            f"第 {i} tick 包裹层 {h_wrap}px ≠ 回合+重试行 {want}px → 回合上下会留大片空白 "
+            f"{_geom_detail(panel)}")
         assert y <= 2, f"第 {i} tick 回合未顶端对齐（y={y}）→ 上下对称留白"
 
     # 包裹层相对回合的「多出量」只应等于间距 + 重试行，全程不得漂移
@@ -195,7 +257,7 @@ def test_turn_box_is_tall_enough_for_all_visible_blocks(panel):
 
     assert turn._box.height() >= need - 2, (
         f"回合内层只有 {turn._box.height()}px，内容需要 {need}px → "
-        f"底部 {need - turn._box.height()}px（含系统时间行）会被裁掉")
+        f"底部 {need - turn._box.height()}px（含系统时间行）会被裁掉 {_geom_detail(p)}")
 
 
 def test_turn_timing_starts_at_task_launch_not_first_token(panel):
@@ -231,10 +293,10 @@ def test_retry_row_appearing_keeps_wrapper_consistent(panel):
     v = wrap.layout()
     retry = turn._retry_btn
     retry.setVisible(True)          # 模拟悬停显示
-    _pump(20)
+    _settle(p)
     wrap.sync_height()
-    _pump(20)
+    _settle(p)
     want = (max(turn.minimumHeight(), turn.height()) + v.spacing()
             + v.itemAt(1).sizeHint().height())
     assert abs(wrap.height() - want) <= 2, \
-        f"重试行显示后包裹层 {wrap.height()} ≠ 期望 {want}"
+        f"重试行显示后包裹层 {wrap.height()} ≠ 期望 {want} {_geom_detail(p)}"
