@@ -12,6 +12,7 @@
   C. 只在托管源变化时自动刷新（无关文件的变化不得打扰用户正在看的页面）；
   D. 预览工具已注册且恒可用；提示词要求模型自行判断并调用。
 """
+import os
 import sys
 import urllib.request
 from pathlib import Path
@@ -92,6 +93,31 @@ def test_source_change_marks_and_bumps_version(hub, tmp_path):
     other.write_text(HTML_A, encoding="utf-8")
     assert agent_preview.notify_source_changed(str(other)) is False, \
         "只有托管源的变化才该刷新，别的文件不能让用户眼前的页面跳走"
+
+
+def test_source_change_detected_when_mtime_and_size_equal(hub, tmp_path):
+    """等长改写 + mtime 未变也必须算「变化」（判定必须以内容为准）。
+
+    CI 实测：HTML_A / HTML_B 字节数完全相同，两次写入又落在同一 mtime 刻度
+    （Windows 文件时间的时钟刻度约 15.6ms）→ 只看 mtime+size 会被判成「没变」，
+    表现就是「AI 改完产物，用户浏览器里还是旧的」。这里把时间戳显式还原到改写前，
+    锁住「内容变了就必须刷新」。
+    """
+    src = tmp_path / "page.html"
+    src.write_text(HTML_A, encoding="utf-8")
+    ok, msg = hub.set_source(str(src))
+    assert ok, msg
+    st = src.stat()
+    v1 = hub.version
+
+    src.write_text(HTML_B, encoding="utf-8")
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))      # 时间戳保持改写前
+    assert src.stat().st_size == st.st_size, "本例前提：改写前后字节数相同（仅内容变）"
+
+    assert agent_preview.notify_source_changed(str(src)) is True, \
+        "内容变了却没刷新（mtime+size 相同被误判为没变）"
+    assert hub.version == v1 + 1
+    assert "预览B" in hub.page()
 
 
 # ---------- 打开与刷新（浏览器启动被替换，测试不真的拉起浏览器）----------

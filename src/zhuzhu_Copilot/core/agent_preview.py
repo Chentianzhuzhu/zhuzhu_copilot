@@ -111,8 +111,7 @@ class PreviewHub:
         self._html = ""
         self._title = ""
         self._version = 0
-        self._source = ""          # 托管源文件路径（用于 mtime 兜底刷新）
-        self._source_stamp = None  # (mtime, size)
+        self._source = ""          # 托管源文件路径（内容变化即自动刷新，见 reload_source）
         self._port = 0
         self._server = None
         self._watcher = None
@@ -152,10 +151,9 @@ class PreviewHub:
             if title:
                 self._title = str(title)
             self._source = ""
-            self._source_stamp = None
 
     def set_source(self, path: str) -> tuple:
-        """把预览内容指向本地文件：立即读取一次，并记录 mtime 供兜底刷新。"""
+        """把预览内容指向本地文件：立即读取一次（后续按内容变化自动跟随）。"""
         p = Path(str(path or "")).expanduser()
         if not p.is_file():
             return False, f"文件不存在: {path}"
@@ -170,13 +168,11 @@ class PreviewHub:
             self._html = text
             self._title = p.stem
             self._source = str(p)
-            self._source_stamp = self._stamp(p)
         return True, ""
 
     def drop_source(self):
         with self._lock:
             self._source = ""
-            self._source_stamp = None
 
     def bump(self) -> int:
         """版本 +1：已打开的预览页面会在一个轮询周期内自刷新。"""
@@ -185,26 +181,27 @@ class PreviewHub:
             return self._version
 
     def reload_source(self) -> bool:
-        """重新读取托管源文件；内容或 mtime 变化则返回 True（调用方决定是否 bump）。"""
+        """重新读取托管源文件；**内容**有变化则返回 True（调用方决定是否 bump）。
+
+        变化判定以内容为准，不能只看 mtime+size：Windows 文件时间的时钟刻度约 15.6ms，
+        两次相隔极近的写入会拿到同一个 mtime；若此时大小又恰好相同（例如把页面里的 A
+        改成 B 这类等长改写），就会被误判成「没变」而漏掉刷新 —— CI 上就是这样漏的，
+        对用户则表现为「AI 改完产物，浏览器里还是旧的」。预览文件本身有尺寸上限
+        （MAX_PREVIEW_BYTES），重读一次判断内容是否变化的代价可忽略。
+        """
         with self._lock:
             src = self._source
+            old = self._html
         if not src:
             return False
-        p = Path(src)
-        stamp = self._stamp(p)
-        with self._lock:
-            if stamp == self._source_stamp:
-                return False
+        try:
+            text = Path(src).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        if text == old:
+            return False          # 只是被读取 → 不打扰用户正在看的页面
         ok, _msg = self.set_source(src)
         return ok
-
-    @staticmethod
-    def _stamp(p: Path):
-        try:
-            st = p.stat()
-            return (st.st_mtime_ns, st.st_size)
-        except OSError:
-            return None
 
     # ---------- 服务 ----------
     def ensure_server(self) -> int:

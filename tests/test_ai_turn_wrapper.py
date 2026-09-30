@@ -117,6 +117,33 @@ def panel():
     mp.undo()
 
 
+_DETAILS: list = []          # 每个 tick 的现场（失败时打进断言信息，CI 只靠日志看得到）
+
+
+def _hug(p):
+    """推进一个 tick 的布局到**收敛**，回报该 tick 的几何
+    (回合高, 包裹层高, 期望包裹层高, 回合 y, 重试行高)。
+
+    为什么不「pump 一下就断言」：这里比的是**已分配几何**与**内容所需**，两者都由布局系统
+    在事件循环里分配/回写。CI runner 上固定几毫秒的 pump 常常只走完一半布局链
+    （LayoutRequest → _TurnWrap.sync_height → 回合重排 → 内层 _box 重新分配），就会拿上一轮
+    的旧几何去断言（实测本机全绿、runner 上 130px vs 483px 整片误报）。
+
+    这里只是**把布局推到位**（显式走一次生产入口 sync_height，再跑到几何连续两轮不变），
+    不是「等到断言成立」：收敛之后断言照旧生效 —— 包裹层真贴不上回合时，收敛后依然不等，
+    用例依然失败。
+    """
+    turn = p._ai_bubble
+    wrap = turn.parentWidget()
+    v = wrap.layout()
+    wrap.sync_height()          # 生产路径入口：按回合内容高钉包裹层
+    _settle(p)                  # 跑到几何不动（_settle 每轮也会再 sync 一次）
+    retry_h = int(v.itemAt(1).sizeHint().height())
+    want = max(int(turn.minimumHeight()), int(turn.height())) + v.spacing() + retry_h
+    _DETAILS.append(_geom_detail(p))
+    return (turn.height(), wrap.height(), want, turn.geometry().y(), retry_h)
+
+
 def _stream_thinking(p, ticks: int):
     """模拟一次长思考的流式推送，返回每个 tick 的
     (回合高, 包裹层高, 期望包裹层高, 回合 y, 重试行高)"""
@@ -124,17 +151,12 @@ def _stream_thinking(p, ticks: int):
     p._ensure_ai_bubble()
     p._ensure_spinner()
     p._set_spinner_text("AI 思考中…")
+    _DETAILS.clear()
     trace = []
     for _ in range(ticks):
         p._on_reasoning(CHUNK)
         p._apply_refresh_ai_html()
-        _settle(p)
-        turn = p._ai_bubble
-        wrap = turn.parentWidget()
-        v = wrap.layout()
-        retry_h = int(v.itemAt(1).sizeHint().height())
-        want = max(int(turn.minimumHeight()), int(turn.height())) + v.spacing() + retry_h
-        trace.append((turn.height(), wrap.height(), want, turn.geometry().y(), retry_h))
+        trace.append(_hug(p))
     return trace
 
 
@@ -163,10 +185,11 @@ def test_turn_wrapper_hugs_turn_and_never_inflates(panel):
     assert trace, "未产生流式轨迹"
 
     for i, (h_turn, h_wrap, want, y, retry_h) in enumerate(trace):
+        detail = _DETAILS[i] if i < len(_DETAILS) else ""
         assert abs(h_wrap - want) <= 2, (
             f"第 {i} tick 包裹层 {h_wrap}px ≠ 回合+重试行 {want}px → 回合上下会留大片空白 "
-            f"{_geom_detail(panel)}")
-        assert y <= 2, f"第 {i} tick 回合未顶端对齐（y={y}）→ 上下对称留白"
+            f"{detail}")
+        assert y <= 2, f"第 {i} tick 回合未顶端对齐（y={y}）→ 上下对称留白 {detail}"
 
     # 包裹层相对回合的「多出量」只应等于间距 + 重试行，全程不得漂移
     extras = {h_wrap - h_turn for h_turn, h_wrap, _w, _y, _r in trace}
@@ -289,14 +312,8 @@ def test_retry_row_appearing_keeps_wrapper_consistent(panel):
     """重试行显隐（悬停重试按钮）后包裹层仍与回合一致，不残留旧高度。"""
     p = panel
     turn = p._ai_bubble
-    wrap = turn.parentWidget()
-    v = wrap.layout()
     retry = turn._retry_btn
     retry.setVisible(True)          # 模拟悬停显示
-    _settle(p)
-    wrap.sync_height()
-    _settle(p)
-    want = (max(turn.minimumHeight(), turn.height()) + v.spacing()
-            + v.itemAt(1).sizeHint().height())
-    assert abs(wrap.height() - want) <= 2, \
-        f"重试行显示后包裹层 {wrap.height()} ≠ 期望 {want} {_geom_detail(p)}"
+    _h_turn, h_wrap, want, _y, _r = _hug(p)
+    assert abs(h_wrap - want) <= 2, \
+        f"重试行显示后包裹层 {h_wrap} ≠ 期望 {want} {_geom_detail(p)}"
