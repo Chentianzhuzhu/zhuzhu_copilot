@@ -44,6 +44,25 @@ def _pump(ms: int = 6):
         time.sleep(0.002)
 
 
+def _chrome(wrap) -> int:
+    """包裹层钉高时额外加的「间距 + 重试行高」，**判据必须与 `_TurnWrap._real_h` 完全一致**：
+    第二项为空（重试行隐藏 / 空布局项）时就不加。
+
+    这里踩过一次坑：测试原先自己按 `v.spacing() + v.itemAt(1).sizeHint().height()` 硬算，
+    重试行隐藏时也算进去，于是比生产实现多算几像素 —— 而「隐藏控件还有多大 sizeHint」随字体
+    而异（本机 2px、CI 3px），断言就成了「本机刚好落在 ±2 容差内、CI 越界报红」。
+    """
+    try:
+        v = wrap.layout()
+        if v is not None and v.count() > 1:
+            btm = v.itemAt(1)
+            if btm is not None and not btm.isEmpty():
+                return int(v.spacing()) + int(btm.sizeHint().height())
+    except Exception:
+        pass
+    return 0
+
+
 def _snapshot(p):
     """当前几何指纹（用于判断布局是否已收敛）"""
     turn = getattr(p, "_ai_bubble", None)
@@ -51,7 +70,8 @@ def _snapshot(p):
         return None
     wrap = turn.parentWidget()
     return (turn.height(), wrap.height() if wrap is not None else 0,
-            turn._box.height(), turn.minimumHeight(), turn.width())
+            turn._box.height(), turn.minimumHeight(), turn.width(),
+            _chrome(wrap) if wrap is not None else 0)
 
 
 def _settle(p, max_ms: int = 300):
@@ -135,13 +155,11 @@ def _hug(p):
     """
     turn = p._ai_bubble
     wrap = turn.parentWidget()
-    v = wrap.layout()
     wrap.sync_height()          # 生产路径入口：按回合内容高钉包裹层
-    _settle(p)                  # 跑到几何不动（_settle 每轮也会再 sync 一次）
-    retry_h = int(v.itemAt(1).sizeHint().height())
-    want = max(int(turn.minimumHeight()), int(turn.height())) + v.spacing() + retry_h
+    _settle(p)                  # 跑到几何（含 chrome）不动（_settle 每轮也会再 sync 一次）
+    want = (max(int(turn.minimumHeight()), int(turn.height())) + _chrome(wrap))
     _DETAILS.append(_geom_detail(p))
-    return (turn.height(), wrap.height(), want, turn.geometry().y(), retry_h)
+    return (turn.height(), wrap.height(), want, turn.geometry().y(), _chrome(wrap))
 
 
 def _stream_thinking(p, ticks: int):
@@ -172,7 +190,8 @@ def _geom_detail(p) -> str:
         hfw = -1
     return (f"[宽 {turn.width()} 高 {turn.height()} 最小高 {turn.minimumHeight()} "
             f"HFW {hfw} 内层 {turn._box.height()} 包裹层 {wrap.height() if wrap else -1} "
-            f"包裹层固定高 {wrap.minimumHeight() if wrap else -1}]")
+            f"包裹层固定高 {wrap.minimumHeight() if wrap else -1} "
+            f"chrome {_chrome(wrap) if wrap else 0}]")
 
 
 def test_turn_wrapper_hugs_turn_and_never_inflates(panel):
