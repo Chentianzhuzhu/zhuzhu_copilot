@@ -40,10 +40,53 @@ _wf_io_lock = threading.Lock()
 
 # 工作流根目录初始化标记：workflows_root 的 mkdir+README 每进程只做一次
 _ROOT_READY = False
-# 已加载的核心文件模块缓存 {(工作流名, 文件名): ((mtime_ns, size), 模块)}
+# 已加载的核心文件模块缓存 {(工作流名, 文件名): ((mtime_ns, size, mode), 模块)}
 _MOD_CACHE: dict = {}
-# workflow.json 元数据缓存 {工作流名: ((mtime_ns, size), meta)}，写入时同步更新
+# workflow.json 元数据缓存 {工作流名: ((mtime_ns, size, mode), meta)}，写入时同步更新
 _META_CACHE: dict = {}
+
+# 文件指纹的复检间隔（秒）：Windows 下单次 stat ≈ 0.5ms（杀软开销），而引擎每轮都会
+# 多次解析「激活工作流 / 是否存在 / 元数据 / 核心模块」——逐次 stat 会吃掉长任务每轮
+# 预算的一大块（实测 ~5ms/轮）。这里对 (mtime_ns, size, mode) 指纹做短 TTL 复用：
+# 应用内的写操作都会显式失效缓存（即时生效）；应用外手工改文件最多延迟这么久生效。
+_FP_TTL_S = 1.0
+# 指纹缓存 {路径字符串: (检查时刻, (mtime_ns, size, mode) 或 None)}；跨线程共享需加锁
+_FP_CACHE: dict = {}
+_FP_LOCK = threading.Lock()
+
+
+def file_fingerprint(path: Path, ttl: float = _FP_TTL_S):
+    """带 TTL 的 (mtime_ns, size, mode) 指纹；路径不存在返回 None。
+
+    供本模块与其它核心模块（如 agent_subagent 的注册表）复用：热路径上的存在性/
+    变更判定不必每次 stat —— TTL 内沿用上次结果，写入后调用 `touch_fingerprint`
+    立即失效。指纹含 mode，便于调用方直接判定文件/目录类型。"""
+    key = str(path)
+    now = time.monotonic()
+    with _FP_LOCK:
+        hit = _FP_CACHE.get(key)
+        if hit is not None and now - hit[0] < ttl:
+            return hit[1]
+    try:
+        st = path.stat()
+        fp = (st.st_mtime_ns, st.st_size, st.st_mode)
+    except OSError:
+        fp = None
+    with _FP_LOCK:
+        _FP_CACHE[key] = (now, fp)
+    return fp
+
+
+def touch_fingerprint(path: Path) -> None:
+    """写入后立即让指纹缓存失效（下一次读取重新 stat）"""
+    with _FP_LOCK:
+        _FP_CACHE.pop(str(path), None)
+
+
+def _dir_ok(path: Path) -> bool:
+    """目录存在（带 TTL 指纹缓存，避免热路径重复 stat）"""
+    fp = file_fingerprint(path)
+    return bool(fp) and stat.S_ISDIR(fp[2])
 
 # 内置核心文件清单：用户可在工作流中提供同名文件覆盖默认模块
 CORE_FILES = ("agent.py", "llm.py", "tools.py", "skills", "plugins", "mcp.json")
@@ -142,25 +185,43 @@ def _active_file() -> Path:
     return workflows_root() / ".active"
 
 
+# 全局激活工作流的解析结果缓存（含 .active 文件读取与有效性校验）：
+# 引擎每轮会调用 active_workflow 数次，逐次读盘/校验是长任务热点；TTL 内直接复用，
+# 应用内切换（set_active/set_enabled/创建/删除）与元数据写入都会显式失效。
+_ACTIVE_CACHE: dict = {}
+
+
+def invalidate_workflow_caches() -> None:
+    """失效工作流解析缓存（激活值 + 文件指纹）：写入侧调用，保证应用内改动即时生效"""
+    _ACTIVE_CACHE.clear()
+    with _FP_LOCK:
+        _FP_CACHE.clear()
+
+
 def active_workflow() -> str:
     """当前激活工作流名（缺省 _default；激活的工作流若已被禁用则回退默认）。
     引擎任务线程内优先返回其会话工作流（@切换），否则返回全局激活工作流。"""
     tl = _current_workflow()
-    if tl and workflow_dir(tl).is_dir() and _read_meta(tl).get("enabled", True):
+    if tl and _dir_ok(workflow_dir(tl)) and _read_meta(tl).get("enabled", True):
         return tl
+    hit = _ACTIVE_CACHE.get("name")
+    if hit is not None and time.monotonic() - _ACTIVE_CACHE.get("ts", 0.0) < _FP_TTL_S:
+        return hit
     try:
         name = _active_file().read_text(encoding="utf-8").strip()
     except OSError:
-        return DEFAULT_WORKFLOW
-    if not name or not workflow_dir(name).is_dir() or not _read_meta(name).get("enabled", True):
-        return DEFAULT_WORKFLOW
+        name = DEFAULT_WORKFLOW
+    if not name or not _dir_ok(workflow_dir(name)) or not _read_meta(name).get("enabled", True):
+        name = DEFAULT_WORKFLOW
+    _ACTIVE_CACHE["name"] = name
+    _ACTIVE_CACHE["ts"] = time.monotonic()
     return name
 
 
 def is_workflow(name: str) -> bool:
     """指定工作流是否存在且未被禁用（@工作流路由校验用）"""
     name = (name or "").strip()
-    return bool(name) and workflow_dir(name).is_dir() and _read_meta(name).get("enabled", True)
+    return bool(name) and _dir_ok(workflow_dir(name)) and _read_meta(name).get("enabled", True)
 
 
 def resolve_workflow(name: str, fallback: str = DEFAULT_WORKFLOW) -> str:
@@ -182,13 +243,14 @@ def set_active(name: str) -> tuple:
     name = (name or "").strip()
     if not name:
         return False, "工作流名不能为空"
-    if not workflow_dir(name).is_dir():
+    if not _dir_ok(workflow_dir(name)):
         return False, f"工作流不存在: {name}"
     if not _read_meta(name).get("enabled", True):
         return False, f"工作流已被禁用，请先在工作流管理中启用: {name}"
     try:
         workflows_root().mkdir(parents=True, exist_ok=True)
         _active_file().write_text(name, encoding="utf-8")
+        invalidate_workflow_caches()      # 切换立即生效（解析缓存含 .active 读取）
         return True, f"已切换工作流: {name}"
     except OSError as e:
         return False, f"切换失败: {e}"
@@ -198,7 +260,7 @@ def set_enabled(name: str, enabled: bool) -> tuple:
     """启用/禁用工作流（默认工作流不可禁用；禁用激活中的工作流会回退默认）。返回 (ok, message)。"""
     if is_default(name):
         return False, "默认工作流不可禁用"
-    if not workflow_dir(name).is_dir():
+    if not _dir_ok(workflow_dir(name)):
         return False, f"工作流不存在: {name}"
     meta = _read_meta(name)
     meta["enabled"] = bool(enabled)
@@ -208,6 +270,7 @@ def set_enabled(name: str, enabled: bool) -> tuple:
             _active_file().write_text(DEFAULT_WORKFLOW, encoding="utf-8")
         except OSError:
             pass
+    invalidate_workflow_caches()          # 启停立即生效
     return True, f"已{'启用' if enabled else '禁用'}工作流: {name}"
 
 
@@ -289,16 +352,16 @@ def set_skill_state(workflow: str, skill: str, enabled: bool) -> tuple:
 
 
 def _read_meta(name: str) -> dict:
-    """读取工作流元数据 workflow.json（带 mtime 缓存，返回深拷贝）。
+    """读取工作流元数据 workflow.json（带指纹缓存，返回深拷贝）。
 
     引擎每轮都会经 skill_states/active_workflow 读它（长任务热点），故按
-    (mtime, size) 缓存解析结果；写入侧 _write_meta 同步刷新缓存，用户改动即时生效。
+    (mtime, size, mode) 缓存解析结果，指纹本身走 `file_fingerprint` 的短 TTL 复用
+    （Windows 下单次 stat ≈ 0.5ms，逐次复查会吃掉每轮预算）；写入侧 _write_meta
+    同步刷新缓存，用户改动即时生效。
     返回深拷贝：调用方（set_skill_state/set_enabled 等）会就地修改后回写。"""
     f = workflow_dir(name) / "workflow.json"
-    try:
-        st = f.stat()
-        fp = (st.st_mtime_ns, st.st_size)
-    except OSError:
+    fp = file_fingerprint(f)
+    if fp is None:
         _META_CACHE.pop(name, None)
         return {}
     hit = _META_CACHE.get(name)
@@ -319,13 +382,12 @@ def _write_meta(name: str, meta: dict) -> None:
         d.mkdir(parents=True, exist_ok=True)
         f = d / "workflow.json"
         f.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        try:
-            st = f.stat()
-            _META_CACHE[name] = ((st.st_mtime_ns, st.st_size), copy.deepcopy(meta))
-        except OSError:
-            _META_CACHE.pop(name, None)
+        st = f.stat()
+        _META_CACHE[name] = ((st.st_mtime_ns, st.st_size, st.st_mode), copy.deepcopy(meta))
+        touch_fingerprint(f)              # 指纹缓存同刷：改动即时生效
+        touch_fingerprint(d)
     except OSError:
-        pass
+        _META_CACHE.pop(name, None)
 
 
 def _template_dir() -> Path:
@@ -477,6 +539,7 @@ def create_builtin_workflow(preset_id: str, name: str = "",
         except Exception:
             pass
         _report(on_status, 100, "内置工作流创建完成")
+        invalidate_workflow_caches()   # 新建的核心文件/技能立即可被加载
         msg = (f"已创建内置工作流「{safe}」（{preset.get('display_name') or preset_id}）"
                f"，核心文件: {', '.join(core_files) or '—'}，注册式子 Agent {n_sub} 个。"
                f"调用 switch_workflow(name=\"{safe}\") 即可激活生效。")
@@ -521,6 +584,7 @@ def create_workflow(name: str, description: str = "", files: list = None) -> tup
             "created": time.strftime("%Y-%m-%d %H:%M"),
             "updated": time.strftime("%Y-%m-%d %H:%M"),
         })
+        invalidate_workflow_caches()   # 新建的核心文件立即可被加载
         return True, f"已创建工作流 {safe}（核心文件: {', '.join(want)}）"
     except OSError as e:
         try:
@@ -543,6 +607,7 @@ def delete_workflow(name: str) -> tuple:
     with _wf_io_lock:
         try:
             shutil.rmtree(d)
+            invalidate_workflow_caches()   # 删除立即生效（存在性缓存随之刷新）
             return True, f"已删除工作流: {name}"
         except OSError as e:
             return False, f"删除失败: {e}"
@@ -586,6 +651,7 @@ def write_core_file(name: str, file: str, content: str) -> tuple:
                     return False, "mcp.json 需为 {\"servers\": [...]} 结构"
                 content = json.dumps(data, ensure_ascii=False, indent=2)
             p.write_text(content, encoding="utf-8")
+            touch_fingerprint(p)          # 核心文件改动即时生效（指纹缓存同刷）
             meta = _read_meta(name)
             meta["updated"] = time.strftime("%Y-%m-%d %H:%M")
             if file not in meta.get("core_files", []):
@@ -623,6 +689,7 @@ def add_core_file(name: str, file: str) -> tuple:
         if file not in meta.get("core_files", []):
             meta["core_files"] = list(meta.get("core_files", [])) + [file]
         _write_meta(name, meta)
+        touch_fingerprint(dst)   # 新核心文件立即可被加载（指纹缓存同刷）
         return True, f"已添加核心文件 {name}/{file}（可编辑后 switch 生效）"
     except OSError as e:
         return False, f"添加失败: {e}"
@@ -636,6 +703,7 @@ def delete_core_file(name: str, file: str) -> tuple:
         return False, "非法工作流名"
     try:
         (workflow_dir(name) / file).unlink(missing_ok=True)
+        touch_fingerprint(workflow_dir(name) / file)   # 删除立即生效（回退内置默认）
         return True, f"已删除 {name}/{file}（该模块回退到内置默认实现）"
     except OSError as e:
         return False, f"删除失败: {e}"
@@ -647,10 +715,11 @@ def delete_core_file(name: str, file: str) -> tuple:
 def _load_module(name: str, file: str):
     """用 importlib 动态加载工作流核心 .py 文件；失败返回 None。
 
-    缓存策略：按 (路径, mtime, size) 记忆已加载模块 —— 引擎每轮构建提示词都会取
+    缓存策略：按 (mtime, size) 记忆已加载模块 —— 引擎每轮构建提示词都会取
     agent_hooks（长任务里等于每轮重新 exec 一遍 agent.py + 依赖检查，实测 6ms/轮），
-    内容未变时直接复用同一模块对象；文件被改写（热更新/重新创建）或删除时按新内容
-    重新加载，用户自定义的即时生效语义不变。"""
+    内容未变时直接复用同一模块对象；文件被改写（热更新）或删除时**立即**按新内容
+    重新加载（此处刻意不做 TTL：用户在工作流里改 agent.py/tools.py 后立即对话就要
+    生效，一次 stat 的开销换语义确定性）。"""
     p = workflow_dir(name) / file
     try:
         st = p.stat()
@@ -1263,6 +1332,7 @@ def create_workflow_from_nl(description: str, files: list = None, on_status=None
             "updated": time.strftime("%Y-%m-%d %H:%M"),
         })
         _report(on_status, 98, "保存元数据完成…")
+        invalidate_workflow_caches()   # 新建的核心文件/技能立即可被加载
         if n_skill:
             return True, (f"已用 AI 创建工作流「{name}」，并自动生成配置 {n_skill} 个技能"
                           f"（核心文件: {', '.join(want)}）")

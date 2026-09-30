@@ -813,6 +813,29 @@ def _subagent_file(workflow: str = "") -> Path:
         return Path()
 
 
+def _wf_file_fingerprint(path: Path):
+    """注册文件的 (mtime_ns, size, mode) 指纹（走 agent_workflow 的短 TTL 缓存）；
+    取不到（无 agent_workflow / 文件不存在）返回 None。"""
+    try:
+        from zhuzhu_Copilot.core import agent_workflow
+        return agent_workflow.file_fingerprint(path)
+    except (ImportError, OSError):
+        try:
+            st = path.stat()
+            return (st.st_mtime_ns, st.st_size, st.st_mode)
+        except OSError:
+            return None
+
+
+def _touch_fingerprint(path: Path) -> None:
+    """注册文件写入后立即让指纹缓存失效（改动即时生效）"""
+    try:
+        from zhuzhu_Copilot.core import agent_workflow
+        agent_workflow.touch_fingerprint(path)
+    except (ImportError, OSError):
+        pass
+
+
 def _norm_tristate(v):
     """三态开关归一化：True/False 保留，None/空/未识别 → None（由主 Agent 决策）。"""
     if isinstance(v, bool):
@@ -832,16 +855,17 @@ def registered_subagents(workflow: str = "") -> list:
     [{name, description, goal, allowed, persona, shared_context, allow_chat, share_context}]
 
     性能：引擎每轮组装工具列表会调用两次（工具名集合 + tools schema），故按注册文件的
-    (mtime, size) 缓存解析结果；register/unregister 写盘后 mtime 变化自然失效。
+    (mtime, size, mode) 指纹缓存解析结果；指纹本身走 agent_workflow.file_fingerprint 的
+    短 TTL 复用（Windows 单次 stat ≈ 0.5ms，两次调用都逐次 stat 是长任务热点）；
+    register/unregister 写盘后调用 touch_fingerprint 立即失效。
     返回深拷贝，调用方就地修改不会污染缓存。
     共享全开策略：缺省字段按开启解析；存量文件（无 _migrated_v2 标记）在首次读取时
     一次性迁移为开启并回写（幂等），此后显式关闭仍被保留。"""
     f = _subagent_file(workflow)
-    try:
-        st = f.stat()
-        fp = (st.st_mtime_ns, st.st_size)
-    except Exception:
+    fp = _wf_file_fingerprint(f)
+    if fp is None:
         return []
+    fp = fp[:2]                       # 缓存键沿用 (mtime_ns, size) 二元组
     key = str(f)
     hit = _SUB_CACHE.get(key)
     if hit is not None and hit[0] == fp:
@@ -868,6 +892,7 @@ def registered_subagents(workflow: str = "") -> list:
                          encoding="utf-8")
             st = f.stat()
             fp = (st.st_mtime_ns, st.st_size)
+            _touch_fingerprint(f)
         except OSError:
             pass
     out = []
@@ -937,6 +962,7 @@ def register_subagent(name: str, description: str, goal: str, allowed="",
     try:
         f.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                      encoding="utf-8")
+        _touch_fingerprint(f)            # 注册立即生效（指纹缓存同刷）
     except Exception as e:
         return False, f"[register_sub_agent] 写入失败: {e}"
     tool_name = name if name.startswith("sub_") else "sub_" + name
@@ -973,6 +999,7 @@ def unregister_subagent(name: str, workflow: str = "") -> tuple:
             return False, f"[unregister_sub_agent] 未找到子 Agent「{name}」"
         del data[name]
         f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _touch_fingerprint(f)            # 注销立即生效（指纹缓存同刷）
     except Exception as e:
         return False, f"[unregister_sub_agent] {e}"
     return True, f"子 Agent「{name}」已从当前工作流注销"

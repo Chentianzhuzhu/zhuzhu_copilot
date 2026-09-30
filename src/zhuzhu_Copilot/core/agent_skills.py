@@ -1876,10 +1876,23 @@ def invalidate_settings_cache() -> None:
         _SETTINGS_CACHE["data"] = None
 
 
+def settings_view() -> dict:
+    """settings.json 缓存的**只读视图**（不深拷贝）：供「每轮只读单个标量」的热路径
+    （如 cap_enabled）使用，避免为读一个开关反复深拷贝整个设置（实测 7 次/轮）。
+
+    约定：调用方**只读**，绝不可就地修改返回值或其中的嵌套对象（会污染缓存）；
+    需要改动或传递给可能改动的代码时，一律用 load_settings()（返回深拷贝）。"""
+    data = _SETTINGS_CACHE.get("data")
+    if data is None:
+        load_settings()                      # 首次：正常加载（含读盘/解密，带缓存）
+        data = _SETTINGS_CACHE.get("data") or {}
+    return data
+
+
 def cap_enabled(key: str) -> bool:
     """能力开关：settings.json 中 cap_<key>，默认开启；存 "false"/"0"/"off" 即禁用。
     key ∈ {"mcp","skill","plugin"}。供引擎按能力裁剪工具/技能。"""
-    v = str(load_settings().get("cap_" + key, "1")).strip().lower()
+    v = str(settings_view().get("cap_" + key, "1")).strip().lower()
     return v not in ("0", "false", "no", "off")
 
 

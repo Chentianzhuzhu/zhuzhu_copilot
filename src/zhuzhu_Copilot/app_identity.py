@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 # ---------------- 当前身份标识 ----------------
@@ -34,6 +35,10 @@ LEGACY_SETTINGS_SCOPE = (LEGACY_SLUG, LEGACY_SLUG)
 _MIGRATION_MARKER = "app_identity_migrated_from"
 
 _migrated = False
+
+# 数据目录解析缓存 {家目录字符串: (检查时刻, 数据目录)}；见 data_root() 的性能说明
+_ROOT_CACHE: dict = {}
+_ROOT_TTL_S = 5.0
 
 
 def _home() -> Path:
@@ -57,12 +62,31 @@ def data_root() -> Path:
 
     正常迁移完成后即新目录；迁移未发生或失败而旧目录仍在时回退旧目录，
     宁可临时沿用旧名，也不让用户的工作流 / 会话 / 密钥失效。
+
+    性能：本函数位于几乎全部数据路径的构造链上（工作流/会话/设置/日志），每轮引擎
+    循环会走到数十次；每次 `is_dir()` 是一次 stat（Windows 杀软下 ≈0.5ms），实测占
+    长任务每轮预算的一大块。故按家目录缓存解析结果（短 TTL + 迁移后显式失效）：
+    数据目录在进程运行期内是稳定的，用户改名/迁移走 ensure_migrated → 显式刷新。
     """
-    new = _home() / DATA_DIR_NAME
+    home = _home()
+    key = str(home)
+    now = time.monotonic()
+    hit = _ROOT_CACHE.get(key)
+    if hit is not None and now - hit[0] < _ROOT_TTL_S:
+        return hit[1]
+    new = home / DATA_DIR_NAME
     if new.is_dir():
-        return new
-    legacy = _home() / LEGACY_DATA_DIR_NAME
-    return legacy if legacy.is_dir() else new
+        root = new
+    else:
+        legacy = home / LEGACY_DATA_DIR_NAME
+        root = legacy if legacy.is_dir() else new
+    _ROOT_CACHE[key] = (now, root)
+    return root
+
+
+def invalidate_data_root_cache() -> None:
+    """失效数据目录解析缓存（目录改名/迁移、首启创建后调用；测试切换家目录亦可用）"""
+    _ROOT_CACHE.clear()
 
 
 def temp_dir() -> Path:
@@ -156,6 +180,7 @@ def ensure_migrated() -> None:
         return
     _migrated = True
     _migrate_data_dir()          # 先改目录名，data_root() 才会指向新目录
+    invalidate_data_root_cache()  # 目录改名后立即刷新解析缓存
     _migrate_settings()
     _migrate_workflow_code()     # 依赖 data_root()，必须在目录改名之后
 
