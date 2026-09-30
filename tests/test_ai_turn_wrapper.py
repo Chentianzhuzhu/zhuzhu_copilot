@@ -336,3 +336,29 @@ def test_retry_row_appearing_keeps_wrapper_consistent(panel):
     _h_turn, h_wrap, want, _y, _r = _hug(p)
     assert abs(h_wrap - want) <= 2, \
         f"重试行显示后包裹层 {h_wrap} ≠ 期望 {want} {_geom_detail(p)}"
+
+
+def test_restored_turn_shows_frozen_cost_and_time_row(panel):
+    """重启/切回会话后「时间统计」必须回来：磁盘行带 cost/meta → 恢复渲染即显示。
+
+    历史缺陷：未归档的最后一轮落盘时没带 cost/meta（AI 行是落盘时现追加的），
+    重启后该轮的耗时徽章与系统时间行消失，且此后不再补回。
+    """
+    p = panel
+    segs = [{"type": "text", "raw": "历史回复正文", "streaming": False}]
+    rows = [{"type": "user", "text": "你好"},
+            {"type": "ai", "segs": segs, "cost": 12.4, "meta": "14:02:31 → 14:02:43"}]
+    keep = (p._ai_bubble, p._task_active, p._rows, p._user_msgs, p._segments)
+    try:
+        p._task_active = False          # 历史回合：不参与实时计时
+        p._rows, p._user_msgs, p._segments = rows, ["你好"], []
+        p._render_history_all()         # 恢复入口（重启加载会话走这里）
+        _pump(60)
+        b = p._ai_bubble
+        assert b is not None, "恢复后没有渲染出回合"
+        assert not b._ribbon.isHidden(), "重启后耗时徽章消失（最后一轮的 cost 没落盘）"
+        assert b._ribbon._text.text() == "12.4s"
+        assert not b._sys.isHidden(), "重启后系统时间行消失（最后一轮的 meta 没落盘）"
+        assert b._sys.text() == "14:02:31 → 14:02:43"
+    finally:
+        p._ai_bubble, p._task_active, p._rows, p._user_msgs, p._segments = keep

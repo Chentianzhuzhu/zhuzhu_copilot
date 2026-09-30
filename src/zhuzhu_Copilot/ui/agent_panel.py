@@ -12979,6 +12979,23 @@ class AgentPanel(QDialog):
         st["user_msgs"] = self._user_msgs
         st["sub_segs"] = self._sub_segs
 
+    def _live_turn_cost_meta(self, sid: str) -> dict:
+        """未归档当前回合的「耗时 + 系统时间行」快照，供 _write_ui_json 一并落盘。
+
+        回合帧（`self._ai_bubble`）只属于正在查看的会话，故仅在 sid 就是当前会话时取值；
+        后台会话不渲染回合帧 → 返回空 dict（保持原样，绝不错取当前会话的耗时串到别的会话）。
+        只有**已冻结**的回合（任务收尾 `ChatTurn.finish()`）才有值：进行中的回合耗时尚无
+        定论，不落半截数据（此时 `cost` 属性为 None）。
+        """
+        if sid != self.__dict__.get("_session_id"):
+            return {}
+        b = self.__dict__.get("_ai_bubble")
+        if b is None or not self._bubble_alive(b):
+            return {}
+        cost = getattr(b, "cost", None)
+        meta = getattr(b, "turn_meta", "") or ""
+        return {"cost": cost, "meta": meta} if (cost is not None or meta) else {}
+
     def _write_ui_json(self, sid: str, st: dict) -> None:
         """把会话 UI 气泡（rows）写入磁盘。关键防护：内存态无内容但磁盘已有历史时跳过，
         避免关闭/未加载完成的会话用空态把历史清空，导致重启后会话记录消失。"""
@@ -12998,11 +13015,16 @@ class AgentPanel(QDialog):
         # 改为内容指纹判等：末尾已是同一轮则原位刷新（幂等，防重复追加），否则追加。
         rows_src = st.get("rows") or []
         if ds:
+            # 耗时徽章与系统时间行必须跟着这一行一起落盘：否则**未归档的最后一轮**
+            # （rows 末尾还是用户行、AI 行由这里现追加）重启后徽章/时间行消失 ——
+            # 其余轮次在归档时已带上 cost/meta，只有最后一轮会丢（用户反馈的
+            # 「重启后时间统计消失」）。
+            stamp = self._live_turn_cost_meta(sid)
             _tail = rows_src[-1] if rows_src and rows_src[-1].get("type") == "ai" else None
             if _tail is not None and _segs_same(_tail.get("segs") or [], ds):
-                rows_src = rows_src[:-1] + [dict(_tail, segs=list(ds))]
+                rows_src = rows_src[:-1] + [dict(_tail, segs=list(ds), **stamp)]
             else:
-                rows_src = rows_src + [{"type": "ai", "segs": list(ds)}]
+                rows_src = rows_src + [dict({"type": "ai", "segs": list(ds)}, **stamp)]
         rows = [
             dict(r, segs=[_strip_seg_render_cache(s) for s in r.get("segs") or []
                           if not (s.get("type") == "mark" and s.get("html") == "已停止")])
