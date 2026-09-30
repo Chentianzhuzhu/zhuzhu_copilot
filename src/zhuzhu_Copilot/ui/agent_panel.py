@@ -1936,15 +1936,6 @@ class _MultiLineInputDialog(QDialog):
         hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
         lay.addWidget(hint)
         btns = QHBoxLayout()
-        # 「重新查看新手指南」入口：文字链接样式，靠左
-        guide = QPushButton("重新查看新手指南")
-        guide.setStyleSheet(f"background: transparent; color: {self._DIM}; border: none;"
-                            "font-size: 12px; text-decoration: underline; padding: 6px 8px;")
-        guide.setAutoDefault(False)
-        guide.setCursor(Qt.CursorShape.PointingHandCursor)
-        guide.setToolTip("再次打开首次安装时的分步新手指南（含设置介绍与初始偏好）")
-        guide.clicked.connect(self._open_guide)
-        btns.addWidget(guide)
         btns.addStretch(1)
         cancel = QPushButton("取消")
         cancel.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
@@ -2390,6 +2381,15 @@ class _AgentSettingsDialog(QDialog):
         right.addWidget(self._page_scroll, 1)
 
         btns = QHBoxLayout()
+        # 「重新查看新手指南」入口：文字链接样式，靠左
+        guide = QPushButton("重新查看新手指南")
+        guide.setStyleSheet(f"background: transparent; color: {self._DIM}; border: none;"
+                            "font-size: 12px; text-decoration: underline; padding: 6px 8px;")
+        guide.setAutoDefault(False)
+        guide.setCursor(Qt.CursorShape.PointingHandCursor)
+        guide.setToolTip("再次打开首次安装时的分步新手指南（含设置介绍与初始偏好）")
+        guide.clicked.connect(self._open_guide)
+        btns.addWidget(guide)
         btns.addStretch(1)
         save = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), "保存")
         save.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
@@ -20870,6 +20870,13 @@ class AgentPanel(QDialog):
                 self._segments.append(seg)
             self._refresh_ai_html()
             self._scroll_bottom()
+        elif s.startswith("生成进度:"):
+            # 生成类任务（UI/UX 包 / 插件）实时进度：AI 通过 set_generation_progress
+            # 工具上报，或生成内置回调经 on_status 透传。更新转圈行文案显示百分比。
+            parts = s.split(":", 2)
+            pct = parts[1] if len(parts) > 1 else ""
+            msg = parts[2] if len(parts) > 2 else ""
+            self._set_spinner_text(f"生成中 {pct}% {msg}".strip())
         elif s == "完成":
             self._hide_spinner()   # 任务结束，停掉转圈
         elif s.startswith("错误"):

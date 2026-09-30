@@ -202,6 +202,7 @@ _CORE_TOOLS = frozenset({
     "save_memory", "load_memory", "update_todo", "list_todo", "git_info",
     "explore_project",
     "inspect_customization",   # 深度自定义总入口：任何自定义/新增功能场景都需先盘点现状
+    "set_generation_progress",  # 生成类任务实时进度上报：UI/UX 包/插件生成时恒可用
     "shared_context",          # 共同上下文空间：编队协同（主 Agent 开启/成员双向读写）
     "set_session_name",        # 会话命名：AI 可给当前对话起名/改名（用户明确要求时必调）
     "register_sub_agent",      # 注册式子 Agent：用户任何措辞的「创建子 agent」都要能落到它
@@ -256,7 +257,9 @@ _TASK_GROUPS = [
                 "list_workflow_agents", "use_workflow_agent",
                 "inspect_customization", "list_sub_agents", "register_sub_agent",
                 "list_builtin_workflows", "shared_context",
-                "register_feature_panel"})),
+                "register_feature_panel",
+                # UI/UX 与插件生成：自定义任务裁剪后仍需可用（自然语言生成/手动管理）
+                "create_uiux", "manage_uiux", "create_plugin"})),
 ]
 _TASK_GROUP_TOOLS = {g: tools for g, _kw, tools in _TASK_GROUPS}
 

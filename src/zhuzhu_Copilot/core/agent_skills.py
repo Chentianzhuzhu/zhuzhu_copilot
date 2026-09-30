@@ -484,6 +484,9 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
    - combined：同时提供技能与 MCP 工具（默认）
 4. 用 create_plugin 工具创建，description 写清插件要做什么、提供哪些能力；
    tools/api 的 implementation 用标准库实现真实操作，异常自行捕获并返回错误说明文本。
+   生成耗时较长时按阶段调用 `set_generation_progress(percent, message)` 上报进度
+   （如 5 分析需求 / 70 写入文件 / 95 校验 / 100 完成），让用户在面板上看到进度；
+   该工具与 create_plugin 内部进度回调同源，无需重复上报同一阶段。
 5. 创建成功后提示：插件已统一存入插件目录，MCP 工具与技能均已自动登记即时生效；
    用户可在设置-插件页查看/管理/停用/删除；MCP 服务器需保存后自动重连。
 6. 若用户描述的是可复用的独立能力，适合沉淀为插件；若只是流程，用 skill-create 即可。""",
@@ -567,10 +570,16 @@ browser_scroll/browser_eval/browser_html/browser_close），而不是用鼠标�
 ## 2. 生成流程
 1. 先问清用户想要的风格/布局/配色（信息不足用 ask_user，禁止瞎猜）。
 2. 用 manage_uiux 工具列出已有包：参数 op=list。
-3. 生成**完整自定义** build_ui.py 代码（见下方契约与示例），用 manage_uiux op=create 创建：
-   {"op":"create","name":"包名(英文)","description":"一句话风格","build_ui":"完整代码",
-    "build_welcome":"可选","theme":"{\\"dark\\":{...},\\"light\\":{...}} 可选自定义主题色板",
-    "qss":"可选 QSS 样式表深度定制组件外观"}
+3. 选择生成方式：
+   - **整体生成（推荐）**：`create_uiux(description="风格/布局/配色描述", activate=false)`，
+     内部走真实 LLM 生成 build_ui + 深/浅双主题色板 + panel.qss 并落盘，生成期间自动上报进度；
+     activate=true 时生成后自动热插拔切换。适合「换个风格 / 重新设计面板 / 自定义界面」。
+   - **手工精修**：自己写**完整自定义** build_ui.py 后 `manage_uiux op=create` 创建：
+     {"op":"create","name":"包名(英文)","description":"一句话风格","build_ui":"完整代码",
+      "build_welcome":"可选","theme":"{\\"dark\\":{...},\\"light\\":{...}} 可选自定义主题色板",
+      "qss":"可选 QSS 样式表深度定制组件外观"}
+     手工分多轮执行/自检耗时较长时，按阶段调用 `set_generation_progress(percent, message)`
+     上报进度，让用户看到进展而非干等。
 4. 可选 op=activate 立即切换（热插拔生效）；若未激活，让用户在 设置→UI/UX 自定义 里切换预览。
 
 ## 3. 契约（务必遵守，否则面板出错自动回退默认）
@@ -908,8 +917,10 @@ QScrollBar::handle:vertical { border-radius: 4px; }
 - **插件（mcp/skill/combined/web 四型）**：`create_plugin` AI 生成可运行插件（含 MCP server +
   SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url + browser_open 打开给用户，
   操作者必须是用户本人，严禁 AI 与脚本自动对战）。
-- **UI/UX 包（面板深度自定义）**：`manage_uiux` op=list 看现状 → op=create（build_ui 完整自定义 +
-  theme 双主题色板 + qss 样式表）→ op=activate 热插拔切换；或 op=update/set_qss/update_theme 迭代。
+- **UI/UX 包（面板深度自定义）**：`manage_uiux` op=list 看现状 → 整体生成用 `create_uiux`
+  （自然语言 → LLM 生成 build_ui + 双主题色板 + qss，自动上报进度，可选立即切换），
+  手工精修用 op=create（build_ui 完整自定义 + theme + qss）→ op=activate 热插拔切换；
+  或 op=update/set_qss/update_theme 迭代。
 - **面板按钮（与 UI/UX 解耦恒显示）**：`register_panel_btn` op=register 注册顶部按钮栏按钮。
 - **子 agent（小功能的常用落地通道，绑定当前工作流）**：`list_sub_agents` 看现状 → `register_sub_agent`
   （name/description/goal/allowed）注册进当前工作流，立即作为 `sub_<name>` 工具可调用，不新建工作流。
@@ -923,6 +934,8 @@ QScrollBar::handle:vertical { border-radius: 4px; }
 - **依赖（自定义代码带第三方 import）**：`set_feature_deps` op=declare 声明（写入当前工作流 requirements.txt，
   deps=["pandas"]）；op=install 立即安装；op=list 查看。加载自定义代码时自动补齐缺失依赖，无需手动 pip。
 - **MCP 服务器**：通过插件（create_plugin kind=mcp/combined）或工作流 mcp.json 声明。
+- **生成进度**：UI/UX 包 / 插件等耗时生成过程按阶段调用 `set_generation_progress(percent, message)`
+  上报进度（create_plugin / create_uiux 内部也会自动上报），让面板状态行实时显示进度。
 
 ## 3. 收尾
 - 汇报：改了什么维度、新功能如何触发/使用、如何切回/删除（安全兜底：工作流缺失回退内置、
@@ -2031,6 +2044,9 @@ _SKILL_KEYWORDS = {
     "deep-customize": ["深度自定义", "深度定制", "全面自定义", "自定义功能", "新增功能",
                        "添加功能", "扩展功能", "改造", "深度定制 agent", "深度定制agent",
                        "自定义整个", "全功能自定义", "把 ai 改", "把ai改", "改得更", "更好用"],
+    "custom-ui-ux": ["ui/ux", "ui ux", "自定义界面", "自定义ui", "换个风格", "换皮肤", "换肤",
+                     "界面风格", "面板风格", "重新设计面板", "重新设计界面", "改界面", "改ui",
+                     "美化界面", "美化面板"],
     "test-driven-development": ["写测试", "测试用例", "tdd"],
     "systematic-debugging": ["调试", "排查问题", "修复bug"],
     "brainstorming": ["头脑风暴", "想创意", "方案点子"],

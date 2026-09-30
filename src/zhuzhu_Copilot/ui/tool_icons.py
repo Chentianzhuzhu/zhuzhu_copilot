@@ -480,6 +480,8 @@ TOOL_ICON_SPEC = {
     "create_skill": ("puzzle", "plus"),
     "create_plugin": ("plug", "plus"),
     "manage_uiux": ("grid", "gear"),
+    "create_uiux": ("grid", "pencil"),
+    "set_generation_progress": ("clock", "right"),
     "register_panel_btn": ("grid", "plus"),
     "inspect_customization": ("grid", "info"),
     "register_feature_panel": ("grid", "star"),

@@ -1964,6 +1964,42 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "create_uiux",
+            "description": "用自然语言描述让 AI 生成一个**完整的自定义 UI/UX 包**（Cordis 热插拔界面）："
+                           "内部调用真实 LLM 生成 build_ui.py + 深/浅两套主题色板 + panel.qss 样式表"
+                           "并落盘，生成期间自动上报进度。适合「换个风格 / 重新设计面板 / 自定义界面」"
+                           "的整体生成；仅微调已有包（改样式/换色/改局部）请用 manage_uiux "
+                           "op=read + set_qss/update_theme/update。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "description": {"type": "string",
+                                               "description": "用户自然语言描述：风格、布局、配色等"},
+                               "activate": {"type": "boolean",
+                                            "description": "可选，默认 false：生成后是否立即设为当前界面"
+                                                           "（热插拔生效）"}},
+                           "required": ["description"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_generation_progress",
+            "description": "实时上报当前**生成类任务**的进度（百分比 + 阶段说明），显示在面板状态行上，"
+                           "让用户看到进度而不是干等。用于 UI/UX 包生成、插件生成等耗时生成过程："
+                           "按阶段调用（如 5=分析需求、30=设计、70=写入文件、95=校验、100=完成）。"
+                           "非生成类任务无需调用。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "percent": {"type": "integer",
+                                           "description": "进度百分比 0-100"},
+                               "message": {"type": "string",
+                                           "description": "阶段说明（简短，如「正在写入插件文件」）"}},
+                           "required": ["percent"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "register_panel_btn",
             "description": "注册/注销 AI 面板顶部按钮栏的自定义按钮（与 UI/UX 解耦：不管当前/以后切换任何"
                            "UI/UX 包、甚至完全重构界面，按钮都保持可见且点击生效）。"
@@ -2821,6 +2857,11 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
             return _delete_workflow(str(args.get("name", "")))
         if name == "manage_uiux":
             return _manage_uiux(args)
+        if name == "create_uiux":
+            return _create_uiux(str(args.get("description", "")),
+                                bool(args.get("activate")), status_cb)
+        if name == "set_generation_progress":
+            return _set_generation_progress(args, status_cb)
         if name == "register_panel_btn":
             return _manage_panel_btn(args)
         if name == "inspect_customization":
@@ -3219,7 +3260,7 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
                                  str(args.get("instruction", "")))
         if name == "create_plugin":
             return _create_plugin(str(args.get("description", "")),
-                                  str(args.get("kind", "combined")))
+                                  str(args.get("kind", "combined")), status_cb)
         # ---- TTS 语音合成（Qwen-TTS 声音复刻，DashScope 真实 API） ----
         if name == "tts_create_voice":
             try:
@@ -4837,12 +4878,67 @@ def _create_skill(name: str, description: str, instruction: str) -> dict:
     return ({"text": msg, "images": []} if ok else _blocked(msg))
 
 
-def _create_plugin(description: str, kind: str) -> dict:
+def _generation_status_adapter(status_cb):
+    """把生成回调 (pct, msg) 适配成引擎状态回调字符串「生成进度:<pct>:<msg>」。
+    status_cb 不可用时返回 None（生成函数会跳过回调）。"""
+    if not callable(status_cb):
+        return None
+
+    def _rep(pct, msg):
+        try:
+            status_cb(f"生成进度:{int(pct)}:{str(msg or '').strip()}")
+        except Exception:
+            pass
+
+    return _rep
+
+
+def _set_generation_progress(args: dict, status_cb=None) -> dict:
+    """set_generation_progress 工具：把百分比 + 阶段说明实时上报到面板状态行。"""
+    try:
+        pct = int(args.get("percent", 0))
+    except (TypeError, ValueError):
+        return _blocked("[set_generation_progress] percent 需为 0-100 的整数")
+    pct = max(0, min(100, pct))
+    msg = str(args.get("message", "") or "").strip()
+    if callable(status_cb):
+        try:
+            status_cb(f"生成进度:{pct}:{msg}")
+        except Exception:
+            pass
+    return {"text": f"进度已更新：{pct}%" + (f" {msg}" if msg else ""), "images": []}
+
+
+def _create_plugin(description: str, kind: str, status_cb=None) -> dict:
     """用自然语言描述创建插件（AI 生成可运行 MCP server + SKILL.md + 脚本/资源/示例），
-    统一存入插件目录并登记技能/MCP 配置，创建后即时生效。"""
+    统一存入插件目录并登记技能/MCP 配置，创建后即时生效。生成期间上报进度。"""
     from zhuzhu_Copilot.core import agent_plugins
-    ok, msg = agent_plugins.create_plugin_from_nl(description, kind)
+    ok, msg = agent_plugins.create_plugin_from_nl(
+        description, kind, on_status=_generation_status_adapter(status_cb))
     return ({"text": msg, "images": []} if ok else _blocked(msg))
+
+
+def _create_uiux(description: str, activate: bool, status_cb=None) -> dict:
+    """用自然语言描述生成完整 UI/UX 包（真实 LLM：build_ui + 双主题色板 + panel.qss），
+    生成期间上报进度；activate=True 时生成后自动切换为当前界面（热插拔生效）。"""
+    from zhuzhu_Copilot.core import agent_ui_ux
+    desc = (description or "").strip()
+    if not desc:
+        return _blocked("[create_uiux] 需要 description 参数：用自然语言描述想要的界面风格")
+    before = {p.get("name") for p in agent_ui_ux.list_packages()}
+    ok, msg = agent_ui_ux.create_package_from_nl(
+        desc, on_status=_generation_status_adapter(status_cb))
+    if not ok:
+        return _blocked(msg)
+    if activate:
+        new_names = [p.get("name") for p in agent_ui_ux.list_packages()
+                     if p.get("name") not in before]
+        if len(new_names) == 1:
+            aok, amsg = agent_ui_ux.set_active_package(new_names[0])
+            msg += f"\n{amsg}" if aok else f"\n（自动切换失败：{amsg}）"
+        else:
+            msg += "\n（已生成，请在 设置→UI/UX 自定义 中切换生效）"
+    return {"text": msg, "images": [], "rebuild_uiux": bool(activate)}
 
 
 def _new_project(path: str, kind: str = "generic", name: str = "") -> dict:
