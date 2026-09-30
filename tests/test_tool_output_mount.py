@@ -211,6 +211,36 @@ def test_seg_sig_covers_output_so_block_refreshes_when_result_arrives():
     assert ap._seg_sig(seg) != before
 
 
+def test_long_output_is_clipped_for_display_with_note():
+    """超长输出的**展示**必须被裁剪（行数与字数双限）：否则单个工具块的换行高度
+    可达数千像素，把思考气泡与回复正文挤出视野、并挤压相邻区块（用户反馈）。
+
+    只裁剪展示：提示语要说明「完整内容已返回模型」，避免被误读成内容丢失。
+    """
+    many_lines = "\n".join(f"第 {i} 行输出" for i in range(200))
+    shown, note = cb.clip_output(many_lines)
+    assert shown.count("\n") + 1 == cb.OUT_PREVIEW_LINES
+    assert str(cb.OUT_PREVIEW_LINES) in note and "已返回模型" in note
+
+    one_long_line = "字" * (cb.OUT_PREVIEW_CHARS + 500)
+    shown2, note2 = cb.clip_output(one_long_line)
+    assert len(shown2) == cb.OUT_PREVIEW_CHARS and "已返回模型" in note2
+
+    short = "第一行\n第二行"
+    assert cb.clip_output(short) == (short, ""), "短输出不得被裁剪/加提示"
+
+
+def test_on_result_clips_what_the_block_would_render():
+    """端到端：超长工具结果落到 op 段时，渲染用的 html 必须是裁剪后的（块高受限）。"""
+    segs = [{"type": "op", "name": "read_file", "html": "▎read_file"}]
+    p = _res_panel(segs)
+    p._on_result("read_file", "\n".join(f"第 {i} 行" for i in range(500)), [])
+
+    out = segs[0].get("out") or ""
+    assert out.count("<br/>") + 1 <= cb.OUT_PREVIEW_LINES + 2, "成果文本未被裁剪 → 块会被撑爆"
+    assert "已返回模型" in out
+
+
 def test_tool_row_keeps_output_hidden_until_it_arrives(host):
     """无输出时工具行等价于原来的一行调用（输出区不占高度）。"""
     row = host.add(cb.ToolCallRow(STYLE, ap._line_icon))

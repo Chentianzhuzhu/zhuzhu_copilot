@@ -92,6 +92,12 @@ THINK_HEAD_GAP = 8             # .tb-head margin-bottom
 TOOL_ICON = 30                 # .tc-icon 30x30
 TOOL_GLYPH_RATIO = 0.66        # 工具图标绘制比例（族底图 + 动作角标要在壳内看清）
 TOOL_OUT_GAP = 9               # 工具行与其输出之间的间距（输出紧贴该工具行下方）
+# 工具/命令输出在界面上的展示上限（行数 + 字数双限，超出的部分只回给模型）：
+# 单条输出长度没有上限时，一次 20000 字的工具结果就能把区块撑到数千像素高，
+# 把思考气泡与回复正文挤出视野、并让相邻区块互相遮挡（用户反馈）。此处按行数与
+# 字数取更严的一个，保证单块最多约一屏高；完整内容仍随工具结果返回模型。
+OUT_PREVIEW_LINES = 24
+OUT_PREVIEW_CHARS = 4000
 OUT_LINE_W = 2                 # 输出区左侧竖线宽（同系列工具的多次输出按同一视觉挂载）
 OUT_LINE_GAP = 9               # 竖线到输出文字的间距
 THINK_ICON = 28                # .tb-head .icon 28x28
@@ -313,6 +319,25 @@ def _label_hfw(lbl: QLabel, width: int, ver: int) -> int:
         lbl.setMinimumHeight(saved)
     lbl._hfwk, lbl._hfqv = key, val
     return val
+
+
+def clip_output(text: str) -> tuple:
+    """工具/命令输出的**展示**裁剪，返回 (展示文本, 提示语)。
+
+    只影响界面展示（完整内容照旧随工具结果返回模型，见面板 `_on_result`）：行数与
+    字数取更严的一个，保证单条输出最多约一屏高 —— 否则一次 20000 字的工具结果就能把
+    区块撑到数千像素高，把思考气泡与回复正文挤出视野、并让相邻区块互相遮挡。
+    上限见 `OUT_PREVIEW_LINES` / `OUT_PREVIEW_CHARS`。
+    """
+    src = str(text or "")
+    parts = src.split("\n")
+    if len(parts) > OUT_PREVIEW_LINES:
+        return "\n".join(parts[:OUT_PREVIEW_LINES]), (
+            f"（共 {len(parts)} 行，界面只展开前 {OUT_PREVIEW_LINES} 行，完整内容已返回模型）")
+    if len(src) > OUT_PREVIEW_CHARS:
+        return src[:OUT_PREVIEW_CHARS], (f"（界面只展开前 {OUT_PREVIEW_CHARS} 字，"
+                                         "完整内容已返回模型）")
+    return src, ""
 
 
 def _widget_hfw(wid: QWidget, width: int) -> int:
@@ -1433,8 +1458,20 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
         return lbl
 
     def _inner_w(self) -> int:
-        return max(1, self.width() - self.layout().contentsMargins().right()
-                   - TOOL_ICON - self.layout().spacing())
+        return self._body_inner_w(self.width())
+
+    def _body_inner_w(self, width: int) -> int:
+        """文字列（标题/meta/输出）的可用宽度：块宽再让出左侧图标壳与它的间距。
+
+        **不能用块宽直接当文字宽**：本行左侧还有一列图标壳，两者相差约 40px。
+        按块宽测出的高度会偏小（长输出尤其明显：少算一行 ≈15px），而
+        `QLabel.heightForWidth` 又受最小高钳制 —— 偏小的值会被外层布局当成槽位高度，
+        块却被 QWidget 钳回自己的最小高，后一块便骑到本块上（用户反馈的
+        「工具输出过长时遮挡/挤压思考气泡与回复正文」）。
+        """
+        lay = self.layout()
+        return max(1, int(width) - TOOL_ICON - lay.spacing()
+                   - lay.contentsMargins().right())
 
     @staticmethod
     def _out_inner_w(inner: int) -> int:
@@ -1445,19 +1482,19 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
         w = int(width) if width else self._inner_w()
         if w <= 0:
             return
-        self._pin_w = w
+        self._pin_w = w            # 记的是**入参宽度**（ChatTurn 的增量判据按它比对）
+        body = self._body_inner_w(w)
         if not self._meta.isHidden():
-            h = _label_hfw(self._meta, w, self._content_ver)
+            h = _label_hfw(self._meta, body, self._content_ver)
             if _need_resize(self._meta.minimumHeight(), h):
                 self._meta.setMinimumHeight(h)
         if not self._out_box.isHidden():
-            h = _label_hfw(self._out, self._out_inner_w(w), self._content_ver)
+            h = _label_hfw(self._out, self._out_inner_w(body), self._content_ver)
             if _need_resize(self._out.minimumHeight(), h):
                 self._out.setMinimumHeight(h)
 
     def heightForWidth(self, width: int) -> int:
-        inner = max(1, int(width) - TOOL_ICON - self.layout().spacing()
-                    - self.layout().contentsMargins().right())
+        inner = self._body_inner_w(width)
 
         h = self._title.sizeHint().height()
         if not self._meta.isHidden():
@@ -2069,6 +2106,11 @@ class ChatTurn(QWidget):
             pos = index * 2 + i * 2
             self._box_lay.insertWidget(pos, wid)
             self._box_lay.insertItem(pos + 1, spacer)
+            # 新块必须在紧随其后的重排**之前**就处于「该可见」的状态：Qt 新建的子控件默认
+            # 是隐藏的（`isHidden()` 为真），而 relayout_heights 把隐藏块按 0 高跳过 ——
+            # 刚插入的这一块高度不计入回合总额，内层布局随即被挤、块又被钳回最小高，
+            # 于是后一块骑到前一块上（超长工具输出「遮挡/挤压正文」的成因之一）。
+            wid.setVisible(not (is_proc and self._done))
             self._items.insert(index + i, _BlockRef(kind, sig, wid, spacer, is_proc))
         self.setUpdatesEnabled(True)
 
@@ -2170,7 +2212,11 @@ class ChatTurn(QWidget):
         if w <= 0:
             return 0
         m = self._box_lay.contentsMargins()
-        inner = max(1, w - m.left() - m.right())
+        # 内容实际铺在 `_box` 上，而 `_box` 又比回合窄一圈外层布局边距（实测左右各 9px）：
+        # 按回合宽测量等于把每块都当成宽 18px 的块去测 —— 长文本会少算一行左右（≈15px），
+        # 偏小的值经 QLabel（heightForWidth 受最小高钳制）传给外层布局就成了偏小的槽位，
+        # 块自身又被 QWidget 钳回最小高 → 后一块骑到前一块上（遮挡/挤压的成因之一）。
+        inner = max(1, w - self._outer_pad_w() - m.left() - m.right())
         incremental = (dirty is not None and self._hfw_cache is not None
                        and self._hfw_cache[0] == w)
         if incremental:
@@ -2356,7 +2402,8 @@ class ChatTurn(QWidget):
         if self._hfw_cache is not None and self._hfw_cache[0] == w:
             return self._hfw_cache[1]
         m = self._box_lay.contentsMargins()
-        inner = max(1, w - m.left() - m.right())
+        # 与 relayout_heights 同口径：块的换行高度按 `_box` 的真实内容宽度测（见 _outer_pad_w）
+        inner = max(1, w - self._outer_pad_w() - m.left() - m.right())
         h = self._outer_pad() + m.top() + m.bottom()
         for ref in self._items:
             if ref.widget.isHidden():
@@ -2379,3 +2426,14 @@ class ChatTurn(QWidget):
         """
         m = self._lay.contentsMargins()
         return m.top() + m.bottom()
+
+    def _outer_pad_w(self) -> int:
+        """外层 `_lay` 的左右边距之和（`_box` 因此比回合窄这一整份）。
+
+        **测量必须扣掉它**：块的换行高度取决于其真实宽度（= 回合宽 − 该边距 − `_box_lay`
+        边距），按回合宽去测会系统性偏小，长文本下每块少一行左右（≈15px）；偏小的测量值
+        经 `QLabel.heightForWidth`（受最小高钳制）成为外层布局的槽位，而块自身被 QWidget
+        钳回最小高 —— 后一块就骑到前一块上（遮挡/挤压的成因之一）。
+        """
+        m = self._lay.contentsMargins()
+        return m.left() + m.right()
