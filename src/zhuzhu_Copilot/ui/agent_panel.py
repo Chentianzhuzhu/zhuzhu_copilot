@@ -1526,13 +1526,19 @@ def _shown_len(seg: dict) -> int:
 
 
 def _strip_seg_render_cache(seg):
-    """移除段 dict 中的渲染缓存键（_rd_cache：markdown 增量渲染缓存，键为
-    (块文本, 主题版本) 元组，json 无法序列化）→ 会话落盘前必须剥离，加载后按需重建。
-    _seg_cache 存在面板层不随段保存；统一剥离所有下划线前缀内部键做兜底。"""
-    if isinstance(seg, dict):
-        for _k in [k for k in seg if k.startswith("_")]:
-            seg.pop(_k, None)
-    return seg
+    """剥离段 dict 中的内部键，**返回副本**（绝不改动入参）。
+
+    用在哪：会话落盘前必须剥掉渲染用内部键（`_rd_cache` 的键是元组、json 无法序列化），
+    加载后按需重建；`_seg_cache` 存在面板层不随段保存，故统一剥离所有下划线前缀内部键兜底。
+
+    为什么必须返回副本：实时段里还挂着**流式落字进度** `_shown`。落盘（每 4 秒的任务中自动
+    备份、切会话、发送前提交、退出兜底）走的是与内存态**同一批 dict 对象**，若就地剥离，
+    落字进度会被清掉，下一次 `_reveal_note` 把它重新初始化为 0 → 已经显示出来的内容从头
+    重播一遍；长思考进入折叠态后可见的就是前几行，用户看到的就是「思考气泡重复播放前五行」。
+    """
+    if not isinstance(seg, dict):
+        return seg
+    return {k: v for k, v in seg.items() if not k.startswith("_")}
 
 
 def _segs_same(a: list, b: list) -> bool:
