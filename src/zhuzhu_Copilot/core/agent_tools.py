@@ -3862,6 +3862,23 @@ def clear_todos(conv_id=None) -> bool:
         return False
 
 
+def drop_todos(conv_id=None) -> bool:
+    """回收**该会话**的任务清单文件（会话被删除时调用）；返回是否成功。
+
+    与 clear_todos 的分工：clear 只把清单清空（文件仍在，会话继续复用同一份文件）；
+    drop 是把文件一起删掉 —— 会话都没了还留着清单文件，会在 TODO_DIR 里攒出一堆再也
+    对应不上任何会话的孤儿清单，既占空间也让人误以为还有任务在跑。
+    只动该会话自己的文件，其他会话的清单不受影响。
+    """
+    try:
+        path = todo_file(conv_id)
+        with _TODO_LOCK:
+            path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def _update_todo(todos: list) -> dict:
     """创建/更新当前会话的任务清单：全量提交，status 限定 pending/in_progress/completed"""
     clean = []

@@ -6583,6 +6583,13 @@ class _TurnWrap(QWidget):
             # 尚未布局（宽度未知）：退回钉定值/实际值/建议值，宁可偏大也不能偏小
             h = max(int(turn.minimumHeight()), int(turn.height()),
                     int(turn.sizeHint().height()))
+        else:
+            # 内容高不得低于回合自己的最小高：两者都是按内容测出来的（最小高由
+            # relayout_heights 按固定宽度钉定），但「内容刚变、高度缓存还是旧宽度」的瞬间
+            # 可能差几个像素 —— 取小值会把回合底部那几像素裁掉（最后一个块 / 系统时间行被
+            # 切边）。注意仍**不**采信 turn.height()：那正是本层分配出去的高度，用它当基准
+            # 会让任何一次瞬时偏小变成不可自愈的不动点（见类文档）。
+            h = max(h, int(turn.minimumHeight()))
         v = self.layout()
         if v is not None and v.count() > 1:
             btm = v.itemAt(1)
@@ -19352,6 +19359,12 @@ class AgentPanel(QDialog):
                 (d / fn).unlink(missing_ok=True)
             except Exception:
                 pass
+        # 任务清单按会话独立存盘 → 会话被删除时把该会话的清单文件一并回收，
+        # 否则 TODO_DIR 里会留下再也对应不上任何会话的孤儿清单（且会被误当成"还有任务在跑"）
+        try:
+            agent_tools.drop_todos(sid)
+        except Exception:
+            pass
         lst = [x for x in self._load_session_list() if x.get("id") != sid]
         self._save_session_list(lst)
 

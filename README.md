@@ -21,7 +21,7 @@
 
 ```bash
 # Windows，Python 3.13
-pip install -r requirements.txt
+pip install -r src/requirements.txt
 python src/main.py
 ```
 

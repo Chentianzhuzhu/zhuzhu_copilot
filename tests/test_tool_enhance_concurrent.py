@@ -333,8 +333,16 @@ def test_single_concurrent_tool_reports_precise_status(monkeypatch, tmp_path):
     assert not any(s.startswith("正在并行执行") for s in statuses), statuses
 
 
-def test_multiple_concurrent_tools_report_batch_status(monkeypatch, tmp_path):
-    """多个并发工具走批次文案（含数量与工具名清单），不逐条刷屏。"""
+def test_multiple_concurrent_tools_report_per_tool_status(monkeypatch, tmp_path):
+    """多个并发工具：逐条发「待执行工具: <名>」，**不再**发「正在并行执行 N 个」批次文案。
+
+    批次文案一度用来把多条状态压成一条，但用户反馈它与各工具的行内条目重复、属冗余提示，
+    已从引擎移除（见 agent_engine._run_inner 并发分支的注释）。本用例锁定该现状：
+      · 同一轮的每个调用仍逐条给出「待执行工具: <工具名>」（受理反馈不缺）；
+      · 不再出现「正在并行执行」批次文案（不重复刷屏）。
+    并发能力本身由 test_read_calls_run_concurrently / test_write_calls_run_concurrently_
+    across_files 用耗时比守护，这里只守状态文案契约。
+    """
     files = [tmp_path / f"{c}.py" for c in "abc"]
     for f in files:
         f.write_text("x", encoding="utf-8")
@@ -349,6 +357,9 @@ def test_multiple_concurrent_tools_report_batch_status(monkeypatch, tmp_path):
     eng = _make_engine(llm, monkeypatch)
     eng.on_status = statuses.append
     eng.run("并发读三个文件")
-    batch = [s for s in statuses if s.startswith("正在并行执行")]
-    assert batch, statuses
-    assert "3" in batch[0] and "read_file" in batch[0], batch
+
+    per_tool = [s for s in statuses if s == "待执行工具: read_file"]
+    assert len(per_tool) == len(files), f"同一轮三个调用都应逐条受理并反馈：{statuses}"
+    assert not any(s.startswith("正在并行执行") for s in statuses), \
+        f"「正在并行执行」批次文案已按用户反馈移除，不得再出现：{statuses}"
+    assert llm.calls >= 2, "该轮应跑完并把结果交回模型（进入下一轮收尾）"

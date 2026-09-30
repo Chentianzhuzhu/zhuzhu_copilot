@@ -12,3 +12,6 @@ pypdf>=4.0
 Cython>=3.0
 # 安全引擎：YARA 规则引擎（缺失时安全引擎自动降级为禁用 YARA，不影响其他防护）
 yara-python>=4.5
+# 音乐播放与 TTS 朗读回放（pygame.mixer；缺失时音乐/朗读静默降级，不影响其余功能）
+# 注：构建 spec 已把 pygame 列为 hiddenimport，此处同步声明，避免开发/CI 环境漏装
+pygame>=2.5
