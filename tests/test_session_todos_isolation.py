@@ -185,6 +185,31 @@ def test_concurrent_conversations_do_not_cross_write():
         assert _titles(f"sess{i}") == [f"T{i}-19"], "并发写入必须各落各的会话文件"
 
 
+# ---------- 4b. 读取缓存不得返回旧清单（等长改写 + 同一 mtime 刻度） ----------
+def test_load_todos_never_returns_stale_after_equal_length_rewrite(tmp_path, monkeypatch):
+    """等长改写 + mtime 未变时也必须读到新清单。
+
+    真实缺陷（CI 实测，`test_concurrent_conversations_do_not_cross_write` 因此偶发报红）：
+    读取缓存原先只按 (mtime, size) 判指纹，而两次相隔极近的写入会落在同一 mtime 刻度
+    （Windows 文件时间的时钟刻度约 15.6ms）；此时若清单内容又恰好等长（如 T1-16 → T1-17），
+    就会被判成「没变」而返回上一份旧清单 —— 用户侧就是「刚更新的任务清单没刷新」。
+    这里把时间戳显式还原到改写前，把该场景钉死。
+    """
+    monkeypatch.setattr(agent_tools, "TODO_DIR", tmp_path)     # 只在本用例的临时目录里读写
+    conv = "sess-stale"
+    agent_tools.save_todos([{"title": "T1-16", "status": "pending"}], conv)
+    assert _titles(conv) == ["T1-16"]                          # 先让缓存填上
+    before = agent_tools.todo_file(conv).stat()
+
+    agent_tools.save_todos([{"title": "T1-17", "status": "pending"}], conv)
+    os.utime(agent_tools.todo_file(conv), ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = agent_tools.todo_file(conv).stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns), \
+        "本例前提：改写前后等长且 mtime 相同"
+
+    assert _titles(conv) == ["T1-17"], "缓存返回了旧清单（等长改写 + 同一 mtime 刻度被误判为没变）"
+
+
 # ---------- 5. 文件名安全 ----------
 def test_todo_slug_is_filesystem_safe_and_unique():
     for bad in ("a/b", "a\\b", "会话 1:2*?", "..", ""):

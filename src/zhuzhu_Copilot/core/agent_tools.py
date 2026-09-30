@@ -3813,6 +3813,7 @@ _TODO_STATUS = ("pending", "in_progress", "completed")
 _TODO_MAX_CACHE = 128            # 缓存的文件数上限（超出按插入顺序淘汰，防长跑进程内存累积）
 _TODO_LOCK = threading.RLock()   # 并发会话/引擎线程同时读写时保护缓存与落盘
 _TODO_CACHE: dict = {}           # 文件路径 -> {"fp": 指纹, "list": 解析结果}（引擎每轮读取，读盘热点）
+_TODO_WRITES: dict = {}          # 文件路径 -> 本进程内的写入代数（指纹的一部分，见 load_todos）
 
 
 def _current_conversation() -> str:
@@ -3862,16 +3863,22 @@ def _read_todo_list(path: Path) -> list:
 def load_todos(conv_id=None) -> list:
     """读取**该会话独享**的任务清单：返回 [{title, status}]，文件缺失/损坏返回空。
 
-    性能：引擎每轮都要读它生成清单消息（长任务热点，每次读盘 ~1.5ms），故按
-    (mtime, size) 缓存；任何写入方（update_todo/clear_todos/UI 清空）落盘后
-    指纹自然变化，无需额外通知即可读到最新内容。缓存按文件分键，
-    多会话并发时各读自己那一份、互不覆盖。"""
+    性能：引擎每轮都要读它生成清单消息（长任务热点，每次读盘 ~1.5ms），故做缓存。
+    指纹 = (本进程写入代数, mtime, size)：
+      · 只看 mtime+size 不够 —— 两次相隔极近的写入会落在同一 mtime 刻度（Windows 文件时间
+        的时钟刻度约 15.6ms），内容又恰好等长时（如 T1-16 → T1-17）就会被判成「没变」，
+        于是返回上一份旧清单（CI 实测：并发写/读用例读到 T1-16 而非 T1-17，用户侧则是
+        「刚更新的任务清单没刷新」）。
+      · 写入代数只在 save_todos 里 +1，是本进程内「这份文件刚被改过」的确定信号；
+        mtime/size 继续保留，用于兜住进程外改动。
+    缓存按文件分键，多会话并发时各读自己那一份、互不覆盖。"""
     path = todo_file(conv_id)
     key = str(path)
     with _TODO_LOCK:
+        gen = _TODO_WRITES.get(key, 0)
         try:
             st = path.stat()
-            fp = (st.st_mtime_ns, st.st_size)
+            fp = (gen, st.st_mtime_ns, st.st_size)
         except OSError:
             _TODO_CACHE.pop(key, None)
             return []
@@ -3892,6 +3899,10 @@ def save_todos(todos: list, conv_id=None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(list(todos or []), ensure_ascii=False, indent=2),
                         encoding="utf-8")
+        # 写入代数 +1：读取侧指纹必须含它，否则「等长改写 + 同一 mtime 刻度」会被当成没变，
+        # 读到上一份旧清单（原因详见 load_todos 的说明）
+        key = str(path)
+        _TODO_WRITES[key] = _TODO_WRITES.get(key, 0) + 1
 
 
 def clear_todos(conv_id=None) -> bool:
