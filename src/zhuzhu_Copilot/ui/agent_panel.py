@@ -1576,6 +1576,17 @@ _RESULT_TRUNCATE = 6000
 _STREAM_TICK_MS = 4
 _SCROLL_TICK_MS = 4
 _STREAM_BIG_CHARS = 200_000
+_STREAM_TICK_BIG_MS = 60      # 超大正文（≥_STREAM_BIG_CHARS）的兜底间隔
+# 单帧成本自适应（实测数据，探针 scripts/_probe_stream_perf.py steady 模式）：
+# 富文本侧成本随正文长度增长（单帧：2k 字 ~1ms → 20k 字 ~38ms 均值/67ms 峰值），
+# 而「前缀不变时单帧仅 0.09ms」—— 成本全部来自「前缀增长后重建整段富文本」。
+# 固定 4ms 节拍在 20k 字下 = 主线程 900% 超载（正文越长越卡、整机掉帧）。
+# 因此按实测单帧成本反推节拍：delay ≈ 成本 / 目标占空比，把刷新占用率钉在上限内。
+# 落字连贯不受影响：落字速度是**按时间**推进的（见 _reveal_tick），节拍变长只是
+# 单次更新多落几个字；模型实际到达速度 30~60 字/秒时，150ms 一拍也只多落 9 字。
+_STREAM_DUTY_TARGET = 0.25    # 单帧成本占节拍的比例上限（1/4 主线程，留足输入/滚动/绘制）
+_STREAM_TICK_MAX_MS = 200     # 节拍上限（保底 ≥5fps 的内容更新，不至于一顿一顿）
+_STREAM_COST_DECAY = 0.8      # 成本估计的回落系数（每帧；涨即时、降渐缓，避免抖动）
 # 长任务（回合内区块多）的内容节拍上限：每 tick 成本 ∝ 区块数，4ms 节拍在几十个区块的
 # 回合里等于把主线程排满 —— 「气泡样式一多就卡」的乘数就在这里。放宽到 16ms（60fps，
 # 与屏幕刷新对齐）可省约 4 倍主线程；落字连贯由浮现层（EMERGE_TICK_MS≈125fps 合成，
@@ -17999,7 +18010,13 @@ class AgentPanel(QDialog):
         # 不必再按正文长度放宽间隔（旧实现最长 600ms，观感是一跳一跳的）。按
         # _STREAM_TICK_MS 定拍，文字连续落字、观感丝滑；dirty 防抖仍会把期间的所有增量
         # 合并为一次渲染。超大正文保留一档兜底间隔，避免极端长文下单帧占用过高。
-        delay = _STREAM_TICK_MS if n < _STREAM_BIG_CHARS else 60
+        delay = _STREAM_TICK_MS if n < _STREAM_BIG_CHARS else _STREAM_TICK_BIG_MS
+        # 单帧成本自适应：按上一次实测的单帧耗时反推节拍（delay ≈ 成本 / 目标占空比）。
+        # 只有「前缀增长」的帧才贵（重建整段富文本），而前缀由落字节奏推进 —— 长正文
+        # 降到 5~7fps 的内容更新即可保住主线程，落字速度不受影响（按时间推进）。
+        cost = self.__dict__.get("_refresh_cost_ema", 0.0)
+        if cost > _STREAM_TICK_MS:
+            delay = max(delay, min(_STREAM_TICK_MAX_MS, int(cost / _STREAM_DUTY_TARGET)))
         if delay < _STREAM_TICK_LONG_MS and self._turn_block_count() >= _STREAM_TICK_BLOCKS:
             # 长任务（回合内区块多）把内容节拍放宽到 60fps：每 tick 的成本随区块数增长，
             # 「块一多就卡」本质是高频×大 N。落字连贯改由浮现层保证（EMERGE_TICK_MS 合成
@@ -18018,11 +18035,19 @@ class AgentPanel(QDialog):
         self._html_dirty = False
         if self._ai_bubble is None:
             return
+        t0 = time.perf_counter()
         try:
             self._render_ai_frame(self._ai_bubble, self._segments)
             self._sync_bubble_heights([self._ai_bubble])  # 流式高频路径只重算当前回合
         except RuntimeError:
             self._ai_bubble = None
+            return
+        # 实测单帧成本喂给节拍（见 _refresh_ai_html）：这是「正文长度 → 节拍」的唯一依据，
+        # 不做长度公式猜测（成本还与主题、字体缩放、代码块/表格占比有关）。
+        # 涨即时、降渐进：长文收缩/切会话不留下过大的节拍，又不因单帧抖动频繁变拍。
+        cost = (time.perf_counter() - t0) * 1000.0
+        prev = self.__dict__.get("_refresh_cost_ema", 0.0) * _STREAM_COST_DECAY
+        self._refresh_cost_ema = max(cost, prev)
 
     # ---------- 滑动动画 + 思考过程（思考内容在 AI 气泡开头，完成后折叠） ----------
     def _ensure_spinner(self):

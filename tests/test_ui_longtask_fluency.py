@@ -375,6 +375,49 @@ def test_short_turn_keeps_fast_stream_tick(monkeypatch):
     assert delays and delays[-1] == ap._STREAM_TICK_MS
 
 
+def test_stream_tick_tracks_measured_frame_cost(monkeypatch):
+    """单帧成本自适应：长正文的单帧成本随长度增长（探针实测 20k 字 ~38ms 均值/67ms 峰值）。
+
+    固定 4ms 节拍在长文下等于把主线程排满（占用率无上界）—— 契约是「节拍 ≥ 实测成本 /
+    目标占空比」，即刷新占用率有上界；成本极高时封顶保底更新频率。
+    """
+    delays = []
+    monkeypatch.setattr(ap.QTimer, "singleShot",
+                        staticmethod(lambda ms, fn: delays.append(ms)))
+    p = _panel()
+    p._ai_bubble = type("T", (), {"_items": [object()]})()
+    p._segments = [{"type": "text", "raw": "x" * 10, "streaming": True}]
+
+    cost = 40.0
+    p._refresh_cost_ema = cost
+    p._refresh_ai_html()
+    assert delays[-1] == int(cost / ap._STREAM_DUTY_TARGET), \
+        f"节拍未随单帧成本放宽：{delays[-1]}ms（单帧 {cost}ms）"
+    assert delays[-1] * ap._STREAM_DUTY_TARGET >= cost, "占用率超过目标上限"
+
+    delays.clear()
+    p._html_dirty = False
+    p._refresh_cost_ema = 10_000.0            # 极端长文：单帧成本远超上限
+    p._refresh_ai_html()
+    assert delays[-1] == ap._STREAM_TICK_MAX_MS, "节拍必须有上限（保底更新频率）"
+
+
+def test_frame_cost_ema_is_recorded_and_decays():
+    """成本估计：实测记录（节拍唯一依据，不做长度公式猜测）+ 渐进回落（不长期偏大）。"""
+    p = _panel()
+    p._render_ai_frame = lambda *a, **kw: None
+    p._sync_bubble_heights = lambda *a, **kw: None
+    p._refresh_cost_ema = 0.0
+    p._apply_refresh_ai_html()
+    assert p._refresh_cost_ema > 0.0, "单帧成本必须被实测记录"
+    assert p._refresh_cost_ema < 5.0, "桩渲染的耗时不应被夸大"
+
+    p._refresh_cost_ema = 100.0
+    p._apply_refresh_ai_html()
+    assert abs(p._refresh_cost_ema - 100.0 * ap._STREAM_COST_DECAY) < 1e-3, \
+        "成本估计必须渐进回落（否则短回合也长期按长文节拍刷新）"
+
+
 def test_inactive_emerge_band_does_no_measurement():
     """非流式区块的浮现层在几何变化时不得做文本测量：长会话上百个块各测一次即卡顿。"""
     block = cb.StreamBlock(_STYLE)
