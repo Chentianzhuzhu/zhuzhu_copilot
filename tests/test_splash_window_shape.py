@@ -117,6 +117,25 @@ def test_title_uses_capitalized_brand():
     assert 'QLabel("zhuzhu copilot")' not in src, "启动窗标题遗留了全小写写法"
 
 
+def test_startup_work_is_off_the_critical_path():
+    """启动提速契约：预热与动画并行、浮层预热不挡首帧（时序仍是固定 2 秒）。
+
+    性能改动只在「何时做」，不做「少做」——故用源码顺序 + 调用形态钉住：
+      ① 面板模块/配置解密预热线程在启动动画之前启动（与 2 秒动画并行）；
+      ② Copilot 浮层预热改为面板显示之后经 QTimer 触发，不再直接挡在可见性前面；
+      ③ 2 秒启动动画本身不得被改动（见上一条测试）。
+    """
+    m = _splash_mod()
+    src = open(m.__file__, encoding="utf-8").read()
+    preload_at = src.index('name="agent_panel_preload"')
+    splash_at = src.index("splash = SplashWindow()")
+    assert preload_at < splash_at, "预热线程应在启动动画展示前启动（与动画并行）"
+    assert "QTimer.singleShot(COPILOT_PREWARM_DELAY_MS, panel.prewarm_copilot_panel)" in src, \
+        "浮层预热必须延后到面板显示之后触发（不得直接调用阻塞首帧）"
+    assert "panel.prewarm_copilot_panel()\n" not in src, "浮层预热不应再同步直调"
+    assert m.COPILOT_PREWARM_DELAY_MS > 0
+
+
 def test_title_font_size_from_single_source():
     """标题字号取自 SPLASH_TITLE_PX（调大小只改常量），且确实渲染生效。"""
     m = _splash_mod()

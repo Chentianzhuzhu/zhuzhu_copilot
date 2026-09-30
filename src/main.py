@@ -87,6 +87,12 @@ SPLASH_SUB_INSET_Y = 10
 # 标题字号（单一数据源：调大小只改这里）
 SPLASH_TITLE_PX = 30
 
+# 面板首帧之后再预热 Copilot 浮层（延迟 ms）：
+# 预热会在主线程创建浮层/托盘并做首次应用扫描（实测约 1.4s），放在面板显示前会让
+# 「启动动画结束 → 界面可见」之间空窗 1.4s（用户对着空屏等）。延后到首帧绘制之后，
+# 启动观感与既有行为都不变（浮层依旧随程序启动预创建，只是不再挡在可见性前面）。
+COPILOT_PREWARM_DELAY_MS = 600
+
 
 def _resolve_theme_mode() -> str:
     """启动动画深浅色自适应：与 agent_panel 的主题解析保持一致（dark/light/auto）。"""
@@ -496,6 +502,14 @@ def main():
         _media_selftest(app, _selftest)
         return
 
+    # 启动动画之前就把「面板模块导入 + 配置解密缓存」交给后台线程，与 2 秒动画并行：
+    # 动画结束时面板模块已在 sys.modules、模型配置解密缓存已就绪，打开面板不再等它们
+    # （实测 import agent_panel ~0.6s、PBKDF2 解密 ~0.7s）。时序与观感不变：动画仍是
+    # 固定 2 秒，面板仍在其后打开。必须在 QApplication 创建之后启动 —— 模块顶层
+    # apply_theme 读 QSettings、补丁 QDialog.showEvent 均不依赖主线程。
+    threading.Thread(target=_preload_agent_panel_ready,
+                     daemon=True, name="agent_panel_preload").start()
+
     # 主窗口已移除：启动即进入 AI 面板（zhuzhu Copilot 浮层由面板顶栏按钮或托盘唤起）。
     # 启动动画：先显示圆角矩形动画窗口（尺寸不变，仅四角圆角），
     # 面板就绪后淡出（界面不再"空白卡顿"）。
@@ -504,13 +518,11 @@ def main():
 
     def _open_panel():
         panel = _open_agent_panel(app)
-        # 预创建 Copilot 浮层（不显示）：桌宠 / 托盘 / 首次应用扫描随程序启动，保持原有启动行为
-        panel.prewarm_copilot_panel()
-        # 启动后台线程预热 AI 面板模块与配置解密缓存（节省的部分成本与面板生命周期并行）。
-        # 注意：必须在 QApplication 创建后启动（模块顶层 apply_theme 读取 QSettings、
-        # 补丁 QDialog.showEvent 均不依赖主线程）。
-        threading.Thread(target=_preload_agent_panel_ready,
-                         daemon=True, name="agent_panel_preload").start()
+        # 预创建 Copilot 浮层（不显示）：桌宠 / 托盘 / 首次应用扫描随程序启动，保持原有
+        # 启动行为。延后到面板首帧之后再执行（见 COPILOT_PREWARM_DELAY_MS）：该预热在
+        # 主线程实测约 1.4s，放在显示前等于让用户对着空屏等它；_ensure_copilot_panel
+        # 幂等，用户先点开浮层也不会重复创建。
+        QTimer.singleShot(COPILOT_PREWARM_DELAY_MS, panel.prewarm_copilot_panel)
 
     def _close_splash_then_open_panel():
         # 先关闭启动动画窗口，再进入后续流程（避免面板先出、启动窗还在的重叠感）
