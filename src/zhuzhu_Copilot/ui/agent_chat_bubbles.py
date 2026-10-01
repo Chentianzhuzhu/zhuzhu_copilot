@@ -1252,17 +1252,23 @@ class _PinMixin:
 
 
 class _FoldMixin:
-    """正文超行自动折叠 + 「展开/收起」开关：思考气泡、工具输出、命令输出共用一套。
+    """正文超行自动折叠 + 「展开/收起」开关：思考气泡、工具输出、命令块共用一套。
 
     折叠只改两件事：**铺进标签的正文**（折叠态只铺前缀）与**钉住的最小高度**（折叠态 =
-    行数上限）。全文始终留在 `_fold_full` 里、绝不丢弃，点开即看到完整内容 —— 因此界面
-    上不存在任何截断，「展开全部」名副其实。
+    行数上限）。全文留在 `_fold_parts`（`_fold_full` 是它的拼接）里、绝不丢弃，点开即看到
+    完整内容 —— 因此界面上不存在任何截断，「展开全部」名副其实。
 
-    子类只差四处，各自实现钩子给出：
-      · `_fold_label()`     哪条标签承载长正文（工具行/命令块都只折叠「输出」那一条）；
-      · `_fold_avail_w()`   该标签的可用宽度（图标壳 / 描边 / 内边距各不相同）；
+    **折叠区可以是一条标签，也可以是多条**（`_fold_targets()`）：命令块把「`$ 命令` +
+    输出」当成**同一个**折叠区 —— 任一段超出上限就出现同一个「展开全部」，点开两段同时
+    铺全文，用户不必分两次点。判定与钉高都按「各段独立上限」做（每段各自最多
+    `_fold_lines()` 行），因此任一超长段都不会把另一段挤没。
+
+    子类只差几处，各自实现钩子给出：
+      · `_fold_label()`     承载遮罩的那条标签（多段时取**最下方**那条）；
+      · `_fold_targets()`   参与折叠的全部标签（默认就是 `_fold_label()` 一条）；
+      · `_fold_avail_w()`   标签的可用宽度（图标壳 / 描边 / 内边距各不相同）；
       · `_fold_gap()`       正文与开关之间的间距（由各自布局给出的实际值）；
-      · `_fold_preview()`   折叠态铺进标签的字符预算。
+      · `_fold_preview()`   折叠态铺进**每一段**的字符预算。
     开关的位置由子类自己插进布局（各块结构不同），混入只负责状态、显隐、测量与遮罩。
     """
 
@@ -1280,9 +1286,10 @@ class _FoldMixin:
         self._fold_style = style
         self._fold_provider = icon_provider
         self._fold_open_text = open_text
-        self._fold_full = ""            # 全文（绝不截断，展开时铺它）
-        self._fold_full_key = None      # 全文高度缓存的键 (内容版本, 宽度)
-        self._fold_full_val = 0
+        self._fold_parts: list = []      # 各段全文（与 `_fold_targets()` 一一对应）
+        self._fold_full = ""             # 各段拼接（非空判定 / 长度口径，兼容既有调用方）
+        self._fold_h_key = None          # 各段全文高度缓存的键 (内容版本, 宽度)
+        self._fold_h_val: list = []
         self._fold_btn = PillButton(style, open_text, self._fold_chev(),
                                     dashed=True, parent=self)
         self._fold_btn.clicked.connect(self._fold_toggle)
@@ -1304,7 +1311,16 @@ class _FoldMixin:
 
     # ---------- 子类钩子 ----------
     def _fold_label(self) -> QLabel:
+        """承载渐隐遮罩的那条标签（多段折叠区取**最下方**那条）"""
         raise NotImplementedError
+
+    def _fold_targets(self) -> list:
+        """参与折叠的全部标签，按显示顺序（默认只有 `_fold_label()` 一条）。
+
+        返回多条时它们共享一个折叠开关与一个判定：**任一段**超出上限即折叠，展开时
+        各段同时铺全文。全文按同样顺序经 `_fold_set_parts()` 喂入。
+        """
+        return [self._fold_label()]
 
     def _fold_avail_w(self, width: int = None) -> int:
         raise NotImplementedError
@@ -1322,17 +1338,23 @@ class _FoldMixin:
 
     # ---------- 状态 ----------
     def _fold_set_full(self, full_html: str):
-        """喂入新的全文。
+        """喂入**单段**全文（多段折叠区用 `_fold_set_parts`）"""
+        self._fold_set_parts([full_html])
+
+    def _fold_set_parts(self, parts: list):
+        """喂入各段全文（顺序与 `_fold_targets()` 一致）。
 
         内容**不是上一份的增长**（另一个工具的输出出现在同一控件上）时复位用户的手动展开：
         否则上一个工具的展开状态会串到新内容上。思考气泡不适用这条（它的富文本被
         `<div>` 包裹，增长时首尾都变），改由调用方按段标识 `sid` 判定 —— 见
         `_fold_content_reset`。
         """
-        old = self._fold_full
-        if self._fold_content_reset and old and not full_html.startswith(old):
+        new_parts = [str(p or "") for p in (parts or [])]
+        joined = "".join(new_parts)
+        if self._fold_content_reset and self._fold_full and not joined.startswith(self._fold_full):
             self._fold_reset()
-        self._fold_full = full_html or ""
+        self._fold_parts = new_parts
+        self._fold_full = joined
 
     def _fold_reset(self):
         """回到「自动」判定并把开关文案复位（换内容时调用）"""
@@ -1351,11 +1373,11 @@ class _FoldMixin:
     def _fold_lines(self) -> int:
         raise NotImplementedError
 
-    def _fold_full_h(self, width: int = None) -> int:
-        """全文（不截断）在可用宽度下的高度，带 (内容版本, 宽度) 缓存。
+    def _fold_heights(self, width: int = None) -> list:
+        """各段全文（不截断）在可用宽度下的高度列表，带 (内容版本, 宽度) 缓存。
 
-        判定必须基于**全文**：若像思考气泡那样按「当前铺进标签的正文」判断，短前缀在超宽
-        窗口下可能不到折叠上限 → 判定在折叠/展开之间翻转（开关反复闪烁）。
+        判定必须基于**全文**：若按「当前铺进标签的正文」判断，短前缀在超宽窗口下可能
+        不到折叠上限 → 判定在折叠/展开之间翻转（开关反复闪烁）。
 
         实现上**估算优先**（见 `_fold_line_floor` / `_fold_est_lines` 的说明）：先看显式
         换行数是否已超上限，再用采样字宽外推总行数，两者都能明确给出结论时**完全不做
@@ -1364,69 +1386,81 @@ class _FoldMixin:
         """
         w = max(1, self._fold_avail_w(width))
         key = (self._content_ver, w)
-        if self._fold_full_key == key:
-            return self._fold_full_val
-        full = self._fold_full or ""
-        limit = self._fold_limit_h()
-        lines = self._fold_lines()
-        line_h = self._line_height()
-        floor = _fold_line_floor(full)
-        if floor > lines:
-            h = limit + (floor - lines) * line_h + 1        # 显式换行已超上限：必然可折叠
-        else:
-            est = _fold_est_lines(full, w, self._fold_label().fontMetrics())
-            if est > lines + _EST_MARGIN_LINES:
-                h = limit + line_h + 1                     # 明显超出：不排版
-            elif est < lines - _EST_MARGIN_LINES:
-                h = max(1, int(est * line_h))              # 明显不足：不排版
-            else:
-                h = self._fold_measure_full(w)             # 阈值附近：真测
-        self._fold_full_key, self._fold_full_val = key, h
-        return h
+        if self._fold_h_key == key:
+            return self._fold_h_val
+        vals = []
+        for i, lbl in enumerate(self._fold_targets()):
+            html = self._fold_parts[i] if i < len(self._fold_parts) else ""
+            vals.append(self._fold_one_h(lbl, html, w))
+        self._fold_h_key, self._fold_h_val = key, vals
+        return vals
 
-    def _fold_measure_full(self, w: int) -> int:
-        """把全文临时铺进标签量一次真实高度（昂贵，仅阈值附近调用），测完立刻还原"""
-        lbl = self._fold_label()
+    def _fold_one_h(self, lbl: QLabel, html: str, w: int) -> int:
+        """单段全文在宽度 `w` 下的高度（估算优先，只有阈值附近才真测）"""
+        if not html:
+            return 0
+        lines, line_h = self._fold_lines(), self._line_height()
+        limit = lines * line_h
+        floor = _fold_line_floor(html)
+        if floor > lines:
+            return limit + (floor - lines) * line_h + 1    # 显式换行已超上限：必然可折叠
+        est = _fold_est_lines(html, w, lbl.fontMetrics())
+        if est > lines + _EST_MARGIN_LINES:
+            return limit + line_h + 1                      # 明显超出：不排版
+        if est < lines - _EST_MARGIN_LINES:
+            return max(1, int(est * line_h))               # 明显不足：不排版
+        return self._fold_measure_one(lbl, html, w)        # 阈值附近：真测
+
+    def _fold_measure_one(self, lbl: QLabel, html: str, w: int) -> int:
+        """把一段全文临时铺进它的标签量一次真实高度（昂贵，仅阈值附近调用），测完立刻还原"""
         saved_txt, saved_min = lbl.text(), lbl.minimumHeight()
         lbl.setMinimumHeight(0)
-        lbl.setText(self._fold_full)
+        lbl.setText(html)
         h = int(lbl.heightForWidth(w) or 0)
         lbl.setText(saved_txt)
         lbl.setMinimumHeight(saved_min)
         return h
 
     def _fold_foldable(self, width: int = None) -> bool:
-        """是否可折叠（判定成本见 `_fold_full_h`）。
+        """是否可折叠：**任一段**全文超出各自的行数上限即成立（成本见 `_fold_heights`）。
 
         `width` 由 `heightForWidth` 传入，保证「判定宽度」与「测量宽度」一致 ——
         否则布局探宽期间会按控件瞬时宽度反复改判，开关跟着布局闪烁。
         """
         if not self._fold_full:
             return False
-        return self._fold_full_h(width) > self._fold_limit_h()
+        limit = self._fold_limit_h()
+        return any(h > limit for h in self._fold_heights(width))
 
     def _fold_is_folded(self) -> bool:
         return self._fold_foldable() and self._fold_open is not True
 
     # ---------- 应用 ----------
-    def _fold_shown(self) -> str:
-        """当前该铺进标签的正文：展开态（或本来就短）给全文，否则给前缀 + 省略号。"""
-        full = self._fold_full
-        if self._fold_open is True or len(full) <= self._fold_preview():
-            return full
-        return safe_prefix(full, self._fold_preview()) + "…"
+    def _fold_shown_parts(self) -> list:
+        """各段当前该铺进标签的正文：展开态（或本来就短）给全文，否则给前缀 + 省略号。
+
+        预算**按段各自给**（`_fold_preview()`）：命令与输出各留一份，任一超长的段都不会
+        因为另一段太长而被整段挤掉，用户点开两段同时看到全文。
+        """
+        if self._fold_open is True:
+            return list(self._fold_parts)
+        budget = self._fold_preview()
+        return [p if len(p) <= budget else safe_prefix(p, budget) + "…"
+                for p in self._fold_parts]
 
     def _fold_apply_text(self) -> bool:
-        """按折叠态铺正文；与标签现状一致时不触碰标签（返回是否真的改了）。"""
-        want = self._fold_shown()
-        lbl = self._fold_label()
-        if want == lbl.text():
-            return False
-        lbl.setText(want)
-        return True
+        """按折叠态铺各段正文；与标签现状一致时不触碰标签（返回是否真的改了）。"""
+        want = self._fold_shown_parts()
+        changed = False
+        for i, lbl in enumerate(self._fold_targets()):
+            txt = want[i] if i < len(want) else ""
+            if lbl.text() != txt:
+                lbl.setText(txt)
+                changed = True
+        return changed
 
     def _fold_visible_h(self, width: int = None) -> int:
-        """正文标签当前应占的高度：折叠态 = 行数上限，展开态 = 全文高度。
+        """折叠区当前应占的高度：折叠态 = **各段上限之和**，展开态 = 各段全文高度之和。
 
         块高预算必须用它，而不是直接测标签：折叠态标签里铺的是**前缀**（比上限长，
         为的是让折叠判定稳定），直接测就会按前缀申请高度 —— 块比可见内容高出一截，
@@ -1435,20 +1469,34 @@ class _FoldMixin:
         w = self._fold_avail_w(width)
         if w <= 0:
             return 0
-        full = _label_hfw(self._fold_label(), w, self._content_ver)
         limit = self._fold_limit_h()
-        return limit if (full > limit and self._fold_open is not True) else full
+        open_ = self._fold_open is True
+        total = 0
+        for lbl in self._fold_targets():
+            if lbl.isHidden():
+                continue
+            h = _label_hfw(lbl, w, self._content_ver)
+            total += h if open_ else min(h, limit)
+        return total
 
     def _fold_pin(self, width: int = None):
-        """钉住正文标签的高度：折叠态 = 行数上限，展开态 = 全文高度。
+        """钉住各段标签的高度：折叠态 = 各自的行数上限，展开态 = 全文高度。
 
         **绝不允许钉入超过折叠上限的值**：否则本块真实高度远超 heightForWidth 的估算，
         把整条回合撑爆、把下方开关压扁（与思考气泡同一条约束）。
         """
-        target = self._fold_visible_h(width)
-        lbl = self._fold_label()
-        if target > 0 and _need_resize(lbl.minimumHeight(), target):
-            lbl.setMinimumHeight(target)
+        w = self._fold_avail_w(width)
+        if w <= 0:
+            return
+        limit = self._fold_limit_h()
+        open_ = self._fold_open is True
+        for lbl in self._fold_targets():
+            if lbl.isHidden():
+                continue
+            h = _label_hfw(lbl, w, self._content_ver)
+            target = h if open_ else min(h, limit)
+            if target > 0 and _need_resize(lbl.minimumHeight(), target):
+                lbl.setMinimumHeight(target)
 
     def _fold_extra_h(self, width: int = None) -> int:
         """本块高度里属于「间距 + 开关」的那一份（不可折叠时为 0）"""
@@ -1918,7 +1966,9 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
 class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
     """执行命令块（demo .cmd）：圆角边框 + 标题栏三点 + `$ 命令` + 输出行。
 
-    输出行超长时由 `_FoldMixin` 折叠（可「展开全部」）；`$ 命令` 与标题栏不参与折叠。
+    「`$ 命令`」与「输出」同属**一个**折叠区（`_fold_targets`）：任一段超出
+    `OUT_FOLD_LINES` 行即出现同一个「展开全部」，点开两段同时铺全文 —— 长命令与长输出
+    都能完整查看；标题栏（三点 + 工具名）不参与折叠。
     """
 
     def __init__(self, style: ChatStyle, icon_provider: IconProvider = None,
@@ -1985,7 +2035,12 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
 
     # ---------- 折叠钩子（见 _FoldMixin） ----------
     def _fold_label(self) -> QLabel:
+        """遮罩贴在最下方那段（命令在上、输出在下）"""
         return self._body
+
+    def _fold_targets(self) -> list:
+        """「`$ 命令`」与「输出」同属一个折叠区，顺序即 `_fold_set_parts` 的顺序"""
+        return [self._cmd, self._body]
 
     def _fold_lines(self) -> int:
         return OUT_FOLD_LINES
@@ -2022,11 +2077,15 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
 
     def set_content(self, label: str, cmd_html: str, out_html: str, defer: bool = False):
         self._bar_label.setText(label or "")
-        self._cmd.setText(f'<span style="color:{self._style.accent};">$&nbsp;</span>'
-                          f'{cmd_html}' if cmd_html else "")
-        # 输出行交给折叠机制：全文存 _fold_full，标签按折叠态铺前缀或全文
-        self._fold_set_full(f'<span style="color:{self._style.muted};">ok</span>&nbsp;&nbsp;'
-                            f'{out_html}' if out_html else "")
+        # 「`$` 命令」与「输出」都交给折叠机制（同一折叠区的两段）：全文存 `_fold_parts`，
+        # 各段标签按折叠态铺前缀或全文 —— 长命令与长输出都能「展开全部」看全，而不是
+        # 像以前那样命令被 `_RESULT_TRUNCATE` 静默截掉。
+        self._fold_set_parts([
+            (f'<span style="color:{self._style.accent};">$&nbsp;</span>{cmd_html}'
+             if cmd_html else ""),
+            (f'<span style="color:{self._style.muted};">ok</span>&nbsp;&nbsp;{out_html}'
+             if out_html else ""),
+        ])
         if defer:
             self._deferred_show = (bool(cmd_html), bool(out_html))   # 见 ToolCallRow.set_content
         else:
@@ -2058,22 +2117,17 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         if w <= 0:
             return
         self._pin_w = w
-        if not self._cmd.isHidden():
-            h = _label_hfw(self._cmd, w, self._content_ver)
-            if _need_resize(self._cmd.minimumHeight(), h):
-                self._cmd.setMinimumHeight(h)
-        if not self._body.isHidden():
-            self._fold_pin(width)      # 输出标签：折叠态 = 行数上限，展开态 = 全文高度
+        if not self._cmd.isHidden() or not self._body.isHidden():
+            # 命令 + 输出两段：折叠态 = 各自行数上限，展开态 = 全文高度（见 _FoldMixin）
+            self._fold_pin(width)
 
     def heightForWidth(self, width: int) -> int:
         inner = max(1, int(width) - 2)
 
         h = self.layout().itemAt(0).widget().sizeHint().height() + 2
-        if not self._cmd.isHidden():
-            h += _label_hfw(self._cmd, inner, self._content_ver)
-        if not self._body.isHidden():
-            h += self._fold_visible_h(width)
-            h += self._fold_extra_h(width)  # 折叠开关（含间距）：仅可折叠时占高
+        if not self._cmd.isHidden() or not self._body.isHidden():
+            h += self._fold_visible_h(width)   # 「命令 + 输出」两段各自的可见高度
+            h += self._fold_extra_h(width)     # 折叠开关（含间距）：仅可折叠时占高
         return h
 
 

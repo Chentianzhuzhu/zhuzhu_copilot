@@ -408,7 +408,34 @@ def test_command_block_output_folds_too(host):
     assert cmd._body.minimumHeight() == cmd._fold_limit_h(), "命令块输出未钉在折叠上限"
     cmd._fold_btn.click()
     app.processEvents()
-    assert cmd._body.text() == cmd._fold_full, "展开后命令块必须铺全文"
+    # 命令块是**两段**折叠区（`$ 命令` + 输出）：`_fold_full` 是两段拼接，
+    # 各段标签只承载自己那一段。
+    assert cmd._body.text() == cmd._fold_parts[1], "展开后命令块必须铺全文"
+
+
+def test_command_text_folds_with_long_command(host):
+    """命令**全文**（`$ ...`）同样参与折叠：超长命令不再被静默截断。
+
+    以前命令段不折叠、只受 `_RESULT_TRUNCATE` 截断，用户看不到完整命令；现在
+    「命令 + 输出」同属一个折叠区，任一段超长都会出现「展开全部」。
+    """
+    long_cmd = "dir " + ("--include=/very/long/path/segment " * 60)
+    segs = [{"type": "op", "name": "run_command", "html": "▎run_command",
+             "cmd": long_cmd, "out": "ok"}]
+    p = _res_panel(segs)
+    turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
+    turn.render(p._seg_blocks(segs), live=True)
+    host.show()
+    app.processEvents()
+
+    cmd = next(r.widget for r in turn._items if r.kind == cb.KIND_CMD)
+    assert cmd._fold_foldable(), "超长命令必须判定为可折叠"
+    limit = cmd._fold_limit_h()
+    assert cmd._cmd.minimumHeight() <= limit + 2, "折叠态命令段必须压在行数上限内"
+    cmd._fold_btn.click()
+    app.processEvents()
+    assert cmd._cmd.text() == cmd._fold_parts[0], "展开后命令段必须铺全文"
+    assert cmd._body.text() == cmd._fold_parts[1], "展开是两段一起铺，输出段不受影响"
 
 
 # ---------- B. 气泡底部外侧只剩打字指示器 ----------

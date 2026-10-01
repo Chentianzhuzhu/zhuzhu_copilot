@@ -610,13 +610,13 @@ def test_long_output_is_foldable_without_laying_out_full_text(monkeypatch):
     ref = next(r for r in turn._items if r.kind == cb.KIND_TOOL)
 
     measured = []
-    orig = cb.ToolCallRow._fold_measure_full
+    orig = cb.ToolCallRow._fold_measure_one
 
-    def spy(self, w):
+    def spy(self, lbl, html, w):
         measured.append(w)
-        return orig(self, w)
+        return orig(self, lbl, html, w)
 
-    monkeypatch.setattr(cb.ToolCallRow, "_fold_measure_full", spy)
+    monkeypatch.setattr(cb.ToolCallRow, "_fold_measure_one", spy)
     ref.widget._bump_content()               # 失效判定缓存 → 强制重算
     assert ref.widget._fold_foldable(), "数百行的输出必须判为可折叠"
     assert not measured, "显式换行数已超上限时不得为判定排版全文（估算即可定论）"
@@ -629,13 +629,13 @@ def test_short_output_is_not_foldable_without_laying_out_full_text(monkeypatch):
     ref = next(r for r in turn._items if r.kind == cb.KIND_TOOL)
 
     measured = []
-    orig = cb.ToolCallRow._fold_measure_full
+    orig = cb.ToolCallRow._fold_measure_one
 
-    def spy(self, w):
+    def spy(self, lbl, html, w):
         measured.append(w)
-        return orig(self, w)
+        return orig(self, lbl, html, w)
 
-    monkeypatch.setattr(cb.ToolCallRow, "_fold_measure_full", spy)
+    monkeypatch.setattr(cb.ToolCallRow, "_fold_measure_one", spy)
     ref.widget._bump_content()
     assert not ref.widget._fold_foldable(), "两行输出不该出现折叠开关"
     assert not measured, "明显不足上限时同样不需要排版全文"
