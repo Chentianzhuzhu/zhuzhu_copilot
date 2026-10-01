@@ -99,13 +99,22 @@ def test_session_combo_uses_self_drawing_arrow(panel):
 
 
 def test_session_combo_arrow_is_actually_painted(panel):
-    """自绘箭头必须真的落在像素上（离屏抓图，右侧下拉区应有深色笔画）。"""
+    """自绘箭头必须真的落在像素上（离屏抓图）。
+
+    判据不能再用「深色像素」：背景已随「禁止深色背景附着」改为透明磨砂，
+    深色背景消失后亮度判会测不到箭头。改为「右侧下拉区相对左侧参照区有明显差异像素」。
+    """
     img = panel.session_combo.grab().toImage()
     x0, x1 = max(1, img.width() - 18), max(2, img.width() - 6)
-    dark = sum(1 for y in range(3, img.height() - 3)
-               for x in range(x0, x1)
-               if sum(img.pixelColor(x, y).getRgb()[:3]) < 460)
-    assert dark >= 6, f"会话下拉右侧未画出箭头（深色像素仅 {dark} 个）"
+    ys = list(range(3, img.height() - 3))
+    ref_x = max(2, x0 - 30)
+    ref = [sum(img.pixelColor(ref_x + dx, y).getRgb()[:3])
+           for y in ys for dx in range(6)]
+    cur = [sum(img.pixelColor(x, y).getRgb()[:3])
+           for y in ys for x in range(x0, x1)]
+    ref_avg = sum(ref) / max(1, len(ref))
+    diff = sum(1 for v in cur if abs(v - ref_avg) > 90)
+    assert diff >= 6, f"会话下拉右侧未画出箭头（与参照区差异像素仅 {diff} 个）"
 
 
 def test_round_buttons_keep_their_own_diameter_radius():

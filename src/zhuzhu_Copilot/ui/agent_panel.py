@@ -499,12 +499,15 @@ _ROUND_BTN_D = 42
 def _round_icon_btn_qss(diameter: int) -> str:
     """输入行圆形图标按钮的统一皮肤（上传 / 优化共用，两者观感必须完全一致）。
 
-    实心面板底 + 1px 描边正圆（圆角取直径一半），hover 时描边转强调色。
-    透明底 + 无描边时圆角看不出来，按钮就成了一个裸图标（用户反馈「没有圆形的 UI 附着样式」）。
+    「禁止深色背景附着」：底改为**透明磨砂**（玻璃开启时极淡白洗色，关闭时回退面板色），
+    描边用浅色边缘色 —— 透明底且无描边时圆角看不出来，按钮就成了一个裸图标
+    （用户反馈「没有圆形的 UI 附着样式」）。
     """
-    return (f"QPushButton {{ background: {PANEL}; border: 1px solid {BORDER};"
+    return (f"QPushButton {{ background: {_gfill(PANEL)};"
+            f"border: 1px solid {_gedge()};"
             f"border-radius: {diameter // 2}px; }}"
-            f"QPushButton:hover {{ border: 1px solid {ACCENT}; }}")
+            f"QPushButton:hover {{ border: 1px solid {ACCENT_HOVER};"
+            f"background: {HOVER_T}; }}")
 
 
 def _global_dialog_qss() -> str:
@@ -10897,8 +10900,18 @@ class _HtmlListDelegate(QStyledItemDelegate):
         # 每条 Git 记录画独立长方形卡片（背景+边框）：彼此以边框分割开，
         # 避免整列填充同色背景看起来"合并成一个长方形"
         r = option.rect.adjusted(2, 2, -2, -2)
-        painter.setPen(QPen(QColor(BORDER_SOFT), 1))
-        painter.setBrush(QColor(PANEL))
+        # 「禁止深色背景附着」：卡片底改为透明磨砂（极淡白），只靠浅色边框分隔每条记录。
+        # 注意 QColor 不吃 QSS 的 rgba() 浮点 alpha（0.55 会被截断成 0 → 描边消失），
+        # 所以这里直接算 QColor，不复用 _gedge() 的字符串。
+        if _glass_on():
+            _e = max(0.0, min(1.0, float(app_glass.params().edge)))
+            _card_bg = QColor(255, 255, 255, max(0, min(255, int(255 * app_glass.SHEER_WASH))))
+            _card_edge = QColor(255, 255, 255, max(0, min(255, int(90 * _e))))
+        else:
+            _card_bg = QColor(PANEL)
+            _card_edge = QColor(BORDER)
+        painter.setPen(QPen(_card_edge, 1))
+        painter.setBrush(_card_bg)
         painter.drawRoundedRect(r, 6, 6)
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
@@ -16930,7 +16943,7 @@ class AgentPanel(QDialog):
                 f' <span style="color:{OK};font-weight:700;">+{added}</span>')
         lbl = QLabel(f"<span>{html}</span>")
         lbl.setStyleSheet(
-            f"color: {TEXT_DIM}; background: {_sheer(app_glass.SHEER_WASH_STRONG, BORDER)}22;"
+            f"color: {TEXT_DIM}; background: {_sheer(app_glass.SHEER_WASH_STRONG, BORDER)};"
             f"border: 1px solid {BORDER}; border-radius: 7px;"
             "padding: 0 6px; font-size: 12px; font-weight: 600; line-height: 16px;")
         lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
