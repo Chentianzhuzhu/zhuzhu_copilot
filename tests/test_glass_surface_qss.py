@@ -699,8 +699,8 @@ def test_popup_glass_follows_the_glass_sliders(glass_state, tmp_path):
     surface_thin = _mean_of(ap._popup_surface())
     glass_state.set_param("frost", 0.95, persist=False)
     thick = ap._popup_frost_alpha()
-    assert thick > thin + 0.25, f"磨砂程度没作用到弹层白纱：{thin:.2f} → {thick:.2f}"
-    assert _mean_of(ap._popup_surface()) > surface_thin + 40, \
+    assert thick > thin + 0.2, f"磨砂程度没作用到弹层白纱：{thin:.2f} → {thick:.2f}"
+    assert _mean_of(ap._popup_surface()) > surface_thin + 8, \
         "磨砂程度拉高后弹层底没变亮（白纱强度没跟）"
 
     glass_state.set_param("opacity", 0.10, persist=False)
@@ -793,3 +793,77 @@ def test_combo_popup_stays_light_over_a_dark_wallpaper(glass_state, offscreen_ap
     luma, _ = _popup_luma_and_colors(shot)
     _drop_popup(offscreen_app, combo)
     assert luma >= 110, f"暗壁纸下弹层平均亮度只有 {luma:.1f}，仍是一块深色板"
+
+
+def _rel_luma(c) -> float:
+    def ch(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return 0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2])
+
+
+def _contrast(fg, bg) -> float:
+    a, b = _rel_luma(fg), _rel_luma(bg)
+    hi, lo = max(a, b), min(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _median_color(img) -> tuple:
+    """抓图的逐通道中位数 = 背景色（文字是少数派，中位数落在背景上）。"""
+    rs, gs, bs = [], [], []
+    for y in range(0, img.height(), 2):
+        for x in range(0, img.width(), 2):
+            r, g, b, _ = img.pixelColor(x, y).getRgb()
+            rs.append(r)
+            gs.append(g)
+            bs.append(b)
+    rs.sort()
+    gs.sort()
+    bs.sort()
+    i = len(rs) // 2
+    return (rs[i], gs[i], bs[i])
+
+
+def test_popup_text_contrasts_with_its_rendered_background(glass_state, offscreen_app, tmp_path):
+    """弹层文字色必须与**实际渲染出来的**弹层底有足够对比（≥4:1）。
+
+    回归：白纱把弹层底提亮之后，字色判定仍按旧的中间量走 → 出现「白字压浅底」，
+    整个下拉发灰、看不清（用户反馈「下拉菜单的问题还是没解决」）。
+    所以这里抓真实像素算对比度：判据与画面必须同源，不能只在逻辑上"自洽"。
+    """
+    from PyQt6.QtGui import QColor, QImage, QPainter
+    from PyQt6.QtWidgets import QComboBox
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    wall = tmp_path / "dark2.png"
+    img = QImage(640, 400, QImage.Format.Format_ARGB32)
+    p = QPainter(img)
+    p.fillRect(img.rect(), QColor("#121A22"))          # 暗壁纸（底偏暗最容易出白字）
+    p.end()
+    img.save(str(wall))
+
+    glass_state.set_fields(persist=False, enabled=True, bg_image=str(wall))
+    glass_state.set_param("frost", 0.15, persist=False)      # 用户现场这种偏低的值
+    ap.refresh_glass()
+
+    fg = QColor(ap._popup_fg()).getRgb()[:3]
+    combo = QComboBox()
+    combo.setStyleSheet(ap._QCOMBO)
+    combo.addItems(["一", "二", "三"])
+    combo.resize(200, 32)
+    combo.show()
+    ap._harden_combo_popup(combo)
+    for _ in range(60):
+        offscreen_app.processEvents()
+    combo.showPopup()
+    for _ in range(120):
+        offscreen_app.processEvents()
+    shot = combo.view().window().grab().toImage()
+    _drop_popup(offscreen_app, combo)
+
+    bg = _median_color(shot)
+    ratio = _contrast(fg, bg)
+    assert ratio >= 4.0, (
+        f"弹层文字与底对比不足：{ratio:.2f}:1（字 {ap._popup_fg()}，底 rgb{bg}）"
+        "—— 就是「白字压浅底」那种看不清")

@@ -282,9 +282,16 @@ _POPUP_GLASS_FLOOR = 0.55
 _POPUP_GLASS_SPAN = 0.42
 
 # 弹出层白色磨砂纱强度：alpha = floor + span × 磨砂程度（与根背景/气泡同一条公式，
-# 见 `app_glass.veil_alpha`）—— 弹层是浮层，压一层白纱才不会跟着偏暗的壁纸变深色板。
-_POPUP_FROST_FLOOR = 0.30
-_POPUP_FROST_SPAN = 0.45
+# 见 `app_glass.veil_alpha`）。
+# 地板给得比较厚（0.45）：弹层是浮层，壁纸局部偏暗时也不能变成深色板；更重要的是
+# 「文字该用深色还是白色」要靠底色亮度来判，地板厚才能让弹层底稳定落在浅色区间，
+# 判据与实际渲染才不会打架（曾出现过「底已经变浅、字还是白的」= 白字压浅底看不清）。
+_POPUP_FROST_FLOOR = 0.45
+_POPUP_FROST_SPAN = 0.35
+
+# 弹层底亮于这个阈值就改用深字。取 100（而不是 128）：中灰底上白字的对比度比深字更差，
+# 所以宁可早一点切深字。
+_POPUP_LIGHT_LUMA = 100
 
 
 def _frost_surface() -> str:
@@ -499,11 +506,15 @@ def _draw_round_rect(widget, painter, color: str, alpha: int = 255) -> None:
 
 
 def _popup_light_surface() -> bool:
-    """弹层底（压过白纱后）是不是**浅色**（决定弹层文字该用白字还是深字）。"""
+    """弹层底（压过白纱后）是不是**浅色**（决定弹层文字该用白字还是深字）。
+
+    判的是**合成后**的底（`_popup_surface` = 面板玻璃 ⊕ 白纱），不是中间量：
+    遮色/字色这类判定一旦拿中间量去做，就会与屏幕上真正的颜色对不上。
+    """
     if not _glass_wallpaper_active():
         return False
     c = QColor(_popup_surface())
-    return (c.red() + c.green() + c.blue()) / 3.0 >= 128
+    return (c.red() + c.green() + c.blue()) / 3.0 >= _POPUP_LIGHT_LUMA
 
 
 def _popup_fg() -> str:
