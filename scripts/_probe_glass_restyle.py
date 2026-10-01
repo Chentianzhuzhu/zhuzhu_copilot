@@ -65,16 +65,40 @@ def _page_of(dlg, w) -> str:
     return "页外"
 
 
-def _scan_solid(label, roots, dlg=None):
-    """列出仍带「不透明实色底」的控件（玻璃化收尾用）。
-
-    只报 `background: #RRGGBB`；rgba(...) / transparent / 强调色按钮与视频黑台
-    属刻意设计，不在此列。
-    """
+def _dark_bg(qss: str) -> str:
+    """qss 里第一个「非状态、且为深色」的背景声明（无则空串）。"""
     import re
+    pat = re.compile(r"background:\s*(#[0-9A-Fa-f]{3,8}|rgba?\([^)]*\)|transparent|[A-Za-z]+)")
+    for m in pat.finditer(qss):
+        head = qss[max(0, m.start() - 34):m.start()]
+        if any(k in head for k in (":hover", ":pressed", ":focus", ":checked")):
+            continue
+        v = m.group(1).strip()
+        if v.lower() in ("transparent", "none"):
+            return ""      # 首个非状态背景就是透明 → 该控件无底色，不算深色附着
+        r = g = b = None
+        if v.startswith("#"):
+            h = v[1:]
+            if len(h) >= 6:
+                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        elif v.lower().startswith("rgb"):
+            nums = [x.strip() for x in v[v.find("(") + 1:v.find(")")].split(",")]
+            try:
+                r, g, b = (int(float(nums[i])) for i in range(3))
+            except Exception:
+                continue
+        if r is None:
+            continue
+        if min(r, g, b) < 110:
+            return f"{v}（rgb={r},{g},{b}）"
+        return ""          # 首个非状态背景不是深色 → 该控件 OK
+    return ""
+
+
+def _scan_solid(label, roots, dlg=None):
+    """列出仍带「深色背景」的控件（禁止深色背景附着的收尾检查）。"""
     from PyQt6.QtWidgets import QWidget
-    pat = re.compile(r"background:\s*#[0-9A-Fa-f]{6}")
-    print(f"\n=== {label}：仍为不透明实色底的控件 ===")
+    print(f"\n=== {label}：仍有深色背景的控件 ===")
     seen = 0
     for root in roots:
         if root is None:
@@ -84,28 +108,19 @@ def _scan_solid(label, roots, dlg=None):
                 qss = w.styleSheet() or ""
             except Exception:
                 continue
-            m = None
-            for cand in pat.finditer(qss):
-                # 跳过 :hover / :selected 这类状态规则里的实色（刻意保留的交互反馈）
-                head = qss[max(0, cand.start() - 34):cand.start()]
-                if any(k in head for k in (":hover", ":selected", ":checked",
-                                           ":pressed", ":focus")):
-                    continue
-                m = cand
-                break
-            if m is None:
+            hit = _dark_bg(qss)
+            if not hit:
                 continue
             seen += 1
             if seen > 40:
                 continue
-            frag = qss[:132].replace("\n", " ")
             txt = ""
             try:
                 txt = (w.text() if hasattr(w, "text") else "")[:20]
             except Exception:
                 pass
             print(f"  {_page_of(dlg, w) if dlg is not None else '':<5} "
-                  f"{type(w).__name__:<16} {frag}  {txt!r}")
+                  f"{type(w).__name__:<16} {hit:<28} {txt!r}")
     print(f"  合计 {seen} 处")
 
 

@@ -81,6 +81,13 @@ _ROOT_VEIL_SPAN = 0.34    # frost 再往上加的部分（frost=1 → 0.76）
 PANEL_FILL_FLOOR = 0.30
 PANEL_FILL_SPAN = 0.26
 
+# 「禁止深色背景附着」：玻璃开启时，容器类表面一律不再铺自己的底色
+# （直接透出窗口根部的磨砂玻璃）；只有确实需要边界的交互态才用一层极淡的
+# **白色**洗色 —— 既看得出控件范围与悬停反馈，又不是一块深色底。
+SHEER_WASH = 0.10           # 小控件（按钮 / 输入框补底）的浅色洗色
+SHEER_WASH_STRONG = 0.22    # 选中 / 当前项
+HOVER_WASH_ALPHA = 0.5      # 附着（悬停 / 按下）态：白色 50% 透明（用户指定）
+
 _PHASE_INTERVAL_MS = 33
 _PHASE_CYCLE_S = 4.0
 _PHASE_STEP = (_PHASE_INTERVAL_MS / 1000.0) / _PHASE_CYCLE_S

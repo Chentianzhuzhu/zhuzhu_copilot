@@ -194,32 +194,39 @@ def _theme_setting() -> str:
 
 
 def _gfill(color: str) -> str:
-    """小控件的玻璃填充色（磨砂程度 → alpha、透明度 → 整体缩放）。
+    """小控件（按钮 / 下拉 / 输入框）的补底色。
 
-    玻璃关闭时返回不透明原色，等价于纯主题外观。与大面积玻璃层同源，
-    保证「面板玻璃」和「控件玻璃」是同一套材质。
+    玻璃开启时用极淡的**白色**洗色 —— 既看得出控件范围，又符合「禁止深色背景
+    附着」的硬性要求（不能是一块深色底）；玻璃关闭时回退主题色。
     """
-    return app_glass.control_fill(color)
+    if not _glass_on():
+        return color
+    return app_glass.rgba("#FFFFFF", app_glass.SHEER_WASH)
 
 
 def _gsurface(color: str) -> str:
-    """大面积表面（窗口底 / 列表 / 树 / 输入区 / 卡片）的玻璃填充色。
+    """大面积表面（窗口底 / 列表 / 树 / 输入区 / 卡片）的底色。
 
-    与 `_gfill` 的区别：小控件用 alpha = frost×opacity，而大表面若同样半透明，
-    正文会直接压在壁纸上不可读 —— 这里走 `legible_fill` 的可读性地板，并取
-    「面板档」更透的系数（设置页 / 侧栏 / 预览面板不再是一块块深色底板）。
-    全应用「带底色的容器」一律经这两个入口取色，玻璃关闭时返回不透明原色。
+    「禁止深色背景附着」：玻璃开启时大表面**不铺自己的底色**，直接透出窗口根部的
+    磨砂玻璃（模糊壁纸 + 磨砂纱）；`color` 只作为玻璃关闭时的回退主题色。
+    全应用「带底色的容器」一律经这两个入口取色。
     """
-    return app_glass.legible_fill(color, floor=app_glass.PANEL_FILL_FLOOR,
-                                  span=app_glass.PANEL_FILL_SPAN)
+    return "transparent" if _glass_on() else color
 
 
 # 玻璃参数变化 → 合并刷新（滑杆拖动时每次变化都重算 QSS 会卡）
 _GLASS_REFRESH_DEBOUNCE_MS = 120
 
-# 按钮 / 列表项「附着（悬停·按下）」态底色的不透明度（用户指定 50%）。
-# 独立于 HOVER：HOVER 还被绘制层当实色用（_mix_hex 只吃 hex），不能就地改半透明。
-_HOVER_ALPHA = 0.5
+
+def _sheer(alpha: float, fallback: str) -> str:
+    """交互态（悬停 / 选中 / 当前项）的浅色洗色：**白色**半透明。
+
+    「禁止深色背景附着」：选中 / 悬停都不能是一块深色底，改用一层淡白高亮。
+    玻璃关闭时回退到给定的主题色（纯主题模式下保持原有交互观感）。
+    """
+    if not _glass_on():
+        return fallback
+    return app_glass.rgba("#FFFFFF", alpha)
 
 
 def _gedge(alpha: float = 0.55) -> str:
@@ -430,8 +437,9 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     ICON_GRAY = t["TEXT_DIM"]   # 工具/技能/插件矢量图的淡灰，随主题切换
     LINK_COLOR = t["LINK_COLOR"]; USER_BG = t["USER_BG"]; AI_BG = t["AI_BG"]
     OK = t["OK"]; WARN = t["WARN"]; ERR = t["ERR"]; HOVER = t["HOVER"]
-    # 「附着（悬停 / 按下）」态底色：50% 透明，交互反馈不再是一块实色
-    HOVER_T = app_glass.rgba(HOVER, _HOVER_ALPHA)
+    # 附着（悬停 / 按下）态：**白色** 50% 透明 —— 用户指定透明度，且不能是深色底
+    # （HOVER 本身仍是主题实色：绘制层拿它当颜色用，_mix_hex 只吃 hex）
+    HOVER_T = app_glass.rgba("#FFFFFF", app_glass.HOVER_WASH_ALPHA)
     CODE_ACCENT = t["CODE_ACCENT"]
     CODE_BG = t.get("CODE_BG") or PANEL   # 代码块背景：浅色下区别于白色气泡，深色下略高于面板
     # 重建模块级派生样式常量（以更新后的颜色重新生成字符串；几何/字距规格取自 Design Tokens）
@@ -664,13 +672,18 @@ def refresh_glass() -> None:
 
 
 def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
-    """主题自适应滚动条样式：轨道用 BG、滑块用 BORDER（深色=纯黑、浅色=浅灰）。
-    随主题重建，避免浅色模式残留纯黑轨道/滑块。both=False 时仅生成垂直滚动条。
-    液态玻璃激活时改用透明轨道 + 亮白磨砂滑块（消除暗色主题残留）。"""
+    """主题自适应滚动条样式：轨道透明、滑块随主题。
+
+    「禁止深色背景附着」：玻璃开启时滑块改用**白色**半透明（原来的深灰 BORDER
+    滑条在磨砂面板上就是一条深色附着），玻璃关闭时回退主题描边色。
+    both=False 时仅生成垂直滚动条。
+    """
+    _handle = _sheer(app_glass.SHEER_WASH_STRONG, BORDER)
+    _handle_hover = _sheer(0.34, BORDER_SOFT)
     v = (f"QScrollBar:vertical {{ background: transparent; width: {width + 4}px; }}"
-         f"QScrollBar::handle:vertical {{ background: {BORDER};"
+         f"QScrollBar::handle:vertical {{ background: {_handle};"
          f"border-radius: {radius}px; min-height: 30px; margin: 0 2px; }}"
-         f"QScrollBar::handle:vertical:hover {{ background: {BORDER_SOFT}; }}"
+         f"QScrollBar::handle:vertical:hover {{ background: {_handle_hover}; }}"
          f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
          f"{{ background: transparent; }}"
          f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
@@ -679,9 +692,9 @@ def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
         return v
     return v + (
         f"QScrollBar:horizontal {{ background: transparent; height: {width + 4}px; }}"
-        f"QScrollBar::handle:horizontal {{ background: {BORDER};"
+        f"QScrollBar::handle:horizontal {{ background: {_handle};"
         f"border-radius: {radius}px; min-width: 30px; margin: 2px 0; }}"
-        f"QScrollBar::handle:horizontal:hover {{ background: {BORDER_SOFT}; }}"
+        f"QScrollBar::handle:horizontal:hover {{ background: {_handle_hover}; }}"
         f"QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal"
         f"{{ background: transparent; }}"
         f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal"
@@ -2571,7 +2584,7 @@ class _AgentSettingsDialog(QDialog):
         _popup_bg = self._PANEL
         # 输入类控件是大表面：走玻璃填充（壁纸下不再是不透明的旧实色块）
         _in_bg = _gsurface(self._PANEL)
-        _in_focus = _gsurface(self._PANEL2)
+        _in_focus = _sheer(app_glass.SHEER_WASH, self._PANEL2)
         return (
             # QDialog#agentSettingsDlg：透明背景仅作用于设置对话框自身，
             # 避免级联到子 QMessageBox/QInputDialog 导致其背景透明变纯黑
@@ -2585,12 +2598,12 @@ class _AgentSettingsDialog(QDialog):
             f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
             f"color: {self._TEXT}; border: 1px solid {self._BORDER};"
             f"border-radius: 12px; padding: 4px; outline: none;"
-            f"selection-background-color: {self._PANEL2}; }}"
+            f"selection-background-color: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)}; }}"
             f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
             f" border-radius: {RADIUS_SM}px; }}"
-            f"QComboBox QAbstractItemView::item:hover {{ background: {self._PANEL2}; }}"
+            f"QComboBox QAbstractItemView::item:hover {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)}; }}"
             f"QScrollBar:vertical {{ background: transparent; width: 8px; }}"
-            f"QScrollBar::handle:vertical {{ background: {self._BORDER};"
+            f"QScrollBar::handle:vertical {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._BORDER)};"
             "border-radius: 4px; min-height: 30px; }}")
 
     def _nav_qss(self) -> str:
@@ -2601,9 +2614,10 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget::item {{ color: {self._DIM}; padding: 12px 14px;"
             "font-size: 13px; font-weight: 600; border: none;"
             f"border-left: 3px solid transparent; }}"
-            f"QListWidget::item:hover {{ background: {self._PANEL2};"
+            f"QListWidget::item:hover {{ background: {_sheer(app_glass.SHEER_WASH, self._PANEL2)};"
             f"color: {self._TEXT}; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"QListWidget::item:selected {{"
+            f"background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)};"
             f"color: {self._ACCENT_HOVER};"
             f"border-left: 3px solid {self._ACCENT_HOVER}; }}")
 
@@ -2651,7 +2665,11 @@ class _AgentSettingsDialog(QDialog):
         self._rebuild_pages()
 
     def _rebuild_pages(self):
-        """按当前玻璃参数重建全部设置页，保留当前页、滚动位置与未保存的输入。"""
+        """按当前玻璃参数重建**已建的全部**设置页，保留当前页、滚动位置与未保存输入。
+
+        注意重建范围要覆盖「已经建出来的所有页」，不能只到当前页 —— 懒加载下用户
+        可能已经翻过好几页，只重建当前页会让其余页停在旧底色上。
+        """
         keep = {}
         for name, w in list(vars(self).items()):
             if isinstance(w, QPlainTextEdit):
@@ -2659,12 +2677,13 @@ class _AgentSettingsDialog(QDialog):
             elif isinstance(w, QLineEdit):
                 keep[name] = w.text()
         idx = self.stack.currentIndex()
+        count = max(idx, self.stack.count() - 1)
         scroll = self._page_scroll.verticalScrollBar().value()
         while self.stack.count():
             page = self.stack.widget(0)
             self.stack.removeWidget(page)
             page.deleteLater()
-        while self.stack.count() <= idx and self.stack.count() < len(self._page_builders):
+        while self.stack.count() <= count and self.stack.count() < len(self._page_builders):
             self.stack.addWidget(self._page_builders[self.stack.count()]())
         if self.stack.count():
             self.stack.setCurrentIndex(min(idx, self.stack.count() - 1))
@@ -3364,7 +3383,7 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ border-radius: 8px; margin: 2px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2}; }}")
+            f"QListWidget::item:selected {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)}; }}")
         self.provider_list.itemClicked.connect(self._on_provider_select)
         self.provider_list.itemDoubleClicked.connect(self._on_provider_edit)
         self.provider_list.itemSelectionChanged.connect(self._update_provider_ui)
@@ -3429,7 +3448,7 @@ class _AgentSettingsDialog(QDialog):
         self.effort_slider.setToolTip("思考强度（工作力度）：决定思考档位与所用模型，"
                                       + " / ".join(_eff_lv))
         self.effort_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
+            f"QSlider::groove:horizontal {{ height: 4px; background: {_sheer(app_glass.SHEER_WASH_STRONG, self._BORDER)};"
             "border-radius: 2px; }}"
             f"QSlider::sub-page:horizontal {{ background: {self._ACCENT}; border-radius: 2px; }}"
             f"QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;"
@@ -3559,7 +3578,7 @@ class _AgentSettingsDialog(QDialog):
         self.speed_slider.setPageStep(5)
         self.speed_slider.setToolTip("拖动调节语速（100% = 与参考音频一致）")
         self.speed_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
+            f"QSlider::groove:horizontal {{ height: 4px; background: {_sheer(app_glass.SHEER_WASH_STRONG, self._BORDER)};"
             "border-radius: 2px; }"
             f"QSlider::sub-page:horizontal {{ background: {self._ACCENT}; border-radius: 2px; }}"
             f"QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;"
@@ -3688,10 +3707,14 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(lyr_head)
         self.lyrics_view = LyricsView()
         self.lyrics_view.set_colors(self._TEXT, self._DIM, self._ACCENT,
-                                    HOVER, self._PANEL)
+                                    HOVER_T,
+                                    _sheer(app_glass.SHEER_WASH, self._PANEL))
         self.lyrics_view.setFixedHeight(LYRICS_VIEW_H)
         lay.addWidget(self.lyrics_view)
-        self._lyrics.lyrics_changed.connect(self._lyrics_update)
+        try:
+            self._lyrics.lyrics_changed.connect(self._lyrics_update)
+        except RuntimeError:
+            pass      # 歌词引擎是进程级单例，复用进程里可能已被销毁 → 跳过接线
         # 高精度歌词跟随定时器：与进度条 500ms 心跳解耦，保证填充/滚动平滑连续
         self._lyrics_timer = QTimer(self)
         self._lyrics_timer.setInterval(LYRICS_STEP_MS)
@@ -3747,7 +3770,7 @@ class _AgentSettingsDialog(QDialog):
         self.music_slider = QSlider(Qt.Orientation.Horizontal)
         self.music_slider.setRange(0, 0)
         self.music_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
+            f"QSlider::groove:horizontal {{ height: 4px; background: {_sheer(app_glass.SHEER_WASH_STRONG, self._BORDER)};"
             "border-radius: 2px; }"
             f"QSlider::sub-page:horizontal {{ background: {self._ACCENT}; border-radius: 2px; }}"
             f"QSlider::handle:horizontal {{ width: 13px; height: 13px; margin: -5px 0;"
@@ -3998,7 +4021,7 @@ class _AgentSettingsDialog(QDialog):
             f"QComboBox {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
             f"QComboBox QAbstractItemView {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; selection-background-color: {self._PANEL2}; }}")
+            f"border: 1px solid {self._BORDER}; selection-background-color: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)}; }}")
         self.skill_wf_combo.currentIndexChanged.connect(self._on_skill_wf_changed)
         scope.addWidget(self.skill_wf_combo)
         scope.addStretch(1)
@@ -4009,7 +4032,7 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 7px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"QListWidget::item:selected {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)};"
             f"color: {self._ACCENT_HOVER}; }}")
         self.skill_list.itemChanged.connect(self._on_skill_item_changed)
         lay.addWidget(self.skill_list, 1)
@@ -4159,7 +4182,7 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"QListWidget::item:selected {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)};"
             f"color: {self._ACCENT_HOVER}; }}")
         lay.addWidget(self.mcp_list, 1)
         row = QHBoxLayout()
@@ -4238,7 +4261,7 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"QListWidget::item:selected {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)};"
             f"color: {self._ACCENT_HOVER}; }}")
         lay.addWidget(self.agent_sub_list, 1)
         srow = QHBoxLayout()
@@ -4402,7 +4425,7 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"QListWidget::item:selected {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)};"
             f"color: {self._ACCENT_HOVER}; }}")
         lay.addWidget(self.wf_list, 1)
 
@@ -4742,7 +4765,7 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"QListWidget::item:selected {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)};"
             f"color: {self._ACCENT_HOVER}; }}")
         lay.addWidget(self.plugin_list, 1)
         # 换行布局：这一排七个按钮会把页面「最小宽度需求」顶到 742px（视口仅 759），
@@ -9162,6 +9185,21 @@ class CodePreviewWindow(_RoundedFloatWindow):
         bar = getattr(self, "media_ctrl_bar", None)      # 懒建：未播放媒体时为 None
         if bar is not None:
             bar.setStyleSheet(f"background: {surf}; border-radius: 6px;")
+        # Office 放映控制条那排按钮：构造时写死实色，玻璃开关后不刷新就会残留
+        # 一块深色（用户反馈的「深色背景附着」），这里一并重设。
+        for b in getattr(self, "_slide_btns", None) or ():
+            b.setStyleSheet(
+                f"QPushButton {{ background: {_gfill(PANEL)}; color: {TEXT};"
+                f"border: 1px solid {BORDER}; border-radius: 5px;"
+                f"padding: 2px 9px; font-size: 11px; }}"
+                f"QPushButton:hover {{ background: {HOVER_T}; }}")
+        fb = getattr(self, "full_btn", None)
+        if fb is not None:
+            fb.setStyleSheet(
+                f"QPushButton {{ background: {ACCENT}; color: #FFFFFF; border: none;"
+                f"border-radius: 5px; padding: 2px 11px; font-size: 11px;"
+                f"font-weight: 600; }}"
+                f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
 
     # ---- 页面构建 ----
     def _btn(self, text, slot, tip=""):
@@ -9736,7 +9774,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.media_progress = QSlider(Qt.Orientation.Horizontal)
         self.media_progress.setRange(0, 0)
         self.media_progress.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {BORDER};"
+            f"QSlider::groove:horizontal {{ height: 4px; background: {_sheer(app_glass.SHEER_WASH_STRONG, BORDER)};"
             "border-radius: 2px; }"
             f"QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}"
             f"QSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -4px 0;"
@@ -14510,10 +14548,10 @@ class AgentPanel(QDialog):
           与深蓝只留给「状态/强调」保持一致；
         · 输出区：淡蓝字（LINK_COLOR）+ 深蓝竖线（ACCENT），让「工具调用 → 输出」有归属感。
         """
-        # 磨砂玻璃：AI 气泡与面板表面改为半透明玻璃填充（带可读性地板），
-        # 透出壁纸；用户气泡保留深蓝品牌色（强调色，保持实色更稳）。
-        _glass_card = app_glass.legible_fill(AI_BG) if _glass_on() else AI_BG
-        _glass_panel = app_glass.legible_fill(PANEL) if _glass_on() else PANEL
+        # 「禁止深色背景附着」：玻璃开启时容器类表面（气泡卡 / 面板）**不铺底色**，
+        # 直接透出窗口根玻璃；需要层次的小元素改用**白色**洗色（_sheer），不用深色。
+        _glass_card = "transparent" if _glass_on() else AI_BG
+        _glass_panel = "transparent" if _glass_on() else PANEL
         return chat_bubbles.ChatStyle(
             card=_glass_card,
             border=BORDER,
@@ -14523,22 +14561,22 @@ class AgentPanel(QDialog):
             text_dim=TEXT_DIM,
             accent=ACCENT,
             muted=TEXT_DIM,
-            icon_shell=HOVER,
+            icon_shell=_sheer(app_glass.SHEER_WASH, HOVER),
             icon_color=ICON_GRAY,
-            tag_bg=_mix_hex(BORDER_SOFT, AI_BG, 0.55),
+            tag_bg=_sheer(app_glass.SHEER_WASH, _mix_hex(BORDER_SOFT, AI_BG, 0.55)),
             tag_fg=TEXT_DIM,
             user_bg=USER_BG,
             user_fg="#FFFFFF",
             cmd_fg=TEXT,
             ok_fg=LINK_COLOR,
-            hover=HOVER,
+            hover=HOVER_T,
             panel=_glass_panel,
             bg=BG,
-            think_bg=_mix_hex(ACCENT, AI_BG, 0.10),
+            think_bg=_sheer(app_glass.SHEER_WASH, _mix_hex(ACCENT, AI_BG, 0.10)),
             think_border=_mix_hex(ACCENT, BORDER, 0.30),
-            tag_plan_bg=_mix_hex(BORDER_SOFT, AI_BG, 0.55),
-            tag_exec_bg=_mix_hex(ACCENT, AI_BG, 0.32),
-            tool_shell=_mix_hex(BORDER_SOFT, HOVER, 0.22),
+            tag_plan_bg=_sheer(app_glass.SHEER_WASH, _mix_hex(BORDER_SOFT, AI_BG, 0.55)),
+            tag_exec_bg=_sheer(app_glass.SHEER_WASH_STRONG, _mix_hex(ACCENT, AI_BG, 0.32)),
+            tool_shell=_sheer(app_glass.SHEER_WASH, _mix_hex(BORDER_SOFT, HOVER, 0.22)),
             out_fg=LINK_COLOR,
             out_line=ACCENT,
         )
@@ -16892,7 +16930,7 @@ class AgentPanel(QDialog):
                 f' <span style="color:{OK};font-weight:700;">+{added}</span>')
         lbl = QLabel(f"<span>{html}</span>")
         lbl.setStyleSheet(
-            f"color: {TEXT_DIM}; background: {BORDER}22;"
+            f"color: {TEXT_DIM}; background: {_sheer(app_glass.SHEER_WASH_STRONG, BORDER)}22;"
             f"border: 1px solid {BORDER}; border-radius: 7px;"
             "padding: 0 6px; font-size: 12px; font-weight: 600; line-height: 16px;")
         lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)

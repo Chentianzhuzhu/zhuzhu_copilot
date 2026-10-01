@@ -39,18 +39,6 @@ def test_gsurface_and_gfill_follow_glass_switch(glass_state):
         assert fn(ap.PANEL).startswith("rgba("), "玻璃开启后必须是半透明玻璃填充"
 
 
-def test_gsurface_alpha_has_readable_floor(glass_state):
-    """面板底必须保留可读性地板：alpha 落在 0.25~0.55 的可读区间。
-
-    面板档比气泡档透（用户要求「不要有深色元素」），但不能透到正文压不住壁纸。
-    """
-    from zhuzhu_Copilot.ui import agent_panel as ap
-
-    glass_state.set_fields(persist=False, enabled=True)
-    surf = _alpha(ap._gsurface(ap.PANEL))
-    assert 0.25 <= surf <= 0.55, f"面板底 alpha={surf} 超出可读区间"
-
-
 @pytest.mark.parametrize("cls_name,attr", [("WorktreeWindow", "tree"),
                                            ("GitLogWindow", "list")])
 def test_side_panels_restyle_on_glass_change(glass_state, offscreen_app,
@@ -65,7 +53,8 @@ def test_side_panels_restyle_on_glass_change(glass_state, offscreen_app,
         assert "rgba" not in target.styleSheet(), "玻璃关闭时应为不透明主题色"
         glass_state.set_fields(persist=False, enabled=True)
         win.refresh_glass_qss()
-        assert "rgba(" in target.styleSheet(), "开玻璃后仍是旧实色底（残留）"
+        qss = target.styleSheet()
+        assert "background: transparent" in qss, "容器底应完全透明（禁止深色附着）"
     finally:
         win.close()
 
@@ -183,7 +172,8 @@ def test_settings_dialog_restyles_on_glass_toggle(glass_state, offscreen_app):
     try:
         assert "rgba" not in dlg.nav.styleSheet(), "玻璃关闭时应为不透明主题色"
         glass_state.set_fields(persist=False, enabled=True)   # 订阅回调 → 重建页面
-        assert "rgba(" in dlg.nav.styleSheet(), "开玻璃后设置页导航仍是旧实色"
+        assert "background: transparent" in dlg.nav.styleSheet(), \
+            "开玻璃后设置页导航底仍是不透明色块（应透明）"
     finally:
         dlg.done(0)
 
@@ -246,32 +236,63 @@ def _alpha(css: str) -> float:
     return float(css.rsplit(",", 1)[1].rstrip(")"))
 
 
-def test_panel_surface_is_more_transparent_than_bubble(glass_state):
-    """面板类大表面必须比聊天气泡更透。
+def _is_light_or_clear(css: str) -> bool:
+    """背景色是「透明」或「白色系半透明」→ 不含深色附着（用户硬性要求）。"""
+    c = (css or "").strip().lower()
+    if c in ("transparent", "none", ""):
+        return True
+    if c.startswith("rgba("):
+        parts = [float(x) for x in c[5:].rstrip(")").split(",")[:3]]
+        return len(parts) == 3 and min(parts) >= 128
+    if c.startswith("#") and len(c) == 7:
+        return min(int(c[i:i + 2], 16) for i in (1, 3, 5)) >= 128
+    return False
 
-    用户要求「透明磨砂玻璃：3 个面板和设置页不要有深色元素」—— 气泡的正文密度高，
-    仍用可读性地板；面板/设置页取更透的 PANEL_FILL 档，壁纸透出更多。
-    """
+
+def test_gsurface_and_gfill_follow_glass_switch(glass_state):
+    """取色入口：玻璃关回退不透明主题色；开则**容器透明 / 控件白色洗色**（禁止深色附着）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=False)
+    assert ap._gsurface(ap.PANEL).lower() == ap.PANEL.lower()
+    assert ap._gfill(ap.PANEL).lower() == ap.PANEL.lower()
+
+    glass_state.set_fields(persist=False, enabled=True)
+    assert ap._gsurface(ap.PANEL) == "transparent", "容器类表面必须完全透明（不得深色附着）"
+    assert _is_light_or_clear(ap._gfill(ap.PANEL)), "小控件底必须是白色洗色而非深色"
+
+
+def test_control_wash_is_white_not_dark(glass_state):
+    """小控件补底是**白色**洗色且足够淡（否则又变成一块可见色块）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True)
+    wash = ap._gfill(ap.PANEL)
+    assert wash.startswith("rgba(255, 255, 255"), wash
+    assert 0.0 < _alpha(wash) <= 0.35, f"洗色过重：{wash}"
+
+
+def test_interactive_states_are_white_and_not_dark(glass_state):
+    """悬停 / 选中 / 附着态一律白色半透明（用户要求 50% 透明且非深色底）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True)
+    for css in (ap.HOVER_T, ap._sheer(0.10, ap.PANEL), ap._sheer(0.22, ap.PANEL)):
+        assert _is_light_or_clear(css), f"{css} 是深色附着"
+    assert ap.HOVER_T.endswith(", 0.500)"), ap.HOVER_T
+
+
+def test_bubble_keeps_readable_floor_while_panels_are_clear(glass_state):
+    """面板类表面完全透明；聊天气泡仍保留可读性地板（正文不能直接压在壁纸上）。"""
     from zhuzhu_Copilot.core import app_glass
 
     from zhuzhu_Copilot.ui import agent_panel as ap
 
     glass_state.set_fields(persist=False, enabled=True)
-    panel = _alpha(ap._gsurface(ap.PANEL))
-    bubble = _alpha(app_glass.legible_fill(ap.PANEL))
-    assert panel < bubble, f"面板底 {panel} 不比气泡底 {bubble} 透"
-
-
-def test_hover_fill_is_half_transparent(glass_state):
-    """按钮 / 列表项「附着（悬停 · 按下）」态底色必须是 50% 透明（用户指定）。"""
-    from zhuzhu_Copilot.ui import agent_panel as ap
-
-    glass_state.set_fields(persist=False, enabled=True)
-    ap.refresh_glass()          # 重建派生 QSS（HOVER_T 在其中生成）
-    assert ap.HOVER_T.endswith(", 0.500)"), ap.HOVER_T
-    assert ap.HOVER_T in ap._BTN_COMPACT, "紧凑按钮的悬停底没用附着态色"
-    assert ap.HOVER_T in ap._BTN_GHOST, "幽灵按钮的悬停底没用附着态色"
-    assert f"background: {ap.HOVER};" not in ap._BTN_COMPACT, "悬停底仍是实色"
+    assert ap._gsurface(ap.PANEL) == "transparent"
+    bubble = app_glass.legible_fill(ap.PANEL)
+    assert bubble.startswith("rgba(")
+    assert _alpha(bubble) >= 0.4, "气泡缺可读性地板，正文会压在壁纸上"
 
 
 def test_compact_button_is_not_squeezed():
