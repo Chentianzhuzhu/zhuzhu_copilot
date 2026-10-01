@@ -83,3 +83,14 @@
   `python tools/deploy.py --base-url https://chentian.dpdns.org` 一条命令上线；
   线上健康检查须先等就绪（Spring Boot 启动约 17 秒）。
 - 前端测试红线：四色体系、禁止 emoji、禁止原生 alert/confirm/prompt、全项目文件必须 UTF-8。
+
+## 磨砂玻璃外观系统（2026-10-01 起）
+- `core/app_glass.py` 是外观参数唯一事实来源（PARAM_SPECS：blur/frost/edge/opacity/liquid
+  等）；加可调维度只改这一处，设置页/校验/持久化/agent 工具自动跟上。
+- **旧 UI/UX 包系统与旧玻璃引擎已删除**：manage_uiux / create_uiux 工具、设置页 UI/UX
+  分组、uiux_done/uiux_progress 信号都不存在了，技能与测试不得再引用；
+  `agent_ui_ux.py` 只剩 render_markdown_html / web_engine_available / _PreviewPanel /
+  apply_rounded_window。
+- 材质开关 `_glass_on()`（默认开）与窗口外壳开关 `_glass_chrome()`（无边框，默认关）必须分开。
+- Tooltip 等系统级不透明表面用 `frost_surface_color()`（壁纸平均色实色），不能用 rgba。
+- 改 agent_panel.py 前先看 `.workbuddy/memory/2026-10-01.md` 的玻璃架构与三条教训。
