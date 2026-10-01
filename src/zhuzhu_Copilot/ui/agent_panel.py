@@ -206,14 +206,20 @@ def _gsurface(color: str) -> str:
     """大面积表面（窗口底 / 列表 / 树 / 输入区 / 卡片）的玻璃填充色。
 
     与 `_gfill` 的区别：小控件用 alpha = frost×opacity，而大表面若同样半透明，
-    正文会直接压在壁纸上不可读 —— 这里走 `legible_fill` 的可读性地板。
+    正文会直接压在壁纸上不可读 —— 这里走 `legible_fill` 的可读性地板，并取
+    「面板档」更透的系数（设置页 / 侧栏 / 预览面板不再是一块块深色底板）。
     全应用「带底色的容器」一律经这两个入口取色，玻璃关闭时返回不透明原色。
     """
-    return app_glass.legible_fill(color)
+    return app_glass.legible_fill(color, floor=app_glass.PANEL_FILL_FLOOR,
+                                  span=app_glass.PANEL_FILL_SPAN)
 
 
 # 玻璃参数变化 → 合并刷新（滑杆拖动时每次变化都重算 QSS 会卡）
 _GLASS_REFRESH_DEBOUNCE_MS = 120
+
+# 按钮 / 列表项「附着（悬停·按下）」态底色的不透明度（用户指定 50%）。
+# 独立于 HOVER：HOVER 还被绘制层当实色用（_mix_hex 只吃 hex），不能就地改半透明。
+_HOVER_ALPHA = 0.5
 
 
 def _gedge(alpha: float = 0.55) -> str:
@@ -405,6 +411,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     """
     global BG, BG_BOTTOM, PANEL, CARD, BORDER, BORDER_SOFT, TEXT, TEXT_DIM
     global ACCENT, ACCENT_HOVER, LINK_COLOR, USER_BG, AI_BG, OK, WARN, ERR, HOVER
+    global HOVER_T
     global CODE_ACCENT
     global CODE_BG
     global ICON_GRAY
@@ -423,6 +430,8 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     ICON_GRAY = t["TEXT_DIM"]   # 工具/技能/插件矢量图的淡灰，随主题切换
     LINK_COLOR = t["LINK_COLOR"]; USER_BG = t["USER_BG"]; AI_BG = t["AI_BG"]
     OK = t["OK"]; WARN = t["WARN"]; ERR = t["ERR"]; HOVER = t["HOVER"]
+    # 「附着（悬停 / 按下）」态底色：50% 透明，交互反馈不再是一块实色
+    HOVER_T = app_glass.rgba(HOVER, _HOVER_ALPHA)
     CODE_ACCENT = t["CODE_ACCENT"]
     CODE_BG = t.get("CODE_BG") or PANEL   # 代码块背景：浅色下区别于白色气泡，深色下略高于面板
     # 重建模块级派生样式常量（以更新后的颜色重新生成字符串；几何/字距规格取自 Design Tokens）
@@ -431,7 +440,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                   f"padding: {SPACING_SM}px {SPACING_MD}px;"
                   f"font-size: {FONT_SMALL}px; font-weight: 600; }}"
                   f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
-                  f"background: {HOVER}; }}")
+                  f"background: {HOVER_T}; }}")
     # 垂直内边距取 SPACING_XS：与同排的文本框/标签（padding 6px）等高，
     # 否则按钮会被同行更高的控件挤成一条（外观页「选择图片 / 清除」曾矮到 16px）
     _BTN_COMPACT = (f"QPushButton {{ background: transparent; color: {TEXT_DIM};"
@@ -439,12 +448,12 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                     f"padding: {SPACING_XS}px {SPACING_SM}px;"
                     f"font-size: {FONT_SMALL}px; }}"
                     f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
-                    f"background: {HOVER}; }}")
+                    f"background: {HOVER_T}; }}")
     _BTN_GHOST_ACCENT = (f"QPushButton {{ background: transparent; color: {ACCENT_HOVER};"
                          f"border: 1px solid {BORDER_SOFT}; border-radius: {RADIUS_SM}px;"
                          f"padding: {SPACING_SM}px {SPACING_MD}px;"
                          f"font-size: {FONT_SMALL}px; font-weight: 600; }}"
-                         f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; background: {HOVER}; }}")
+                         f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; background: {HOVER_T}; }}")
     _BTN_PRIMARY = (f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
                     f"stop:0 {ACCENT_HOVER}, stop:1 {ACCENT}); color: #FFFFFF; border: none;"
                     f"border-radius: 17px; padding: 0 {SPACING_LG}px;"
@@ -463,11 +472,11 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                f"font-size: {FONT_SMALL}px; }}"
                f"QComboBox::drop-down {{ border: none; width: 22px; }}"
                f"QComboBox QAbstractItemView {{ background: {PANEL}; color: {TEXT};"
-               f"border: 1px solid {BORDER}; selection-background-color: {HOVER};"
+               f"border: 1px solid {BORDER}; selection-background-color: {HOVER_T};"
                f"selection-color: {TEXT}; }}")
     _BTN_ICON = (f"QPushButton {{ background: transparent; border: 1px solid {_gedge()};"
                  f"border-radius: {RADIUS_SM}px; }}"
-                 f"QPushButton:hover {{ background: {HOVER}; border-color: {BORDER_SOFT}; }}")
+                 f"QPushButton:hover {{ background: {HOVER_T}; border-color: {BORDER_SOFT}; }}")
     _BTN_DANGER = (f"QPushButton {{ background: {ERR}; color: #FFFFFF; border: none;"
                    f"border-radius: {RADIUS_SM}px; padding: 0; }}"
                    f"QPushButton:hover {{ background: #EF4444; }}"
@@ -501,14 +510,16 @@ def _global_dialog_qss() -> str:
     # 故一律用不透明的主题色，随深浅主题实时换色。
     _popup_bg = PANEL
     _popup_bd = BORDER
-    _popup_hover = HOVER
-    _popup_sel = HOVER
+    # 悬停 / 选中是叠在不透明底上的交互反馈：用 50% 透明（见 HOVER_T），
+    # 观感与按钮一致；弹出层自身底色仍必须不透明（半透明会叠成黑块）。
+    _popup_hover = HOVER_T
+    _popup_sel = HOVER_T
     _dlg_bg = PANEL
     _in_bg = PANEL
-    _in_hover = HOVER
+    _in_hover = HOVER_T
     _tip_bg = _glass_tip_bg()      # Tooltip：壁纸生效时用壁纸平均色（磨砂观感）
     _tip_bd = ACCENT
-    _menu_bg, _menu_sel, _menu_hover = PANEL, HOVER, HOVER
+    _menu_bg, _menu_sel, _menu_hover = PANEL, HOVER_T, HOVER_T
     _ctrl_qss = ""
     _base = (
         f"QMessageBox, QInputDialog, QFileDialog, QColorDialog, QProgressDialog {{"
@@ -3645,13 +3656,20 @@ class _AgentSettingsDialog(QDialog):
         self._desktop_lyrics = get_desktop_lyrics().bind(player)
         remember_on = str(app_identity.qsettings().value(
             "desktop_lyrics/enabled", "0")) == "1"
-        if remember_on and not self._desktop_lyrics.isVisible():
-            self._desktop_lyrics.show()
-            self._desktop_lyrics.raise_()
-            self._desktop_lyrics.sync_now()
+        # 桌面歌词是进程级单例：长驻进程里它可能已被销毁（复用/测试场景），
+        # 访问会抛 RuntimeError —— 这里做一次存活判断，别让整个设置页构建失败
+        try:
+            _lyr_on = bool(self._desktop_lyrics.isVisible())
+            if remember_on and not _lyr_on:
+                self._desktop_lyrics.show()
+                self._desktop_lyrics.raise_()
+                self._desktop_lyrics.sync_now()
+                _lyr_on = True
+        except RuntimeError:
+            _lyr_on = False
         self.lyrics_desktop = QPushButton(_line_icon("music", 14, self._TEXT), " 桌面歌词")
         self.lyrics_desktop.setCheckable(True)
-        self.lyrics_desktop.setChecked(self._desktop_lyrics.isVisible())
+        self.lyrics_desktop.setChecked(_lyr_on)
         self.lyrics_desktop.setStyleSheet(
             "QPushButton { background: transparent; color: %s; border: 1px solid %s;"
             "border-radius: 6px; padding: 3px 10px; font-size: 12px; }"
@@ -8151,7 +8169,7 @@ class _TokenStatsPopover(QFrame):
             f" border-radius: {RADIUS_MD}px; }}"
             f"#tokenStatsPop QLabel#tkTitle {{ color: {TEXT}; font-size: {FONT_BODY}px;"
             " font-weight: 700; }"
-            f"#tokenStatsPop QLabel#tkChip {{ color: {TEXT_DIM}; background: {HOVER};"
+            f"#tokenStatsPop QLabel#tkChip {{ color: {TEXT_DIM}; background: {HOVER_T};"
             f" border: 1px solid {BORDER_SOFT}; border-radius: {RADIUS_SM}px;"
             f" padding: 1px {SPACING_SM}px; font-size: {FONT_CAPTION}px; }}"
             f"#tokenStatsPop QLabel#tkRatio {{ color: {TEXT}; font-size: {FONT_TITLE}px;"
@@ -9124,7 +9142,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 f" font-size: 11px; padding: 3px 8px; margin: 1px;"
                 f" border: 1px solid {BORDER}; border-radius: 4px; }}"
                 f"QTabBar::tab:selected {{ background: {surf}; color: {TEXT}; }}"
-                f"QTabBar::tab:hover {{ background: {HOVER}; }}")
+                f"QTabBar::tab:hover {{ background: {HOVER_T}; }}")
         self.html_view.setStyleSheet(
             f"QTextBrowser {{ background: {surf}; color: {TEXT};"
             f"border: 1px solid {BORDER}; border-radius: 6px; }}")
@@ -9155,7 +9173,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setStyleSheet(f"QToolButton {{ background: transparent; border: none;"
                         f"color: {TEXT}; font-size: 13px; }}"
-                        f"QToolButton:hover {{ background: {HOVER}; }}")
+                        f"QToolButton:hover {{ background: {HOVER_T}; }}")
         b.clicked.connect(slot)
         return b
 
@@ -9444,7 +9462,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 b.setStyleSheet(f"QPushButton {{ background: {PANEL}; color: {TEXT};"
                                 f"border: 1px solid {BORDER}; border-radius: 5px;"
                                 f"padding: 4px 12px; }}"
-                                f"QPushButton:hover {{ background: {HOVER}; }}")
+                                f"QPushButton:hover {{ background: {HOVER_T}; }}")
                 b.clicked.connect(fn)
                 row.addWidget(b)
             lay.addLayout(row)
@@ -9495,7 +9513,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 f"QPushButton {{ background: {_gfill(PANEL)}; color: {TEXT};"
                 f"border: 1px solid {BORDER}; border-radius: 5px;"
                 f"padding: 2px 9px; font-size: 11px; }}"
-                f"QPushButton:hover {{ background: {HOVER}; }}")
+                f"QPushButton:hover {{ background: {HOVER_T}; }}")
             b.clicked.connect(lambda _=False, code=js: self._deck_call(code))
             bar.addWidget(b)
             self._slide_btns.append(b)
@@ -13555,7 +13573,7 @@ class AgentPanel(QDialog):
             f"QMessageBox QPushButton {{ color: {TEXT}; background: {CARD};"
             f"border: 1px solid {BORDER}; border-radius: 8px;"
             f"padding: 6px 14px; font-size: 13px; }}"
-            f"QMessageBox QPushButton:hover {{ background: {HOVER}; }}")
+            f"QMessageBox QPushButton:hover {{ background: {HOVER_T}; }}")
         box.setText("1 秒内连续清空了 3 次任务清单。\n如不需要该窗口，可在设置中关闭任务清单窗口。")
         go = box.addButton("前往设置", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
@@ -16353,7 +16371,7 @@ class AgentPanel(QDialog):
             # 局部 QToolTip：用当前主题面板/文字色显式配色（浅色=浅底深字、深色=深底浅字）
             retry.setStyleSheet(
                 "QPushButton { background: transparent; border: none; border-radius: 8px; }"
-                f"QPushButton:hover {{ background: {HOVER}; }}"
+                f"QPushButton:hover {{ background: {HOVER_T}; }}"
                 f"QToolTip {{ background-color: {PANEL}; color: {TEXT};"
                 f" border: 1px solid {ACCENT}; border-radius: 6px;"
                 f" padding: 4px 8px; font-size: 12px; }}")
@@ -18916,7 +18934,7 @@ class AgentPanel(QDialog):
             f"border: 1px solid {BORDER}; border-radius: 8px;"
             f"font-size: 13px; padding: {pad}; }}"
             f"QListWidget::item {{ padding: 6px 12px 6px 12px; border-radius: 6px; }}"
-            f"QListWidget::item:hover {{ background: {HOVER}; }}"
+            f"QListWidget::item:hover {{ background: {HOVER_T}; }}"
             f"QListWidget::item:selected {{ background: {ACCENT}; color: #FFFFFF; }}")
 
     def _resize_cmd_list(self):
@@ -19715,7 +19733,7 @@ class AgentPanel(QDialog):
             f"QMessageBox QPushButton {{ color: {TEXT}; background: {_btn_bg};"
             f"border: 1px solid {_btn_bd}; border-radius: 8px; padding: 6px 20px;"
             "font-size: 13px; font-weight: 600; }}"
-            f"QMessageBox QPushButton:hover {{ background: {HOVER}; border-color: {ACCENT}; }}")
+            f"QMessageBox QPushButton:hover {{ background: {HOVER_T}; border-color: {ACCENT}; }}")
         box.exec()
         return box.clickedButton() is yes
 
@@ -20057,7 +20075,7 @@ class AgentPanel(QDialog):
         box.setFixedSize(78, 86)
         box.setStyleSheet(
             f"#attCard {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}"
-            f"#attCard:hover {{ background: {HOVER}; border: 1px solid {ACCENT}; }}")
+            f"#attCard:hover {{ background: {HOVER_T}; border: 1px solid {ACCENT}; }}")
         v = QVBoxLayout(box)
         v.setContentsMargins(6, 8, 6, 6)
         v.setSpacing(4)

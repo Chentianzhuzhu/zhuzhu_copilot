@@ -40,13 +40,15 @@ def test_gsurface_and_gfill_follow_glass_switch(glass_state):
 
 
 def test_gsurface_alpha_has_readable_floor(glass_state):
-    """大表面走可读性地板：透明度再高，alpha 也不低于小控件的刻度。"""
+    """面板底必须保留可读性地板：alpha 落在 0.25~0.55 的可读区间。
+
+    面板档比气泡档透（用户要求「不要有深色元素」），但不能透到正文压不住壁纸。
+    """
     from zhuzhu_Copilot.ui import agent_panel as ap
 
-    glass_state.set_fields(persist=False, enabled=True, opacity=1.0)
-    surf = float(ap._gsurface(ap.PANEL).rsplit(",", 1)[1].rstrip(")"))
-    ctrl = float(ap._gfill(ap.PANEL).rsplit(",", 1)[1].rstrip(")"))
-    assert surf > ctrl, "大表面（列表/输入区）必须比小控件更不透明，否则正文压不住壁纸"
+    glass_state.set_fields(persist=False, enabled=True)
+    surf = _alpha(ap._gsurface(ap.PANEL))
+    assert 0.25 <= surf <= 0.55, f"面板底 alpha={surf} 超出可读区间"
 
 
 @pytest.mark.parametrize("cls_name,attr", [("WorktreeWindow", "tree"),
@@ -237,6 +239,39 @@ def test_settings_pages_fit_viewport_width(offscreen_app):
             f"「{worst_name}」页最小宽度需求 {worst} 逼近视口 {vp}，字号稍大就会裁掉右侧"
     finally:
         dlg.done(0)
+
+
+def _alpha(css: str) -> float:
+    """从 rgba(...) 串里取 alpha。"""
+    return float(css.rsplit(",", 1)[1].rstrip(")"))
+
+
+def test_panel_surface_is_more_transparent_than_bubble(glass_state):
+    """面板类大表面必须比聊天气泡更透。
+
+    用户要求「透明磨砂玻璃：3 个面板和设置页不要有深色元素」—— 气泡的正文密度高，
+    仍用可读性地板；面板/设置页取更透的 PANEL_FILL 档，壁纸透出更多。
+    """
+    from zhuzhu_Copilot.core import app_glass
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True)
+    panel = _alpha(ap._gsurface(ap.PANEL))
+    bubble = _alpha(app_glass.legible_fill(ap.PANEL))
+    assert panel < bubble, f"面板底 {panel} 不比气泡底 {bubble} 透"
+
+
+def test_hover_fill_is_half_transparent(glass_state):
+    """按钮 / 列表项「附着（悬停 · 按下）」态底色必须是 50% 透明（用户指定）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True)
+    ap.refresh_glass()          # 重建派生 QSS（HOVER_T 在其中生成）
+    assert ap.HOVER_T.endswith(", 0.500)"), ap.HOVER_T
+    assert ap.HOVER_T in ap._BTN_COMPACT, "紧凑按钮的悬停底没用附着态色"
+    assert ap.HOVER_T in ap._BTN_GHOST, "幽灵按钮的悬停底没用附着态色"
+    assert f"background: {ap.HOVER};" not in ap._BTN_COMPACT, "悬停底仍是实色"
 
 
 def test_compact_button_is_not_squeezed():

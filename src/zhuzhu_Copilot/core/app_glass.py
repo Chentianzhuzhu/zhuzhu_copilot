@@ -75,6 +75,12 @@ _BLUR_MIN_EDGE = 1
 _ROOT_VEIL_FLOOR = 0.42   # 最低强度（保证文字可读的地板）
 _ROOT_VEIL_SPAN = 0.34    # frost 再往上加的部分（frost=1 → 0.76）
 
+# 面板类大表面（设置页 / 侧栏面板 / 预览面板）的更透档：
+# 同样由「磨砂程度」驱动，但地板更低 → 壁纸透出更多、不再是一块块深色底板。
+# 与聊天气泡分开：气泡的正文密度高，仍用上面的默认地板。
+PANEL_FILL_FLOOR = 0.30
+PANEL_FILL_SPAN = 0.26
+
 _PHASE_INTERVAL_MS = 33
 _PHASE_CYCLE_S = 4.0
 _PHASE_STEP = (_PHASE_INTERVAL_MS / 1000.0) / _PHASE_CYCLE_S
@@ -1213,17 +1219,25 @@ def rgba(color, alpha: float) -> str:
     return f"rgba({c.red()}, {c.green()}, {c.blue()}, {a:.3f})"
 
 
-def legible_fill(color: str, p: Optional[GlassParams] = None) -> str:
-    """大表面（聊天气泡 / 卡片）的半透明玻璃填充：带**可读性地板**。
+def legible_fill(color: str, p: Optional[GlassParams] = None,
+                 floor: Optional[float] = None,
+                 span: Optional[float] = None) -> str:
+    """大表面（聊天气泡 / 卡片 / 面板）的半透明玻璃填充：带**可读性地板**。
 
     与 control_fill 的区别：control_fill 的 alpha = frost×opacity，透明度调低会
     让正文直接压在壁纸上；这一层用 root_veil 同款地板（0.42 + frost×0.34），
     保证气泡在壁纸上依然可读、又能透出壁纸。
+
+    - ``floor`` / ``span``：可读性地板与「随磨砂程度增长」的部分。面板类大表面
+      （设置页 / 侧栏面板）用更透的一档 ``PANEL_FILL_FLOOR``，壁纸透出更多；
+      聊天气泡沿用默认地板，保证正文可读。
     """
     q = p if p is not None else params()
     if not q.enabled:
         return QColor(color).name()
-    a = _ROOT_VEIL_FLOOR + _ROOT_VEIL_SPAN * max(0.0, min(1.0, q.frost))
+    fl = _ROOT_VEIL_FLOOR if floor is None else max(0.0, min(1.0, float(floor)))
+    sp = _ROOT_VEIL_SPAN if span is None else max(0.0, min(1.0, float(span)))
+    a = fl + sp * max(0.0, min(1.0, q.frost))
     return rgba(color, a)
 
 
