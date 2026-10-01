@@ -770,10 +770,131 @@ _GEAR_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="
              '<circle cx="12" cy="12" r="3"/></svg>')
 
 
-@lru_cache(maxsize=512)
-def _svg_icon(svg: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
-    """渲染内联 SVG 线条矢量图标（开源矢量路径，统一着色，线条风格一致）。
-    结果按 (svg, size, color) 缓存：主题切换/面板重建时重复图标直接命中，避免反复渲染。"""
+def _lucide(body: str) -> str:
+    """把 Lucide 图标体包成可着色的内联 SVG。
+
+    stroke 用 {color} 占位，实际颜色由 `_svg_pixmap` 渲染时注入 —— 本模块的图标
+    定义里不出现任何颜色字面量，深浅主题共用同一份图形。
+    """
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"'
+            ' stroke="{color}" stroke-width="2" stroke-linecap="round"'
+            f' stroke-linejoin="round">{body}</svg>')
+
+
+# ---------------------------------------------------------------------------
+# 设置页左侧导航图标：Lucide 开源线条矢量图（ISC 许可，v0.544.0）
+#
+# 每个导航项配一个语义对口的专属图标 —— 此前 folder 一个图形被「对话流 / 技能 /
+# 工作流 / UI-UX 自定义」四项复用，视觉上无法区分。这里全部换成 Lucide 官方图标，
+# 统一 24×24 viewBox + stroke-width 2 + 圆头圆角，与顶栏齿轮（_GEAR_SVG）同源同风格。
+#
+# 升级 / 换图标：直接取 https://unpkg.com/lucide-static@0.544.0/icons/<name>.svg
+# 的 <svg> 内容，把 `stroke="currentColor"` 去掉（由 _lucide 统一注入）、
+# `fill="currentColor"` 改成 `fill="{color}"`，其余原样保留即可。
+# ---------------------------------------------------------------------------
+_LUCIDE_NAV_ICONS: dict[str, str] = {
+    # 通用与记忆：横向滑杆 —— 界面主题 / 能力开关这类"调节"型设置
+    "general": _lucide(
+        '<path d="M10 5H3"/><path d="M12 19H3"/><path d="M14 3v4"/><path d="M16 17v4"/>'
+        '<path d="M21 12h-9"/><path d="M21 19h-5"/><path d="M21 5h-7"/>'
+        '<path d="M8 10v4"/><path d="M8 12H3"/>'),
+    # 对话流：双向对话气泡 —— 会话列表与按会话的工作目录
+    "sessions": _lucide(
+        '<path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1'
+        ' 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286'
+        'a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/>'),
+    # 自定义规则：带勾选的清单 —— 逐条生效的行为约束
+    "rules": _lucide(
+        '<path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/>'
+        '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/>'),
+    # 系统提示词：展开的卷轴文本 —— 长期生效的指令正文
+    "prompt": _lucide(
+        '<path d="M15 12h-5"/><path d="M15 8h-5"/>'
+        '<path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1'
+        'H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>'),
+    # bash 白名单：终端提示符 —— 免确认的命令前缀
+    "bash": _lucide('<path d="M12 19h8"/><path d="m4 17 6-6-6-6"/>'),
+    # 模型接入：脑神经网络 —— 大模型服务商与思考强度
+    "model": _lucide(
+        '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588'
+        'A4 4 0 1 0 12 18Z"/><path d="M9 13a4.5 4.5 0 0 0 3-4"/>'
+        '<path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/>'
+        '<path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M12 13h4"/>'
+        '<path d="M12 18h6a2 2 0 0 1 2 2v1"/><path d="M12 8h8"/>'
+        '<path d="M16 8V5a2 2 0 0 1 2-2"/><circle cx="16" cy="13" r=".5"/>'
+        '<circle cx="18" cy="3" r=".5"/><circle cx="20" cy="21" r=".5"/>'
+        '<circle cx="20" cy="8" r=".5"/>'),
+    # 技能：学士帽 —— 可装载的能力包
+    "skills": _lucide(
+        '<path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08'
+        'a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/>'
+        '<path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/>'),
+    # MCP 服务器：机架 —— 外部工具服务
+    "mcp": _lucide(
+        '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/>'
+        '<rect width="20" height="8" x="2" y="14" rx="2" ry="2"/>'
+        '<line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>'),
+    # 插件：拼图块 —— 即插即用的扩展
+    "plugins": _lucide(
+        '<path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68'
+        'l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0'
+        '-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61'
+        'a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682'
+        'a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015'
+        ' 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/>'),
+    # 语音合成：声波刻度 —— 朗读音色与语速
+    "tts": _lucide(
+        '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/>'
+        '<path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>'),
+    # 音乐：双音符 —— 背景音乐与歌词
+    "music": _lucide(
+        '<path d="M9 18V5l12-2v13"/><path d="m9 9 12-2"/>'
+        '<circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'),
+    # Agent 管理：机器人 —— 主 Agent 与成员编队
+    "agents": _lucide(
+        '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/>'
+        '<path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'),
+    # 工作流：串联的流程节点 —— 多角色编排
+    "workflow": _lucide(
+        '<rect width="8" height="8" x="3" y="3" rx="2"/>'
+        '<path d="M7 11v4a2 2 0 0 0 2 2h4"/>'
+        '<rect width="8" height="8" x="13" y="13" rx="2"/>'),
+    # UI/UX 自定义：调色板 —— 主题配色包
+    "uiux": _lucide(
+        '<path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0'
+        '-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/>'
+        '<circle cx="13.5" cy="6.5" r=".5" fill="{color}"/>'
+        '<circle cx="17.5" cy="10.5" r=".5" fill="{color}"/>'
+        '<circle cx="6.5" cy="12.5" r=".5" fill="{color}"/>'
+        '<circle cx="8.5" cy="7.5" r=".5" fill="{color}"/>'),
+}
+
+# 设置页导航项（展示顺序 = 左侧导航顺序，与 _page_builders 的下标一一对应）
+_NAV_ITEMS: tuple[tuple[str, str], ...] = (
+    ("通用与记忆", "general"),
+    ("对话流", "sessions"),
+    ("自定义规则", "rules"),
+    ("系统提示词", "prompt"),
+    ("bash 白名单", "bash"),
+    ("模型接入", "model"),
+    ("技能", "skills"),
+    ("MCP 服务器", "mcp"),
+    ("插件", "plugins"),
+    ("语音合成", "tts"),
+    ("音乐", "music"),
+    ("Agent 管理", "agents"),
+    ("工作流", "workflow"),
+    ("UI/UX 自定义", "uiux"),
+)
+
+# 导航图标尺寸（px）：18px 下 brain-circuit / puzzle 这类细密图形的笔画才分得开
+_NAV_ICON_SIZE = 18
+
+
+@lru_cache(maxsize=1024)
+def _svg_pixmap(svg: str, size: int = 18, color: str = TEXT_DIM) -> QPixmap:
+    """把内联 SVG（stroke 用 {color} 占位）渲染成透明底 QPixmap。
+    SVG 非法时返回空白位图而不抛异常，由调用方以「图标缺失」的方式优雅降级。"""
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     try:
@@ -784,7 +905,34 @@ def _svg_icon(svg: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
         p.end()
     except Exception:
         pass
-    return QIcon(pm)
+    return pm
+
+
+@lru_cache(maxsize=512)
+def _svg_icon(svg: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
+    """渲染内联 SVG 线条矢量图标（开源矢量路径，统一着色，线条风格一致）。
+    结果按 (svg, size, color) 缓存：主题切换/面板重建时重复图标直接命中，避免反复渲染。"""
+    return QIcon(_svg_pixmap(svg, size, color))
+
+
+@lru_cache(maxsize=128)
+def _nav_icon(svg: str, size: int, normal: str, hover: str,
+              selected: str, disabled: str) -> QIcon:
+    """设置页导航项的多状态图标：常态 / 悬停 / 选中 / 禁用各烘焙一帧。
+
+    QListView 按项状态取 QIcon 的模式（选中 → Selected、悬停 → Active、禁用 → Disabled），
+    所以一个 QIcon 就能让图标颜色跟着导航项状态走，与同一项的 QSS 文字配色同源。
+
+    四个颜色**显式传入并计入缓存键**：不能依赖默认参数捕获模块常量 ——
+    `LINE_ICON`/`SVG_ICON` 的默认参数在导入期就固化了，主题切换后重建面板会沿用旧主题色。
+    """
+    ic = QIcon()
+    for mode, color in ((QIcon.Mode.Normal, normal),
+                        (QIcon.Mode.Selected, selected),
+                        (QIcon.Mode.Active, hover),
+                        (QIcon.Mode.Disabled, disabled)):
+        ic.addPixmap(_svg_pixmap(svg, size, color), mode, QIcon.State.Off)
+    return ic
 
 
 @lru_cache(maxsize=512)
@@ -2332,23 +2480,15 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
             f"color: {self._ACCENT_HOVER};"
             f"border-left: 3px solid {self._ACCENT_HOVER}; }}")
-        for name, kind in (
-            ("通用与记忆", "drive"),
-            ("对话流", "folder"),
-            ("自定义规则", "list"),
-            ("系统提示词", "doc"),
-            ("bash 白名单", "bash"),
-            ("模型接入", "net"),
-            ("技能", "folder"),
-            ("MCP 服务器", "server"),
-            ("插件", "puzzle"),
-            ("语音合成", "mic"),
-            ("音乐", "music"),
-            ("Agent 管理", "user"),
-            ("工作流", "folder"),
-            ("UI/UX 自定义", "folder"),
-        ):
-            self.nav.addItem(QListWidgetItem(_line_icon(kind, 16), name))
+        # 图标尺寸与 QListWidget 默认值（16px）不同，必须显式同步，否则 QListView
+        # 会按默认尺寸缩放/裁切图标。
+        self.nav.setIconSize(QSize(_NAV_ICON_SIZE, _NAV_ICON_SIZE))
+        for name, key in _NAV_ITEMS:
+            # 四态配色与本项 QSS 同源：常态次要文字色 / 悬停正文色 / 选中强调色
+            self.nav.addItem(QListWidgetItem(
+                _nav_icon(_LUCIDE_NAV_ICONS[key], _NAV_ICON_SIZE,
+                          self._DIM, self._TEXT, self._ACCENT_HOVER, self._DIM),
+                name))
         self.nav.setCurrentRow(0)
         self.nav.currentRowChanged.connect(self._switch_page)
         root.addWidget(self.nav)
@@ -11171,7 +11311,11 @@ class WorktreeWindow(_RoundedFloatWindow):
             f"QTreeWidget::item {{ padding: 3px 4px; border-radius: 4px; }}"
             f"QTreeWidget::item:selected {{ background: transparent; }}"
             f"QTreeWidget::item:hover {{ background: transparent; }}"
-            f"QTreeWidget::item:focus {{ outline: none; }}")
+            f"QTreeWidget::item:focus {{ outline: none; }}"
+            # 控件一旦设了自己的样式表，**未显式提及的子控件会退回系统默认样式** ——
+            # 不给出滚动条规则时，浅色主题下会残留系统深色滚动条（用户反馈的
+            # 「Copilot 面板残留白色/深色元素」）。
+            + _scrollbar_css(6, 3, both=True))
         # 窗口失焦（如拖拽移动）时 Qt 会在选中项上画白色焦点边框，禁止其抢焦
         self.tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # 选中态仅高亮「图标+文件名」内容胶囊，不整行变蓝
@@ -12220,6 +12364,7 @@ class AgentPanel(QDialog):
         self._action_anim_angle = 0
 
         self._build_ui()
+        self._apply_side_scrollbars()    # 启动即按当前主题补齐侧栏滚动条样式
         # AI 写/改文件 → 预览面板差异高亮观察者（幂等注册，常驻实例）
         try:
             from zhuzhu_Copilot.core import agent_tools as _at
@@ -17572,12 +17717,47 @@ class AgentPanel(QDialog):
         try:
             if getattr(self, "msg_lay", None) is None:
                 return
+            # 气泡宽度按**当前**视口重设：主题切换会整面板重建，重建瞬间 `msg_area`
+            # 视口尚未就绪，`_ai_turn_max_width()` 会回退到 240px 并被 `setMaximumWidth`
+            # 钉死 —— 布局稳定后这里必须按真实宽度重设，否则正文一直挤在中间
+            # （用户反馈的「对话气泡向中间压缩」）。用户气泡用的是面板宽度、不受影响，
+            # 但一并按同口径重设，避免两者宽度基准不一致。
+            ai_w = self._ai_turn_max_width()
+            usr_w = self._bubble_max_width()
+            for b in self._bubble_widgets:
+                if not self._bubble_alive(b):
+                    continue
+                want = ai_w if b.property("align") == "ai" else usr_w
+                if b.maximumWidth() != want:
+                    b.setMaximumWidth(want)
             self.msg_lay.activate()
             container = self.msg_area.widget()
             if container is not None:
                 container.updateGeometry()
         except Exception:
             pass
+
+    def _apply_side_scrollbars(self):
+        """给四个侧栏窗口内的滚动区域补上**主题滚动条样式**。
+
+        这些控件各自的样式表只描述自身；而 Qt 的规则是：控件一旦设有样式表，未显式
+        提及的子控件会退回**系统默认**外观 —— 浅色主题下就残留一条深灰滚动条（用户
+        反馈的「Copilot 面板残留白色/深色元素」）。侧栏窗口每次重建都是新实例，这里
+        按当前主题统一补一次；将来新增侧栏只要名字进列表就自动受益。
+        """
+        from PyQt6.QtWidgets import QAbstractScrollArea
+        qss = _scrollbar_css(6, 3, both=True)
+        for _nm in ("wt_win", "git_win", "todos_win", "code_win"):
+            _w = getattr(self, _nm, None)
+            if _w is None:
+                continue
+            try:
+                for _sa in _w.findChildren(QAbstractScrollArea):
+                    _cur = _sa.styleSheet() or ""
+                    if "QScrollBar" not in _cur:
+                        _sa.setStyleSheet(_cur + qss)
+            except Exception:
+                pass
 
     def _sync_bubble_heights(self, bubbles=None):
         """气泡最小高度＝真实换行高度。QLabel 的 sizeHint 对换行长文本只按
@@ -20351,6 +20531,21 @@ class AgentPanel(QDialog):
         self._sync_git_win()
         self._sync_todos_win()
         self._sync_code_win()
+        # 9.0) 重建出的侧栏窗口是**空壳**，必须显式刷新内容。
+        #     `_sync_wt_win` / `_sync_git_win` 只在「原本不可见」时才 refresh（避免拖动
+        #     过程反复扫描目录），而新建窗口在 _build_ui 里已经 show 过 → `isVisible()`
+        #     为真 → 被判为"已可见"而跳过刷新，表现为切换主题后工作树 / Git 内容整块
+        #     空白（用户反馈）。这里对重建后的空树各补一次刷新。
+        for _nm in ("wt_win", "git_win"):
+            _w = getattr(self, _nm, None)
+            _rf = getattr(_w, "refresh", None)
+            if callable(_rf):
+                try:
+                    _rf()
+                except Exception:
+                    pass
+        # 9.0.1) 重建后的侧栏滚动条随新主题补齐（见 _apply_side_scrollbars 的说明）
+        self._apply_side_scrollbars()
         # 9.1) 恢复切换前的子窗口原位（保持左侧停靠位置，避免偏移到右侧与预览重叠）
         if side_pos:
             for name, g in side_pos.items():
