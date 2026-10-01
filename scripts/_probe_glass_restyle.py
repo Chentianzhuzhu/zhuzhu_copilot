@@ -51,6 +51,64 @@ def _probe(label, panel, dlg):
     return glassy
 
 
+def _page_of(dlg, w) -> str:
+    """控件属于设置页第几页（定位「哪页没被重建」）。"""
+    try:
+        p = w.parentWidget()
+        while p is not None and p is not dlg:
+            idx = dlg.stack.indexOf(p)
+            if idx >= 0:
+                return f"页{idx}"
+            p = p.parentWidget()
+    except Exception:
+        pass
+    return "页外"
+
+
+def _scan_solid(label, roots, dlg=None):
+    """列出仍带「不透明实色底」的控件（玻璃化收尾用）。
+
+    只报 `background: #RRGGBB`；rgba(...) / transparent / 强调色按钮与视频黑台
+    属刻意设计，不在此列。
+    """
+    import re
+    from PyQt6.QtWidgets import QWidget
+    pat = re.compile(r"background:\s*#[0-9A-Fa-f]{6}")
+    print(f"\n=== {label}：仍为不透明实色底的控件 ===")
+    seen = 0
+    for root in roots:
+        if root is None:
+            continue
+        for w in root.findChildren(QWidget):
+            try:
+                qss = w.styleSheet() or ""
+            except Exception:
+                continue
+            m = None
+            for cand in pat.finditer(qss):
+                # 跳过 :hover / :selected 这类状态规则里的实色（刻意保留的交互反馈）
+                head = qss[max(0, cand.start() - 34):cand.start()]
+                if any(k in head for k in (":hover", ":selected", ":checked",
+                                           ":pressed", ":focus")):
+                    continue
+                m = cand
+                break
+            if m is None:
+                continue
+            seen += 1
+            if seen > 40:
+                continue
+            frag = qss[:132].replace("\n", " ")
+            txt = ""
+            try:
+                txt = (w.text() if hasattr(w, "text") else "")[:20]
+            except Exception:
+                pass
+            print(f"  {_page_of(dlg, w) if dlg is not None else '':<5} "
+                  f"{type(w).__name__:<16} {frag}  {txt!r}")
+    print(f"  合计 {seen} 处")
+
+
 def main():
     real = None
     from zhuzhu_Copilot import app_identity
@@ -97,6 +155,15 @@ def main():
     n_off = _probe("再切回玻璃关闭", panel, dlg)
 
     print(f"\n结论：开玻璃后玻璃态控件 {n_on}/6，关玻璃后 {n_off}/6（期望 6 / 0）")
+
+    app_glass.set_fields(persist=False, enabled=True)   # 扫描必须在玻璃开启态
+    _pump(app, 1.0)
+    dlg._ensure_all_pages()
+    _pump(app, 0.6)
+    _scan_solid("设置页（14 页全建）", [dlg], dlg=dlg)
+    _scan_solid("四个浮窗", [panel.wt_win, panel.git_win,
+                            panel.todos_win, panel.code_win])
+
     app_glass.set_params(before, persist=False)
 
     try:

@@ -32,10 +32,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QEvent, QObject, QRect, QSize, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QBrush,
     QColor,
+    QGuiApplication,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -646,6 +647,48 @@ def frost_surface_color(fallback: str, alpha: float = 1.0) -> str:
     return f"#{a:02X}{mixed.red():02X}{mixed.green():02X}{mixed.blue():02X}"
 
 
+def _quantize(v: int, grid: int = 48) -> int:
+    """把屏幕坐标量化到网格：拖动窗口时不至于逐像素重算背景模糊。"""
+    return int(v) // grid * grid
+
+
+def _source_rect_for_window(src_size: QSize, screen: QSize, win: QSize,
+                            origin: tuple, fit: str) -> Optional[QRect]:
+    """算出「本窗口这一块」在**原图**上对应的矩形（按屏幕坐标映射）。
+
+    背景图若每个窗口各自缩放到自身尺寸，面板之间、面板与桌面之间就对不上，
+    视觉上是一块块生硬贴片（用户反馈的「面板对背景的残留元素生硬衔接」）。
+    这里统一按屏幕映射：窗口在屏幕上的哪一块，就取背景图的哪一块。
+    返回 None 表示沿用「按窗口自身渲染」（平铺 / 窗口落在 contain 留白处）。
+    """
+    sw, sh = int(src_size.width()), int(src_size.height())
+    ww, wh = int(win.width()), int(win.height())
+    SW, SH = int(screen.width()), int(screen.height())
+    if sw <= 0 or sh <= 0 or ww <= 0 or wh <= 0 or SW <= 0 or SH <= 0:
+        return None
+    if fit == "tile":
+        return None                     # 平铺：按窗口自身重复渲染（少见用法，保持原行为）
+    ox, oy = int(origin[0]), int(origin[1])
+    if fit == "stretch":
+        sx, sy = sw / SW, sh / SH
+        return QRect(int(ox * sx), int(oy * sy),
+                     max(1, round(ww * sx)), max(1, round(wh * sy)))
+    if fit == "contain":
+        s = min(sw / SW, sh / SH)       # 图像在屏幕上的显示比例与居中位置
+        dw, dh = sw * s, sh * s
+        px, py = (SW - dw) / 2, (SH - dh) / 2
+        if ox < px or oy < py or ox + ww > px + dw or oy + wh > py + dh:
+            return None                 # 窗口压到留白 → 回退窗口自身渲染
+        return QRect(int((ox - px) / s), int((oy - py) / s),
+                     max(1, round(ww / s)), max(1, round(wh / s)))
+    # cover（默认）：等比放大到覆盖整屏后居中裁切
+    s = max(sw / SW, sh / SH)
+    dw, dh = sw * s, sh * s
+    px, py = (SW - dw) / 2, (SH - dh) / 2
+    return QRect(int((ox - px) / s), int((oy - py) / s),
+                 max(1, round(ww / s)), max(1, round(wh / s)))
+
+
 def _shape_pixmap(src: QPixmap, size: QSize, fit: str) -> QPixmap:
     """把原图按适配方式铺到目标尺寸（cover/contain/stretch/tile）。"""
     w, h = max(1, size.width()), max(1, size.height())
@@ -690,11 +733,22 @@ class GlassBackground:
     上百个玻璃层共享一次模糊的成果。
     """
 
-    def __init__(self, p: GlassParams, size: QSize):
+    def __init__(self, p: GlassParams, size: QSize,
+                 origin: tuple = (0, 0), screen: Optional[QSize] = None):
         self._params = p
         self._size = QSize(max(1, size.width()), max(1, size.height()))
+        self._origin = (int(origin[0]), int(origin[1]))   # 窗口左上角在屏幕上的坐标
+        self._screen = screen or QSize(1920, 1080)        # 屏幕尺寸（cover 映射基准）
         self._key: Optional[tuple] = None
         self._blurred: Optional[QPixmap] = None
+
+    def set_view(self, origin: tuple, screen: QSize) -> None:
+        """更新「窗口在屏幕上的位置 / 屏幕尺寸」；变化则让缓存失效。"""
+        origin = (int(origin[0]), int(origin[1]))
+        if origin != self._origin or screen != self._screen:
+            self._origin = origin
+            self._screen = screen
+            self._key = None
 
     def resize(self, size: QSize) -> None:
         w, h = max(1, size.width()), max(1, size.height())
@@ -719,14 +773,20 @@ class GlassBackground:
                 mtime = -1        # 文件消失 → 与"存在"区分开，走无背景分支
         return (path, mtime, self._params.bg_fit,
                 int(round(self._params.blur)),
-                self._size.width(), self._size.height())
+                self._size.width(), self._size.height(),
+                self._origin[0], self._origin[1],
+                self._screen.width(), self._screen.height())
 
     def has_wallpaper(self) -> bool:
         path = self._params.bg_image or ""
         return bool(path) and Path(path).is_file()
 
     def blurred(self) -> Optional[QPixmap]:
-        """窗口尺寸的模糊背景图；无背景图或读取失败返回 None。"""
+        """窗口尺寸的模糊背景图；无背景图或读取失败返回 None。
+
+        内容取自背景图中**本窗口所处的那一块**（按屏幕坐标映射），这样各面板之间、
+        面板与桌面之间是连续的同一张壁纸，不会出现一块块贴片式的生硬衔接。
+        """
         k = self.key()
         if k == self._key:
             return self._blurred
@@ -737,8 +797,17 @@ class GlassBackground:
         if src is None:
             self._key, self._blurred = k, None
             return None
-        shaped = _shape_pixmap(src, self._size, self._params.bg_fit)
-        self._blurred = gaussian_blur(shaped, self._params.blur)
+        area = _source_rect_for_window(src.size(), self._screen, self._size,
+                                       self._origin, self._params.bg_fit)
+        if area is not None:
+            area = area.intersected(QRect(0, 0, src.width(), src.height()))
+        if area is not None and not area.isEmpty():
+            piece = src.copy(area).scaled(
+                self._size, Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+        else:
+            piece = _shape_pixmap(src, self._size, self._params.bg_fit)
+        self._blurred = gaussian_blur(piece, self._params.blur)
         self._key = k
         return self._blurred
 
@@ -927,11 +996,33 @@ class GlassSkin(QObject):
     def params(self) -> GlassParams:
         return load()
 
+    def _window_view(self) -> tuple:
+        """窗口客户区左上角在屏幕上的坐标（量化）与屏幕尺寸。
+
+        量化到 48px 网格：拖动窗口时不必逐像素重算背景模糊（模糊后本就分辨不出）。
+        """
+        origin = (0, 0)
+        try:
+            pt = self._window.mapToGlobal(QPoint(0, 0))
+            origin = (_quantize(pt.x()), _quantize(pt.y()))
+        except Exception:
+            pass
+        size = QSize(1920, 1080)
+        try:
+            scr = self._window.screen() or QGuiApplication.primaryScreen()
+            if scr is not None:
+                size = scr.geometry().size()
+        except Exception:
+            pass
+        return origin, size
+
     def _background(self) -> GlassBackground:
         if self._bg is None:
             self._bg = GlassBackground(self.params, self._window.size())
         self._bg.set_params(self.params)
         self._bg.resize(self._window.size())
+        origin, screen = self._window_view()
+        self._bg.set_view(origin, screen)
         return self._bg
 
     def background_blurred(self) -> Optional[QPixmap]:

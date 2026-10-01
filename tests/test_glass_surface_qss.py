@@ -203,6 +203,42 @@ def test_rebuild_pages_keeps_unsaved_input(glass_state, offscreen_app):
         dlg.done(0)
 
 
+def test_settings_pages_fit_viewport_width(offscreen_app):
+    """每页的「最小宽度需求」必须明显小于视口宽。
+
+    真实缺陷（用户反馈「设置页右侧文字被挤压」）：插件页那排七个按钮把最小需求顶到
+    742px（视口仅 759），字号/DPI 稍大就撑宽整个 QStackedWidget，把所有页的右侧内容
+    （外观页的滑杆数值等）推出视口裁掉。按钮排改 FlowLayout 后降到 168px。
+    这里留 25% 余量做底线，防止将来又加长按钮排。
+    """
+    from pathlib import Path as _P
+
+    from PyQt6.QtGui import QFontDatabase
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    # offscreen 平台无字体 → 度量会偏小，显式加载系统中文字体后再量
+    for f in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simsun.ttc"):
+        if _P(f).is_file():
+            QFontDatabase.addApplicationFont(f)
+
+    dlg = ap._AgentSettingsDialog(None)
+    try:
+        dlg.resize(991, 687)
+        dlg._ensure_all_pages()
+        vp = dlg._page_scroll.viewport().width()
+        worst, worst_name = 0, ""
+        for i in range(dlg.stack.count()):
+            need = dlg.stack.widget(i).minimumSizeHint().width()
+            if need > worst:
+                worst = need
+                worst_name = ap._NAV_ITEMS[i][0] if i < len(ap._NAV_ITEMS) else str(i)
+        assert worst <= vp * 0.75, \
+            f"「{worst_name}」页最小宽度需求 {worst} 逼近视口 {vp}，字号稍大就会裁掉右侧"
+    finally:
+        dlg.done(0)
+
+
 def test_compact_button_is_not_squeezed():
     """外观页「选择图片 / 清除」曾被同行更高的控件挤到 16px（padding 1px）。"""
     from zhuzhu_Copilot.ui import agent_panel as ap

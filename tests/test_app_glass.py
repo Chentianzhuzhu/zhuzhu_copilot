@@ -280,6 +280,59 @@ def _paint(p, size=(80, 60), origin=(0, 0), bg=None) -> QPixmap:
     return pm
 
 
+# ---------- 背景按屏幕位置采样：各面板与桌面连续（不再生硬衔接） ----------
+
+def test_source_rect_is_identity_when_image_matches_screen():
+    """原图与屏幕等比时，窗口取到的就是它自己那一块。"""
+    area = g._source_rect_for_window(QSize(1920, 1080), QSize(1920, 1080),
+                                     QSize(280, 360), (100, 200), "cover")
+    assert (area.x(), area.y(), area.width(), area.height()) == (100, 200, 280, 360)
+
+
+def test_source_rect_of_neighbours_is_contiguous():
+    """左右相邻的两个面板取到的区域必须首尾相接 —— 这是「衔接自然」的数学保证。"""
+    screen, src = QSize(1600, 900), QSize(3200, 1800)
+    a = g._source_rect_for_window(src, screen, QSize(280, 360), (0, 0), "cover")
+    b = g._source_rect_for_window(src, screen, QSize(280, 360), (280, 0), "cover")
+    assert a.right() + 1 == b.left(), "相邻面板取到的背景区不连续"
+    assert a.y() == b.y() and a.height() == b.height()
+
+
+def test_source_rect_follows_window_movement():
+    """窗口平移，取到的区域同步平移（否则拖动时背景会"跟着窗口走"，非常假）。"""
+    screen, src, win = QSize(1600, 900), QSize(3200, 1800), QSize(280, 360)
+    a = g._source_rect_for_window(src, screen, win, (0, 0), "cover")
+    b = g._source_rect_for_window(src, screen, win, (96, 0), "cover")
+    assert b.x() - a.x() == 96 // 2      # cover 下原图是屏幕的 2 倍
+
+
+def test_source_rect_tile_falls_back_to_window_shaping():
+    """平铺模式与 contain 留白区沿用「按窗口自身渲染」，返回 None 表示回退。"""
+    assert g._source_rect_for_window(QSize(100, 100), QSize(1920, 1080),
+                                     QSize(280, 360), (0, 0), "tile") is None
+    # contain：窗口落在图像之外（留白处）→ 回退
+    assert g._source_rect_for_window(QSize(100, 100), QSize(2000, 1000),
+                                     QSize(280, 360), (0, 0), "contain") is None
+
+
+def test_background_differs_by_window_position(tmp_path):
+    """端到端：同一张壁纸下，位置不同的窗口必须取到不同的背景内容。"""
+    img = tmp_path / "w.png"
+    pm = QPixmap(3200, 2400)
+    painter = QPainter(pm)
+    painter.fillRect(0, 0, 1600, 2400, QColor("#FFFFFF"))   # 原图左半白、右半黑
+    painter.fillRect(1600, 0, 1600, 2400, QColor("#000000"))
+    painter.end()
+    assert pm.save(str(img), "PNG")
+
+    p = g.GlassParams(enabled=True, bg_image=str(img), bg_fit="cover", blur=0)
+    screen = QSize(1600, 1200)
+    left = g.GlassBackground(p, QSize(280, 360), (0, 0), screen).blurred()
+    right = g.GlassBackground(p, QSize(280, 360), (960, 0), screen).blurred()
+    assert left is not None and right is not None
+    assert left.toImage() != right.toImage(), "不同位置取到了同一块背景（仍是贴片式铺满）"
+
+
 def test_glass_paints_something_when_enabled():
     assert _light(_paint(g.params())) > 0, "开启玻璃却什么都没画出来"
 

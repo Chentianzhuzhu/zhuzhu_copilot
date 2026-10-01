@@ -252,6 +252,36 @@ def _glass_root_bg(fallback: str) -> str:
     return "transparent" if _glass_wallpaper_active() else fallback
 
 
+def _paint_glass_edge(painter, rect, radius: int) -> None:
+    """玻璃边缘高光：外缘亮线 + 内缘衬线 + 顶部受光边。
+
+    只在壁纸生效时调用（见调用处的 `_paint_glass_root` 返回值）：给窗口描一层
+    「玻璃厚度」，面板与壁纸之间才不是一条生硬的硬边（用户反馈的「面板对背景的
+    残留元素生硬衔接」）。强度完全由「边缘高光」参数驱动，参数为 0 时不画。
+    """
+    try:
+        p = app_glass.params()
+        e = max(0.0, min(1.0, float(p.edge)))
+        if not p.enabled or e <= 0.02:
+            return
+        r = max(0, int(radius))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen1 = QPen(QColor(255, 255, 255, int(84 * e)), 1.5)
+        painter.setPen(pen1)
+        painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), r, r)
+        pen2 = QPen(QColor(255, 255, 255, int(36 * e)), 1)
+        painter.setPen(pen2)
+        r2 = max(0, r - 2)
+        painter.drawRoundedRect(QRectF(rect).adjusted(2, 2, -2, -2), r2, r2)
+        pen3 = QPen(QColor(255, 255, 255, int(120 * e)), 1)
+        painter.setPen(pen3)
+        painter.drawLine(rect.left() + r, rect.top() + 1,
+                         rect.right() - r, rect.top() + 1)
+    except Exception:
+        pass          # 边缘高光只是装饰，失败不影响窗口本身
+
+
 def _glass_tip_bg() -> str:
     """悬浮提示底色：壁纸生效时取壁纸平均色（磨砂观感），否则主题面板色。"""
     if _glass_wallpaper_active():
@@ -2594,6 +2624,12 @@ class _AgentSettingsDialog(QDialog):
 
     def _restyle_glass(self):
         """玻璃开关变化后重建本对话框样式：根样式 + 导航 + 取消按钮 + 全部页面。"""
+        # 先让派生 QSS 常量（_QCOMBO 等）跟上参数：主面板侧的刷新带 120ms 防抖，
+        # 订阅回调可能先于它执行，否则重建出来的控件仍会套上一轮的旧值。
+        try:
+            refresh_glass()
+        except Exception:
+            pass
         for apply in (lambda: self.setStyleSheet(self._dialog_qss()),
                       lambda: self.nav.setStyleSheet(self._nav_qss()),
                       lambda: self.cancel_btn.setStyleSheet(self._cancel_btn_qss())):
@@ -2639,12 +2675,12 @@ class _AgentSettingsDialog(QDialog):
 
     # ---------- 各分组页面 ----------
     def paintEvent(self, event):
-        """设置页根背景：壁纸生效时由玻璃内核绘制。"""
-        from PyQt6.QtGui import QPainter
+        """设置页根背景：壁纸生效时由玻璃内核绘制，并补一层玻璃边缘高光。"""
         painter = QPainter(self)
         try:
-            if _paint_glass_root(self, painter, self.rect(),
-                                 _glass_root_radius(self, app_glass.RADIUS_WINDOW)):
+            radius = _glass_root_radius(self, app_glass.RADIUS_WINDOW)
+            if _paint_glass_root(self, painter, self.rect(), radius):
+                _paint_glass_edge(painter, self.rect(), app_glass.RADIUS_WINDOW)
                 painter.end()
                 return
         except Exception:
@@ -3963,8 +3999,8 @@ class _AgentSettingsDialog(QDialog):
         self.skill_feedback.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         self.skill_feedback.setWordWrap(True)
         lay.addWidget(self.skill_feedback)
-        row = QHBoxLayout()
-        row.setSpacing(8)
+        # 换行布局：同插件页 —— 长按钮排会撑破页面最小宽度（见 _build_plugin_page）
+        row = FlowLayout(spacing=SPACING_SM)
         imp = QPushButton(_std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder),
                           "导入市场标准技能（SKILL.md 或 zip 包）…")
         imp.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
@@ -3992,7 +4028,6 @@ class _AgentSettingsDialog(QDialog):
                             "绑定后其他工作流不再加载该技能")
         wf_skill.clicked.connect(self._on_skill_workflows)
         row.addWidget(wf_skill)
-        row.addStretch(1)
         lay.addLayout(row)
         self._reload_skill_wf_combo()
         return w
@@ -4692,8 +4727,10 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
             f"color: {self._ACCENT_HOVER}; }}")
         lay.addWidget(self.plugin_list, 1)
-        row = QHBoxLayout()
-        row.setSpacing(8)
+        # 换行布局：这一排七个按钮会把页面「最小宽度需求」顶到 742px（视口仅 759），
+        # 只要字体/DPI 略大就撑破页面，把所有页的右侧内容（如外观页滑杆数值）
+        # 推出视口裁掉 —— 改 FlowLayout 后最小需求降到单个按钮宽。
+        row = FlowLayout(spacing=SPACING_SM)
         create_b = QPushButton(_line_icon("plus", 16), "创建插件（自然语言）")
         create_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
                                "border: none; border-radius: 8px; padding: 7px 14px; font-weight: 700;")
@@ -4749,7 +4786,6 @@ class _AgentSettingsDialog(QDialog):
         row.addWidget(call_b)
         row.addWidget(wf_b)
         row.addWidget(del_b)
-        row.addStretch(1)
         lay.addLayout(row)
         self._reload_plugin_list()
         return w
@@ -8789,12 +8825,17 @@ class _RoundedFloatWindow(QWidget):
     _drag_handle = None    # 子类构造时调用 _install_drag_handle() 创建把手
 
     def paintEvent(self, event):
-        """壁纸生效时根背景交给玻璃内核；否则维持子类 QSS 主题底色。"""
-        from PyQt6.QtGui import QPainter
+        """壁纸生效时根背景交给玻璃内核；否则维持子类 QSS 主题底色。
+
+        注意：这里**不能**再函数内 import Qt 名字 —— 那会让该名字变成整个函数的
+        局部名，函数顶部的 `QPainter(self)` 在绑定前执行 → UnboundLocalError →
+        整个界面崩溃（crash_20261001_165356.log 实证）。
+        """
         painter = QPainter(self)
         try:
             if _paint_glass_root(self, painter, self.rect(),
                                  _glass_root_radius(self, self._WINDOW_RADIUS)):
+                _paint_glass_edge(painter, self.rect(), self._WINDOW_RADIUS)
                 painter.end()
                 return
         except Exception:
