@@ -249,6 +249,19 @@ def _glass_tip_bg() -> str:
     return PANEL
 
 
+def _glass_root_radius(widget, default: int) -> int:
+    """壁纸根绘制的圆角：**只有无边框窗口才切圆角**。
+
+    系统标题栏窗口的客户区是矩形，若仍按圆角裁剪，四角会露出未绘制的黑底
+    （用户反馈"黑色背景残留"）。无边框窗口的四角由蒙版/自绘圆角负责。
+    """
+    try:
+        frameless = bool(widget.windowFlags() & Qt.WindowType.FramelessWindowHint)
+    except Exception:
+        frameless = False
+    return default if frameless else RADIUS_NONE
+
+
 def _paint_glass_root(widget, painter, rect, radius: int, fallback: str = None) -> bool:
     """把窗口根背景交给玻璃内核绘制（背景图按 blur 模糊 + 圆角裁剪）。
 
@@ -2371,23 +2384,6 @@ class _AgentSettingsDialog(QDialog):
         # （QMessageBox/QInputDialog 等也是 QDialog 子类，若规则用裸 QDialog 选择器，
         #  会继承 background:transparent → 弹窗透明显示为纯黑）
         self.setObjectName("agentSettingsDlg")
-        # 玻璃外壳（无边框）模式：换自绘标题栏 _frameless_titlebar（可拖动/关闭）。
-        # 设置页有自己的标题栏实现，无边框在这里是**可用**的；壁纸画在客户区，
-        # 与标题栏共存。真正的"遮挡"根因是壁纸没画出来 + 缺磨砂纱，已另行修复。
-        _glass = _glass_chrome()
-        if _glass:
-            outer = QVBoxLayout(self)
-            outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(0)
-            outer.addWidget(_frameless_titlebar(self, "AI 设置"))
-            root = QHBoxLayout()
-            root.setContentsMargins(0, 0, 0, 0)
-            root.setSpacing(0)
-            outer.addLayout(root, 1)
-        else:
-            root = QHBoxLayout(self)
-            root.setContentsMargins(0, 0, 0, 0)
-            root.setSpacing(0)
         self.setMinimumSize(991, 687)
         self.resize(991, 687)
         # 有自定义背景图时根底交给玻璃内核绘制壁纸；否则用主题底色。
@@ -2424,7 +2420,13 @@ class _AgentSettingsDialog(QDialog):
         s = agent_skills.load_settings()
         self._mcp_servers = agent_skills.load_mcp_servers()
 
+        # 玻璃外壳（无边框）模式：换自绘标题栏 _frameless_titlebar（可拖动/关闭）；
+        # 系统标题栏模式：root 直接作为对话框布局。两种模式 root 都必须装上。
+        _glass = _glass_chrome()
         if _glass:
+            # 无边框 + 圆角裁剪：四角不再绘制，必须声明半透明背景，
+            # 否则未绘制的四角会显示为黑块（用户反馈"黑色背景残留"）。
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             outer = QVBoxLayout(self)
             outer.setContentsMargins(0, 0, 0, 0)
             outer.setSpacing(0)
@@ -2542,7 +2544,8 @@ class _AgentSettingsDialog(QDialog):
         from PyQt6.QtGui import QPainter
         painter = QPainter(self)
         try:
-            if _paint_glass_root(self, painter, self.rect(), app_glass.RADIUS_WINDOW):
+            if _paint_glass_root(self, painter, self.rect(),
+                                 _glass_root_radius(self, app_glass.RADIUS_WINDOW)):
                 painter.end()
                 return
         except Exception:
@@ -8687,7 +8690,8 @@ class _RoundedFloatWindow(QWidget):
         from PyQt6.QtGui import QPainter
         painter = QPainter(self)
         try:
-            if _paint_glass_root(self, painter, self.rect(), self._WINDOW_RADIUS):
+            if _paint_glass_root(self, painter, self.rect(),
+                                 _glass_root_radius(self, self._WINDOW_RADIUS)):
                 painter.end()
                 return
         except Exception:
@@ -11958,6 +11962,9 @@ class AgentPanel(QDialog):
         if _glass:
             self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                                 | Qt.WindowType.Window)
+            # 无边框 + 圆角：四角不绘制 → 必须半透明背景，否则四角是黑块。
+            # （旧实现靠 Acrylic/DWM 合成兜底，该引擎已移除。）
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         else:
             self.setWindowFlags(self.windowFlags()
                                 | Qt.WindowType.Window
@@ -14383,7 +14390,7 @@ class AgentPanel(QDialog):
         if painter is not None:
             try:
                 glass_done = _paint_glass_root(self, painter, self.rect(),
-                                               app_glass.RADIUS_WINDOW)
+                                           _glass_root_radius(self, app_glass.RADIUS_WINDOW))
                 if glass_done and self._panel_frameless():
                     self._paint_frameless_edge(painter)
             except Exception:

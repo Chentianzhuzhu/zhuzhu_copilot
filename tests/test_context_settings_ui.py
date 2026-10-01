@@ -419,3 +419,52 @@ def test_panel_paintevent_wallpaper_actually_renders(tmp_path):
         app_glass.set_fields(bg_image="", persist=False)
         panel.close()
         panel.deleteLater()
+
+
+# ---------- 2.12 设置页结构与黑角回归 ----------
+
+def test_settings_dialog_has_layout_and_children():
+    """回归：构造函数里曾出现**两份** frameless 布局块，第二份的
+    `QVBoxLayout(self)` 装不上（已有布局）→ root 变成孤儿布局，
+    后续 root.addWidget 全部丢失 → 设置页只剩壁纸、内容全无。
+
+    契约：对话框必须有 layout，nav/stack 必须真实可见。
+    """
+    dlg = ap._AgentSettingsDialog()
+    try:
+        assert dlg.layout() is not None, "设置对话框必须有布局（否则内容全部丢失）"
+        assert len(dlg.findChildren(ap.QWidget)) > 20, "设置页子控件数量异常"
+        assert dlg.nav.isVisibleTo(dlg), "左侧导航不可见"
+        assert dlg.stack.isVisibleTo(dlg), "右侧内容栈不可见"
+    finally:
+        dlg.deleteLater()
+
+
+def test_frameless_glass_window_corners_are_transparent(tmp_path):
+    """回归：无边框 + 圆角裁剪后，未绘制的四角若不声明半透明背景就是黑块
+    （用户反馈"黑色背景残留"）。"""
+    from PyQt6.QtCore import Qt
+    from zhuzhu_Copilot.core import app_glass
+    img = tmp_path / "w.png"
+    pm = ap.QPixmap(32, 32)
+    pm.fill(ap.QColor("#2F52D8"))
+    assert pm.save(str(img), "PNG")
+    app_glass.set_fields(bg_image=str(img), frameless=True, persist=False)
+    dlg = ap._AgentSettingsDialog()
+    try:
+        dlg.show()
+        for _ in range(4):
+            ap.QApplication.instance().processEvents()
+        grabbed = dlg.grab().toImage()
+        corners = [(1, 1), (grabbed.width() - 2, 1),
+                   (1, grabbed.height() - 2),
+                   (grabbed.width() - 2, grabbed.height() - 2)]
+        for x, y in corners:
+            c = grabbed.pixelColor(x, y)
+            # 右上角属于自绘标题栏子控件（不透明主题色，正常）；要杜绝的是黑块
+            is_black = (c.alpha() == 255 and c.red() < 12
+                        and c.green() < 12 and c.blue() < 12)
+            assert not is_black, f"四角 ({x},{y}) 是黑块：{c.name()}"
+    finally:
+        dlg.close()
+        dlg.deleteLater()
