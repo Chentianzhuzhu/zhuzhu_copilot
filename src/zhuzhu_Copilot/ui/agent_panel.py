@@ -235,31 +235,33 @@ def _sheer(alpha: float, fallback: str) -> str:
 # 失焦立刻移除 —— Qt 的 effect 会让控件走离屏渲染，常驻会拖慢输入（性能优先）。
 _FOCUS_GLOW_BLUR = 16
 _FOCUS_GLOW_ALPHA = 170
-# 聚焦时的边缘色透明度：用户要「边缘泛光」而不是「取消边缘」—— 边缘必须还在，
-# 只是从一条实线变成一层半透明的光边，再叠上外发光。
-_FOCUS_EDGE_ALPHA = 0.55
 
 
 def _focus_edge() -> str:
-    """输入框聚焦时的边缘色：品牌蓝半透明（保留轮廓 + 光的观感）。"""
-    return app_glass.rgba(ACCENT, _FOCUS_EDGE_ALPHA)
+    """输入框聚焦时的边缘色：**磨砂玻璃的边缘高光**（白色半透明）。
+
+    用户明确要求「蓝色边缘改为磨砂玻璃的边缘高光」—— 聚焦不再用品牌蓝实线，
+    而是与玻璃受光边同色系的亮白高光；玻璃关闭时回退主题边框色。
+    """
+    return _gedge(0.85)
 
 
 def _frost_popup_view(view) -> None:
-    """把下拉弹出层做成**玻璃**：无边框 + 半透明窗口。
+    """把下拉弹出层做成**玻璃**：给弹出容器设半透明窗口属性。
 
     弹出视图是独立顶层窗口，默认被系统填成实色，QSS 里的半透明底因此完全不生效
-    （这就是「下拉菜单没有磨砂玻璃材质」的根因）。必须同时设
-    WA_TranslucentBackground 与 FramelessWindowHint，半透明底才画得出来 ——
-    这样它能透出下方的对话/面板，与主界面是同一套玻璃材质。
+    （这就是「下拉菜单没有磨砂玻璃材质」的根因）。
+
+    **关键**：属性要设在 `view.window()`（= Qt 的 QComboBoxPrivateContainer popup 容器）上。
+    若对 view 自身调 `setWindowFlags`，会把它从容器里"拆"成一个独立窗口，破坏 Qt 的
+    popup 结构 —— 表现就是弹出一块**没有内容的纯深色矩形**（用户反馈的 bug）。
     """
     if view is None:
         return
     try:
-        view.setWindowFlags(Qt.WindowType.Popup
-                            | Qt.WindowType.FramelessWindowHint
-                            | Qt.WindowType.NoDropShadowWindowHint)
-        view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        win = view.window()
+        if win is not None:
+            win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
     except Exception:
         pass      # 平台不支持时静默退回不透明，不影响功能
 
@@ -312,7 +314,9 @@ def _install_focus_glow(widget) -> None:
                 eff = QGraphicsDropShadowEffect(obj)
                 eff.setBlurRadius(_FOCUS_GLOW_BLUR)
                 eff.setOffset(0, 0)
-                c = QColor(ACCENT)
+                # 光晕与边缘同色系：玻璃开启时是白色高光（磨砂玻璃受光边），
+                # 关闭时仍是品牌蓝（纯主题模式下保留原有聚焦提示）
+                c = QColor("#FFFFFF" if _glass_on() else ACCENT)
                 c.setAlpha(_FOCUS_GLOW_ALPHA)
                 eff.setColor(c)
                 obj.setGraphicsEffect(eff)

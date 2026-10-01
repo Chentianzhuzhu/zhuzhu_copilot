@@ -69,14 +69,15 @@ def test_popup_and_menu_use_frosted_surface(glass_state):
 
 
 def test_focus_keeps_a_glowing_edge(glass_state):
-    """聚焦提示 = **保留边缘**的半透明光边 + 外发光（用户要求的是泛光，不是取消边缘）。"""
+    """聚焦 = **保留边缘**的磨砂玻璃高光边 + 外发光（不是取消边缘，也不用品牌蓝）。"""
     from pathlib import Path
 
     from zhuzhu_Copilot.ui import agent_panel as ap
 
     glass_state.set_fields(persist=False, enabled=True)
     edge = ap._focus_edge()
-    assert edge.startswith("rgba(") and 0.2 <= _alpha(edge) <= 0.8, edge
+    assert edge.startswith("rgba(255, 255, 255"), f"应是玻璃白高光而非品牌蓝：{edge}"
+    assert 0.4 <= _alpha(edge) <= 1.0, edge
     src = Path(ap.__file__).read_text(encoding="utf-8")
     n = sum(1 for ln in src.splitlines() if ":focus" in ln and "_focus_edge" in ln)
     assert n >= 5, f"聚焦光边接入点太少：{n}"
@@ -98,8 +99,12 @@ def test_popup_glass_is_translucent(glass_state):
     assert 0.4 <= _alpha(css) < 0.95, f"弹出层应半透明（可透出下方内容）：{css}"
 
 
-def test_combo_popup_is_made_frosted(glass_state, offscreen_app):
-    """弹出视图必须被设成无边框 + 半透明窗口，否则 QSS 的半透明底根本不生效。"""
+def test_popup_frost_targets_window_not_view(glass_state, offscreen_app):
+    """半透明属性必须设在弹出**顶层窗口**上。
+
+    反例（上一版的 bug）：对 view 自身调 setWindowFlags，会把它从 Qt 的 popup 容器里
+    "拆"成独立窗口，破坏 popup 结构 —— 表现是弹出一块没有内容的纯深色矩形。
+    """
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QComboBox
 
@@ -109,9 +114,10 @@ def test_combo_popup_is_made_frosted(glass_state, offscreen_app):
     ap._harden_combo_popup(combo)
     assert combo._glass_popup_filter is not None, "未挂上弹出玻璃化过滤器"
     view = combo.view()
+    before = view.windowFlags()
     ap._frost_popup_view(view)
-    assert view.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    assert view.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert view.windowFlags() == before, "不得改动 view 自身的窗口标志"
+    assert view.window().testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
 
 def test_gsurface_and_gfill_follow_glass_switch(glass_state):
@@ -367,7 +373,7 @@ def test_interactive_states_are_white_and_not_dark(glass_state):
     glass_state.set_fields(persist=False, enabled=True)
     for css in (ap.HOVER_T, ap._sheer(0.10, ap.PANEL), ap._sheer(0.22, ap.PANEL)):
         assert _is_light_or_clear(css), f"{css} 是深色附着"
-    assert ap.HOVER_T.endswith(", 0.400)"), ap.HOVER_T
+    assert ap.HOVER_T.endswith(", 0.250)"), ap.HOVER_T
 
 
 def test_bubble_keeps_readable_floor_while_panels_are_clear(glass_state):
