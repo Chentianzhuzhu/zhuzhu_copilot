@@ -506,8 +506,17 @@ _player_lock = threading.Lock()
 
 
 def get_player() -> MusicPlayer:
-    """获取全局单例播放器（线程安全），首次创建时挂退出兜底保存"""
+    """获取全局单例播放器（线程安全），首次创建时挂退出兜底保存。
+
+    注意：长驻 / 复用进程（测试、面板重建）里，Python 侧引用还在但底层 C++ 对象
+    可能已被销毁 —— 直接返回会让人连信号时抛 RuntimeError，所以先探活再复用。
+    """
     global _player
+    if _player is not None:
+        try:
+            _player.objectName()          # 触碰 C++ 对象：已销毁会抛 RuntimeError
+        except RuntimeError:
+            _player = None                # 已销毁 → 当作没有，重建一个
     if _player is None:
         with _player_lock:
             if _player is None:

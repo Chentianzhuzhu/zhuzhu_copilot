@@ -86,7 +86,7 @@ PANEL_FILL_SPAN = 0.26
 # **白色**洗色 —— 既看得出控件范围与悬停反馈，又不是一块深色底。
 SHEER_WASH = 0.10           # 小控件（按钮 / 输入框补底）的浅色洗色
 SHEER_WASH_STRONG = 0.22    # 选中 / 当前项
-HOVER_WASH_ALPHA = 0.5      # 附着（悬停 / 按下）态：白色 50% 透明（用户指定）
+HOVER_WASH_ALPHA = 0.40     # 附着（悬停 / 按下）态：白色 40% 透明（用户指定）
 
 _PHASE_INTERVAL_MS = 33
 _PHASE_CYCLE_S = 4.0

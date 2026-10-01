@@ -26,6 +26,47 @@ def offscreen_app():
     yield app
 
 
+def test_focus_hint_is_glow_not_blue_border(glass_state, offscreen_app):
+    """输入框聚焦提示 = 透明边缘 + 边缘泛光（不再用蓝色实线边框）。"""
+    from PyQt6.QtWidgets import QLineEdit
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    # 1) 源码里不得再有「:focus + 实线边框」的写法
+    from pathlib import Path
+    src = Path(ap.__file__).read_text(encoding="utf-8")
+    bad = [ln.strip() for ln in src.splitlines()
+           if ":focus" in ln and "border: 1px solid" in ln and "transparent" not in ln]
+    assert not bad, f"仍有聚焦实线边框：{bad[:3]}"
+
+    # 2) 聚焦时真的挂上泛光，失焦要立刻摘掉（否则一直走离屏渲染）。
+    #    离屏平台下未显示的控件不会收到真实的 FocusIn，直接投递焦点事件。
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QFocusEvent
+
+    le = QLineEdit()
+    ap._install_focus_glow(le)
+    offscreen_app.sendEvent(le, QFocusEvent(QEvent.Type.FocusIn))
+    eff = le.graphicsEffect()
+    assert eff is not None and eff.blurRadius() >= 8, "聚焦未产生边缘泛光"
+    offscreen_app.sendEvent(le, QFocusEvent(QEvent.Type.FocusOut))
+    assert le.graphicsEffect() is None, "失焦后泛光未移除"
+
+
+def test_popup_and_menu_use_frosted_surface(glass_state):
+    """下拉 / 菜单弹出层底必须走磨砂入口，不得退回深色面板常量。"""
+    from pathlib import Path
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    src = Path(ap.__file__).read_text(encoding="utf-8")
+    bad = [ln.strip() for ln in src.splitlines()
+           if ("QAbstractItemView" in ln or "QMenu {{" in ln)
+           and "background: {PANEL}" in ln]
+    assert not bad, f"弹出层仍是深色面板常量：{bad[:3]}"
+    assert "_popup_bg = _glass_tip_bg()" in src
+
+
 def test_gsurface_and_gfill_follow_glass_switch(glass_state):
     """大表面 / 小控件的取色入口：玻璃关=不透明原色，开=半透明玻璃。"""
     from zhuzhu_Copilot.ui import agent_panel as ap
@@ -273,13 +314,13 @@ def test_control_wash_is_white_not_dark(glass_state):
 
 
 def test_interactive_states_are_white_and_not_dark(glass_state):
-    """悬停 / 选中 / 附着态一律白色半透明（用户要求 50% 透明且非深色底）。"""
+    """悬停 / 选中 / 附着态一律白色半透明（用户要求 40% 透明且非深色底）。"""
     from zhuzhu_Copilot.ui import agent_panel as ap
 
     glass_state.set_fields(persist=False, enabled=True)
     for css in (ap.HOVER_T, ap._sheer(0.10, ap.PANEL), ap._sheer(0.22, ap.PANEL)):
         assert _is_light_or_clear(css), f"{css} 是深色附着"
-    assert ap.HOVER_T.endswith(", 0.500)"), ap.HOVER_T
+    assert ap.HOVER_T.endswith(", 0.400)"), ap.HOVER_T
 
 
 def test_bubble_keeps_readable_floor_while_panels_are_clear(glass_state):
