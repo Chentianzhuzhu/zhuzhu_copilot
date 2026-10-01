@@ -17,8 +17,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from PyQt6.QtCore import QSize, Qt                                    # noqa: E402
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap             # noqa: E402
+from PyQt6.QtCore import QRectF, QSize, Qt                              # noqa: E402
+from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap               # noqa: E402
 from PyQt6.QtSvg import QSvgRenderer                                  # noqa: E402
 from PyQt6.QtWidgets import QApplication                              # noqa: E402
 
@@ -71,37 +71,58 @@ def probe_live_nav() -> None:
 
 
 def render_sheet(out: Path) -> None:
-    cell, pad, label_w = 62, 6, 96
+    """输出验收图：每行一个导航项，左侧语义键，中间四态 3 倍放大（看细节），
+    右侧原始 18px（看真实尺寸下的可读性）。
+
+    说明：offscreen 平台没有任何字体（QFontDatabase.families() 为空），中文标签必然
+    渲染成方块，故此处用 ASCII 语义键代替文案。
+    """
+    zoom, pad, key_w = 3, 8, 104
+    cell = ap._NAV_ICON_SIZE * zoom + 8          # 放大后的图标 + 内边距
+    native_w = 40
+    states = (("常态", "#5F6B7E"), ("悬停", "#1B2433"),
+              ("选中", "#2B51D1"), ("深色", "#9BA3B0"))
     rows = len(ap._NAV_ITEMS)
-    w = label_w + cell * 4 + pad * 2
-    h = rows * (cell + pad) + pad
+    w = key_w + cell * len(states) + native_w + pad * 2
+    h = 34 + rows * (cell + pad) + pad
     sheet = QImage(w, h, QImage.Format.Format_RGB32)
     sheet.fill(QColor("#FFFFFF"))
     p = QPainter(sheet)
     f = p.font()
-    f.setPointSize(8)
+    f.setPointSize(9)
     p.setFont(f)
+    p.setPen(QColor("#1B2433"))
+    p.drawText(pad, 22, "设置页导航图标 · Lucide 开源线条矢量图（ISC）· 3× 放大 + 实际尺寸")
     for i, (name, key) in enumerate(ap._NAV_ITEMS):
-        y = pad + i * (cell + pad)
+        y = 34 + i * (cell + pad)
         p.setPen(QColor("#1B2433"))
-        p.drawText(4, y + cell // 2 + 4, f"{key}")
+        p.drawText(pad, y + cell // 2 + 4, key)
+        p.setPen(QColor("#8A93A3"))
+        p.drawText(pad, y + cell // 2 + 18, f"# {i + 1}")
         svg = ap._LUCIDE_NAV_ICONS[key]
-        for j, (mode, color) in enumerate((("常态", "#5F6B7E"),
-                                           ("悬停", "#1B2433"),
-                                           ("选中", "#2B51D1"),
-                                           ("深色", "#9BA3B0"))):
-            x = label_w + j * cell
-            pm = QPixmap(cell - 8, cell - 8)
+        for j, (label, color) in enumerate(states):
+            x = key_w + j * cell
+            side = ap._NAV_ICON_SIZE * zoom
+            pm = QPixmap(side, side)
             pm.fill(Qt.GlobalColor.transparent)
             pp = QPainter(pm)
             pp.setRenderHint(QPainter.RenderHint.Antialiasing)
-            QSvgRenderer(svg.replace("{color}", color).encode("utf-8")).render(pp)
+            QSvgRenderer(svg.replace("{color}", color).encode("utf-8")).render(
+                pp, QRectF(0, 0, side, side))
             pp.end()
             p.drawPixmap(x + 4, y + 4, pm)
-            p.setPen(QColor("#C8CFDA"))
-            p.drawRect(x + 4, y + 4, cell - 9, cell - 9)
+            p.setPen(QColor("#D5DCE8"))
+            p.drawRect(x + 4, y + 4, side - 1, side - 1)
             p.setPen(QColor("#8A93A3"))
-            p.drawText(x + 6, y + cell + 2, mode)
+            p.drawText(x + 6, y + cell + 6, label)
+        # 实际尺寸（18px）直出：看真实尺寸下笔画是否还分得开
+        nx = key_w + cell * len(states) + 8
+        p.drawPixmap(nx, y + (cell - ap._NAV_ICON_SIZE) // 2,
+                     ap._svg_pixmap(svg, ap._NAV_ICON_SIZE, states[0][1]))
+        p.drawPixmap(nx + ap._NAV_ICON_SIZE + 4, y + (cell - ap._NAV_ICON_SIZE) // 2,
+                     ap._svg_pixmap(svg, ap._NAV_ICON_SIZE, states[2][1]))
+        p.setPen(QColor("#8A93A3"))
+        p.drawText(nx, y + cell + 6, "18px")
     p.end()
     sheet.save(str(out), "PNG")
     print(f"预览图：{out}  ({w}×{h})")
