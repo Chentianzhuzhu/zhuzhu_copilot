@@ -295,3 +295,60 @@ def test_appearance_page_sliders_cover_all_spec_keys():
         assert keys == set(app_glass.param_keys()), f"滑杆与规格不一致：{keys}"
     finally:
         dlg.deleteLater()
+
+
+# ---------- 2.10 壁纸根绘制：必须真的接管 ----------
+
+def test_paint_glass_root_takes_over_when_wallpaper_set(tmp_path):
+    """回归：`_paint_glass_root` 曾把 QRectF 误从 QtGui 导入 → 每次都 ImportError
+    被吞掉 → 恒返回 False，壁纸从未画上屏（用户反馈"图片无法正常显示"）。"""
+    from PyQt6.QtGui import QPainter
+    from PyQt6.QtCore import Qt
+    from zhuzhu_Copilot.core import app_glass
+
+    img = tmp_path / "wall.png"
+    pm = ap.QPixmap(64, 64)
+    pm.fill(ap.QColor("#2F52D8"))
+    assert pm.save(str(img), "PNG")
+    app_glass.set_fields(bg_image=str(img), persist=False)
+
+    host = ap.QWidget()
+    host.resize(120, 80)
+    skin = app_glass.install(host, app_glass.RADIUS_WINDOW)
+    assert skin.background_blurred() is not None, "壁纸应能加载成位图"
+
+    out = ap.QPixmap(120, 80)
+    out.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(out)
+    try:
+        took_over = ap._paint_glass_root(host, painter, out.rect(),
+                                         app_glass.RADIUS_WINDOW)
+    finally:
+        painter.end()
+    assert took_over is True, "壁纸生效时根绘制必须被接管（否则壁纸永远不上屏）"
+
+    # 磨砂纱必须真实画上去：接管后的画面不能等于"只有壁纸"
+    bare = ap.QPixmap(120, 80)
+    bare.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(bare)
+    bg = skin.background_blurred()
+    painter.drawPixmap(bare.rect(), bg, bg.rect())
+    painter.end()
+    assert out.toImage() != bare.toImage(), "磨砂纱没有画上去，正文会压在照片上"
+    host.deleteLater()
+
+
+def test_glass_root_bg_transparent_only_when_usable(tmp_path):
+    """根底转透明的**前提**是壁纸真的可用；否则必须保持主题底色（避免透明黑块）。"""
+    from zhuzhu_Copilot.core import app_glass
+    img = tmp_path / "w.png"
+    pm = ap.QPixmap(32, 32)
+    pm.fill(ap.QColor("#2F52D8"))
+    assert pm.save(str(img), "PNG")
+    app_glass.set_fields(bg_image=str(img), persist=False)
+    assert ap._glass_root_bg("#101216") == "transparent"
+
+    junk = tmp_path / "broken.png"
+    junk.write_bytes(b"broken")
+    app_glass.set_fields(bg_image=str(junk), persist=False)
+    assert ap._glass_root_bg("#101216") == "#101216", "坏图必须回落主题底色"

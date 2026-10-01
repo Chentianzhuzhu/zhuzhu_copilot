@@ -230,7 +230,9 @@ def _glass_wallpaper_active() -> bool:
     """
     try:
         p = app_glass.params()
-        return bool(p.enabled and p.bg_image and Path(p.bg_image).is_file())
+        # 必须用「能解码」而不是「文件存在」：解不了的图会让根底转透明却
+        # 没有壁纸可画，界面变成透明黑块。
+        return bool(p.enabled and p.bg_image and app_glass.wallpaper_ok())
     except Exception:
         return False
 
@@ -247,7 +249,7 @@ def _glass_tip_bg() -> str:
     return PANEL
 
 
-def _paint_glass_root(widget, painter, rect, radius: int) -> bool:
+def _paint_glass_root(widget, painter, rect, radius: int, fallback: str = None) -> bool:
     """把窗口根背景交给玻璃内核绘制（背景图按 blur 模糊 + 圆角裁剪）。
 
     返回 True 表示已接管（调用方直接返回，不再走原主题底色）；
@@ -255,7 +257,8 @@ def _paint_glass_root(widget, painter, rect, radius: int) -> bool:
     """
     if not _glass_wallpaper_active():
         return False
-    from PyQt6.QtGui import QPainterPath, QRectF
+    from PyQt6.QtCore import QRectF          # QRectF 在 QtCore（此前误写 QtGui）
+    from PyQt6.QtGui import QPainterPath
     try:
         skin = app_glass.install(widget, radius)
         bg = skin.background_blurred()
@@ -269,6 +272,8 @@ def _paint_glass_root(widget, painter, rect, radius: int) -> bool:
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     painter.setClipPath(path)
     painter.drawPixmap(rect, bg, bg.rect())
+    # 磨砂纱：壁纸之上必须压一层纱，正文才可读（用户反馈"设置项被遮挡"）
+    painter.fillRect(rect, app_glass.root_veil_color(fallback or BG))
     painter.restore()
     return True
 
@@ -2366,31 +2371,36 @@ class _AgentSettingsDialog(QDialog):
         # （QMessageBox/QInputDialog 等也是 QDialog 子类，若规则用裸 QDialog 选择器，
         #  会继承 background:transparent → 弹窗透明显示为纯黑）
         self.setObjectName("agentSettingsDlg")
+        # 玻璃外壳（无边框）模式：换自绘标题栏 _frameless_titlebar（可拖动/关闭）。
+        # 设置页有自己的标题栏实现，无边框在这里是**可用**的；壁纸画在客户区，
+        # 与标题栏共存。真正的"遮挡"根因是壁纸没画出来 + 缺磨砂纱，已另行修复。
         _glass = _glass_chrome()
         if _glass:
-            self.setWindowFlags(Qt.WindowType.FramelessWindowHint
-                                | Qt.WindowType.Dialog)
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+            outer.addWidget(_frameless_titlebar(self, "AI 设置"))
+            root = QHBoxLayout()
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
+            outer.addLayout(root, 1)
+        else:
+            root = QHBoxLayout(self)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
         self.setMinimumSize(991, 687)
         self.resize(991, 687)
         # 有自定义背景图时根底交给玻璃内核绘制壁纸；否则用主题底色。
         # （注意与无边框外壳无关：不换标题栏也能有壁纸背景。）
         _dlg_bg = "transparent" if _glass_wallpaper_active() else self._BG
-        if _glass:
-            # 弹出层跟随主题面板色；磨砂玻璃的观感由应用级 QSS 的玻璃填充提供
-            # （见 app_glass.control_fill），不在这里写死颜色。
-            _popup_bg = self._PANEL
-            _popup_bd = self._BORDER
-            _popup_sel = self._PANEL2
-            _popup_hover = self._PANEL2
-            _in_bg = self._PANEL
-            _in_focus = self._PANEL2
-        else:
-            _popup_bg = self._PANEL
-            _popup_bd = self._BORDER
-            _popup_sel = self._PANEL2
-            _popup_hover = self._PANEL2
-            _in_bg = self._PANEL
-            _in_focus = self._PANEL2
+        # 弹出层跟随主题面板色；磨砂玻璃的观感由应用级 QSS 的玻璃填充提供
+        # （见 app_glass.control_fill），不在这里写死颜色。
+        _popup_bg = self._PANEL
+        _popup_bd = self._BORDER
+        _popup_sel = self._PANEL2
+        _popup_hover = self._PANEL2
+        _in_bg = self._PANEL
+        _in_focus = self._PANEL2
         self.setStyleSheet(
             # QDialog#agentSettingsDlg：透明背景仅作用于设置对话框自身，
             # 避免级联到子 QMessageBox/QInputDialog 导致其背景透明变纯黑
@@ -2904,8 +2914,13 @@ class _AgentSettingsDialog(QDialog):
         self._glass_fit_combo.blockSignals(True)
         self._glass_fit_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._glass_fit_combo.blockSignals(False)
-        self._glass_bg_label.setText(Path(p.bg_image).name if p.bg_image
-                                     else "未设置（使用主题渐变背景）")
+        if not p.bg_image:
+            self._glass_bg_label.setText("未设置（使用主题渐变背景）")
+        elif not Path(p.bg_image).is_file():
+            self._glass_bg_label.setText(
+                f"{Path(p.bg_image).name}（文件已不存在，请重新选择）")
+        else:
+            self._glass_bg_label.setText(Path(p.bg_image).name)
 
     def _on_glass_slider(self, spec, value: int, scale: int):
         actual = value / scale if scale > 1 else float(value)
@@ -2933,8 +2948,8 @@ class _AgentSettingsDialog(QDialog):
             self, "选择背景图片", str(Path.home()), f"图片 ({exts})")
         if not path:
             return
-        ok, msg, _stored = app_glass.import_background(path)
-        self._glass_bg_label.setText(Path(msg.split("：")[-1]).name if ok else msg)
+        ok, msg, stored = app_glass.import_background(path)
+        self._glass_bg_label.setText(Path(stored).name if ok else msg)
         if not ok:
             QMessageBox.warning(self, "设置背景失败", msg)
         self._glass_sync_widgets()
@@ -14351,14 +14366,20 @@ class AgentPanel(QDialog):
         不画，透出 QSS 的主题渐变）。模糊位图由内核按参数签名缓存，逐帧零开销。
         材质关闭时走系统默认绘制（QSS 主题渐变）。
         """
-        skin = getattr(self, "_glass_skin", None)
-        if skin is not None and _glass_on() and not self._panel_frameless():
-            from PyQt6.QtGui import QPainter
-            painter = QPainter(self)
-            try:
-                skin.paint_root(painter, self.rect())
-            finally:
-                painter.end()
+        # 壁纸分支**不受无边框影响**：无边框只决定圆角与标题栏，不该决定壁纸
+        # 是否上屏（此前被挡住 → 开了无边框的用户永远看不到背景图）。
+        painter = QPainter(self)
+        glass_done = False
+        try:
+            glass_done = _paint_glass_root(self, painter, self.rect(),
+                                           app_glass.RADIUS_WINDOW)
+            if glass_done and self._panel_frameless():
+                self._paint_frameless_edge(painter)
+        except Exception:
+            glass_done = False
+        finally:
+            painter.end()
+        if glass_done:
             return
         if not self._panel_frameless():
             super().paintEvent(event)
@@ -14375,9 +14396,16 @@ class AgentPanel(QDialog):
             p.setClipPath(path)
             p.fillRect(enlarged, QColor(BG))
             p.end()
+            self._paint_frameless_edge(None)
+        except Exception:
+            super().paintEvent(event)
 
-            # 2. 绘制增强边缘高光（玻璃质感）
-            p = QPainter(self)
+    def _paint_frameless_edge(self, painter):
+        """无边框窗口的边缘高光（玻璃厚度感）；painter 为 None 时自建。"""
+        try:
+            from PyQt6.QtCore import QRectF
+            from PyQt6.QtGui import QColor, QPainter, QPen
+            p = painter if painter is not None else QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             # 外缘亮线（玻璃边缘反光）
             pen1 = QPen(QColor(255, 255, 255, 80), 1.5)
@@ -14391,9 +14419,10 @@ class AgentPanel(QDialog):
             pen3 = QPen(QColor(255, 255, 255, 120), 1)
             p.setPen(pen3)
             p.drawLine(20, 1, self.width() - 20, 1)
-            p.end()
+            if painter is None:
+                p.end()
         except Exception:
-            super().paintEvent(event)
+            pass          # 边缘高光只是装饰，失败不影响窗口本身
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

@@ -477,6 +477,64 @@ def test_module_has_no_emoji():
     assert not emoji.findall(src)
 
 
+def test_wallpaper_ok_requires_decodable_image(tmp_path):
+    """文件存在 ≠ 能显示：Qt 解不了的图必须判为不可用。
+
+    若只判存在，窗口根底会转成透明却没有壁纸可画 → 透明黑块。
+    """
+    img = tmp_path / "w.png"
+    _solid((16, 16), "#101216").save(str(img), "PNG")
+    g.set_fields(bg_image=str(img), persist=False)
+    assert g.wallpaper_ok() is True
+
+    junk = tmp_path / "w.png"
+    junk.write_bytes(b"not an image at all")
+    g.set_fields(bg_image=str(junk), persist=False)
+    assert g.wallpaper_ok() is False, "坏图必须判不可用"
+
+    g.set_fields(bg_image=str(tmp_path / "gone.png"), persist=False)
+    assert g.wallpaper_ok() is False
+
+
+def test_import_background_rejects_undecodable_file(tmp_path):
+    """收编前必须先解码：否则坏图会静默变成透明黑块。"""
+    bad = tmp_path / "fake.png"
+    bad.write_bytes(b"MZ not an image")
+    ok, msg, stored = g.import_background(bad)
+    assert not ok, "坏图不能被收编"
+    assert "无法识别" in msg
+    assert not stored, "拒绝时不得返回落盘路径"
+
+
+def test_import_background_removes_stale_other_extension(tmp_path):
+    """换图后目录里只保留当前一张（旧扩展名是死数据）。"""
+    a = tmp_path / "a.jpg"
+    _solid((16, 16), "#101216").save(str(a), "JPEG")
+    ok1, _, stored1 = g.import_background(a)
+    assert ok1 and stored1.endswith(".jpg")
+
+    b = tmp_path / "b.png"
+    _solid((16, 16), "#2F52D8").save(str(b), "PNG")
+    ok2, _, stored2 = g.import_background(b)
+    assert ok2 and stored2.endswith(".png")
+    assert not Path(stored1).is_file(), "旧扩展名壁纸应被清理"
+
+
+def test_root_veil_alpha_is_legible_and_frost_driven():
+    """磨砂纱是可读性地板：必须有足够厚度，且随 frost 单调加深。
+
+    刻意**不随 opacity 缩放**——若乘上去，用户调低透明度正文就会重新压在照片上。
+    """
+    g.set_fields(bg_image="", enabled=True, persist=False)
+    a0 = g.root_veil_color("#101216").alpha()
+    assert 80 <= a0 <= 200, f"纱太薄正文不可读，太厚看不见壁纸：{a0}"
+    g.set_param("frost", 1.0, persist=False)
+    a1 = g.root_veil_color("#101216").alpha()
+    assert a1 > a0, "frost 调大后纱必须更厚"
+    g.set_param("frost", 0.0, persist=False)
+    assert g.root_veil_color("#101216").alpha() < a0
+
+
 # ─────────────────────────── 5) 窗口装配 ───────────────────────────
 
 def test_install_is_idempotent_and_registers_surfaces():

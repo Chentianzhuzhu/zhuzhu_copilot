@@ -69,6 +69,11 @@ _BLUR_MAX_EDGE = 768
 _BLUR_MIN_EDGE = 1
 
 # 液态相位推进：_PHASE_INTERVAL_MS 一跳，_PHASE_CYCLE_S 秒走完一个循环
+# 根表面（主面板/子窗口/设置页）的磨砂纱强度：这些是**不透明窗口**，壁纸
+# 画上去之后必须再压一层纱，否则正文直接叠在照片上不可读。
+_ROOT_VEIL_FLOOR = 0.42   # 最低强度（保证文字可读的地板）
+_ROOT_VEIL_SPAN = 0.34    # frost 再往上加的部分（frost=1 → 0.76）
+
 _PHASE_INTERVAL_MS = 33
 _PHASE_CYCLE_S = 4.0
 _PHASE_STEP = (_PHASE_INTERVAL_MS / 1000.0) / _PHASE_CYCLE_S
@@ -420,13 +425,26 @@ def import_background(source, apply: bool = True) -> tuple:
     if ext not in _BACKGROUND_EXTS:
         return (False, f"不支持的图片格式 {ext or '(无扩展名)'}，"
                        f"可用：{'、'.join(_BACKGROUND_EXTS)}", "")
+    # 收编前先验证 Qt 真的能解码：解不了的图一旦设为背景，会让窗口根底转
+    # 透明却没有壁纸可画（透明黑块）。在这里拒绝并给出明确原因。
+    from PyQt6.QtGui import QPixmap
+    if QPixmap(str(src)).isNull():
+        return (False, f"无法识别的图片：{src.name}（Qt 不支持该格式或文件已损坏）", "")
     try:
         dest_dir = backgrounds_dir()
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"wallpaper{ext}"
         if src.resolve() != dest.resolve():
             shutil.copyfile(src, dest)
+        # 目录里只保留当前一张：换图后旧扩展名的壁纸文件会变成死数据
+        for old in dest_dir.glob("wallpaper.*"):
+            if old.suffix.lower() != ext:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
         _SOURCE_CACHE.clear()
+        _TINT_CACHE.clear()
         if apply:
             set_fields(bg_image=str(dest))
         return (True, f"背景图已设置：{dest.name}", str(dest))
@@ -539,6 +557,38 @@ def _source_pixmap(path: str, mtime: int) -> Optional[QPixmap]:
     _SOURCE_CACHE.clear()
     _SOURCE_CACHE[key] = pm
     return pm
+
+
+def wallpaper_ok() -> bool:
+    """当前配置的背景图是否**真的能解码显示**。
+
+    文件存在 ≠ 能显示：Qt 不认的格式/损坏文件若只判存在，会让窗口根底
+    转成透明却没有壁纸可画 → 界面变成透明黑块。必须以能加载出位图为准。
+    """
+    p = load()
+    path = p.bg_image or ""
+    if not p.enabled or not path:
+        return False
+    try:
+        mtime = Path(path).stat().st_mtime_ns
+    except OSError:
+        return False
+    return _source_pixmap(path, mtime) is not None
+
+
+def root_veil_color(fallback: str, alpha_scale: float = 1.0) -> QColor:
+    """根表面的磨砂纱颜色（壁纸平均色，带 alpha）。
+
+    强度 = 地板 + frost 追加，再乘整层透明度；纱越厚文字越可读，壁纸越含蓄。
+    """
+    q = load()
+    c = QColor(frost_surface_color(fallback))
+    # 刻意**不乘** opacity：这一层是可读性地板。若乘上去，用户把透明度调低
+    # 正文就会重新压在照片上（用户反馈"设置项被遮挡"的第二个成因）。
+    a = (_ROOT_VEIL_FLOOR + _ROOT_VEIL_SPAN * max(0.0, min(1.0, q.frost))) \
+        * max(0.0, min(1.0, alpha_scale))
+    c.setAlpha(int(round(255 * max(0.0, min(1.0, a)))))
+    return c
 
 
 def wallpaper_tint() -> Optional[QColor]:
