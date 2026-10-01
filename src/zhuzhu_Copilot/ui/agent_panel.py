@@ -19999,10 +19999,13 @@ class AgentPanel(QDialog):
         # 默认焦点给"否"，防误触删除
         no_btn = box.buttons()[1]
         box.setDefaultButton(no_btn)
-        if _glass_chrome():
-            _box_bg = PANEL
-            _btn_bg = AI_BG
-            _btn_bd = BORDER
+        # 弹窗底与按钮：与下拉 / 菜单同一材质。这三个取色入口内部已处理
+        # 「玻璃关闭时回退主题色」，所以**不能**再放进 if 分支里赋值 ——
+        # 之前只在唯一分支里赋值，玻璃关闭时直接 UnboundLocalError
+        # （用户反馈：删除对话弹确认框时崩溃）。
+        _box_bg = _popup_glass()
+        _btn_bg = _gfill(AI_BG)
+        _btn_bd = _gedge()
         box.setStyleSheet(
             f"QMessageBox {{ background: {_box_bg}; }}"
             f"QMessageBox QLabel {{ color: {TEXT}; font-size: 13px; }}"

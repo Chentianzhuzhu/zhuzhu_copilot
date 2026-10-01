@@ -120,6 +120,31 @@ def test_popup_frost_targets_window_not_view(glass_state, offscreen_app):
     assert view.window().testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
 
+def test_confirm_box_colors_are_unconditional(glass_state):
+    """确认弹窗（删除对话等）的取色不得放进条件分支。
+
+    回归：`_box_bg` / `_btn_bg` / `_btn_bd` 原先只在 `if _glass_chrome():` 里赋值，
+    玻璃关闭时点「删除对话」→ UnboundLocalError 崩溃。
+    这三个取色入口内部已处理「玻璃关闭回退主题色」，无条件调用即可。
+    """
+    from pathlib import Path
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    src = Path(ap.__file__).read_text(encoding="utf-8")
+    lines = src.splitlines()
+    assert "_box_bg = _popup_glass()" in src, "确认弹窗底色未走玻璃入口"
+    for i, ln in enumerate(lines):
+        if "_box_bg = _popup_glass()" in ln:
+            prev = lines[max(0, i - 1)].strip()
+            assert not prev.startswith("if "), f"取色被放回条件分支：{prev}"
+
+    # 三个入口本身在玻璃关/开两种状态下都必须有值（不会返回 None）
+    for enabled in (False, True):
+        glass_state.set_fields(persist=False, enabled=enabled)
+        assert ap._popup_glass() and ap._gfill(ap.AI_BG) and ap._gedge()
+
+
 def test_gsurface_and_gfill_follow_glass_switch(glass_state):
     """大表面 / 小控件的取色入口：玻璃关=不透明原色，开=半透明玻璃。"""
     from zhuzhu_Copilot.ui import agent_panel as ap
