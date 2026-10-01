@@ -431,3 +431,76 @@ def test_general_page_has_no_duplicate_layout():
 
     src = Path(ap.__file__).read_text(encoding="utf-8")
     assert src.count("lay.addLayout(theme_row)") == 1
+
+
+def _popup_luma_and_colors(img) -> tuple:
+    """抓图 → (平均亮度, 颜色分桶数)；离屏无字形，按粗网格采样即可。"""
+    lums, colors = [], set()
+    for y in range(0, img.height(), 3):
+        for x in range(0, img.width(), 3):
+            r, g, b, _ = img.pixelColor(x, y).getRgb()
+            lums.append((r + g + b) / 3.0)
+            colors.add((r // 16, g // 16, b // 16))
+    return sum(lums) / max(1, len(lums)), len(colors)
+
+
+def test_combo_popup_really_shows_the_frosted_wallpaper(glass_state, offscreen_app, tmp_path):
+    """下拉弹出层必须真透出壁纸，而不是一块深色板 —— 用**像素**判，不看 QSS 串。
+
+    用户先后三次反馈「下拉菜单仍然是深色背景」。只断言 `_popup_glass()` 是 rgba 半透明
+    根本不成立：弹出层是独立顶层窗口，Qt 默认把它填成实色；即便设了
+    WA_TranslucentBackground，QAbstractItemView 的样式底也会把自绘玻璃盖住。
+    所以这里按真实链路验证：真造一个带 `_QCOMBO` 样式的 QComboBox → 设一张亮色壁纸
+    → showPopup() → 抓弹出层像素。透出壁纸才会变亮，因此平均亮度必须明显高于
+    `_POPUP_GLASS_BASE` 自身的亮度；并且颜色不止一两种（不是一块纯色板）。
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter
+    from PyQt6.QtWidgets import QComboBox
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    # 亮色壁纸：左暖橙、右青蓝 —— 透出与否在亮度上分得很开
+    wall = tmp_path / "wall.png"
+    img = QImage(1280, 800, QImage.Format.Format_ARGB32)
+    p = QPainter(img)
+    g = QLinearGradient(0, 0, 1280, 0)
+    g.setColorAt(0.0, QColor("#FFD08A"))
+    g.setColorAt(1.0, QColor("#7FD8E8"))
+    p.fillRect(img.rect(), g)
+    p.end()
+    img.save(str(wall))
+
+    glass_state.set_fields(persist=False, enabled=True, bg_image=str(wall))
+    base_luma = sum(QColor(ap._POPUP_GLASS_BASE).getRgb()[:3]) / 3.0
+
+    combo = QComboBox()
+    combo.setStyleSheet(ap._QCOMBO)
+    combo.addItems(["自动选择", "agnes-2.5-flash", "deepseek-flash", "deepseek-v4-pro"])
+    combo.resize(240, 32)
+    combo.show()
+    ap._harden_combo_popup(combo)
+    for _ in range(60):
+        offscreen_app.processEvents()
+    combo.showPopup()
+    for _ in range(120):
+        offscreen_app.processEvents()
+
+    view = combo.view()
+    assert view.isVisible(), "弹出层没显示，抓图无意义"
+    assert view.window().testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground), \
+        "弹出层未设半透明窗口属性：Qt 会把它填成实色，玻璃不可能透出"
+
+    luma, ncol = _popup_luma_and_colors(view.window().grab().toImage())
+    try:
+        combo.hidePopup()
+        combo.close()
+    except Exception:
+        pass
+    for _ in range(20):
+        offscreen_app.processEvents()
+
+    assert ncol >= 5, f"弹出层几乎是一块纯色板（颜色种类 {ncol}）"
+    assert luma > base_luma + 18, (
+        f"弹出层没透出壁纸：平均亮度 {luma:.1f} ≈ 玻璃底色 {base_luma:.1f}"
+        "（说明自绘玻璃被样式底盖住 / 根本没上屏）")

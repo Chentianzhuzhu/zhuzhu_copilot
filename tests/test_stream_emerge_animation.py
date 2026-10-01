@@ -187,6 +187,38 @@ def test_every_output_block_has_emerge_band():
         app.processEvents()
 
 
+def test_emerge_fill_prefers_band_over_dark_theme_bg():
+    """「落字浮现」的遮底色必须优先取 ChatStyle.band —— 否则正文会闪黑。
+
+    回归（用户反馈「agent 输出正文时有黑色元素瞬间出现」）：正文 / 思考 / 工具行 /
+    命令块原先都直接拿 `style.bg`（纯深色主题底）当遮色。磨砂玻璃下正文是坐在壁纸上的，
+    每落一行字就闪一块纯黑。面板侧因此给出 `band`（壁纸平均色压在面板色上的**不透明**
+    合成色 —— 必须不透明才盖得住旧字）。此用例锁死「给了 band 就必须用 band」的链路：
+    漏掉任何一个区块，黑块就会从那个区块冒出来。
+    """
+    import dataclasses
+
+    band = "#2A3140"
+    styled = dataclasses.replace(STYLE, band=band)
+    blocks = [cb.ThinkBubble(styled, _icon), cb.ToolCallRow(styled, _icon),
+              cb.CmdBlock(styled), cb.StreamBlock(styled), cb.RichBlock(styled)]
+    try:
+        for block in blocks:
+            assert block._emerge._fill.name() == band.lower(), type(block).__name__
+    finally:
+        for block in blocks:
+            block.deleteLater()
+        app.processEvents()
+
+    # 没给 band（历史主题包 / 老构造点）时仍回退到各自的面底色，不出现空色
+    for block in (cb.StreamBlock(STYLE), cb.RichBlock(STYLE)):
+        try:
+            assert block._emerge._fill.name() == STYLE.bg.lower(), type(block).__name__
+        finally:
+            block.deleteLater()
+    app.processEvents()
+
+
 def test_tool_row_emerges_when_it_lands_on_screen():
     """工具行/命令块这类「一次成型」的块：内容在布局生效前就写好了，
     必须靠「首次布局重排 = 块刚上屏」把它整块记为刚落下，否则它会直接跳出来。"""

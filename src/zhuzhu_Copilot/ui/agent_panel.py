@@ -219,15 +219,28 @@ def _gsurface(color: str) -> str:
 _GLASS_REFRESH_DEBOUNCE_MS = 120
 
 
+# 玻璃态「浅色洗色」中保留的派生色比例：0 = 纯白（各层会塌成同一种颜色），
+# 1 = 完全保留派生色（又退回深色块）。取 0.25 —— 仍是明显的浅色薄纱，但每层
+# 仍带着自己那点色相，层次不会被抹平。
+_SHEER_TINT = 0.25
+
+
 def _sheer(alpha: float, fallback: str) -> str:
-    """交互态（悬停 / 选中 / 当前项）的浅色洗色：**白色**半透明。
+    """交互态（悬停 / 选中 / 当前项）与层次色的浅色薄纱：**半透明**，但带本层色相。
 
     「禁止深色背景附着」：选中 / 悬停都不能是一块深色底，改用一层淡白高亮。
     玻璃关闭时回退到给定的主题色（纯主题模式下保持原有交互观感）。
+
+    这里**不能**直接返回固定的 `rgba(255,255,255,alpha)`：同一 alpha 下所有调用点会
+    得到完全相同的颜色串，`think_bg / tag_bg / icon_shell / tool_shell` 这些「由色板
+    派生的层次色」就全塌成一层（等价于硬编码白色），
+    `test_chat_style_derives_layered_colors` 正是这条回归的守卫。
+    做法：把派生色按 `_SHEER_TINT` 提亮成大比例浅色，再以 `alpha` 作覆盖强度 ——
+    既保住层次，又仍是浅色半透明（壁纸照常透出）。
     """
     if not _glass_on():
         return fallback
-    return app_glass.rgba("#FFFFFF", alpha)
+    return app_glass.rgba(_mix_hex(fallback, "#FFFFFF", _SHEER_TINT), alpha)
 
 
 # 输入类控件「聚焦边缘泛光」：QSS 没有 box-shadow，画不出外发光；而
