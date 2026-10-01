@@ -1,18 +1,3 @@
-"""zhuzhu Copilot 工具面板（深色"星际控制台"风格，无 emoji，矢量图标）
-
-消息事件流（1:1 复刻 ui_style_demo/index.html 的结构，实现见 ui/agent_chat_bubbles.py）：
-- AI 回合没有填充气泡：上下虚线分区 + 左侧竖虚线 + 骑线耗时徽章；回合内依次是
-  思考气泡（超 5 行折叠）→ 工具调用行 → 命令块 → 正文；回合结束后过程区整体收起，
-  只留最后一段正文与「查看执行过程」开关（收起态不创建过程控件，长会话才不卡）
-- 用户消息靠右（深蓝非对称圆角气泡），AI 回合铺满内容宽度
-- 工具图标：每个工具一个专属线条矢量图标（ui/tool_icons.py，族底图 + 动作角标）
-- 流式输出：33ms 固定节拍（≈30fps）连续落字，dirty 防抖合并增量
-- 上下文：engine 复用保留跨任务对话历史（截图仅保留最近 2 张防膨胀），可一键清空
-- 反馈：发送中/停止中按钮状态 + "思考中"点号动画 + tokens 实时统计
-- 每步确认：AskBeforeEdit 弹窗确认（确认后危险命令可执行）；YOLO 无确认、不设任何限制（可操作任意目录/系统目录、执行任意命令）
-- MCP / skills / agents：从 ~/.zhuzhu_Copilot/agent/*.json 加载
-"""
-
 from zhuzhu_Copilot import app_identity
 import base64
 import ctypes
@@ -163,8 +148,6 @@ from zhuzhu_Copilot.ui.tokens import (
 from zhuzhu_Copilot.ui.widgets import add_brand_footer
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
-# ---------- 主题系统 ----------
-# 极简四色系：纯黑/淡灰 + 白 + 深蓝。深色（默认）与浅色两套色板，支持手动选择或按时间自动。
 _THEMES = {
     "dark": {
         "BG": "#101216", "BG_BOTTOM": "#0B0D11", "PANEL": "#181B21",
@@ -215,13 +198,11 @@ def _gsurface(color: str) -> str:
     return "transparent" if _glass_on() else color
 
 
-# 玻璃参数变化 → 合并刷新（滑杆拖动时每次变化都重算 QSS 会卡）
+
 _GLASS_REFRESH_DEBOUNCE_MS = 120
 
 
-# 玻璃态「浅色洗色」中保留的派生色比例：0 = 纯白（各层会塌成同一种颜色），
-# 1 = 完全保留派生色（又退回深色块）。取 0.25 —— 仍是明显的浅色薄纱，但每层
-# 仍带着自己那点色相，层次不会被抹平。
+
 _SHEER_TINT = 0.25
 
 
@@ -243,9 +224,7 @@ def _sheer(alpha: float, fallback: str) -> str:
     return app_glass.rgba(_mix_hex(fallback, "#FFFFFF", _SHEER_TINT), alpha)
 
 
-# 输入类控件「聚焦边缘泛光」：QSS 没有 box-shadow，画不出外发光；而
-# QGraphicsDropShadowEffect 的「偏移 0 + 模糊」正好就是一层向外的柔光。聚焦时挂上、
-# 失焦立刻移除 —— Qt 的 effect 会让控件走离屏渲染，常驻会拖慢输入（性能优先）。
+
 _FOCUS_GLOW_BLUR = 16
 _FOCUS_GLOW_ALPHA = 170
 
@@ -397,6 +376,47 @@ def _frost_popup_view(view) -> None:
     except Exception:
         vp = None
     _frost_popup_widget(vp if vp is not None else view)
+    _popup_clear_own_bg(view)
+
+
+def _popup_clear_own_bg(view) -> None:
+    """让弹出层**自己的样式底让位**，从而显示自绘玻璃里的「本窗口那一块壁纸」。
+
+    这是「弹层是一块实色」的根因（用户反馈的「实色元素残留」）：自绘玻璃已经按屏幕
+    坐标铺好了本窗口所处的那块壁纸（与主面板、各浮窗**同一张图**），但 QSS 的
+    `QComboBox QAbstractItemView { background: rgba(壁纸平均色, 0.88) }` 会以 88%
+    不透明度把它盖住 —— 结果弹层是一块**与壁纸无关的纯平均色**，而它周围的面板都在
+    显示同一张照片，视觉上就是「单独一个模块自己处理了这张图」。
+
+    做法：在 view **自身**的样式表里把背景置空。控件自身的样式表优先于祖先的派生
+    选择器（`QComboBox QAbstractItemView`），所以只影响背景，item 的字色/悬停/内边距
+    仍由原 QSS 提供。壁纸不可用时置空为 "" —— 此时玻璃层会退回不透明兜底底，
+    不能留全透明（会糊成一片）。
+    """
+    if view is None:
+        return
+    try:
+        view.setStyleSheet("background: transparent;"
+                           if _glass_wallpaper_active() else "")
+    except Exception:
+        pass
+
+
+def _harden_menu(menu) -> None:
+    """把右键菜单做成玻璃：自绘「本窗口那一块壁纸」+ 清掉它自己的实色样式底。
+
+    与下拉弹层同一个道理（见 `_popup_clear_own_bg`）：QMenu 也是独立顶层 popup，
+    全局 QSS 给它的底是 `_popup_glass()`（壁纸平均色的实色）—— 不清掉的话菜单就是
+    一块与周围照片无关的纯色板。菜单项的字色 / 悬停底仍由全局 QSS 提供。
+    """
+    if menu is None:
+        return
+    try:
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    except Exception:
+        return          # 平台不支持时静默退回不透明，菜单照常可用
+    _frost_popup_widget(menu)
+    _popup_clear_own_bg(menu)
 
 
 def _draw_round_rect(widget, painter, color: str) -> None:
@@ -11853,6 +11873,7 @@ class WorktreeWindow(_RoundedFloatWindow):
             return
         self.tree.setCurrentItem(item)
         menu = QMenu(self)
+        _harden_menu(menu)          # 右键菜单也走玻璃材质
         open_ex = menu.addAction("打开于资源管理器")
         open_ex.triggered.connect(lambda: self._open_in_explorer(path))
         if os.path.isdir(path):
@@ -18328,6 +18349,7 @@ class AgentPanel(QDialog):
         segs = self._bubble_segs.get(id(bubble))
         text = self._bubble_read_text(segs)
         menu = QMenu(self)
+        _harden_menu(menu)          # 右键菜单也走玻璃材质
         read_act = menu.addAction("朗读这条回复")
         if text:
             menu.addSeparator()
@@ -19992,6 +20014,7 @@ class AgentPanel(QDialog):
         name = self.session_combo.itemText(idx.row())
         orig = self.session_combo.currentIndex()   # 记录原索引，防止 popup 关闭误切换对话
         menu = QMenu(self)
+        _harden_menu(menu)          # 右键菜单也走玻璃材质
         del_act = menu.addAction(f"删除对话「{name}」")
         act = menu.exec(view.viewport().mapToGlobal(pos))
         # 菜单/下拉关闭时 QComboBox 会把高亮项同步为当前项，误触发 _on_session_selected：

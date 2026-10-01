@@ -130,6 +130,7 @@ def test_popup_frost_targets_window_not_view(glass_state, offscreen_app):
     ap._frost_popup_view(view)
     assert view.windowFlags() == before, "不得改动 view 自身的窗口标志"
     assert view.window().testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    _drop_popup(offscreen_app, combo)
 
 
 def test_confirm_box_colors_are_unconditional(glass_state):
@@ -478,14 +479,20 @@ def _bright_wallpaper(tmp_path):
     return wall
 
 
-def test_frost_surface_matches_what_the_panel_actually_renders(glass_state, tmp_path):
+def test_frost_surface_matches_what_the_panel_actually_renders(glass_state, offscreen_app,
+                                                               tmp_path):
     """「合成后的玻璃面底色」必须等于「模糊壁纸 ⊕ 磨砂纱」，而不是深色主题底。
 
     这是「下拉仍是深色 / 正文闪黑」的共同根因：
     `frost_surface_color()` = 壁纸平均色 × frost + 主题底色 × (1-frost)，frost 偏小
-    （用户可能调到接近 0）时结果 ≈ **纯深色主题底**（实测 #1F2227）；而面板真正渲染的是
-    `_paint_glass_root()` = 模糊壁纸 + `root_veil_color()` 的纱，亮壁纸下是**中浅色**
-    （实测 #7a8679）。两者亮度差 4 倍，凡是拿前者当「面板该有的样子」的浮层必然是深色。
+    （用户可能调到接近 0）时结果 ≈ **纯主题底色**（深色主题下实测 #1F2227）；而面板真正
+    渲染的是 `_paint_glass_root()` = 模糊壁纸 + `root_veil_color()` 的纱，亮壁纸下是
+    **中浅色**（实测 #7a8679）。两者亮度差 4 倍，凡是拿前者当「面板该有的样子」的浮层
+    必然深一大截。
+
+    这里刻意**不去改主题全局态**（`_apply_colors` 会触发应用级全量重刷样式，离屏会话里
+    容易把早先用例遗留的控件拖崩）——「旧算法在深色主题下退化」用纯函数验证即可，
+    与当前主题无关。
     """
     from PyQt6.QtGui import QColor
 
@@ -495,28 +502,30 @@ def test_frost_surface_matches_what_the_panel_actually_renders(glass_state, tmp_
 
     glass_state.set_fields(persist=False, enabled=True,
                            bg_image=str(_bright_wallpaper(tmp_path)))
-    # 用深色主题复现用户现场（截图就是深色 + 亮壁纸）：旧算法在这种组合下退化成
-    # 深色主题底，而面板实际渲染出来的是「亮壁纸压纱」的浅色。
-    ap._apply_colors(ap._THEMES["dark"], force=True, bump_version=False)
-    try:
-        surf = ap._frost_surface()
-        veil = app_glass.root_veil_color(ap.PANEL)
-        tint = app_glass.wallpaper_tint()
-        a = veil.alphaF()
-        want = QColor(*(int(round(c * (1 - a) + v * a))
-                        for c, v in zip(tint.getRgb()[:3], veil.getRgb()[:3])))
-        got = QColor(surf)
-        assert all(abs(g - w) <= 3 for g, w in zip(got.getRgb()[:3], want.getRgb()[:3])), \
-            f"合成玻璃色不对：{surf} vs 期望 {want.name()}"
-        old = app_glass.frost_surface_color(ap.PANEL)
-        assert _mean_of(surf) > _mean_of(old) + 30, (
-            f"深色主题 + 亮壁纸下合成玻璃色仍偏暗：{surf}（旧算法 {old}）"
-            "—— 弹出层底与落字遮色都会跟着变深")
-    finally:
-        ap.apply_theme()        # 还原成设置里的主题
+    glass_state.set_param("frost", 0.04, persist=False)     # 用户现场：磨砂强度接近 0
+
+    # 旧算法在深色主题下退化成「几乎就是主题底色」—— 这就是 bug 的成因
+    dark_old = app_glass.frost_surface_color(ap._THEMES["dark"]["PANEL"])
+    assert _mean_of(dark_old) < 110, f"旧算法本应退化成深色底，实得 {dark_old}"
+
+    # 新算法 = 壁纸平均色 ⊕ 磨砂纱（凸组合，逐通道核对）
+    surf = ap._frost_surface()
+    veil = app_glass.root_veil_color(ap.PANEL)
+    tint = app_glass.wallpaper_tint()
+    a = veil.alphaF()
+    want = QColor(*(int(round(c * (1 - a) + v * a))
+                    for c, v in zip(tint.getRgb()[:3], veil.getRgb()[:3])))
+    got = QColor(surf)
+    assert all(abs(g - w) <= 3 for g, w in zip(got.getRgb()[:3], want.getRgb()[:3])), \
+        f"合成玻璃色不对：{surf} vs 期望 {want.name()}"
+
+    # 亮壁纸 + 低 frost：合成结果必须远离「旧的深色退化值」，否则浮层还是深色板
+    assert _mean_of(surf) > _mean_of(dark_old) + 30, (
+        f"合成玻璃色仍接近深色底：{surf}（旧的退化值 {dark_old}）"
+        "—— 弹出层底与落字遮色都会跟着变深")
 
 
-def test_emerge_band_matches_the_panel_glass(glass_state, tmp_path):
+def test_emerge_band_matches_the_panel_glass(glass_state, offscreen_app, tmp_path):
     """落字浮现的遮色 == 面板那块玻璃，否则流式输出时每落一行就闪一块深色。
 
     回归（用户反馈「agent 输出正文时有黑色元素瞬间出现」）：遮色原取
@@ -536,6 +545,30 @@ def test_emerge_band_matches_the_panel_glass(glass_state, tmp_path):
 
     glass_state.set_fields(persist=False, enabled=False)
     assert ap._glass_band().lower() == ap.BG.lower(), "玻璃关闭时应回退主题底色"
+
+
+def _drop_popup(app, combo) -> None:
+    """收起并**真正销毁**弹层窗口。
+
+    弹出层是独立顶层 popup（QComboBoxPrivateContainer + QListView）：只 close 不销毁的话
+    解释器退出时它会晚于 QApplication 析构 → 进程以 0xC0000005 崩退
+    （pytest 全绿但退出码非 0，CI 判失败）。conftest 的会话级清理兜不住这个过程内的
+    中间态，所以在用例里就地销毁。
+    """
+    from PyQt6.QtCore import QEvent
+
+    try:
+        combo.hidePopup()
+    except Exception:
+        pass
+    for w in (combo.view().window(), combo.view(), combo):
+        try:
+            w.hide()
+            w.deleteLater()
+        except Exception:
+            pass
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 def test_combo_popup_is_the_same_glass_as_the_panel(glass_state, offscreen_app, tmp_path):
@@ -574,15 +607,72 @@ def test_combo_popup_is_the_same_glass_as_the_panel(glass_state, offscreen_app, 
         "弹出层未设半透明窗口属性：Qt 会把它填成实色，玻璃不可能透出"
 
     luma, ncol = _popup_luma_and_colors(view.window().grab().toImage())
-    try:
-        combo.hidePopup()
-        combo.close()
-    except Exception:
-        pass
-    for _ in range(20):
-        offscreen_app.processEvents()
+    _drop_popup(offscreen_app, combo)
 
     assert ncol >= 5, f"弹出层几乎是一块纯色板（颜色种类 {ncol}）"
     assert luma >= panel_luma * 0.75, (
         f"弹出层比面板暗太多：弹层平均亮度 {luma:.1f}，面板玻璃 {panel_luma:.1f}"
         "（说明弹层底还是深色算法 / 自绘玻璃没上屏）")
+
+
+def test_combo_popup_shows_the_local_wallpaper_block(glass_state, offscreen_app, tmp_path):
+    """弹层显示的必须是**本窗口在屏幕上那一块**壁纸，而不是整张图的平均色。
+
+    回归（用户反馈「仍有实色元素残留 … 对图片，主 agent 面板必须共用一张图，而不是
+    单独一个模块裁切这张图」）：自绘玻璃本来就按屏幕坐标铺好本窗口那块壁纸，但 QSS 的
+    `background: rgba(壁纸平均色, 0.88)` 会把它盖住 → 弹层成了一块**与照片无关的纯色**，
+    而周围面板都在显示同一张照片。
+
+    判据用「左暖橙 / 右青蓝」的壁纸 + 把弹层放在最左边：它必须偏橙（= 局部内容）；
+    整图平均色是中性的（r≈b），若弹层还是实色平均色就判不过。
+    """
+    from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter
+    from PyQt6.QtWidgets import QComboBox
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    wall = tmp_path / "lr.png"
+    img = QImage(1280, 800, QImage.Format.Format_ARGB32)
+    p = QPainter(img)
+    g = QLinearGradient(0, 0, 1280, 0)
+    g.setColorAt(0.0, QColor("#FFA02A"))      # 左：强暖橙
+    g.setColorAt(1.0, QColor("#2AA0FF"))      # 右：强青蓝
+    p.fillRect(img.rect(), g)
+    p.end()
+    img.save(str(wall))
+
+    glass_state.set_fields(persist=False, enabled=True, bg_image=str(wall))
+    ap.refresh_glass()
+
+    combo = QComboBox()
+    combo.setStyleSheet(ap._QCOMBO)
+    combo.addItems(["一", "二", "三", "四"])
+    combo.resize(240, 32)
+    combo.show()
+    ap._harden_combo_popup(combo)
+    for _ in range(60):
+        offscreen_app.processEvents()
+    combo.showPopup()
+    for _ in range(120):
+        offscreen_app.processEvents()
+
+    view = combo.view()
+    shot = view.window().grab().toImage()
+    _drop_popup(offscreen_app, combo)
+
+    # 只取「背景」像素：文字/描边是少数派，用中位数而不是均值区分
+    rs, bs = [], []
+    for y in range(2, shot.height() - 2, 2):
+        for x in range(2, shot.width() - 2, 2):
+            r, g, b, _ = shot.pixelColor(x, y).getRgb()
+            rs.append(r)
+            bs.append(b)
+    rs.sort()
+    bs.sort()
+    warm = rs[len(rs) // 2] - bs[len(bs) // 2]          # 中位数 r-b：橙色为正
+    flat = QColor(ap._frost_surface())
+    flat_warm = flat.red() - flat.blue()
+    assert warm > flat_warm + 25, (
+        f"弹层没显示本窗口那块壁纸（局部暖色 r-b={warm}，平均色 r-b={flat_warm}）"
+        "—— 说明样式底把自绘玻璃盖住了，弹层是一块实色")
+    assert warm > 25, f"弹层整体偏冷（r-b={warm}）：没取到左侧那块暖色壁纸"
