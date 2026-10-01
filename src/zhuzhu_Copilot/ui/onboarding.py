@@ -557,12 +557,7 @@ def build_wizard(parent=None) -> OnboardingWizard:
     否则同一个向导会在两处呈现出不同大小。返回值由调用方负责 exec()。
     """
     dlg = OnboardingWizard(parent)
-    try:
-        from zhuzhu_Copilot.core import agent_ui_ux
-        agent_ui_ux.glassify_dialog(dlg)
-    except Exception:
-        pass
-
+    # 尺寸下限 + 居中的统一处理（弹窗外观现由应用级 QSS 的主题色统一承载）
     def _normalize():
         try:
             dlg.adjustSize()

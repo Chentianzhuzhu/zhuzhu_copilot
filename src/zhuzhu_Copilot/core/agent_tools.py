@@ -290,6 +290,46 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "set_app_background",
+            "description": "设置 AI 面板的背景图与磨砂玻璃外观，参数即时生效（无需重启）。"
+                           "op=set 设置背景图（image=本地图片路径；url=图片地址；"
+                           "也可先用 generate_image 生成图片再传其本地路径）；"
+                           "op=params 只调玻璃参数；op=clear 清除背景图；op=get 查询当前外观"
+                           "（op 缺省 get）。参数含义：blur 背景高斯模糊半径 0-48(px)、"
+                           "frost 磨砂程度 0-1、edge 边缘高光 0-1、opacity 透明度 0-1、"
+                           "liquid 液态感 0-1、liquid_anim 液态流动动效开关。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string",
+                           "description": "set / params / clear / get，缺省 get"},
+                    "image": {"type": "string",
+                              "description": "op=set 用：本地图片路径 "
+                                             "(png/jpg/jpeg/bmp/webp)"},
+                    "url": {"type": "string",
+                            "description": "op=set 用：图片下载地址（与 image 二选一）"},
+                    "fit": {"type": "string",
+                            "description": "背景适配：cover / contain / stretch / tile，"
+                                           "缺省 cover"},
+                    "blur": {"type": "number", "description": "背景模糊半径 0-48（px）"},
+                    "frost": {"type": "number", "description": "磨砂程度 0-1"},
+                    "edge": {"type": "number", "description": "边缘高光 0-1"},
+                    "opacity": {"type": "number", "description": "透明度 0-1"},
+                    "liquid": {"type": "number", "description": "液态感 0-1"},
+                    "liquid_anim": {"type": "boolean",
+                                    "description": "液态流动动效（默认关闭，开启有 CPU 代价）"},
+                    "frameless": {"type": "boolean",
+                                  "description": "无边框玻璃窗口外壳（会换掉系统标题栏，默认关）"},
+                    "reset": {"type": "boolean",
+                              "description": "op=params 时先恢复默认外观再应用本次参数"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "find_app",
             "description": "快速查找已安装应用（扫描开始菜单/桌面快捷方式/注册表，秒查带缓存），"
                            "返回可启动的完整路径候选。当用户要打开某个应用而你不确定其确切名称/"
@@ -1915,74 +1955,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "manage_uiux",
-            "description": "管理自定义 UI/UX 包（Cordis 热插拔）。op 缺省默认 list。"
-                           "op=list 列出全部包；"
-                           "op=create 创建（name/description/build_ui 完整自定义代码，"
-                           "build_welcome 可选，theme 可选 {dark:{...},light:{...}} 自定义主题色板，"
-                           "qss 可选 panel.qss 样式表深度定制组件外观，"
-                           "plugins 可选 [\"插件名\"]、mcp 可选 [\"MCP名\"] 依赖声明）；"
-                           "op=read 读取包内容（name + part=build_ui/build_welcome/theme/qss/meta）；"
-                           "op=update 更新 build_ui（name+build_ui）；"
-                           "op=set_qss 更新样式表（name+qss）；"
-                           "op=update_theme 更新主题色板（name+theme JSON）；"
-                           "op=deps 更新依赖（name+plugins/mcp 列表，传 [] 清空）；"
-                           "op=duplicate 复制包为新包（name+new_name）；"
-                           "op=export 导出 zip 资源包（name+dest 目标目录或文件路径，"
-                           "声明了依赖会含 plugins/ 与 mcp_servers.json）；"
-                           "op=import 导入 zip 资源包（zip_path，同名覆盖，自动安装依赖）；"
-                           "op=activate 切换（name，'default' 切回默认）；op=delete 删除用户包"
-                           "（内置包拒绝）；op=get 获取当前活跃包。",
-            "parameters": {"type": "object",
-                           "properties": {
-                               "op": {"type": "string",
-                                      "enum": ["list", "create", "read", "update", "set_qss",
-                                               "update_theme", "deps", "duplicate", "export",
-                                               "import", "activate", "delete", "get"],
-                                      "description": "操作类型"},
-                               "name": {"type": "string", "description": "包名"},
-                               "new_name": {"type": "string", "description": "duplicate 时新包名"},
-                               "part": {"type": "string",
-                                        "description": "read 时读取部分：build_ui/build_welcome/theme/qss/meta"},
-                               "description": {"type": "string", "description": "create 时的描述"},
-                               "build_ui": {"type": "string", "description": "create/update 时的 build_ui.py 代码（完整自定义）"},
-                               "build_welcome": {"type": "string", "description": "create 时可选 build_welcome.py 代码"},
-                               "qss": {"type": "string",
-                                       "description": "panel.qss 样式表（QSS，深度定制按钮/滑块/输入框/对话框等组件外观）"},
-                               "theme": {"type": "string",
-                                         "description": "自定义主题色板 JSON：{\"dark\":{...},\"light\":{...}}，"
-                                                        "键为色板常量名 BG/TEXT/ACCENT 等"},
-                               "plugins": {"type": "string",
-                                           "description": "依赖的插件名列表 JSON，如 [\"frontend-design-pro\"]（导出时打包）"},
-                               "mcp": {"type": "string",
-                                       "description": "依赖的 MCP server 名列表 JSON，如 [\"local\"]（导出时打包）"},
-                               "dest": {"type": "string", "description": "export 导出目标目录或文件路径（.zip）"},
-                               "zip_path": {"type": "string", "description": "import 要导入的 zip 文件路径"}},
-                           "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_uiux",
-            "description": "用自然语言描述让 AI 生成一个**完整的自定义 UI/UX 包**（Cordis 热插拔界面）："
-                           "内部调用真实 LLM 生成 build_ui.py + 深/浅两套主题色板 + panel.qss 样式表"
-                           "并落盘，生成期间自动上报进度。适合「换个风格 / 重新设计面板 / 自定义界面」"
-                           "的整体生成；仅微调已有包（改样式/换色/改局部）请用 manage_uiux "
-                           "op=read + set_qss/update_theme/update。",
-            "parameters": {"type": "object",
-                           "properties": {
-                               "description": {"type": "string",
-                                               "description": "用户自然语言描述：风格、布局、配色等"},
-                               "activate": {"type": "boolean",
-                                            "description": "可选，默认 false：生成后是否立即设为当前界面"
-                                                           "（热插拔生效）"}},
-                           "required": ["description"]},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "set_generation_progress",
             "description": "实时上报当前**生成类任务**的进度（百分比 + 阶段说明），显示在面板状态行上，"
                            "让用户看到进度而不是干等。用于 UI/UX 包生成、插件生成等耗时生成过程："
@@ -2026,7 +1998,7 @@ TOOLS = [
             "name": "inspect_customization",
             "description": "盘点当前全部可深度自定义维度（Cordis 理念：一切皆可替换/热插拔）："
                            "工作流（agent.py/llm.py/tools.py/skills/plugins/mcp.json）、技能、插件、"
-                           "UI/UX 包、面板自定义按钮、MCP 服务器。返回各维度现状与对应自定义工具，"
+                           "面板自定义按钮、MCP 服务器。返回各维度现状与对应自定义工具，"
                            "供引导用户选择要自定义/新增的功能（信息不足先用 ask_user 问清需求）。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -2275,7 +2247,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "register_feature_panel",
-            "description": "向当前工作流注册一个功能面板（小功能注入现有工作流，绝不新建 UI/UX 包）。"
+            "description": "向当前工作流注册一个功能面板（小功能注入现有工作流，不改动面板外观）。"
                            "生成 <当前工作流>/panel.py，扫描后成为可拖拽扩展浮窗。"
                            "python 需提供 build_panel(owner)->QWidget 的完整代码（module 级暴露）："
                            "TITLE（面板标题，缺省用 name）；WIDTH（默认 300）；HEIGHT（默认 240）；"
@@ -2855,11 +2827,8 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
                                     str(args.get("action", "read")), args.get("content"))
         if name == "delete_workflow":
             return _delete_workflow(str(args.get("name", "")))
-        if name == "manage_uiux":
-            return _manage_uiux(args)
-        if name == "create_uiux":
-            return _create_uiux(str(args.get("description", "")),
-                                bool(args.get("activate")), status_cb)
+        if name == "set_app_background":
+            return _set_app_background(args)
         if name == "set_generation_progress":
             return _set_generation_progress(args, status_cb)
         if name == "register_panel_btn":
@@ -4929,27 +4898,122 @@ def _create_plugin(description: str, kind: str, status_cb=None) -> dict:
     return ({"text": msg, "images": []} if ok else _blocked(msg))
 
 
-def _create_uiux(description: str, activate: bool, status_cb=None) -> dict:
-    """用自然语言描述生成完整 UI/UX 包（真实 LLM：build_ui + 双主题色板 + panel.qss），
-    生成期间上报进度；activate=True 时生成后自动切换为当前界面（热插拔生效）。"""
-    from zhuzhu_Copilot.core import agent_ui_ux
-    desc = (description or "").strip()
-    if not desc:
-        return _blocked("[create_uiux] 需要 description 参数：用自然语言描述想要的界面风格")
-    before = {p.get("name") for p in agent_ui_ux.list_packages()}
-    ok, msg = agent_ui_ux.create_package_from_nl(
-        desc, on_status=_generation_status_adapter(status_cb))
-    if not ok:
-        return _blocked(msg)
-    if activate:
-        new_names = [p.get("name") for p in agent_ui_ux.list_packages()
-                     if p.get("name") not in before]
-        if len(new_names) == 1:
-            aok, amsg = agent_ui_ux.set_active_package(new_names[0])
-            msg += f"\n{amsg}" if aok else f"\n（自动切换失败：{amsg}）"
-        else:
-            msg += "\n（已生成，请在 设置→UI/UX 自定义 中切换生效）"
-    return {"text": msg, "images": [], "rebuild_uiux": bool(activate)}
+# ── 全局外观（背景图 + 磨砂玻璃参数） ─────────────────────────────
+
+_BG_MAX_BYTES = 24 * 1024 * 1024      # 背景图下载上限（挡住误给的超大文件）
+_BG_URL_TIMEOUT = 30
+
+
+def _apply_glass_params(args: dict) -> list:
+    """把参数落到玻璃内核，返回「已应用」的显示文本列表；未传的保持不动。"""
+    from zhuzhu_Copilot.core import app_glass
+    cur = app_glass.params()
+    done = []
+    for s in app_glass.PARAM_SPECS:
+        if args.get(s.key) is None:
+            continue
+        cur = cur.with_param(s.key, args.get(s.key))
+        done.append(f"{s.label}={app_glass.format_value(s, cur.value(s.key))}")
+    for key, label in (("liquid_anim", "液态流动动效"), ("frameless", "无边框外壳")):
+        if args.get(key) is None:
+            continue
+        cur = cur.with_fields(**{key: bool(args.get(key))})
+        done.append(f"{label}={'开' if getattr(cur, key) else '关'}")
+    if done:
+        app_glass.set_params(cur)
+    return done
+
+
+def _download_background(url: str) -> tuple:
+    """下载背景图到临时文件，返回 (path, err)。仅 http/https，限制体积。"""
+    import tempfile
+    import urllib.request
+    from urllib.parse import urlparse
+
+    u = urlparse(url)
+    if u.scheme not in ("http", "https"):
+        return ("", "[set_app_background] url 仅支持 http/https")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "zhuzhu-Copilot"})
+        with urllib.request.urlopen(req, timeout=_BG_URL_TIMEOUT) as resp:
+            data = resp.read(_BG_MAX_BYTES + 1)
+    except Exception as e:
+        return ("", f"[set_app_background] 下载失败：{e}")
+    if not data:
+        return ("", "[set_app_background] 下载到的内容为空")
+    if len(data) > _BG_MAX_BYTES:
+        return ("", f"[set_app_background] 图片超过 {_BG_MAX_BYTES // (1024 * 1024)}MB 上限")
+    ext = Path(u.path).suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".bmp", ".webp"):
+        ext = ".png"          # 无扩展名/CDN 动态路径：按 PNG 落盘，交给 Qt 按内容识别
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=ext, prefix="zhuzhu_bg_")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except Exception as e:
+        return ("", f"[set_app_background] 写入临时文件失败：{e}")
+    return (tmp, "")
+
+
+def _set_app_background(args: dict) -> dict:
+    """set_app_background 工具：设置 AI 面板背景图与磨砂玻璃外观。
+
+    op=set    收编图片（本地 image 或远程 url）并设为背景，可同时带玻璃参数
+    op=params 只改玻璃参数（未传的保持不动；reset=true 先恢复默认）
+    op=clear  清除背景图
+    op=get    查询当前外观
+    参数变更会被 UI 即时订阅并重绘，无需重启或重建面板。
+    """
+    from zhuzhu_Copilot.core import app_glass
+
+    op = str(args.get("op") or "get").strip().lower()
+
+    if op == "get":
+        p = app_glass.params()
+        lines = [f"玻璃材质：{'开启' if p.enabled else '关闭'}",
+                 f"背景图：{p.bg_image or '（未设置，使用主题渐变）'}",
+                 f"背景适配：{p.bg_fit}"]
+        lines += [f"{s.label}：{app_glass.format_value(s, p.value(s.key))}"
+                  for s in app_glass.PARAM_SPECS]
+        lines.append(f"液态流动动效：{'开' if p.liquid_anim else '关'}")
+        lines.append(f"无边框外壳：{'开' if p.frameless else '关'}")
+        return {"text": "当前外观：\n- " + "\n- ".join(lines), "images": []}
+
+    if op == "clear":
+        ok, msg = app_glass.clear_background()
+        return {"text": msg, "images": []} if ok else _blocked(msg)
+
+    if op == "set":
+        path = str(args.get("image") or "").strip()
+        url = str(args.get("url") or "").strip()
+        if not path and url:
+            path, err = _download_background(url)
+            if err:
+                return _blocked(err)
+        if not path:
+            return _blocked("[set_app_background] op=set 需要 image（本地图片路径）"
+                            "或 url（图片地址）；也可先用 generate_image 生成再传其本地路径")
+        ok, msg, _stored = app_glass.import_background(path)
+        if not ok:
+            return _blocked(f"[set_app_background] {msg}")
+        fit = str(args.get("fit") or "").strip().lower()
+        if fit in app_glass.BG_FITS:
+            app_glass.set_fields(bg_fit=fit)
+        applied = _apply_glass_params(args)
+        extra = ("\n已同步参数：" + "、".join(applied)) if applied else ""
+        return {"text": f"{msg}\n背景已即时生效（无需重启）。{extra}", "images": []}
+
+    if op == "params":
+        if bool(args.get("reset")):
+            app_glass.reset_all()
+        applied = _apply_glass_params(args)
+        if not applied:
+            return _blocked(
+                "[set_app_background] op=params 未收到任何参数。可用："
+                + "、".join(app_glass.param_keys()) + "、liquid_anim、frameless、fit")
+        return {"text": "外观参数已更新并即时生效：" + "、".join(applied), "images": []}
+
+    return _blocked(f"[set_app_background] 未知 op={op}，可选 set/params/clear/get")
 
 
 def _new_project(path: str, kind: str = "generic", name: str = "") -> dict:
@@ -5229,185 +5293,6 @@ def _delete_workflow(name: str) -> dict:
         return {"text": msg, "images": []} if ok else _blocked(msg)
     except Exception as e:
         return _blocked(f"[delete_workflow] {e}")
-
-
-def _uiux_list_arg(v):
-    """解析 manage_uiux 的列表参数（plugins/mcp）：list/tuple 直接使用；字符串按 JSON 解析。
-    非法时返回 {"error": 描述}；空值返回 None。"""
-    if v is None or v == "":
-        return None
-    if isinstance(v, (list, tuple)):
-        return [str(x).strip() for x in v if str(x).strip()]
-    if isinstance(v, str):
-        try:
-            arr = json.loads(v)
-        except Exception:
-            return {"error": "不是合法 JSON 列表"}
-        if isinstance(arr, list):
-            return [str(x).strip() for x in arr if str(x).strip()]
-        return {"error": "不是合法 JSON 列表"}
-    return None
-
-
-def _manage_uiux(args: dict) -> dict:
-    """manage_uiux 工具：UI/UX 包管理
-    （list/create/read/update/set_qss/update_theme/duplicate/export/import/activate/delete/get）"""
-    from zhuzhu_Copilot.core import agent_ui_ux
-    op = str(args.get("op") or "list").strip().lower()  # op 缺省默认 list（只读安全）
-    name = str(args.get("name", "")).strip()
-    try:
-        if op == "list":
-            pkgs = agent_ui_ux.list_packages()
-            active = agent_ui_ux.get_active_package()
-            lines = [f"当前活跃: {active}", "已有包:"]
-            for p in pkgs:
-                mark = " ●当前" if p.get("name") == active else ""
-                builtin = "（内置）" if p.get("is_builtin") else ""
-                themed = "（自定义主题）" if p.get("theme") else ""
-                desc = (p.get("description") or "").strip()
-                lines.append(f"- {p.get('name')}{mark}{builtin}{themed}：{desc or '无描述'}")
-            return {"text": "\n".join(lines), "images": []}
-        if op == "get":
-            return {"text": f"当前活跃 UI/UX 包: {agent_ui_ux.get_active_package()}", "images": []}
-        if op == "activate":
-            if not name:
-                return _blocked("[manage_uiux] activate 需要 name 参数")
-            ok, msg = agent_ui_ux.set_active_package(name)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg + "（面板热插拔立即生效）", "images": [],
-                    "rebuild_uiux": True}
-        if op == "create":
-            if not name:
-                return _blocked("[manage_uiux] create 需要 name 参数")
-            theme = None
-            raw_theme = args.get("theme")
-            if raw_theme:
-                try:
-                    theme = json.loads(raw_theme) if isinstance(raw_theme, str) else raw_theme
-                except Exception:
-                    return _blocked("[manage_uiux] theme 参数不是合法 JSON：{\"dark\":{...},\"light\":{...}}")
-            plugins = _uiux_list_arg(args.get("plugins"))
-            mcp = _uiux_list_arg(args.get("mcp"))
-            if isinstance(plugins, dict) or isinstance(mcp, dict):
-                return _blocked("[manage_uiux] plugins/mcp 参数不是合法 JSON 列表，如 [\"name\"]")
-            ok, msg = agent_ui_ux.create_package(
-                name,
-                str(args.get("description", "") or ""),
-                build_ui_code=str(args.get("build_ui", "") or ""),
-                build_welcome_code=str(args.get("build_welcome", "") or ""),
-                theme=theme, plugins=plugins, mcp=mcp)
-            if not ok:
-                return _blocked(msg)
-            extra = ""
-            if args.get("qss"):
-                okq, msgq = agent_ui_ux.set_panel_qss(name, str(args.get("qss", "")))
-                if okq:
-                    extra = "，已写入 panel.qss"
-                else:
-                    extra = f"，panel.qss 写入失败：{msgq}"
-            return {"text": msg + extra + "（可 op=read 查看，op=activate 切换生效）", "images": []}
-        if op == "deps":
-            if not name:
-                return _blocked("[manage_uiux] deps 需要 name 参数")
-            plugins = _uiux_list_arg(args.get("plugins"))
-            mcp = _uiux_list_arg(args.get("mcp"))
-            if isinstance(plugins, dict) or isinstance(mcp, dict):
-                return _blocked("[manage_uiux] plugins/mcp 参数不是合法 JSON 列表，如 [\"name\"]")
-            ok, msg = agent_ui_ux.update_package_deps(name, plugins=plugins, mcp=mcp)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg, "images": []}
-        if op == "read":
-            if not name:
-                return _blocked("[manage_uiux] read 需要 name 参数")
-            part = str(args.get("part", "") or "meta").strip()
-            if part == "qss":
-                return {"text": agent_ui_ux.get_panel_qss(name), "images": []}
-            ok, text = agent_ui_ux.read_package_part(name, part)
-            if not ok:
-                return _blocked(text)
-            return {"text": text, "images": []}
-        if op == "update":
-            if not name:
-                return _blocked("[manage_uiux] update 需要 name 参数")
-            code = str(args.get("build_ui", "") or "")
-            if not code.strip():
-                return _blocked("[manage_uiux] update 需要 build_ui 参数")
-            ok, msg = agent_ui_ux.set_build_ui_code(name, code)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg + ("（当前已激活，面板将热插拔刷新）" if
-                                   agent_ui_ux.get_active_package() == name else
-                                   "（未激活，切换后生效）"), "images": [],
-                    "rebuild_uiux": agent_ui_ux.get_active_package() == name}
-        if op == "set_qss":
-            if not name:
-                return _blocked("[manage_uiux] set_qss 需要 name 参数")
-            qss = str(args.get("qss", "") or "")
-            ok, msg = agent_ui_ux.set_panel_qss(name, qss)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg + ("（当前已激活，面板将热插拔刷新）" if
-                                   agent_ui_ux.get_active_package() == name else
-                                   "（未激活，切换后生效）"), "images": [],
-                    "rebuild_uiux": agent_ui_ux.get_active_package() == name}
-        if op == "update_theme":
-            if not name:
-                return _blocked("[manage_uiux] update_theme 需要 name 参数")
-            raw_theme = args.get("theme")
-            if not raw_theme:
-                return _blocked("[manage_uiux] update_theme 需要 theme 参数（JSON）")
-            try:
-                theme = json.loads(raw_theme) if isinstance(raw_theme, str) else raw_theme
-            except Exception:
-                return _blocked("[manage_uiux] theme 参数不是合法 JSON：{\"dark\":{...},\"light\":{...}}")
-            ok, msg = agent_ui_ux.update_package_theme(name, theme)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg + ("（当前已激活，面板将热插拔刷新）" if
-                                   agent_ui_ux.get_active_package() == name else
-                                   "（未激活，切换后生效）"), "images": [],
-                    "rebuild_uiux": agent_ui_ux.get_active_package() == name}
-        if op == "duplicate":
-            new_name = str(args.get("new_name", "") or "").strip()
-            if not name or not new_name:
-                return _blocked("[manage_uiux] duplicate 需要 name 与 new_name 参数")
-            ok, msg = agent_ui_ux.duplicate_package(name, new_name)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg, "images": []}
-        if op == "export":
-            if not name:
-                return _blocked("[manage_uiux] export 需要 name 参数")
-            dest = str(args.get("dest", "") or "").strip()
-            if not dest:
-                dest = str(agent_tools.get_workdir() or "")   # 默认导出到工作目录
-            ok, msg = agent_ui_ux.export_package_zip(name, dest)
-            if not ok:
-                return _blocked(msg)
-            return {"text": f"已导出 {name} 到: {msg}", "images": []}
-        if op == "import":
-            zip_path = str(args.get("zip_path", "") or "").strip()
-            if not zip_path:
-                return _blocked("[manage_uiux] import 需要 zip_path 参数")
-            ok, msg = agent_ui_ux.import_package_zip(zip_path, overwrite=True)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg + "（可 op=activate 切换启用）", "images": []}
-        if op == "delete":
-            if not name:
-                return _blocked("[manage_uiux] delete 需要 name 参数")
-            ok, msg = agent_ui_ux.delete_package(name)
-            if not ok:
-                return _blocked(msg)
-            return {"text": msg + ("（已回退默认界面）" if
-                                   agent_ui_ux.get_active_package() == "default" else ""),
-                    "images": [], "rebuild_uiux": True}
-        return _blocked(f"[manage_uiux] 未知操作 {op}，可选 list/create/read/update/set_qss/"
-                        f"update_theme/duplicate/export/import/activate/delete/get")
-    except Exception as e:
-        return _blocked(f"[manage_uiux] {e}")
 
 
 # register_panel_btn 允许的 action → 说明（与面板 agent_panel._BTN_ACTIONS 的 action
@@ -5862,7 +5747,7 @@ def _shared_context(args: dict) -> dict:
 
 def _register_feature_panel(args: dict) -> dict:
     """register_feature_panel：把功能面板 panel.py 写入当前工作流（不新建 UI/UX 包）。
-    写好文件后可被 agent_panels.scan_panels 自动发现；返回 rebuild_uiux 标记，
+    写好文件后可被 agent_panels.scan_panels 自动发现；登记为扩展面板，
     由引擎在任务结束后通知 UI 重建扩展面板浮窗。"""
     try:
         from zhuzhu_Copilot.core import agent_workflow

@@ -8,7 +8,7 @@
 写进了多行输入框）。三处入口都经 `_MultiLineInputDialog.get()` → 全部弹窗即崩。
 
 同时沉淀本任务新增能力的契约：
-  · create_uiux / set_generation_progress 两个工具已登记（真实实现，非 mock）；
+  · set_app_background / set_generation_progress 两个工具已登记（真实实现，非 mock）；
   · set_generation_progress 把 (percent, message) 规范化为「生成进度:<pct>:<msg>」；
   · 生成回调适配把 on_status(pct, msg) 转成同一前缀，与面板 _on_status 分支对齐；
   · 任务裁剪保护：进度工具恒可用，生成类工具属 cordis 分组不被剔除。
@@ -64,7 +64,7 @@ def _tool_names() -> set:
 
 def test_generation_tools_registered():
     names = _tool_names()
-    assert "create_uiux" in names
+    assert "set_app_background" in names
     assert "set_generation_progress" in names
 
 
@@ -108,10 +108,22 @@ def test_generation_status_adapter_formats_pct_and_msg():
     assert seen == [f"{PREFIX}30:设计主题", f"{PREFIX}70:"]
 
 
-def test_create_uiux_requires_description():
-    """空描述直接拒绝，绝不发起真实生成（不产生副作用/网络调用）。"""
-    out = agent_tools._create_uiux("   ", False)
-    assert "description" in out.get("text", "")
+def test_set_app_background_requires_image():
+    """op=set 缺图直接拒绝，绝不发起网络/落盘副作用。"""
+    out = agent_tools._set_app_background({"op": "set"})
+    assert "image" in out.get("text", "")
+
+
+def test_set_app_background_rejects_non_http_url():
+    """url 仅允许 http/https：file:// 之类必须被挡下。"""
+    out = agent_tools._set_app_background({"op": "set", "url": "file:///C:/x.png"})
+    assert "http" in out.get("text", "")
+
+
+def test_set_app_background_params_require_values():
+    """op=params 不带任何参数时应给出可用参数清单，而不是静默成功。"""
+    out = agent_tools._set_app_background({"op": "params"})
+    assert "blur" in out.get("text", "")
 
 
 # ---------------- D. 任务裁剪保护 ----------------

@@ -9,15 +9,15 @@ description: 深度自定义总入口（Cordis 一切皆可替换/热插拔）�
 核心思想：Cordis —— **一切皆可替换、热插拔生效**。用户工作流/UI/UX/插件/技能覆盖内置实现，切换即生效，缺失自动回退内置，永不破坏系统。
 
 ## 0. 优先扩展、禁止滥新建（最高优先级，先于一切）
-**小功能的改动，一律先扩展现有资源，禁止新建工作流 / UI/UX 资源包。** 判定与落地顺序：
-- **小功能 = 新增功能面板、新增子 agent、新增/微调工具、小 UI 调整、小钩子**，这类改动直接注入当前工作流或现有 UI/UX：
+**小功能的改动，一律先扩展现有资源，禁止新建工作流。** 判定与落地顺序：
+- **小功能 = 新增功能面板、新增子 agent、新增/微调工具、小 UI 调整、小钩子**，这类改动直接注入当前工作流：
   - **新增子 agent** → `list_sub_agents` 看现状 → `register_sub_agent`（name/description/goal/allowed）注册进**当前工作流**，立即可作为 `sub_<name>` 工具被主 Agent 调用，不新建工作流。
-  - **新增功能面板** → `manage_uiux` op=list 看现有包 → **优先**用 `register_feature_panel`（title/width/height/python）把 panel.py 写进**当前工作流**，成为可拖拽扩展浮窗；仅当你确认面板属于某个独立 UI/UX 包的整体主题时才用 `manage_uiux` op=update 挂到现有包。
+  - **新增功能面板** → 用 `register_feature_panel`（title/width/height/python）把 panel.py 写进**当前工作流**，成为可拖拽扩展浮窗。
   - **新增/覆盖工具** → `edit_agent_file(name=<当前工作流>, file="tools.py")` 写入当前工作流 tools.py，绝不为单独一个工具新建工作流。
   - **自定义代码带第三方 import** → `set_feature_deps`（op=declare deps=["xxx"]）写入当前工作流 requirements.txt，代码顶部可带第三方 import，加载时自动补齐依赖。
-  - **小 UI 调整 / 钩子** → `manage_uiux` op=read + set_qss/update_theme/update 现有包，或 `edit_agent_file` 改 agent.py 钩子。
-- **只有功能大且独立**（整套 Agent 人格、独立界面体系、专用工具集，现有工作流/UI/UX 完全承载不了）时才新建工作流（`create_workflow`）或 UI/UX 包（`manage_uiux` op=create）。
-- 判断口诀：**能不能塞进现有工作流面板.py / 工具.py / 子agent 注册？能就绝不新建资源包。**
+  - **小 UI 调整 / 钩子** → `set_app_background` 调外观（背景图 + 玻璃参数，见 app-background 技能），或 `edit_agent_file` 改 agent.py 钩子。
+- **只有功能大且独立**（整套 Agent 人格、专用工具集，现有工作流完全承载不了）时才新建工作流（`create_workflow`）。
+- 判断口诀：**能不能塞进现有工作流面板.py / 工具.py / 子agent 注册？能就绝不新建。**
 
 ## 1. 先盘点再动手
 1. 信息不足先 `ask_user` 问清：想自定义/新增什么功能、目标效果、使用场景（禁止瞎猜）。
@@ -35,9 +35,9 @@ description: 深度自定义总入口（Cordis 一切皆可替换/热插拔）�
 - **插件（mcp/skill/combined/web 四型）**：`create_plugin` AI 生成可运行插件（含 MCP server +
   SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url + browser_open 打开给用户，
   操作者必须是用户本人，严禁 AI 与脚本自动对战）。
-- **UI/UX 包（面板深度自定义）**：`manage_uiux` op=list 看现状 → op=create（build_ui 完整自定义 +
-  theme 双主题色板 + qss 样式表）→ op=activate 热插拔切换；或 op=update/set_qss/update_theme 迭代。
-- **面板按钮（与 UI/UX 解耦恒显示）**：`register_panel_btn` op=register 注册顶部按钮栏按钮。
+- **外观（背景图 + 磨砂玻璃材质）**：`set_app_background` 设置全局背景图与五个玻璃维度
+  （模糊/磨砂/边缘高光/透明度/液态感），即时生效；完整用法见 app-background 技能。
+- **面板按钮（恒显示）**：`register_panel_btn` op=register 注册顶部按钮栏按钮。
 - **子 agent（小功能的常用落地通道，绑定当前工作流）**：`list_sub_agents` 看现状 → `register_sub_agent`
   （name/description/goal/allowed）注册进当前工作流，立即作为 `sub_<name>` 工具可调用，不新建工作流。
   用户说「创建一个子 agent / 新增一个下属 agent」时必须走这条注册通道：注册式才同时支持
@@ -46,7 +46,7 @@ description: 深度自定义总入口（Cordis 一切皆可替换/热插拔）�
   那只创建「主 Agent 人格」（@agent 会话级切换），主 Agent 调不到它。
 - **功能面板（小 UI 面板的常用落地通道，绑定当前工作流）**：`register_feature_panel`
   （title/width/height/python，python 提供 build_panel(owner) 返回 QWidget）把 panel.py 写入当前工作流，
-  扫描后成为可拖拽扩展浮窗，不新建 UI/UX 包。
+  扫描后成为可拖拽扩展浮窗。
 - **依赖（自定义代码带第三方 import）**：`set_feature_deps` op=declare 声明（写入当前工作流 requirements.txt，
   deps=["pandas"]）；op=install 立即安装；op=list 查看。加载自定义代码时自动补齐缺失依赖，无需手动 pip。
 - **MCP 服务器**：通过插件（create_plugin kind=mcp/combined）或工作流 mcp.json 声明。

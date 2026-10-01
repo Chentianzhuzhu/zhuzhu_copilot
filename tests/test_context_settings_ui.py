@@ -255,3 +255,43 @@ def test_settings_1m_copy_uses_input_output_wording():
     src = inspect.getsource(ap._AgentSettingsDialog)
     assert "模型支持1M上下文窗口，输入+输出=1M上下文窗口" in src   # 勾选框 + 悬浮提示
     assert "窗口由输入+输出共用" in src                          # 动态说明（_context_hint_text）
+
+
+# ---------- 2.9 外观·玻璃页：不得把右侧内容区顶出可视范围 ----------
+
+def _appearance_page_dlg():
+    """构建设置对话框并构建「外观·玻璃」页（真实流程由设置页栈持有引用）"""
+    dlg = ap._AgentSettingsDialog()
+    dlg._stash_page = dlg._build_appearance_page()
+    return dlg
+
+
+def test_appearance_page_fits_dialog_width():
+    """回归：外观页里「液态流动动效（持续重织，较耗 CPU，默认关闭）」这类长文案
+    会把单行最小宽撑得比右侧内容区还宽 —— QScrollArea 不会小于最小宽，只能被
+    裁掉，表现为右侧 UI 被挤压遮挡。现在长说明一律走 tooltip + 可换行 QLabel。"""
+    dlg = _appearance_page_dlg()
+    try:
+        page = dlg._stash_page
+        page.resize(dlg.width() - 200, 600)     # 模拟右侧内容区实际可用宽
+        available = page.width()
+        for w in page.findChildren(ap.QWidget):
+            if not w.isVisibleTo(page) or w.width() <= 0:
+                continue
+            # 任何直接铺在页面里的行容器都不应要求比可用宽更多的宽度
+            assert w.minimumSizeHint().width() <= available + 2, (
+                f"{type(w).__name__} 最小宽 {w.minimumSizeHint().width()} "
+                f"超过可用宽 {available}，右侧会被裁掉")
+    finally:
+        dlg.deleteLater()
+
+
+def test_appearance_page_sliders_cover_all_spec_keys():
+    """五个可调维度必须各有一根滑杆，且由 PARAM_SPECS 派生（内核加维度自动多滑杆）"""
+    from zhuzhu_Copilot.core import app_glass
+    dlg = _appearance_page_dlg()
+    try:
+        keys = set(dlg._glass_sliders.keys())
+        assert keys == set(app_glass.param_keys()), f"滑杆与规格不一致：{keys}"
+    finally:
+        dlg.deleteLater()

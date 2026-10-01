@@ -53,11 +53,16 @@ def test_module_qss_producers_consume_tokens():
         assert "border-radius: 10px" not in ap._BTN_DANGER
 
 
-def test_glass_popup_consumes_tokens():
-    """液态玻璃下拉默认圆角来自 tokens（控件 SM / 弹出视图 MD）"""
+def test_combo_popup_consumes_tokens():
+    """下拉/弹出视图的圆角与玻璃填充都走 tokens 与外观内核
+
+    旧实现自带 `_glass_combo_qss` / `_glass_combo_view_qss` 两个「硬编码浅色玻璃」
+    样式串，已随 UI/UX 包机制一并移除；现在下拉的玻璃观感由应用级 `_QCOMBO` 承载
+    （底色取自 app_glass.control_fill 的参数化半透明填充，几何取自 tokens）。
+    """
     _reapply("dark")
-    assert f"border-radius: {tokens.RADIUS_SM}px" in ap._glass_combo_qss()
-    assert f"border-radius: {tokens.RADIUS_MD}px" in ap._glass_combo_view_qss()
+    assert f"border-radius: {tokens.RADIUS_SM}px" in ap._QCOMBO
+    assert "rgba(" in ap._QCOMBO, "下拉底色应是参数化玻璃填充而不是不透明实色"
 
 
 def test_global_qss_consumes_tokens():
