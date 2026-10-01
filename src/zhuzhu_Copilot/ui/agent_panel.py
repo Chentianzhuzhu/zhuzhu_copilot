@@ -6708,6 +6708,7 @@ class _DropTextEdit(QPlainTextEdit):
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.textChanged.connect(lambda: QTimer.singleShot(0, self._auto_height))
+        self._ime_preedit = ""   # 输入法预编辑串（组合态未上屏内容，inputMethodEvent 维护）
         # 初始校准：QPlainTextEdit 默认尺寸偏高，事件循环启动后立刻按内容压回单行高
         QTimer.singleShot(0, self._auto_height)
 
@@ -6736,6 +6737,23 @@ class _DropTextEdit(QPlainTextEdit):
             self.submit.emit()
             return
         super().keyPressEvent(e)
+
+    def inputMethodEvent(self, e):
+        """跟踪输入法组合态：preeditString 非空 = 正在拼字、内容尚未上屏。
+
+        关键事实（实测）：组合态文字只存在于预编辑区，**不进文档** —— 此时
+        toPlainText() 为空。判空逻辑必须用 has_pending_composition() 区分
+        「真的没输入」与「拼字未上屏」，否则会误报「请先输入内容」。
+        """
+        try:
+            self._ime_preedit = e.preeditString() or ""
+        except Exception:
+            self._ime_preedit = ""
+        super().inputMethodEvent(e)
+
+    def has_pending_composition(self) -> bool:
+        """输入法是否处于组合态（拼字未上屏，文档中读不到内容）"""
+        return bool((self._ime_preedit or "").strip())
 
     def _has_files(self, e) -> bool:
         return e.mimeData().hasUrls()
@@ -16897,7 +16915,21 @@ class AgentPanel(QDialog):
         """优化输入框中的提示词（结合当前对话上下文，后台异步调用 LLM）"""
         text = self.input.toPlainText().strip()
         if not text:
-            self._notify_blocked("请先输入内容，再点击优化提示词")
+            # 拼字未上屏（输入法组合态）：文字只在预编辑区、不进文档，toPlainText() 读不到。
+            # 旧实现一律报「请先输入内容」→ 用户屏幕上看得到字却被说没输入（误报）；
+            # 这里区分组合态：明确提示 + 焦点还给输入框，便于先确认候选词再优化。
+            pending = False
+            probe = getattr(self.input, "has_pending_composition", None)
+            if callable(probe):
+                try:
+                    pending = bool(probe())
+                except Exception:
+                    pending = False
+            if pending:
+                self.input.setFocus()
+                self._notify_blocked("输入法拼字尚未上屏：请先按空格或回车确认候选词，再点击优化提示词")
+            else:
+                self._notify_blocked("请先输入内容，再点击优化提示词")
             return
         if getattr(self, "_optimizing", False):
             return
@@ -17915,7 +17947,13 @@ class AgentPanel(QDialog):
             return
         try:
             if isinstance(bubble, chat_bubbles.ChatTurn):
-                bubble._on_block_resize()      # 作废缓存 → 按当前宽度重钉 → _wrap_sync
+                # `ChatTurn._apply_done` 收尾时已按当前宽度钉准整条回合与各块高度，
+                # 这里再走一次全量重排纯属重复 —— 实测单次 100+ms（回合内上百个布局
+                # 项，每次布局激活都贵）。只在高度缓存确实缺失时补一次，否则仅驱动重绘。
+                if getattr(bubble, "_hfw_cache", None) is None:
+                    bubble._on_block_resize()
+                else:
+                    bubble.updateGeometry()
             else:
                 bubble.setMinimumHeight(0)     # 先解除钳制，再按真实内容重钉
                 self._sync_bubble_heights([bubble])

@@ -108,6 +108,52 @@ def _wait(app, cond, timeout: float = 60.0) -> bool:
     return False
 
 
+def _measure_expand(app, panel, sid: str):
+    """展开过程区耗时：点击「查看执行过程」必须即时，不得阻塞主线程（实测口径：
+    调用回合的 _on_toggle，即按钮 clicked 的槽，前后取墙钟）。"""
+    from zhuzhu_Copilot.ui import agent_chat_bubbles as cb
+    turns = [b for b in panel._bubble_widgets if isinstance(b, cb.ChatTurn)]
+    turns = [t for t in turns if getattr(t, "_proc_count", 0) > 0]
+    print(f"\n[展开过程区] sid={sid} 可展开回合 {len(turns)} 个，"
+          f"过程块合计 {sum(t._proc_count for t in turns)}")
+    for idx, t in enumerate(turns):
+        n = t._proc_count
+        pending = len(getattr(t, "_deferred", []) or [])
+        if "--profile-expand" in sys.argv and n > 1:
+            import cProfile
+            import pstats
+            pr = cProfile.Profile()
+            pr.enable()
+            t._on_toggle()
+            pr.disable()
+            st = pstats.Stats(pr, stream=sys.stdout)
+            st.sort_stats("tottime").print_stats(18)
+            _pump(app, 0.05)
+            continue
+        t0 = time.perf_counter()
+        t._on_toggle()                       # 等价点击「查看执行过程」
+        dt = (time.perf_counter() - t0) * 1000.0
+        # 补显全程：分片显示的过程块在空闲里逐批出现，这里统计总时长与单次最大卡顿
+        fill_ms, stall_ms, t_fill = 0.0, 0.0, time.perf_counter()
+        while getattr(t, "_reveal_pending", None):
+            t_loop = time.perf_counter()
+            app.processEvents()
+            time.sleep(0.001)
+            stall_ms = max(stall_ms, (time.perf_counter() - t_loop) * 1000.0)
+            if time.perf_counter() - t_fill > 120.0:
+                break
+        fill_ms = (time.perf_counter() - t_fill) * 1000.0
+        _pump(app, 0.05)
+        print(f"  回合#{idx} {n:3d} 个过程块（展开前未铺完 {pending:3d}）："
+              f"点击阻塞 {dt:8.1f} ms，补显全程 {fill_ms:8.1f} ms，"
+              f"单次最大卡顿 {stall_ms:7.1f} ms")
+        continue
+    for t in turns:                          # 复原收起态，避免影响后续测量
+        if t._user_open is not None and t._user_open:
+            t._on_toggle()
+    _pump(app, 0.1)
+
+
 def _prepare_home() -> Path:
     real = app_identity.data_root()
     if "--real-home" in sys.argv:
@@ -288,6 +334,8 @@ def main():
             panel._new_session()
             _pump(app, 0.2)
             _measure(app, panel, sid, "切走再切回（温）")
+
+        _measure_expand(app, panel, sid)
 
     try:
         panel.close()

@@ -11,6 +11,10 @@ Qt 会为整篇富文本做一次排版（2000 字符 ≈ 20ms，2 万字符级�
   2. 推进事件循环后收尾自动补齐（输出框显式显示）；
   3. 展开（`_apply_done(False)`）会先**同步补齐**再显示过程块 —— 展开必须立刻可见完整内容；
   4. 进行中的回合（流式，done=False）不推迟：渲染即可见，不走空闲队列。
+
+「待收尾」的判定已从 ChatTurn 级列表（旧的 `turn._deferred`）改为**控件级标志**
+（`_deferred_show` / `_deferred_fold`）：收尾任务推入全局 `_IdleSpreader` 队列，控件自己
+持有延迟标志，因此回合对象不再需要维护一份镜像列表（展开时仍逐块同步补齐，幂等）。
 """
 import os
 import sys
@@ -37,6 +41,17 @@ def _pump(ms: int = 30):
     while time.time() < end:
         _app.processEvents()
         time.sleep(0.002)
+
+
+def _pending_defers(turn) -> int:
+    """仍挂着延迟收尾标志的块数（展开时会由 `_apply_proc_visible` 同步补齐）"""
+    n = 0
+    for ref in turn._items:
+        w = ref.widget
+        if (getattr(w, "_deferred_show", None) is not None
+                or getattr(w, "_deferred_fold", False)):
+            n += 1
+    return n
 
 
 def _tool_specs(n: int = 3) -> list:
@@ -81,9 +96,11 @@ def test_done_turn_defers_hidden_block_finish(panel):
         turn.render(_tool_specs(3), done=True)
         rows = _rows_of(turn)
         assert len(rows) == 3, "过程块应已建控件（结构即时可见）"
-        assert turn._deferred, "done 回合的隐藏过程块应进入延迟收尾队列"
+        assert _pending_defers(turn) == 3, "done 回合的隐藏过程块应进入延迟收尾队列"
         for row in rows:
-            assert row._out.text() == LONG_OUT, "内容必须已完整写入（只是显示收尾被推迟）"
+            # 全文存 `_fold_full`（折叠机制的唯一真相），标签在收尾时才按折叠态铺前缀
+            assert LONG_OUT in row._fold_full, "内容必须已完整写入（只是显示收尾被推迟）"
+            assert row._out.text() == "", "渲染路径上不应触发标签排版"
             assert row._out_box.isHidden(), "渲染路径上不应触发输出框显示（首 show 排版）"
     finally:
         turn.setParent(None)
@@ -96,9 +113,9 @@ def test_idle_slices_finish_deferred_blocks(panel):
     turn = panel._add_bubble("", "ai")
     try:
         turn.render(_tool_specs(2), done=True)
-        assert turn._deferred, "前置条件：应有待收尾的块"
+        assert _pending_defers(turn) == 2, "前置条件：应有待收尾的块"
         deadline = time.time() + 5.0
-        while turn._deferred and time.time() < deadline:
+        while _pending_defers(turn) and time.time() < deadline:
             _pump(20)
         for row in _rows_of(turn):
             assert not row._out_box.isHidden(), "空闲切片后输出框应已收尾（显式显示）"
@@ -113,9 +130,9 @@ def test_expand_resumes_pending_deferred_blocks_synchronously(panel):
     turn = panel._add_bubble("", "ai")
     try:
         turn.render(_tool_specs(2), done=True)
-        assert turn._deferred, "前置条件：应有待收尾的块"
+        assert _pending_defers(turn) == 2, "前置条件：应有待收尾的块"
         turn._apply_done(False)               # 展开过程区（等价于点「查看执行过程」）
-        assert not turn._deferred, "展开必须先同步补齐待收尾块"
+        assert _pending_defers(turn) == 0, "展开必须先同步补齐待收尾块"
         for ref in turn._items:
             row = ref.widget
             assert row._out.text() == LONG_OUT
@@ -132,7 +149,7 @@ def test_live_turn_does_not_defer(panel):
     turn = panel._add_bubble("", "ai")
     try:
         turn.render(_tool_specs(2), done=False)
-        assert not turn._deferred, "进行中的回合不应进入延迟队列"
+        assert _pending_defers(turn) == 0, "进行中的回合不应进入延迟队列"
         for row in _rows_of(turn):
             assert not row._out_box.isHidden(), "流式回合的输出框应即刻显示"
     finally:

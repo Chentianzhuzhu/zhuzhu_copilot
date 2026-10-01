@@ -542,3 +542,115 @@ def test_segment_content_is_escaped_before_reaching_widget():
          "cmd": 'echo "<b>x</b>" > a.txt'})
     assert "&lt;b&gt;" in payload["cmd"]
     assert "<b>" not in payload["cmd"]
+
+
+# ---------------------------------------------------------------------------
+# 耗时徽章常驻：**每个 AI 回合都要有计时器样式**（用户硬性要求）
+# ---------------------------------------------------------------------------
+# 背景：老会话（未归档的最后一轮、异常结束的回合）磁盘上没有 cost 字段，旧实现
+# 「拿不到耗时即 hide 徽章」→ 重启加载后整条回合的计时样式整块消失，与其它回合
+# 不一致。现在改为：有 cost 用它，没有就用系统时间行的起止差，再没有就显示占位符，
+# 但徽章**永不隐藏**。
+
+def _plain_turn(host: Host) -> "cb.ChatTurn":
+    turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
+    turn.setMaximumWidth(760)
+    return turn
+
+
+def test_cost_ribbon_stays_visible_when_cost_missing():
+    host = Host()
+    turn = _plain_turn(host)
+    host.show()
+    turn.render([(cb.KIND_STREAM, {"html": "<div>正文</div>"}, ("s1", 0))],
+                live=False, sys_meta="14:02:31 → 14:02:43", done=True)
+    host.w.update()
+    assert not turn._ribbon.isHidden(), "无 cost 数据时徽章也必须常驻（不得隐藏）"
+    assert turn._ribbon._text.text() == "12.0s", "应由系统时间行的起止差推导耗时"
+
+
+def test_cost_ribbon_falls_back_to_placeholder_without_any_time_data():
+    host = Host()
+    turn = _plain_turn(host)
+    host.show()
+    turn.render([(cb.KIND_STREAM, {"html": "<div>正文</div>"}, ("s1", 0))],
+                live=False, sys_meta="", done=True)
+    host.w.update()
+    assert not turn._ribbon.isHidden(), "任何情况下都不隐藏徽章，保证样式一致"
+    assert turn._ribbon._text.text() == cb.RIBBON_UNKNOWN_TEXT
+
+
+def test_cost_from_meta_parses_only_well_formed_ranges():
+    assert cb.cost_from_meta("14:02:31 → 14:02:43") == 12.0
+    assert cb.cost_from_meta("23:59:50 → 00:00:10") == 20.0, "跨零点按次日处理"
+    assert cb.cost_from_meta("14:02:31") is None, "没有区间不得瞎猜"
+    assert cb.cost_from_meta("") is None
+    assert cb.cost_from_meta("bad → data") is None
+
+
+# ---------------------------------------------------------------------------
+# 折叠判定：估算优先，**不为判定排版整篇富文本**（展开卡死的主因）
+# ---------------------------------------------------------------------------
+# 隔离实测：2 万字符的富文本铺进 QLabel 量一次高度要数十毫秒；长回合里上百块
+# 累积成秒级主线程阻塞（表现为「点开执行过程直接无响应」）。判定改为先用显式
+# 换行数拿下界、再用采样字宽外推，只有量级贴着阈值时才退回真实测量。
+
+def _tool_turn_with(out_html: str, host: Host) -> "cb.ChatTurn":
+    turn = _plain_turn(host)
+    turn.render([(cb.KIND_TOOL, {"name": "scan_drives", "meta": "target=D:/",
+                                 "params": {}, "out": out_html}, ("t1", 0))],
+                live=False, done=False)
+    return turn
+
+
+def test_long_output_is_foldable_without_laying_out_full_text(monkeypatch):
+    host = Host()
+    turn = _tool_turn_with(("扫描结果 " + "x" * 60 + "<br/>") * 400, host)
+    host.show()
+    ref = next(r for r in turn._items if r.kind == cb.KIND_TOOL)
+
+    measured = []
+    orig = cb.ToolCallRow._fold_measure_full
+
+    def spy(self, w):
+        measured.append(w)
+        return orig(self, w)
+
+    monkeypatch.setattr(cb.ToolCallRow, "_fold_measure_full", spy)
+    ref.widget._bump_content()               # 失效判定缓存 → 强制重算
+    assert ref.widget._fold_foldable(), "数百行的输出必须判为可折叠"
+    assert not measured, "显式换行数已超上限时不得为判定排版全文（估算即可定论）"
+
+
+def test_short_output_is_not_foldable_without_laying_out_full_text(monkeypatch):
+    host = Host()
+    turn = _tool_turn_with("ok<br/>done", host)
+    host.show()
+    ref = next(r for r in turn._items if r.kind == cb.KIND_TOOL)
+
+    measured = []
+    orig = cb.ToolCallRow._fold_measure_full
+
+    def spy(self, w):
+        measured.append(w)
+        return orig(self, w)
+
+    monkeypatch.setattr(cb.ToolCallRow, "_fold_measure_full", spy)
+    ref.widget._bump_content()
+    assert not ref.widget._fold_foldable(), "两行输出不该出现折叠开关"
+    assert not measured, "明显不足上限时同样不需要排版全文"
+
+
+def test_fold_estimation_is_monotonic_in_content_length():
+    """估算必须随内容单调增长（阈值判定才有意义），且不依赖真实排版。"""
+    lbl = QLabel("")
+    fm = lbl.fontMetrics()
+    short = cb._fold_est_lines("abc", 700, fm)
+    mid = cb._fold_est_lines("x" * 3000, 700, fm)
+    long_ = cb._fold_est_lines("x" * 9000, 700, fm)
+    assert short < mid < long_
+    assert cb._fold_est_lines("", 700, fm) == 1, "空内容只有一行"
+    # 显式换行数必须进下限：400 个 <br/> 至少 400 行，与宽度无关
+    brs = cb._fold_est_lines("<br/>" * 20 + "x", 100000, fm)
+    assert brs >= 20, brs
+

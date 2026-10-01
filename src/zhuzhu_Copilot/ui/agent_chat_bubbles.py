@@ -26,7 +26,9 @@ from __future__ import annotations
 from zhuzhu_Copilot import app_identity
 
 import dataclasses
+import datetime
 import os
+import re
 import time
 from typing import Callable, Optional
 
@@ -120,6 +122,7 @@ DOT_D = 8                      # .cmd .bar .dotbtn 直径
 DOT_GAP = 5
 DOTS_TICK_MS = 260             # 思考胶囊三点动画节拍
 RIBBON_TICK_MS = 200           # 耗时徽章实时刷新节拍
+RIBBON_UNKNOWN_TEXT = "--"     # 徽章常驻但拿不到耗时时的占位文案（老会话）
 FADE_H = 22                    # 折叠遮罩渐变高度（约 1.5 行）
 
 # ---------------------------------------------------------------------------
@@ -271,6 +274,28 @@ def fmt_seconds(seconds: float) -> str:
     return f"{int(seconds // 60)}m{int(seconds % 60):02d}s"
 
 
+def cost_from_meta(meta: str) -> Optional[float]:
+    """系统时间行「HH:MM:SS → HH:MM:SS」→ 秒数（老会话没有 cost 时的兜底）。
+
+    时间行只有时刻、没有日期，故结束早于开始时按**跨零点**处理（+24h）。整行解析
+    失败一律返回 None —— 宁可让徽章显示占位符，也不显示一个错误时长。
+    """
+    txt = str(meta or "")
+    if "\u2192" not in txt:
+        return None
+    try:
+        a, b = (x.strip() for x in txt.split("\u2192", 1))
+        t1 = datetime.datetime.strptime(a, "%H:%M:%S").time()
+        t2 = datetime.datetime.strptime(b, "%H:%M:%S").time()
+    except (ValueError, TypeError):
+        return None
+    delta = ((t2.hour - t1.hour) * 3600 + (t2.minute - t1.minute) * 60
+             + (t2.second - t1.second))
+    if delta < 0:
+        delta += 86400
+    return float(delta)
+
+
 # 几何自诊断开关（默认关闭，零开销）：排查「生成中闪烁 / 残留空白」这类只有真实
 # 窗口才能复现的问题时，设 WINAPP_CHAT_DEBUG=1 启动，把每次渲染的宽度/高度/写回
 # 情况追加到 ~/.zhuzhu_Copilot/chat_debug.log，据此判断是「高度反复写回」还是
@@ -348,6 +373,51 @@ def safe_prefix(html: str, budget: int) -> str:
     return html[:cut]
 
 
+# ---------------------------------------------------------------------------
+# 「是否可折叠」的廉价估算（见 `_FoldMixin._fold_full_h`）
+# ---------------------------------------------------------------------------
+# 折叠判定必须基于**全文**（前缀在超宽窗口下可能不到折叠上限，按前缀判定会让开关
+# 反复闪烁），但全文测量很贵：QLabel.heightForWidth 会为整篇富文本做一次完整布局，
+# 2 万字符的输出单块就要数十毫秒，长回合里上百块累积成秒级主线程阻塞 —— 这正是
+# 「应用启动加载长对话后点开执行过程直接无响应」的大头。故先用 O(1) 估算给出明确
+# 结论，只有量级贴着阈值时才退回真实测量（此时内容本就不长，成本有界）。
+_EST_SAMPLE_CHARS = 1500       # 估算采样长度（字符）：足以代表正文的平均字宽
+_EST_MARGIN_LINES = 2          # 估算与阈值的「边界地带」（行）：落在这里才真测
+_FOLD_TAG_RE = re.compile(r"<[^>]*>")
+_FOLD_BREAK_RE = re.compile(r"<br\s*/?>|</div>|</p>|</li>", re.I)
+
+
+def _fold_line_floor(html: str) -> int:
+    """HTML 的**显式换行数下限**（块级分隔标签数 + 1）"""
+    return len(_FOLD_BREAK_RE.findall(html or "")) + 1
+
+
+def _fold_est_lines(html: str, width: int, fm: QFontMetrics) -> int:
+    """估算 HTML 在给定宽度下的行数（不排版，O(1)）。
+
+    做法：去掉标签后采样前 `_EST_SAMPLE_CHARS` 个字符，算平均像素宽，再按可见字符
+    总数外推自动折行数，叠加显式换行数。误差约 ±10%，只用于阈值判定、不参与几何
+    写回，因此不需要与 QLabel 的排版逐像素一致。
+    """
+    width = max(1, int(width))
+    floor = _fold_line_floor(html)
+    plain = _FOLD_TAG_RE.sub("", html or "")
+    n = len(plain)
+    if n <= 0:
+        return floor
+    sample = plain[:_EST_SAMPLE_CHARS]
+    try:
+        px = float(fm.horizontalAdvance(sample) or 0)
+    except Exception:
+        px = 0.0
+    if px > 0:
+        avg = px / max(1, len(sample))
+    else:
+        # 字宽取不到（空样本 / 异常）：退化为字阶粗估（CJK 约 1.6 倍字号宽）
+        avg = max(1.0, float(fm.averageCharWidth() or FONT_BODY))
+    return int(floor + (n * avg) / width)
+
+
 def cap_output(text: str) -> tuple:
     """输出的**保留**上限，返回 (保留文本, 提示语)；展示折叠不在这里（见 `_FoldMixin`）。
 
@@ -383,6 +453,15 @@ def _widget_hfw(wid: QWidget, width: int) -> int:
 # 某回合在铺完之前被展开时，ChatTurn._resume_deferred() 会先同步补齐，正确性不变。
 _IDLE_SLICE_MS = 6.0
 
+# 展开过程区的分页参数（见 ChatTurn._set_proc_visible）：
+# 实测（scripts/_probe_switch_perf.py，192 个过程块的长回合，~78 万字）：逐块 setVisible
+# 显示时 Qt 会重排整条回合（每次约 18 次 resizeEvent + 全量子块测量），单块成本随
+# **已显示块数**增长 —— 一次性展开 192 块阻塞主线程 49 秒（表现为「直接无响应」），
+# 即便分片也只把 49s 摊成多次数秒卡顿。故展开按页给出：一页 `_PROC_PAGE` 块，
+# 其余留给「继续显示」按钮；每页内再按 `_REVEAL_CHUNK` 分片，任何一次占用都有界。
+_PROC_PAGE = 12          # 一页显示的过程块数
+_REVEAL_CHUNK = 2        # 页内每次补显的块数（首次同步显示，其余进空闲切片）
+
 
 class _IdleSpreader(QObject):
     """空闲切片执行器：把推迟的收尾动作分摊到事件循环空闲里逐个执行。
@@ -401,6 +480,17 @@ class _IdleSpreader(QObject):
         self._queue.append(fn)
         if not self._timer.isActive():
             self._timer.start(0)
+
+    def drop_pending(self):
+        """丢弃尚未执行的收尾任务（用户主动交互时立刻让路）。
+
+        长会话加载时这里会堆积上百个「隐藏过程块收尾」，每个首次收尾都要为富文本排版
+        （数十毫秒），全部跑完是数秒 —— 用户在这期间点开执行过程，就是在和这条队列抢
+        主线程，点击响应因此忽快忽慢。被丢弃的任务对应的控件全都处于**隐藏**状态
+        （历史回合收起态），其延迟标志仍留在控件上：将来真正展开时
+        `ChatTurn._apply_proc_visible` 会逐块同步补齐（幂等），正确性不受影响。
+        """
+        self._queue.clear()
 
     def _tick(self):
         budget = time.perf_counter() + _IDLE_SLICE_MS / 1000.0
@@ -1261,17 +1351,41 @@ class _FoldMixin:
     def _fold_lines(self) -> int:
         raise NotImplementedError
 
-    def _fold_full_h(self) -> int:
+    def _fold_full_h(self, width: int = None) -> int:
         """全文（不截断）在可用宽度下的高度，带 (内容版本, 宽度) 缓存。
 
         判定必须基于**全文**：若像思考气泡那样按「当前铺进标签的正文」判断，短前缀在超宽
-        窗口下可能不到折叠上限 → 判定在折叠/展开之间翻转（开关反复闪烁）。工具输出不会逐
-        帧增长，全文只在这里临时铺一次标签、测完立刻还原，成本可接受。
+        窗口下可能不到折叠上限 → 判定在折叠/展开之间翻转（开关反复闪烁）。
+
+        实现上**估算优先**（见 `_fold_line_floor` / `_fold_est_lines` 的说明）：先看显式
+        换行数是否已超上限，再用采样字宽外推总行数，两者都能明确给出结论时**完全不做
+        排版**；只有估算落在阈值附近（`_EST_MARGIN_LINES`）才临时铺一次全文真测 ——
+        此时内容量与阈值同量级，成本有界。
         """
-        w = max(1, self._fold_avail_w())
+        w = max(1, self._fold_avail_w(width))
         key = (self._content_ver, w)
         if self._fold_full_key == key:
             return self._fold_full_val
+        full = self._fold_full or ""
+        limit = self._fold_limit_h()
+        lines = self._fold_lines()
+        line_h = self._line_height()
+        floor = _fold_line_floor(full)
+        if floor > lines:
+            h = limit + (floor - lines) * line_h + 1        # 显式换行已超上限：必然可折叠
+        else:
+            est = _fold_est_lines(full, w, self._fold_label().fontMetrics())
+            if est > lines + _EST_MARGIN_LINES:
+                h = limit + line_h + 1                     # 明显超出：不排版
+            elif est < lines - _EST_MARGIN_LINES:
+                h = max(1, int(est * line_h))              # 明显不足：不排版
+            else:
+                h = self._fold_measure_full(w)             # 阈值附近：真测
+        self._fold_full_key, self._fold_full_val = key, h
+        return h
+
+    def _fold_measure_full(self, w: int) -> int:
+        """把全文临时铺进标签量一次真实高度（昂贵，仅阈值附近调用），测完立刻还原"""
         lbl = self._fold_label()
         saved_txt, saved_min = lbl.text(), lbl.minimumHeight()
         lbl.setMinimumHeight(0)
@@ -1279,11 +1393,17 @@ class _FoldMixin:
         h = int(lbl.heightForWidth(w) or 0)
         lbl.setText(saved_txt)
         lbl.setMinimumHeight(saved_min)
-        self._fold_full_key, self._fold_full_val = key, h
         return h
 
-    def _fold_foldable(self) -> bool:
-        return self._fold_full_h() > self._fold_limit_h()
+    def _fold_foldable(self, width: int = None) -> bool:
+        """是否可折叠（判定成本见 `_fold_full_h`）。
+
+        `width` 由 `heightForWidth` 传入，保证「判定宽度」与「测量宽度」一致 ——
+        否则布局探宽期间会按控件瞬时宽度反复改判，开关跟着布局闪烁。
+        """
+        if not self._fold_full:
+            return False
+        return self._fold_full_h(width) > self._fold_limit_h()
 
     def _fold_is_folded(self) -> bool:
         return self._fold_foldable() and self._fold_open is not True
@@ -1330,9 +1450,9 @@ class _FoldMixin:
         if target > 0 and _need_resize(lbl.minimumHeight(), target):
             lbl.setMinimumHeight(target)
 
-    def _fold_extra_h(self) -> int:
+    def _fold_extra_h(self, width: int = None) -> int:
         """本块高度里属于「间距 + 开关」的那一份（不可折叠时为 0）"""
-        if not self._fold_foldable():
+        if not self._fold_foldable(width):
             return 0
         return self._fold_gap() + self._fold_btn.sizeHint().height()
 
@@ -1477,13 +1597,13 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
     def _fold_avail_w(self, width: int = None) -> int:
         return int(width) if width else self._inner_w()
 
-    def _fold_foldable(self) -> bool:
+    def _fold_foldable(self, width: int = None) -> bool:
         """思考正文按**当前铺进标签的正文**判断（折叠态即前缀），而非全文。
 
         长篇推理每 tick 都在落字，按全文测量等于每 tick 重排整篇富文本（O(n²)，主线程被
         排满后气泡与指示器剧烈抖动 —— 这正是 THINK_PREVIEW_CHARS 存在的原因）。
         THINK_PREVIEW_CHARS 取值远大于任意宽度下 5 行的字数，故前缀高度恒 > 折叠上限，
-        判定稳定不翻转（工具输出不逐帧增长，走基类的全文判定，见 `_FoldMixin._fold_full_h`）。
+        判定稳定不翻转（工具输出不逐帧增长，走基类的全文估算，见 `_FoldMixin._fold_full_h`）。
         """
         return self._full_h() > self._fold_limit_h()
 
@@ -1791,7 +1911,7 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
         if not self._out_box.isHidden():
             # 输出区高度 = 它自己的上边距 + 输出标签当前应占的高度（含折叠上限）
             h += self._body_lay.spacing() + TOOL_OUT_GAP + self._fold_visible_h(width)
-            h += self._fold_extra_h()      # 折叠开关（含间距）：仅可折叠时占高
+            h += self._fold_extra_h(width)  # 折叠开关（含间距）：仅可折叠时占高
         return max(TOOL_ICON, h)
 
 
@@ -1953,7 +2073,7 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
             h += _label_hfw(self._cmd, inner, self._content_ver)
         if not self._body.isHidden():
             h += self._fold_visible_h(width)
-            h += self._fold_extra_h()      # 折叠开关（含间距）：仅可折叠时占高
+            h += self._fold_extra_h(width)  # 折叠开关（含间距）：仅可折叠时占高
         return h
 
 
@@ -2086,6 +2206,18 @@ class CostRibbon(QFrame):
         self._text.setText(fmt_seconds(seconds))
         self.show()
 
+    def freeze_unknown(self):
+        """拿不到耗时（老会话未落盘）：徽章**仍然常驻**，只显示占位符。
+
+        用户要求「每个 agent 气泡都要有时间计时器样式」：此前无数据即 hide，重启后
+        整条回合的计时样式整块消失，视觉上与其他回合不一致。样式常驻、数值待补，
+        比时有时无更符合预期。
+        """
+        self._live = False
+        self._timer.stop()
+        self._text.setText(RIBBON_UNKNOWN_TEXT)
+        self.show()
+
     def _tick(self):
         self._text.setText(fmt_seconds(time.time() - self._t0))
 
@@ -2156,7 +2288,9 @@ class ChatTurn(QWidget):
         self._hfw_cache: Optional[tuple] = None   # (width, height) 回合级高度缓存
         self._layer_dirty = True        # 布局参数（边距/开关/系统行）变了 → 下次必须全量重排
         self._live_applied: Optional[bool] = None  # 已下发的流式开关（未变则不重复遍历）
-        self._deferred: list = []       # 待空闲切片收尾的隐藏过程块（见 _IdleSpreader）
+        self._reveal_pending: list = []  # 本页待补显的过程块（分片显示，见 _set_proc_visible）
+        self._reveal_rest = None         # 尚未分页显示的过程块（None=未分页，[]=已全显示）
+        self._proc_dirty: list = []      # 可见性变过、待增量重测的过程块（见 _apply_proc_visible）
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         pol = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         pol.setHeightForWidth(True)
@@ -2182,6 +2316,11 @@ class ChatTurn(QWidget):
         self._toggle.clicked.connect(self._on_toggle)
         self._toggle.hide()
         self._toggle_idx = -1
+
+        # 「继续显示」：长过程区按页给出（见 _PROC_PAGE），本按钮负责拉取下一页
+        self._more = PillButton(style, "", dashed=True, parent=self)
+        self._more.clicked.connect(self._reveal_page)
+        self._more.hide()
 
         self._sys = QLabel("")          # demo .sys-meta：回合的「开始 → 结束」时间行
         self._sys.setStyleSheet(
@@ -2224,13 +2363,14 @@ class ChatTurn(QWidget):
         self._blocks_full = blocks
         self._proc_count = sum(1 for kind, payload, _sig in blocks
                                if self._block_proc(kind, payload))
-        self._finalize_ribbon(cost, live)
-        # 系统时间行的显隐/文案变化会改变回合总额：标记后由 _apply_done 走全量重排
+        # 系统时间行**先落位**：耗时徽章在缺少 cost 时要由它推导（老会话兜底），
+        # 因此必须先于 _finalize_ribbon 写入，否则读到的是上一轮的时间行。
         show_sys = bool(sys_meta)
         if self._sys.isHidden() == show_sys:
             self._sys.setVisible(show_sys)
             self._layer_dirty = True
         self._sys.setText(sys_meta or "")
+        self._finalize_ribbon(cost, live)
         self._apply_done(done)
         self._apply_live()
 
@@ -2296,8 +2436,8 @@ class ChatTurn(QWidget):
         try:
             # 始终按完整序列重建（增量：签名不变的块就地更新，不销毁）
             dirty, structural = self._rebuild_blocks(self._blocks_full)
-            # 收起/展开只切换过程块可见性，不重建控件
-            proc_changed = self._set_proc_visible(not done)
+            # 收起/展开只切换过程块可见性，不重建控件；状态变过的块进增量清单
+            self._set_proc_visible(not done)
 
             show_toggle = self._settled and self._proc_count > 0
             toggle_changed = self._toggle.isHidden() == show_toggle
@@ -2312,11 +2452,16 @@ class ChatTurn(QWidget):
             if show_toggle:
                 self._place_toggle()
             # 长回合流式刷新的主开销就在这一句：只有内容变化的块（通常 1 个）需要重测时
-            # 走增量路径，其余情况（结构增删/收展/边距/开关变化）才全量重排。
-            if structural or proc_changed or toggle_changed or self._layer_dirty:
+            # 走增量路径，其余情况（结构增删/边距/开关变化）才全量重排。
+            # 过程区可见性切换（展开/收起/继续显示）也走增量：只有状态变过的块需要重测，
+            # 未变的块保持原高度（`_hfw_cache` 与 `ref.h` 都还有效）—— 展开长回合时
+            # 这一步决定了是「几十毫秒」还是「数百毫秒」。
+            if structural or toggle_changed or self._layer_dirty or self._hfw_cache is None:
+                self._proc_dirty = []
                 self.relayout_heights(monotonic=self._live)
             else:
-                self.relayout_heights(monotonic=self._live, dirty=dirty)
+                self.relayout_heights(monotonic=self._live,
+                                      dirty=(dirty or []) + self._take_proc_dirty())
         finally:
             self.setUpdatesEnabled(True)
             self.update()
@@ -2327,23 +2472,146 @@ class ChatTurn(QWidget):
         QSpacerItem 无 setVisible，用 changeSize(0,0) / changeSize(0,gap) 切换。
         返回「是否真的发生了变化」：**状态没变就绝不 invalidate 布局** —— 流式每 tick
         都调本方法，无条件 invalidate 会让整条回合每帧全量重排（长任务卡顿的主因之一）。
+
+        展开走**分片**（见 `_EXPAND_FIRST_MS` 的说明）：先同步显示一小批，其余进空闲队列；
+        长回合（上百个过程块、单块含数万字输出）一次性显示会把主线程占住几十秒。
         """
-        changed = False
-        for ref in self._items:
-            if not ref.is_proc:
-                continue
-            if ref.widget.isHidden() != (not visible):
-                ref.widget.setVisible(visible)
-                changed = True
-            gap = ref.gap() if visible else 0
-            if ref.spacer.sizeHint().height() != gap:
-                ref.spacer.changeSize(0, gap, QSizePolicy.Policy.Minimum,
-                                      QSizePolicy.Policy.Fixed)
-                changed = True
-        if changed:
-            self._hfw_cache = None
-            self._box_lay.invalidate()
+        if not visible:
+            self._reveal_pending.clear()          # 收起：取消未完成的补显与分页
+            self._reveal_rest = None
+            self._update_more()
+            return self._apply_proc_visible([r for r in self._items if r.is_proc], False)
+        if self._live:
+            # 进行中的回合：过程块要随输出即时出现（新块由 _insert_blocks 直接显示），
+            # 这里只做一次廉价对账
+            return self._apply_proc_visible([r for r in self._items if r.is_proc], True)
+        if self._reveal_pending:
+            return False                          # 本页还在补显：不打断
+        if self._reveal_rest is None:
+            # 首次展开是用户主动交互：先丢弃后台「隐藏块收尾」积压（长会话里上百个，
+            # 见 _IdleSpreader.drop_pending），把主线程立刻让给这次点击 —— 否则点击
+            # 响应会随着后台队列的进度忽快忽慢。
+            _spreader().drop_pending()
+            # 待显示集合 = 当前仍隐藏的全部过程块；由 _reveal_page 切出第一页。
+            # **不可**在这里先切掉 _PROC_PAGE —— 那会把首页整批丢弃（小回合里表现为
+            # 「点了查看执行过程但一个块都没出现」）。
+            self._reveal_rest = [r for r in self._items
+                                 if r.is_proc and r.widget.isHidden()]
+        return self._reveal_page()
+
+    def _reveal_page(self):
+        """显示「下一页」过程块：首个分片同步显示（点击即有内容），其余进空闲切片。
+        返回本页是否真的改动了可见性（不变则不 invalidate 布局）。"""
+        rest = self._reveal_rest or []
+        page, self._reveal_rest = rest[:_PROC_PAGE], rest[_PROC_PAGE:]
+        if not page:
+            self._update_more()
+            return False
+        changed = self._apply_proc_visible(page[:_REVEAL_CHUNK], True)
+        self._reveal_pending = page[_REVEAL_CHUNK:]
+        if self._reveal_pending:
+            _spreader().push(self._reveal_step)
+        self._update_more()
         return changed
+
+    def _update_more(self):
+        """「继续显示」按钮的显隐与文案：过程区展开且仍有未显示的过程块时才出现"""
+        n = len(self._reveal_rest or [])
+        show = bool(n) and self._user_open is True
+        self._more.setVisible(show)
+        if show:
+            self._more.setText(f"继续显示（还有 {n} 步）")
+        self._place_toggle()
+
+    def _apply_proc_visible(self, refs: list, visible: bool) -> bool:
+        """对给定过程块应用可见性 + 间距；返回是否真的变了（不变则不 invalidate）。
+
+        **切换期间暂停本回合的布局**：单个 `setVisible` 会让父布局立即重排一次
+        （隔离实测 13~46ms/次，随回合内子项数增长），长回合里逐块切换就变成秒级
+        阻塞。暂停后同样的切换只在末尾付一次重排 —— 期间几何由各块自身的
+        heightForWidth 保证不缺不挤，排空后的重排再统一钉准。
+        """
+        if not refs:
+            return False
+        lay = self._box_lay
+        lay.setEnabled(False)
+        dirty: list = []
+        try:
+            for ref in refs:
+                if visible:
+                    # 显示前先补齐该块的可见性收尾（历史回合的隐藏块延迟到建块时只填内容，
+                    # 见 ToolCallRow.set_content 的 defer 说明）—— 逐块补齐才能让每次
+                    # 主线程占用有界，而不是一次补齐上百块。
+                    try:
+                        ref.widget.resume_deferred()
+                    except RuntimeError:
+                        continue                      # 控件已销毁：跳过
+                if ref.widget.isHidden() != (not visible):
+                    ref.widget.setVisible(visible)
+                    dirty.append(ref)
+                gap = ref.gap() if visible else 0
+                if ref.spacer.sizeHint().height() != gap:
+                    ref.spacer.changeSize(0, gap, QSizePolicy.Policy.Minimum,
+                                          QSizePolicy.Policy.Fixed)
+                    dirty.append(ref)
+        finally:
+            lay.setEnabled(True)
+        if dirty:
+            # **不整表作废高度缓存**：把状态变过的块记入增量清单，让随后的重排只重测
+            # 这些块。整表作废会把上百个未变的块重测一遍 —— 展开长回合时正是这类
+            # 全量重排造成了数百毫秒的单次卡顿。
+            seen = {id(r) for r in self._proc_dirty}
+            self._proc_dirty.extend(r for r in dirty if id(r) not in seen)
+            lay.invalidate()
+        return bool(dirty)
+
+    def _take_proc_dirty(self) -> list:
+        """取走并清空「过程区可见性变化」累积的待重测块（供增量重排）"""
+        d = self._proc_dirty
+        self._proc_dirty = []
+        return d
+
+    def _reveal_step(self):
+        """空闲分片：补显下一批过程块；队列排空后统一重排一次（每片有界，不阻塞交互）。
+
+        实测（`scripts/_probe_switch_perf.py`，192 个过程块的长回合）：分片补显期间
+        **不能**每片都做回合重排与面板级重排 —— 那会让补显总时长从 ~4s 涨到 ~96s
+        （回合越大、面板越重，每次重排越贵）。故分片只切可见性，几何交由队列排空后的
+        一次重排统一钉定（期间由 Qt 按 heightForWidth 自排，不会挤压）。
+        """
+        if self._done or not self._reveal_pending:
+            self._reveal_pending.clear()
+        else:
+            try:
+                batch = self._reveal_pending[:_REVEAL_CHUNK]
+                del self._reveal_pending[:_REVEAL_CHUNK]
+                self._apply_proc_visible(batch, True)
+                self.updateGeometry()
+            except RuntimeError:
+                self._reveal_pending.clear()      # 控件已销毁：停止补显
+                return
+            if self._reveal_pending:
+                _spreader().push(self._reveal_step)
+                return
+        # 排空：一次性钉准几何，并让面板按新高度重排（滚动区跟手）。
+        # 走**增量**（只重测本页新显示的那些块）：整表重测会把上百个未变的块也算一遍。
+        # 「钉几何」与「面板跟手」**分两帧**执行：两者各自都可能上百毫秒（回合内上百个
+        # 布局项），挤在同一帧里就是一次可感知的卡顿。
+        try:
+            self.relayout_heights(self.width(), dirty=self._take_proc_dirty())
+        except RuntimeError:
+            return
+        if self._toggle_handler is not None:
+            _spreader().push(self._notify_geometry)
+
+    def _notify_geometry(self):
+        """回合几何已钉准后通知面板跟手（单独一帧，见 `_reveal_step` 的说明）"""
+        if self._toggle_handler is None:
+            return
+        try:
+            self._toggle_handler()
+        except RuntimeError:
+            pass
 
     def _on_toggle(self):
         self._user_open = self._done      # 记住用户选择（后续重渲染不再自动收起）
@@ -2352,7 +2620,7 @@ class ChatTurn(QWidget):
             self._toggle_handler()        # 让面板按新高度重新钉定（消除残留空白）
 
     def _place_toggle(self):
-        """把开关放到最后一个过程块之后（demo 中 .proc-ctrl 紧随 .ai-proc）；
+        """把开关（与「继续显示」）放到最后一个过程块之后（demo 中 .proc-ctrl 紧随 .ai-proc）；
         收起态下没有过程块，开关自然落到正文之前。位置未变时不重复插拔，
         避免流式刷新期间反复触发布局失效。"""
         idx = 0
@@ -2360,11 +2628,12 @@ class ChatTurn(QWidget):
             if ref.is_proc:
                 idx = i * 2 + 2
         idx = min(idx, max(0, self._box_lay.count() - 1))
-        if idx == self._toggle_idx and self._toggle.parent() is self._box:
-            return
-        self._toggle_idx = idx
-        self._box_lay.removeWidget(self._toggle)
-        self._box_lay.insertWidget(idx, self._toggle)
+        if idx != self._toggle_idx or self._toggle.parent() is not self._box:
+            self._toggle_idx = idx
+            self._box_lay.removeWidget(self._toggle)
+            self._box_lay.insertWidget(idx, self._toggle)
+        if self._more.parent() is not self._box:
+            self._box_lay.insertWidget(self._box_lay.indexOf(self._toggle) + 1, self._more)
 
     # ---------- 增量重建 ----------
     def _rebuild_blocks(self, specs: list):
@@ -2533,6 +2802,14 @@ class ChatTurn(QWidget):
 
     # ---------- 耗时徽章 ----------
     def _finalize_ribbon(self, cost: Optional[float], live: bool):
+        """耗时徽章**常驻**：每个 AI 回合都必须有计时器样式（用户硬性要求）。
+
+        - 进行中（live）：自任务起点实时刷新；
+        - 已结束：优先用冻结/持久化的耗时；老会话没有该数据时退化为系统时间行的
+          起止差（`cost_from_meta`）；两者都拿不到就显示占位符。
+        此前「无耗时即 hide」会让重启加载的历史回合整块丢掉计时样式，与其他回合
+        不一致 —— 现在任何情况下都不隐藏徽章。
+        """
         if live:
             self._t0 = self._t0 or time.time()
             if not self._ribbon.is_live:
@@ -2541,15 +2818,15 @@ class ChatTurn(QWidget):
             return
         if cost is None:
             cost = self._cost        # 已冻结的耗时保持稳定（重复渲染不闪烁）
+        if cost is None:
+            cost = cost_from_meta(self._sys.text())
         if cost is not None:
             self._ribbon.freeze(float(cost))
             self._cost = float(cost)
-            self._ensure_inset(True)
-            return
-        # 无耗时数据（老会话）：隐藏徽章并收回骑线留白，上虚线贴顶
-        self._ribbon.hide()
-        self._cost = None
-        self._ensure_inset(False)
+        else:
+            self._ribbon.freeze_unknown()
+        self._ensure_inset(True)
+        self._place_ribbon()         # 徽章由隐藏转常驻：立即就位（resize 之前也要贴住虚线）
 
     def _ensure_inset(self, has_ribbon: bool):
         inset = RIBBON_H // 2 if has_ribbon else 0
