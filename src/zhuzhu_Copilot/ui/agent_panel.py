@@ -286,19 +286,50 @@ _POPUP_RADIUS = 12
 _POPUP_VEIL_SCALE = 0.7
 
 
-# 弹出层玻璃底色：**比面板亮一档的灰蓝**。
-# 弹出层是独立顶层窗口，"半透明透出后面"看到的只是主窗口的深色内容，叠出来仍是
-# 一块深色板（用户反馈"下拉菜单仍然是深色背景"）。所以底本身就要用亮一档的玻璃色，
-# 才有磨砂玻璃的观感；配合圆角 + 浅色描边与主界面的玻璃同一调性。
-_POPUP_GLASS_BASE = "#3A4050"
+# 弹出层玻璃底的不透明度：保留一点透明度（弹出层的观感要"透"），但不能太低，
+# 否则会与系统阴影 / 下层窗口叠成一块脏色。
 _POPUP_GLASS_ALPHA = 0.88
 
 
+def _frost_surface() -> str:
+    """根玻璃表面的**合成后**底色（不透明）：模糊壁纸 ⊕ 磨砂纱。
+
+    与 `frost_surface_color()` 的关键区别（这就是"下拉仍是深色 / 正文闪黑"的根因）：
+    · `frost_surface_color()` 算的是「壁纸平均色 × frost + 主题底色 × (1-frost)」——
+      frost 偏小时（用户可调到接近 0）结果 ≈ **纯深色主题底**；
+    · 而面板真正渲染出来的是 `_paint_glass_root()`：模糊壁纸之上压一层
+      `root_veil_color()` 的纱 —— 在亮壁纸下是**中浅色**。
+    两者亮度差一倍以上（实测 #1F2227 对 #768274）。凡是需要「看起来与面板一致」的
+    浮层都必须用这个合成值：
+      · 弹出层底（下拉 / 菜单）：否则就是一块深色板；
+      · 「落字浮现」遮色：否则流式输出时每落一行就闪一块深色。
+    无壁纸（或玻璃关闭）时回退面板色，与原来一致。
+    """
+    if not _glass_wallpaper_active():
+        return PANEL
+    try:
+        veil = app_glass.root_veil_color(PANEL)
+        tint = app_glass.wallpaper_tint()
+    except Exception:
+        return PANEL
+    base = QColor(tint) if tint is not None else QColor(PANEL)
+    a = veil.alphaF()
+    return QColor(
+        int(round(base.red() * (1.0 - a) + veil.red() * a)),
+        int(round(base.green() * (1.0 - a) + veil.green() * a)),
+        int(round(base.blue() * (1.0 - a) + veil.blue() * a)),
+    ).name()
+
+
 def _popup_glass() -> str:
-    """下拉 / 菜单弹出层的玻璃底（玻璃关闭时退回不透明面板色）。"""
+    """下拉 / 菜单弹出层的玻璃底（玻璃关闭时退回不透明面板色）。
+
+    底取**与面板同一块玻璃**的合成色（见 `_frost_surface`），而不是某个写死的
+    "亮一档灰蓝"：写死色在浅色主题下会变成一块深色板，在深色主题下又与面板不搭。
+    """
     if not _glass_on():
         return PANEL
-    return app_glass.rgba(_POPUP_GLASS_BASE, _POPUP_GLASS_ALPHA)
+    return app_glass.rgba(_frost_surface(), _POPUP_GLASS_ALPHA)
 
 
 def _frost_popup_widget(widget) -> None:
@@ -453,15 +484,16 @@ def _install_focus_glow_all(root) -> None:
 
 
 def _glass_band() -> str:
-    """「落字浮现」遮罩色：**必须不透明**（要盖住旧字），且贴近真实背景。
+    """「落字浮现」遮罩色：**必须不透明**（要盖住旧字），且必须与面板看起来一致。
 
-    玻璃开启时用「壁纸平均色压在面板色上」的合成色；玻璃关闭时就是主题底色。
-    原先这些区块直接拿 `style.bg`（纯深色）当遮罩 —— 流式输出时每落一行字就闪一块
-    黑（用户反馈「agent 输出正文时有黑色元素瞬间出现」）。
+    遮色用的是 `_frost_surface()`（模糊壁纸 ⊕ 磨砂纱的**合成后**色），而不是
+    `frost_surface_color(PANEL)`：后者在 frost 偏小时 ≈ 纯深色主题底，而正文实际坐在
+    中浅色的玻璃面板上 —— 遮色比底色深一倍，流式输出时每落一行就闪一块深色
+    （用户反馈「agent 输出正文时有黑色元素瞬间出现」，实测 #1F2227 vs 面板 #768274）。
     """
     if not _glass_on():
         return BG
-    return app_glass.frost_surface_color(PANEL)
+    return _frost_surface()
 
 
 def _gedge(alpha: float = 0.55) -> str:
@@ -756,9 +788,11 @@ def _global_dialog_qss() -> str:
     + 白色高光描边（只换背景风格，字体/字号与主风格参数均不变）。"""
     # 原生对话框不是半透明窗口：用半透明底会与窗口默认底色叠加成「纯黑」，
     # 故一律用不透明的主题色，随深浅主题实时换色。
-    # 下拉 / 菜单这类弹出层用**磨砂玻璃**底：取壁纸平均色（不透明，防止与系统
-    # 阴影/下层窗口叠成黑块），边缘用浅色描边 —— 与主界面玻璃同一材质观感。
-    _popup_bg = _glass_tip_bg()
+    # 下拉 / 菜单这类弹出层用**磨砂玻璃**底：取与主面板同一块玻璃的合成色。
+    # 曾用 `_glass_tip_bg()`（壁纸平均色 × frost + 主题深色底）—— frost 偏小时它就是
+    # 一块**深色板**，而这里正是"所有没自带 QSS 的下拉"（对话框/插件/MCP…）的**唯一**
+    # 弹层底来源，于是那些下拉全是深色（用户反复反馈的那条）。
+    _popup_bg = _popup_glass()
     _popup_bd = _gedge()
     # 悬停 / 选中是叠在磨砂底上的交互反馈：白色 40% 透明（见 HOVER_T）。
     _popup_hover = HOVER_T

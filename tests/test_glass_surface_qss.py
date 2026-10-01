@@ -55,7 +55,13 @@ def test_focus_hint_is_glow_not_blue_border(glass_state, offscreen_app):
 
 
 def test_popup_and_menu_use_frosted_surface(glass_state):
-    """下拉 / 菜单弹出层底必须走磨砂入口，不得退回深色面板常量。"""
+    """下拉 / 菜单弹出层底必须走磨砂入口，不得退回深色面板常量。
+
+    这条曾经断言 `_popup_bg = _glass_tip_bg()` —— 但那正是"下拉仍是深色"的来源：
+    `_glass_tip_bg()` = 壁纸平均色 × frost + 主题深色底 × (1-frost)，frost 偏小时
+    就是一块深色板；而这里（应用级 QSS）是所有没自带 QSS 的下拉的**唯一**弹层底来源。
+    现在统一走 `_popup_glass()`（与面板同一块玻璃的合成色）。
+    """
     from pathlib import Path
 
     from zhuzhu_Copilot.ui import agent_panel as ap
@@ -65,7 +71,11 @@ def test_popup_and_menu_use_frosted_surface(glass_state):
            if ("QAbstractItemView" in ln or "QMenu {{" in ln)
            and "background: {PANEL}" in ln]
     assert not bad, f"弹出层仍是深色面板常量：{bad[:3]}"
-    assert "_popup_bg = _glass_tip_bg()" in src
+    assert "_popup_bg = _popup_glass()" in src, "应用级弹层底未走磨砂玻璃入口"
+    dark = [ln.strip() for ln in src.splitlines()
+            if ("QAbstractItemView" in ln or "QMenu {{" in ln
+                or "QMenu { {" in ln) and "_glass_tip_bg()" in ln]
+    assert not dark, f"弹出层仍用深色实色入口（_glass_tip_bg 只该给 Tooltip）：{dark[:3]}"
 
 
 def test_focus_keeps_a_glowing_edge(glass_state):
@@ -84,10 +94,12 @@ def test_focus_keeps_a_glowing_edge(glass_state):
 
 
 def test_popup_glass_is_translucent(glass_state):
-    """下拉 / 菜单弹出层底必须是**真半透明**。
+    """下拉 / 菜单弹出层底必须是**真半透明**，且底色取「与面板同一块玻璃」的合成色。
 
-    原先走 frost_surface_color：它是把壁纸平均色压在主题深色底上混出的**实色**，
-    壁纸偏深时混出来还是深色块 —— 这就是「下拉菜单没有磨砂玻璃材质」的根因。
+    只半透明不够：早先底是 `frost_surface_color()`（壁纸平均色压在主题深色底上混出的
+    实色），frost 偏小时就是深色块 —— 这才是「下拉菜单是深色背景」的根因。
+    现在 rgb 部分由 `_frost_surface()` 给出（见 `test_frost_surface_matches_what_the_panel_actually_renders`），
+    这里只管「保留透明度」这一半契约。
     """
     from zhuzhu_Copilot.ui import agent_panel as ap
 
@@ -444,23 +456,16 @@ def _popup_luma_and_colors(img) -> tuple:
     return sum(lums) / max(1, len(lums)), len(colors)
 
 
-def test_combo_popup_really_shows_the_frosted_wallpaper(glass_state, offscreen_app, tmp_path):
-    """下拉弹出层必须真透出壁纸，而不是一块深色板 —— 用**像素**判，不看 QSS 串。
+def _mean_of(css: str) -> float:
+    """颜色串 → 平均亮度（#RRGGBB / #AARRGGBB / rgba(r,g,b,a) 都支持）。"""
+    from PyQt6.QtGui import QColor
+    return sum(QColor(css).getRgb()[:3]) / 3.0
 
-    用户先后三次反馈「下拉菜单仍然是深色背景」。只断言 `_popup_glass()` 是 rgba 半透明
-    根本不成立：弹出层是独立顶层窗口，Qt 默认把它填成实色；即便设了
-    WA_TranslucentBackground，QAbstractItemView 的样式底也会把自绘玻璃盖住。
-    所以这里按真实链路验证：真造一个带 `_QCOMBO` 样式的 QComboBox → 设一张亮色壁纸
-    → showPopup() → 抓弹出层像素。透出壁纸才会变亮，因此平均亮度必须明显高于
-    `_POPUP_GLASS_BASE` 自身的亮度；并且颜色不止一两种（不是一块纯色板）。
-    """
-    from PyQt6.QtCore import Qt
+
+def _bright_wallpaper(tmp_path):
+    """亮色壁纸（左暖橙、右青蓝）：亮/暗在像素上一眼可分，用于玻璃类断言。"""
     from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter
-    from PyQt6.QtWidgets import QComboBox
 
-    from zhuzhu_Copilot.ui import agent_panel as ap
-
-    # 亮色壁纸：左暖橙、右青蓝 —— 透出与否在亮度上分得很开
     wall = tmp_path / "wall.png"
     img = QImage(1280, 800, QImage.Format.Format_ARGB32)
     p = QPainter(img)
@@ -470,9 +475,86 @@ def test_combo_popup_really_shows_the_frosted_wallpaper(glass_state, offscreen_a
     p.fillRect(img.rect(), g)
     p.end()
     img.save(str(wall))
+    return wall
 
-    glass_state.set_fields(persist=False, enabled=True, bg_image=str(wall))
-    base_luma = sum(QColor(ap._POPUP_GLASS_BASE).getRgb()[:3]) / 3.0
+
+def test_frost_surface_matches_what_the_panel_actually_renders(glass_state, tmp_path):
+    """「合成后的玻璃面底色」必须等于「模糊壁纸 ⊕ 磨砂纱」，而不是深色主题底。
+
+    这是「下拉仍是深色 / 正文闪黑」的共同根因：
+    `frost_surface_color()` = 壁纸平均色 × frost + 主题底色 × (1-frost)，frost 偏小
+    （用户可能调到接近 0）时结果 ≈ **纯深色主题底**（实测 #1F2227）；而面板真正渲染的是
+    `_paint_glass_root()` = 模糊壁纸 + `root_veil_color()` 的纱，亮壁纸下是**中浅色**
+    （实测 #7a8679）。两者亮度差 4 倍，凡是拿前者当「面板该有的样子」的浮层必然是深色。
+    """
+    from PyQt6.QtGui import QColor
+
+    from zhuzhu_Copilot.core import app_glass
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True,
+                           bg_image=str(_bright_wallpaper(tmp_path)))
+    # 用深色主题复现用户现场（截图就是深色 + 亮壁纸）：旧算法在这种组合下退化成
+    # 深色主题底，而面板实际渲染出来的是「亮壁纸压纱」的浅色。
+    ap._apply_colors(ap._THEMES["dark"], force=True, bump_version=False)
+    try:
+        surf = ap._frost_surface()
+        veil = app_glass.root_veil_color(ap.PANEL)
+        tint = app_glass.wallpaper_tint()
+        a = veil.alphaF()
+        want = QColor(*(int(round(c * (1 - a) + v * a))
+                        for c, v in zip(tint.getRgb()[:3], veil.getRgb()[:3])))
+        got = QColor(surf)
+        assert all(abs(g - w) <= 3 for g, w in zip(got.getRgb()[:3], want.getRgb()[:3])), \
+            f"合成玻璃色不对：{surf} vs 期望 {want.name()}"
+        old = app_glass.frost_surface_color(ap.PANEL)
+        assert _mean_of(surf) > _mean_of(old) + 30, (
+            f"深色主题 + 亮壁纸下合成玻璃色仍偏暗：{surf}（旧算法 {old}）"
+            "—— 弹出层底与落字遮色都会跟着变深")
+    finally:
+        ap.apply_theme()        # 还原成设置里的主题
+
+
+def test_emerge_band_matches_the_panel_glass(glass_state, tmp_path):
+    """落字浮现的遮色 == 面板那块玻璃，否则流式输出时每落一行就闪一块深色。
+
+    回归（用户反馈「agent 输出正文时有黑色元素瞬间出现」）：遮色原取
+    `frost_surface_color(PANEL)`（≈深色主题底），而正文坐在中浅色的玻璃面板上。
+    遮色**必须不透明**（要盖住旧字），所以只能靠「取值贴近真实底色」来消隐。
+    """
+    from PyQt6.QtGui import QColor
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True,
+                           bg_image=str(_bright_wallpaper(tmp_path)))
+    band = ap._glass_band()
+    assert QColor(band).alpha() == 255, "遮色必须不透明，否则盖不住旧字"
+    assert abs(_mean_of(band) - _mean_of(ap._frost_surface())) <= 2, \
+        f"遮色 {band} 与面板玻璃 {ap._frost_surface()} 不一致 → 会闪色块"
+
+    glass_state.set_fields(persist=False, enabled=False)
+    assert ap._glass_band().lower() == ap.BG.lower(), "玻璃关闭时应回退主题底色"
+
+
+def test_combo_popup_is_the_same_glass_as_the_panel(glass_state, offscreen_app, tmp_path):
+    """下拉弹出层必须与面板是**同一块玻璃**，不能是一块深色板 —— 用像素判，不看 QSS 串。
+
+    用户先后四次反馈「下拉菜单仍然是深色背景 / 鼠标附着样式仍为深色」。只断言
+    `_popup_glass()` 是 rgba 半透明根本不成立：弹出层是独立顶层窗口，Qt 默认把它填成
+    实色，QAbstractItemView 的样式底还会把自绘玻璃盖住 —— 所以只能抓真实像素来判。
+    这里走真实链路：`_QCOMBO` 样式 + `_harden_combo_popup` + showPopup + 抓弹层窗口。
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QComboBox
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True,
+                           bg_image=str(_bright_wallpaper(tmp_path)))
+    ap.refresh_glass()          # 换壁纸后必须重建派生 QSS（`_QCOMBO` 是缓存串）
+    panel_luma = _mean_of(ap._frost_surface())
 
     combo = QComboBox()
     combo.setStyleSheet(ap._QCOMBO)
@@ -501,6 +583,6 @@ def test_combo_popup_really_shows_the_frosted_wallpaper(glass_state, offscreen_a
         offscreen_app.processEvents()
 
     assert ncol >= 5, f"弹出层几乎是一块纯色板（颜色种类 {ncol}）"
-    assert luma > base_luma + 18, (
-        f"弹出层没透出壁纸：平均亮度 {luma:.1f} ≈ 玻璃底色 {base_luma:.1f}"
-        "（说明自绘玻璃被样式底盖住 / 根本没上屏）")
+    assert luma >= panel_luma * 0.75, (
+        f"弹出层比面板暗太多：弹层平均亮度 {luma:.1f}，面板玻璃 {panel_luma:.1f}"
+        "（说明弹层底还是深色算法 / 自绘玻璃没上屏）")
