@@ -202,6 +202,16 @@ def _gfill(color: str) -> str:
     return app_glass.control_fill(color)
 
 
+def _gsurface(color: str) -> str:
+    """大面积表面（窗口底 / 列表 / 树 / 输入区 / 卡片）的玻璃填充色。
+
+    与 `_gfill` 的区别：小控件用 alpha = frost×opacity，而大表面若同样半透明，
+    正文会直接压在壁纸上不可读 —— 这里走 `legible_fill` 的可读性地板。
+    全应用「带底色的容器」一律经这两个入口取色，玻璃关闭时返回不透明原色。
+    """
+    return app_glass.legible_fill(color)
+
+
 # 玻璃参数变化 → 合并刷新（滑杆拖动时每次变化都重算 QSS 会卡）
 _GLASS_REFRESH_DEBOUNCE_MS = 120
 
@@ -392,9 +402,12 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                   f"font-size: {FONT_SMALL}px; font-weight: 600; }}"
                   f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
                   f"background: {HOVER}; }}")
+    # 垂直内边距取 SPACING_XS：与同排的文本框/标签（padding 6px）等高，
+    # 否则按钮会被同行更高的控件挤成一条（外观页「选择图片 / 清除」曾矮到 16px）
     _BTN_COMPACT = (f"QPushButton {{ background: transparent; color: {TEXT_DIM};"
                     f"border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
-                    f"padding: 1px {SPACING_SM}px; font-size: {FONT_SMALL}px; }}"
+                    f"padding: {SPACING_XS}px {SPACING_SM}px;"
+                    f"font-size: {FONT_SMALL}px; }}"
                     f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
                     f"background: {HOVER}; }}")
     _BTN_GHOST_ACCENT = (f"QPushButton {{ background: transparent; color: {ACCENT_HOVER};"
@@ -2395,8 +2408,9 @@ class _AgentSettingsDialog(QDialog):
         _popup_bd = self._BORDER
         _popup_sel = self._PANEL2
         _popup_hover = self._PANEL2
-        _in_bg = self._PANEL
-        _in_focus = self._PANEL2
+        # 输入类控件是大表面：走玻璃填充（壁纸下不再是不透明的旧实色块）
+        _in_bg = _gsurface(self._PANEL)
+        _in_focus = _gsurface(self._PANEL2)
         self.setStyleSheet(
             # QDialog#agentSettingsDlg：透明背景仅作用于设置对话框自身，
             # 避免级联到子 QMessageBox/QInputDialog 导致其背景透明变纯黑
@@ -2448,7 +2462,7 @@ class _AgentSettingsDialog(QDialog):
         self.nav = QListWidget()
         self.nav.setFixedWidth(176)
         self.nav.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; border: none;"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; border: none;"
             "padding-top: 10px; outline: none; }}"
             f"QListWidget::item {{ color: {self._DIM}; padding: 12px 14px;"
             "font-size: 13px; font-weight: 600; border: none;"
@@ -2527,7 +2541,7 @@ class _AgentSettingsDialog(QDialog):
         save.setAutoDefault(False)
         save.clicked.connect(self._save)
         cancel = QPushButton("取消")
-        cancel.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        cancel.setStyleSheet(f"background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                              "padding: 8px 24px; font-size: 13px; font-weight: 600;")
         cancel.setAutoDefault(False)
@@ -2590,7 +2604,6 @@ class _AgentSettingsDialog(QDialog):
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         theme_row.addWidget(self.theme_combo, 1)
         lay.addLayout(theme_row)
-        lay.addLayout(theme_row)
         self.memory_check = QCheckBox("开启长期记忆（save_memory / load_memory）")
         self.memory_check.setChecked(bool(s.get("memory_enabled", True)))
         self.memory_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
@@ -2628,7 +2641,8 @@ class _AgentSettingsDialog(QDialog):
         reset_row.addWidget(reset_lbl)
         reset_btn = QPushButton("重置全部面板位置（恢复默认停靠）")
         reset_btn.setStyleSheet(
-            f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
+            f"background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER};"
             "border-radius: 8px; padding: 6px 14px; font-weight: 600;")
         reset_btn.setAutoDefault(False)
         reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2701,7 +2715,7 @@ class _AgentSettingsDialog(QDialog):
             self.disable_tools_edit.setPlainText("\n".join(_banned))
         self.disable_tools_edit.setMaximumHeight(96)
         self.disable_tools_edit.setStyleSheet(
-            f"QPlainTextEdit {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QPlainTextEdit {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
             "padding: 6px 10px; font-size: 13px; }}"
             f"QPlainTextEdit:focus {{ border: 1px solid {self._ACCENT_HOVER}; }}")
@@ -2785,7 +2799,7 @@ class _AgentSettingsDialog(QDialog):
         self._glass_bg_label.setWordWrap(True)
         self._glass_bg_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self._glass_bg_label.setStyleSheet(
-            f"color: {self._DIM}; font-size: 12px; background: {self._PANEL};"
+            f"color: {self._DIM}; font-size: 12px; background: {_gsurface(self._PANEL)};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px;")
         row.addWidget(self._glass_bg_label, 1)
         pick = QPushButton("选择图片")
@@ -3024,7 +3038,7 @@ class _AgentSettingsDialog(QDialog):
             browse = QPushButton(_line_icon("folder", 18), "浏览…")
             browse.setFixedWidth(96)
             browse.setFixedHeight(30)
-            browse.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+            browse.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                                  f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                  "padding: 0 10px; font-weight: 600;")
             browse.setAutoDefault(False)
@@ -3043,9 +3057,9 @@ class _AgentSettingsDialog(QDialog):
     def _wd_row_qss(self, highlight: bool) -> str:
         """会话工作目录行卡片样式：常态 1px 边框；闪烁高亮用深蓝 2px 边框"""
         if highlight:
-            return (f"QFrame#sessionWdRow {{ background: {self._PANEL};"
+            return (f"QFrame#sessionWdRow {{ background: {_gsurface(self._PANEL)};"
                     f"border: 2px solid {self._ACCENT_HOVER}; border-radius: 8px; }}")
-        return (f"QFrame#sessionWdRow {{ background: {self._PANEL};"
+        return (f"QFrame#sessionWdRow {{ background: {_gsurface(self._PANEL)};"
                 f"border: 1px solid {self._BORDER}; border-radius: 8px; }}")
 
     def _flash_workdir_row(self, frame):
@@ -3219,7 +3233,7 @@ class _AgentSettingsDialog(QDialog):
         self.provider_list.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # 禁止横向滚动条（含最大化时）
         self.provider_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ border-radius: 8px; margin: 2px; }}"
             f"QListWidget::item:selected {{ background: {self._PANEL2}; }}")
@@ -3482,7 +3496,7 @@ class _AgentSettingsDialog(QDialog):
         ops.addWidget(up)
         self.music_del = QPushButton(_line_icon("trash", 16, self._TEXT), "删除选中")
         self.music_del.setStyleSheet(
-            f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
+            f"background: {_gfill(self._PANEL)}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
             "border-radius: 8px; padding: 7px 14px; font-weight: 600;")
         self.music_del.setAutoDefault(False)
         self.music_del.clicked.connect(self._music_delete)
@@ -3551,7 +3565,7 @@ class _AgentSettingsDialog(QDialog):
         # 歌单
         self.music_list = QListWidget()
         self.music_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 4px; }}"
             f"QListWidget::item {{ padding: 6px 8px; border-radius: 5px; }}"
             f"QListWidget::item:hover {{ background: {self._ACCENT}; }}"
@@ -3569,7 +3583,7 @@ class _AgentSettingsDialog(QDialog):
         self.music_mode = QPushButton(_line_icon("repeat", 16, self._TEXT), " 顺序")
         for b in (self.music_prev, self.music_next, self.music_mode):
             b.setStyleSheet(
-                f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
+                f"background: {_gfill(self._PANEL)}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
                 "border-radius: 8px; padding: 8px 14px; font-weight: 700;")
         self.music_toggle.setStyleSheet(
             f"background: {OK}; color: #06281B; border: none;"
@@ -3846,7 +3860,7 @@ class _AgentSettingsDialog(QDialog):
         self.skill_wf_combo = QComboBox()
         self.skill_wf_combo.setMinimumWidth(240)
         self.skill_wf_combo.setStyleSheet(
-            f"QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QComboBox {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
             f"QComboBox QAbstractItemView {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; selection-background-color: {self._PANEL2}; }}")
@@ -3857,7 +3871,7 @@ class _AgentSettingsDialog(QDialog):
         # 技能启停列表（勾选=启用；取消=禁用）
         self.skill_list = QListWidget()
         self.skill_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 7px 10px; border-radius: 6px; }}"
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
@@ -3872,7 +3886,7 @@ class _AgentSettingsDialog(QDialog):
         row.setSpacing(8)
         imp = QPushButton(_std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder),
                           "导入市场标准技能（SKILL.md 或 zip 包）…")
-        imp.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        imp.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                           "padding: 8px 16px; font-weight: 600;")
         imp.setAutoDefault(False)
@@ -3881,7 +3895,7 @@ class _AgentSettingsDialog(QDialog):
         imp.clicked.connect(self._import_skill)
         row.addWidget(imp)
         del_skill = QPushButton(_std_icon(QStyle.StandardPixmap.SP_TrashIcon), "删除技能…")
-        del_skill.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
+        del_skill.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._DIM};"
                                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                 "padding: 8px 16px; font-weight: 600;")
         del_skill.setAutoDefault(False)
@@ -3889,7 +3903,7 @@ class _AgentSettingsDialog(QDialog):
         del_skill.clicked.connect(self._delete_skill)
         row.addWidget(del_skill)
         wf_skill = QPushButton("分配工作流…")
-        wf_skill.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        wf_skill.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                "padding: 8px 16px; font-weight: 600;")
         wf_skill.setAutoDefault(False)
@@ -4008,7 +4022,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(sub)
         self.mcp_list = QListWidget()
         self.mcp_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
@@ -4022,13 +4036,13 @@ class _AgentSettingsDialog(QDialog):
         add_b.setAutoDefault(False)
         add_b.clicked.connect(self._on_mcp_add)
         edit_b = QPushButton("编辑")
-        edit_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        edit_b.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                              "padding: 7px 16px; font-weight: 600;")
         edit_b.setAutoDefault(False)
         edit_b.clicked.connect(self._on_mcp_edit)
         del_b = QPushButton(_line_icon("trash", 16), "删除")
-        del_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
+        del_b.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._DIM};"
                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                             "padding: 7px 16px; font-weight: 600;")
         del_b.setAutoDefault(False)
@@ -4087,7 +4101,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(sh)
         self.agent_sub_list = QListWidget()
         self.agent_sub_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
@@ -4101,7 +4115,7 @@ class _AgentSettingsDialog(QDialog):
         s_add.setAutoDefault(False)
         s_add.clicked.connect(self._on_agent_add_sub)
         s_del = QPushButton("删除选中")
-        s_del.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        s_del.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                             "padding: 7px 14px; font-weight: 600;")
         s_del.setAutoDefault(False)
@@ -4251,7 +4265,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(sub)
         self.wf_list = QListWidget()
         self.wf_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
@@ -4264,7 +4278,7 @@ class _AgentSettingsDialog(QDialog):
                 b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
                                 "border-radius: 8px; padding: 7px 14px; font-weight: 700;")
             else:
-                b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                b.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                 "padding: 7px 14px; font-weight: 600;")
             b.setAutoDefault(False)
@@ -4591,7 +4605,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(sub)
         self.plugin_list = QListWidget()
         self.plugin_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
@@ -4606,21 +4620,21 @@ class _AgentSettingsDialog(QDialog):
         create_b.setToolTip("输入自然语言描述，AI 自动生成可运行的插件（MCP server + SKILL.md + 脚本/资源/示例）")
         create_b.clicked.connect(self._on_plugin_create)
         imp_zip = QPushButton(_line_icon("folder", 16), "导入插件包")
-        imp_zip.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        imp_zip.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                               "padding: 7px 14px; font-weight: 600;")
         imp_zip.setAutoDefault(False)
         imp_zip.setToolTip("导入 zip 插件包（含 plugin.json 的完整插件）")
         imp_zip.clicked.connect(self._on_plugin_import_zip)
         imp_skill = QPushButton("导入标准技能")
-        imp_skill.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        imp_skill.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                 "padding: 7px 14px; font-weight: 600;")
         imp_skill.setAutoDefault(False)
         imp_skill.setToolTip("导入市场标准 SKILL.md（或含 SKILL.md 的 zip），包装为 skill 型插件")
         imp_skill.clicked.connect(self._on_plugin_import_skill)
         call_b = QPushButton("调用")
-        call_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        call_b.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                              "padding: 7px 14px; font-weight: 600;")
         call_b.setAutoDefault(False)
@@ -4628,13 +4642,13 @@ class _AgentSettingsDialog(QDialog):
                           "调用时会把插件说明与调用规范直接交给模型")
         call_b.clicked.connect(self._on_plugin_call)
         toggle_b = QPushButton("启用/停用")
-        toggle_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        toggle_b.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                "padding: 7px 14px; font-weight: 600;")
         toggle_b.setAutoDefault(False)
         toggle_b.clicked.connect(self._on_plugin_toggle)
         wf_b = QPushButton("分配工作流…")
-        wf_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+        wf_b.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._TEXT};"
                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                            "padding: 7px 14px; font-weight: 600;")
         wf_b.setAutoDefault(False)
@@ -4642,7 +4656,7 @@ class _AgentSettingsDialog(QDialog):
                         "插件技能与 MCP 服务器随之绑定生效")
         wf_b.clicked.connect(self._on_plugin_workflows)
         del_b = QPushButton(_line_icon("trash", 16), "删除")
-        del_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
+        del_b.setStyleSheet(f"background: {_gfill(self._PANEL)}; color: {self._DIM};"
                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                             "padding: 7px 14px; font-weight: 600;")
         del_b.setAutoDefault(False)
@@ -4866,7 +4880,7 @@ class _AgentSettingsDialog(QDialog):
     # ---------- 服务商卡片操作 ----------
     def _make_provider_card(self, p: dict) -> QWidget:
         card = QWidget()
-        card.setStyleSheet(f"background: {self._PANEL}; border-radius: 8px;")
+        card.setStyleSheet(f"background: {_gsurface(self._PANEL)}; border-radius: 8px;")
         # 声明 HeightForWidth：让 wordWrap 内容按真实宽度折算高度，卡片不被挤压裁剪
         try:
             sp = card.sizePolicy()
@@ -5008,7 +5022,7 @@ class _AgentSettingsDialog(QDialog):
             self.del_provider_btn.setEnabled(not locked)
             if locked:
                 self.del_provider_btn.setStyleSheet(
-                    f"background: {self._PANEL}; color: {self._DIM};"
+                    f"background: {_gfill(self._PANEL)}; color: {self._DIM};"
                     f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                     "padding: 7px 16px; font-weight: 600;")
                 self.del_provider_btn.setToolTip("内置默认服务商（agnes）不可删除")
@@ -5028,7 +5042,7 @@ class _AgentSettingsDialog(QDialog):
         else:
             self.del_provider_btn.setEnabled(True)
             self.del_provider_btn.setStyleSheet(
-                f"background: {self._PANEL}; color: {self._DIM};"
+                f"background: {_gfill(self._PANEL)}; color: {self._DIM};"
                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                 "padding: 7px 16px; font-weight: 600;")
             self.del_provider_btn.setToolTip("请先选中一个服务商")
@@ -5048,7 +5062,7 @@ class _AgentSettingsDialog(QDialog):
                 w._url_lbl.setStyleSheet("color: #FFFFFF; font-size: 11px;")
                 w._models_lbl.setStyleSheet("color: #FFFFFF; font-size: 12px;")
             else:
-                w.setStyleSheet(f"background: {self._PANEL}; border-radius: 8px;")
+                w.setStyleSheet(f"background: {_gsurface(self._PANEL)}; border-radius: 8px;")
                 w._name_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 14px; font-weight: 700;")
                 w._url_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
                 w._models_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
@@ -6828,9 +6842,9 @@ class TodosPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("todosPanel")
-        # QWidget 默认不绘制 stylesheet 背景 → 加 WA_StyledBackground 才能画出纯黑底
+        # QWidget 默认不绘制 stylesheet 背景 → 加 WA_StyledBackground 才能画出底
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#todosPanel {{ background: {BG}; }}")
+        self.refresh_glass_qss()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*self.MARGINS)
         lay.setSpacing(8)
@@ -6876,6 +6890,10 @@ class TodosPanel(QWidget):
         lay.addWidget(self._scroll, 1)
         self._last_h = -1      # 上次应用的列表内容高度（变化时才通知宿主，避免重复 relayout）
         self.update_todos([])
+
+    def refresh_glass_qss(self):
+        """重建面板底色（玻璃参数变化后由宿主窗口转调，避免停在旧实色底上）。"""
+        self.setStyleSheet(f"QWidget#todosPanel {{ background: {_glass_root_bg(BG)}; }}")
 
     def update_todos(self, todos: list):
         """全量刷新任务列表；面板默认常显，无任务时显示提示语占位"""
@@ -8758,6 +8776,14 @@ class _RoundedFloatWindow(QWidget):
         """子类覆盖：尺寸变化后的内容重排（todos 高度重算 / git delegate 重建等）"""
         pass
 
+    def refresh_glass_qss(self):
+        """重建面板内「带底色」控件的样式表（子类覆写）。
+
+        这些 QSS 在构造时按当时的玻璃参数生成，而浮窗在启动时就已经建好 ——
+        用户之后开启玻璃/换壁纸时若不重设，列表/树/输入区会一直停在旧的实色底上
+        （用户反馈的「原有 UI 元素残留」）。由主面板 `_apply_glass_refresh` 统一调用。
+        """
+
     # ---- 融入主面板 dock 状态 ----
     def _dock_is_immersed(self) -> bool:
         return self.dock_state in ("left", "right")
@@ -8850,7 +8876,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         self.setObjectName("codeWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#codeWin {{ background: {BG}; }}")
+        self.setStyleSheet(f"QWidget#codeWin {{ background: {_glass_root_bg(BG)}; }}")
         self.resize(self.WIDTH, 600)   # 宽度可调（右缘拖拽），初始 441
         self._web_tabs = None     # QTabWidget：多标签浏览器容器（WebEngine 可用时）
         self._web_err = ""        # Web 引擎创建失败的真实原因（供降级提示展示）
@@ -8906,14 +8932,8 @@ class CodePreviewWindow(_RoundedFloatWindow):
         web_row.setSpacing(4)
         self.web_url = QLineEdit()
         self.web_url.setPlaceholderText("输入网址搜索，回车访问")
-        # 显式主题配色：修复地址栏字体在任意模式下不可见（默认渲染受 app 级深色
-        # palette 影响，浅色主题下文字与底对比不足）；placeholder 用淡灰
-        self.web_url.setStyleSheet(
-            f"QLineEdit {{ background: {PANEL}; color: {TEXT};"
-            f" border: 1px solid {BORDER}; border-radius: 6px;"
-            f" padding: 4px 8px; font-size: 12px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {ACCENT_HOVER}; }}"
-            f"QLineEdit::placeholder {{ color: {TEXT_DIM}; }}")
+        # 显式主题配色（见 refresh_glass_qss）：修复地址栏字体在任意模式下不可见
+        # （默认渲染受 app 级深色 palette 影响，浅色主题下文字与底对比不足）
         self.web_url.returnPressed.connect(self._go_url)
         web_row.addWidget(self.web_url, 1)
         self.go_btn = QPushButton("GO")
@@ -8954,10 +8974,54 @@ class CodePreviewWindow(_RoundedFloatWindow):
         # 四边/四角拖拽调节大小（独立持久化）+ 持久化尺寸恢复
         self._install_resize_edges(host=self.parent())
         self.apply_saved_panel_size()
+        self.refresh_glass_qss()   # 各页构建完成后统一上控件底色
 
     def _on_size_changed(self, w: int, h: int):
         """尺寸变化：预留（内部 QStackedWidget/浏览器自适应）；标记已手动调高停用跟随"""
         pass
+
+    def refresh_glass_qss(self):
+        """重建预览面板内「带底色」控件的样式（构造与玻璃参数变化共用一处）。
+
+        面板在启动时就已建好：控件底若只在构造时取一次玻璃色，用户之后开启玻璃 /
+        换壁纸就会一直停在旧的实色底上（用户反馈的「原有 UI 元素残留」）。
+        """
+        surf = _gsurface(PANEL)
+        self.web_url.setStyleSheet(
+            f"QLineEdit {{ background: {surf}; color: {TEXT};"
+            f" border: 1px solid {BORDER}; border-radius: 6px;"
+            f" padding: 4px 8px; font-size: 12px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {ACCENT_HOVER}; }}"
+            f"QLineEdit::placeholder {{ color: {TEXT_DIM}; }}")
+        if self._web_tabs is not None:
+            self._web_tabs.setStyleSheet(
+                f"QTabWidget {{ background: {surf}; }}"
+                f"QTabWidget::pane {{ background: {surf}; border: 1px solid {BORDER}; }}"
+                f"QTabBar {{ background: {surf}; }}"
+                f"QTabBar::tab {{ background: transparent; color: {TEXT_DIM};"
+                f" font-size: 11px; padding: 3px 8px; margin: 1px;"
+                f" border: 1px solid {BORDER}; border-radius: 4px; }}"
+                f"QTabBar::tab:selected {{ background: {surf}; color: {TEXT}; }}"
+                f"QTabBar::tab:hover {{ background: {HOVER}; }}")
+        self.html_view.setStyleSheet(
+            f"QTextBrowser {{ background: {surf}; color: {TEXT};"
+            f"border: 1px solid {BORDER}; border-radius: 6px; }}")
+        self.text.setStyleSheet(
+            f"QPlainTextEdit {{ background: {surf}; color: {TEXT};"
+            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 6px; }}")
+        self.img_scroll.setStyleSheet(
+            f"QScrollArea {{ background: {surf}; border: none; }}"
+            f"QScrollArea > QWidget > QWidget {{ background: {surf}; }}")
+        self.img_label.setStyleSheet(f"background: {surf};")
+        self._office_loading.setStyleSheet(
+            f"color: {TEXT}; font-size: 12px; padding: 3px 8px;"
+            f"background: {surf}; border: 1px solid {BORDER}; border-radius: 5px;")
+        web = getattr(self, "office_web", None)          # 懒建：未预览 Office 时为 None
+        if web is not None:
+            web.setStyleSheet(f"QWebEngineView {{ background: {surf}; border: none; }}")
+        bar = getattr(self, "media_ctrl_bar", None)      # 懒建：未播放媒体时为 None
+        if bar is not None:
+            bar.setStyleSheet(f"background: {surf}; border-radius: 6px;")
 
     # ---- 页面构建 ----
     def _btn(self, text, slot, tip=""):
@@ -8999,15 +9063,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 self._web_tabs.setTabsClosable(True)
                 self._web_tabs.setMovable(True)
                 self._web_tabs.setDocumentMode(True)
-                self._web_tabs.setStyleSheet(
-                    f"QTabWidget {{ background: {PANEL}; }}"
-                    f"QTabWidget::pane {{ background: {PANEL}; border: 1px solid {BORDER}; }}"
-                    f"QTabBar {{ background: {PANEL}; }}"
-                    f"QTabBar::tab {{ background: transparent; color: {TEXT_DIM};"
-                    f" font-size: 11px; padding: 3px 8px; margin: 1px;"
-                    f" border: 1px solid {BORDER}; border-radius: 4px; }}"
-                    f"QTabBar::tab:selected {{ background: {PANEL}; color: {TEXT}; }}"
-                    f"QTabBar::tab:hover {{ background: {HOVER}; }}")
+                # 标签容器配色见 refresh_glass_qss（玻璃参数变化时统一重设）
                 self._web_tabs.tabCloseRequested.connect(self._web_close_tab)
                 self._web_tabs.currentChanged.connect(self._on_web_tab_changed)
                 # 首个标签页
@@ -9314,7 +9370,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setToolTip(tip)
             b.setStyleSheet(
-                f"QPushButton {{ background: {PANEL}; color: {TEXT};"
+                f"QPushButton {{ background: {_gfill(PANEL)}; color: {TEXT};"
                 f"border: 1px solid {BORDER}; border-radius: 5px;"
                 f"padding: 2px 9px; font-size: 11px; }}"
                 f"QPushButton:hover {{ background: {HOVER}; }}")
@@ -9326,6 +9382,27 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.full_btn.setFixedHeight(24)
         self.full_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.full_btn.setToolTip("全屏呈现：← / → 翻页、空格下一步、Esc 退出、F11 切换全屏")
+        self.full_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: #FFFFFF; border: none;"
+            f"border-radius: 5px; padding: 2px 11px; font-size: 11px; font-weight: 600; }}"
+            f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
+        self.full_btn.clicked.connect(self._open_fullscreen)
+        bar.addWidget(self.full_btn)
+        self._office_full_win = None       # 当前全屏放映窗口（防多开）
+        self.slide_bar.setVisible(False)
+        col.addWidget(self.slide_bar)
+        self._office_ph = QLabel("打开 Word / PPT / Excel / PDF 文件后在此保真预览")
+        self._office_ph.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        self._office_ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col.addWidget(self._office_ph, 1)
+        # 加载提示：渲染/载入期间显示明确进度（避免大文件时"一片空白"无反馈）
+        self._office_loading = QLabel("")
+        self._office_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._office_loading.setVisible(False)
+        col.addWidget(self._office_loading)
+        self._office_stack_index = self.stack.count()
+        self.stack.addWidget(page)
+
     def _set_slide_bar(self, is_deck: bool):
         """Office 预览顶部控制条可见性：
         - PPT：显示全部放映按钮 + 「全屏放映」
@@ -9362,31 +9439,6 @@ class CodePreviewWindow(_RoundedFloatWindow):
             except Exception:
                 pass
 
-    def _deck_call(self, js: str):
-        self.full_btn.setStyleSheet(
-            f"QPushButton {{ background: {ACCENT}; color: #FFFFFF; border: none;"
-            f"border-radius: 5px; padding: 2px 11px; font-size: 11px; font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
-        self.full_btn.clicked.connect(self._open_fullscreen)
-        bar.addWidget(self.full_btn)
-        self._office_full_win = None       # 当前全屏放映窗口（防多开）
-        self.slide_bar.setVisible(False)
-        col.addWidget(self.slide_bar)
-        self._office_ph = QLabel("打开 Word / PPT / Excel / PDF 文件后在此保真预览")
-        self._office_ph.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-        self._office_ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        col.addWidget(self._office_ph, 1)
-        # 加载提示：渲染/载入期间显示明确进度（避免大文件时"一片空白"无反馈）
-        self._office_loading = QLabel("")
-        self._office_loading.setStyleSheet(
-            f"color: {TEXT}; font-size: 12px; padding: 3px 8px;"
-            f"background: {PANEL}; border: 1px solid {BORDER}; border-radius: 5px;")
-        self._office_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._office_loading.setVisible(False)
-        col.addWidget(self._office_loading)
-        self._office_stack_index = self.stack.count()
-        self.stack.addWidget(page)
-
     def _ensure_office_web(self) -> bool:
         """懒创建保真预览用的 WebEngine 视图（失败时记录原因并返回 False 以走降级）。
 
@@ -9398,7 +9450,6 @@ class CodePreviewWindow(_RoundedFloatWindow):
         try:
             from PyQt6.QtWebEngineWidgets import QWebEngineView
             view = QWebEngineView()
-            view.setStyleSheet(f"QWebEngineView {{ background: {PANEL}; border: none; }}")
         except Exception as e:
             self._office_web_err = f"{type(e).__name__}: {e}"
             return False
@@ -9426,6 +9477,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         except Exception:
             pass
         self.office_web = view
+        self.refresh_glass_qss()   # 懒建完成后补一次控件底色（此时视图才存在）
         return True
 
     def _deck_call(self, js: str):
@@ -9459,9 +9511,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
     def _build_html_page(self):
         tb = QTextBrowser()
         tb.setOpenExternalLinks(True)
-        tb.setStyleSheet(f"QTextBrowser {{ background: {PANEL}; color: {TEXT};"
-                         f"border: 1px solid {BORDER}; border-radius: 6px; }}")
-        self.html_view = tb
+        self.html_view = tb   # 底色见 refresh_glass_qss
         self.stack.addWidget(tb)
 
     def _build_text_page(self):
@@ -9469,21 +9519,16 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.text.setReadOnly(True)
         self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.text.setFont(QFont("Consolas", 10))
-        self.text.setStyleSheet(
-            f"QPlainTextEdit {{ background: {PANEL}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 6px; }}")
-        self._hl = None
+        self._hl = None       # 底色见 refresh_glass_qss
         self.stack.addWidget(self.text)
 
     def _build_img_page(self):
         sc = QScrollArea()
         sc.setWidgetResizable(True)
-        sc.setStyleSheet(f"QScrollArea {{ background: {PANEL}; border: none; }}"
-                         f"QScrollArea > QWidget > QWidget {{ background: {PANEL}; }}")
         # 可拖拽/缩放图片控件：左键拖拽平移、滚轮缩放、双击复位
         self.img_label = _ZoomableImageView()
-        self.img_label.setStyleSheet(f"background: {PANEL};")
         sc.setWidget(self.img_label)
+        self.img_scroll = sc   # 底色见 refresh_glass_qss
         self.stack.addWidget(sc)
 
     def _build_empty_page(self):
@@ -9535,7 +9580,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         # 控制条：播放/暂停 · 进度 · 时间 · 音量 · 全屏
         bar = QWidget()
         self.media_ctrl_bar = bar   # 全屏时底部控制条（鼠标唤出/自动隐藏）
-        bar.setStyleSheet(f"background: {PANEL}; border-radius: 6px;")
+        bar.setStyleSheet(f"background: {_gsurface(PANEL)}; border-radius: 6px;")
         h = QHBoxLayout(bar)
         h.setContentsMargins(8, 4, 8, 4)
         h.setSpacing(6)
@@ -10537,6 +10582,10 @@ class TodosWindow(_RoundedFloatWindow):
         except Exception:
             pass
 
+    def refresh_glass_qss(self):
+        """任务清单底色实际画在内层 TodosPanel 上，这里转调。"""
+        self.panel.refresh_glass_qss()
+
     def _set_dock_ui(self, docked: bool):
         """融入主面板：隐藏把手与 resize 热区，上下边距归零（贴边，与相邻面板之间不留
         底色缝隙），并按固定尺寸重钉窗口高度；贴附模式恢复常规边距与固定默认尺寸
@@ -10761,9 +10810,7 @@ class GitLogWindow(_RoundedFloatWindow):
         lay.addLayout(head)
 
         self.list = QListWidget()
-        self.list.setStyleSheet(
-            f"QListWidget {{ background: {PANEL}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 4px; }}")
+        self.refresh_glass_qss()   # 列表底色（玻璃参数变化时由主面板重调）
         self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.list.setItemDelegate(_HtmlListDelegate(self.WIDTH - 40, self.list))
         lay.addWidget(self.list, 1)
@@ -10797,6 +10844,12 @@ class GitLogWindow(_RoundedFloatWindow):
                 self.list.doItemsLayout()
         except Exception:
             pass
+
+    def refresh_glass_qss(self):
+        """重建提交/分支列表底色（玻璃参数变化后重调，否则列表停在旧实色上）。"""
+        self.list.setStyleSheet(
+            f"QListWidget {{ background: {_gsurface(PANEL)}; color: {TEXT};"
+            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 4px; }}")
 
     def _set_view(self, view: str, do_refresh: bool = True):
         self._view = view
@@ -11080,18 +11133,7 @@ class WorktreeWindow(_RoundedFloatWindow):
         self.tree.header().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.tree.header().setStretchLastSection(False)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
-        self.tree.setStyleSheet(
-            f"QTreeWidget {{ background: {PANEL}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 4px 4px 4px 1px;"
-            f"outline: none; }}"
-            f"QTreeWidget::item {{ padding: 3px 4px; border-radius: 4px; }}"
-            f"QTreeWidget::item:selected {{ background: transparent; }}"
-            f"QTreeWidget::item:hover {{ background: transparent; }}"
-            f"QTreeWidget::item:focus {{ outline: none; }}"
-            # 控件一旦设了自己的样式表，**未显式提及的子控件会退回系统默认样式** ——
-            # 不给出滚动条规则时，浅色主题下会残留系统深色滚动条（用户反馈的
-            # 「Copilot 面板残留白色/深色元素」）。
-            + _scrollbar_css(6, 3, both=True))
+        self.refresh_glass_qss()   # 树底底色（玻璃参数变化时由主面板重调）
         # 窗口失焦（如拖拽移动）时 Qt 会在选中项上画白色焦点边框，禁止其抢焦
         self.tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # 选中态仅高亮「图标+文件名」内容胶囊，不整行变蓝
@@ -11135,6 +11177,22 @@ class WorktreeWindow(_RoundedFloatWindow):
                 self.setMinimumHeight(0)
         except Exception:
             pass
+
+    def refresh_glass_qss(self):
+        """重建文件树底色（玻璃参数变化后重调，否则树底会停在旧实色上）。
+
+        树自带样式表时，**未显式提及的子控件会退回系统默认样式** —— 不给出滚动条
+        规则时，浅色主题下会残留系统深色滚动条（用户反馈的「残留深色元素」）。
+        """
+        self.tree.setStyleSheet(
+            f"QTreeWidget {{ background: {_gsurface(PANEL)}; color: {TEXT};"
+            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 4px 4px 4px 1px;"
+            f"outline: none; }}"
+            f"QTreeWidget::item {{ padding: 3px 4px; border-radius: 4px; }}"
+            f"QTreeWidget::item:selected {{ background: transparent; }}"
+            f"QTreeWidget::item:hover {{ background: transparent; }}"
+            f"QTreeWidget::item:focus {{ outline: none; }}"
+            + _scrollbar_css(6, 3, both=True))
 
     # ---------- 刷新 / 填充 ----------
     def refresh(self):
@@ -15993,6 +16051,21 @@ class AgentPanel(QDialog):
         else:
             self._apply_glass_refresh()
 
+    def _restyle_float_windows(self):
+        """重设四个侧栏 / 预览面板的控件底色。
+
+        它们的控件 QSS 按玻璃参数生成，而浮窗在启动时就已经建好 —— 参数变了不重设
+        就会一直停在旧实色底上（用户反馈的「原有 UI 元素残留」）。
+        """
+        for name in ("_wt_win", "_git_win", "_todos_win", "_code_win"):
+            win = getattr(self, name, None)
+            if win is None:
+                continue
+            try:
+                win.refresh_glass_qss()
+            except Exception:
+                pass
+
     def _apply_glass_refresh(self):
         """重建玻璃 QSS + 重绘根背景与各玻璃层。"""
         try:
@@ -16000,6 +16073,7 @@ class AgentPanel(QDialog):
             self.setStyleSheet(self._panel_root_qss())
         except Exception:
             pass
+        self._restyle_float_windows()
         skin = getattr(self, "_glass_skin", None)
         if skin is not None:
             try:
