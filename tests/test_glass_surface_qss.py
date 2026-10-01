@@ -672,7 +672,53 @@ def test_combo_popup_shows_the_local_wallpaper_block(glass_state, offscreen_app,
     warm = rs[len(rs) // 2] - bs[len(bs) // 2]          # 中位数 r-b：橙色为正
     flat = QColor(ap._frost_surface())
     flat_warm = flat.red() - flat.blue()
-    assert warm > flat_warm + 25, (
+    wash = ap._POPUP_FROST_WASH         # 弹层还压了一层白色磨砂纱，色偏会按比例衰减
+    assert flat_warm < 5, f"前提不成立：整图平均色在 R/B 上应接近中性，实得 {flat_warm}"
+    assert warm > flat_warm * (1 - wash) + 10, (
         f"弹层没显示本窗口那块壁纸（局部暖色 r-b={warm}，平均色 r-b={flat_warm}）"
         "—— 说明样式底把自绘玻璃盖住了，弹层是一块实色")
-    assert warm > 25, f"弹层整体偏冷（r-b={warm}）：没取到左侧那块暖色壁纸"
+    assert warm > 12, (
+        f"弹层整体偏冷（r-b={warm}）：没取到左侧那块暖色壁纸"
+        "（白纱会把色偏按 (1-wash) 衰减，但仍应明显大于 0）")
+
+
+def test_combo_popup_stays_light_over_a_dark_wallpaper(glass_state, offscreen_app, tmp_path):
+    """壁纸区域偏暗时，弹层也不能跟着变成一块深色板。
+
+    用户反复反馈「下拉还是深色」——他当前的配置（cover + blur=7 + frost=0.42）下，
+    弹层本来取到的是那块**偏暗的壁纸**（实测 rgb(24,48,60)、亮度 70），看着就是一块
+    深色板。弹层是浮在主界面上的一层玻璃，必须压一层白色磨砂纱把它稳定在浅色，
+    同时把文字换成深字保证可读。
+    """
+    from PyQt6.QtGui import QColor, QImage, QPainter
+    from PyQt6.QtWidgets import QComboBox
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    wall = tmp_path / "dark.png"
+    img = QImage(640, 400, QImage.Format.Format_ARGB32)
+    p = QPainter(img)
+    p.fillRect(img.rect(), QColor("#121A22"))          # 暗壁纸
+    p.end()
+    img.save(str(wall))
+
+    glass_state.set_fields(persist=False, enabled=True, bg_image=str(wall))
+    ap.refresh_glass()
+    assert ap._popup_light_surface(), "暗壁纸下弹层没被提亮 → 会是一块深色板"
+    assert ap._popup_fg() == ap._THEMES["light"]["TEXT"], "浅底弹层应改用深字保证可读"
+
+    combo = QComboBox()
+    combo.setStyleSheet(ap._QCOMBO)
+    combo.addItems(["一", "二", "三"])
+    combo.resize(200, 32)
+    combo.show()
+    ap._harden_combo_popup(combo)
+    for _ in range(60):
+        offscreen_app.processEvents()
+    combo.showPopup()
+    for _ in range(120):
+        offscreen_app.processEvents()
+    shot = combo.view().window().grab().toImage()
+    luma, _ = _popup_luma_and_colors(shot)
+    _drop_popup(offscreen_app, combo)
+    assert luma >= 110, f"暗壁纸下弹层平均亮度只有 {luma:.1f}，仍是一块深色板"

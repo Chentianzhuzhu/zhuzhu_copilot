@@ -269,6 +269,13 @@ _POPUP_VEIL_SCALE = 0.7
 # 否则会与系统阴影 / 下层窗口叠成一块脏色。
 _POPUP_GLASS_ALPHA = 0.88
 
+# 弹出层白色磨砂纱强度（只作用于**自绘玻璃**的弹层）。
+# 弹层是浮在主界面上的一层玻璃：壁纸偏暗时它整块跟着变深（实测 rgb(24,48,60)、
+# 亮度 70），用户反复反馈的「下拉还是深色」就是这么来的。压一层薄白纱把它稳定在
+# 浅色（与主题的淡灰/白基调一致），壁纸纹理仍然透出来（不是实色板）。
+# 只压在弹层上、不动面板：面板要如实反映壁纸，弹层要保证"看得清、不显脏"。
+_POPUP_FROST_WASH = 0.45
+
 
 def _frost_surface() -> str:
     """根玻璃表面的**合成后**底色（不透明）：模糊壁纸 ⊕ 磨砂纱。
@@ -300,15 +307,33 @@ def _frost_surface() -> str:
     ).name()
 
 
+def _popup_surface() -> str:
+    """弹层玻璃的**最终**底色（不透明）：面板玻璃 ⊕ 白色磨砂纱。
+
+    无壁纸时直接回退面板色 —— 此时没有壁纸可透，弹层应保持主题底色（不加白纱，
+    否则深色主题下会出现一块突兀的浅色板）。
+    """
+    if not _glass_wallpaper_active():
+        return PANEL
+    base = QColor(_frost_surface())
+    w = _POPUP_FROST_WASH
+    return QColor(
+        int(round(base.red() * (1 - w) + 255 * w)),
+        int(round(base.green() * (1 - w) + 255 * w)),
+        int(round(base.blue() * (1 - w) + 255 * w)),
+    ).name()
+
+
 def _popup_glass() -> str:
     """下拉 / 菜单弹出层的玻璃底（玻璃关闭时退回不透明面板色）。
 
-    底取**与面板同一块玻璃**的合成色（见 `_frost_surface`），而不是某个写死的
-    "亮一档灰蓝"：写死色在浅色主题下会变成一块深色板，在深色主题下又与面板不搭。
+    底取**与面板同一块玻璃**再压一层白纱（见 `_popup_surface`）：写死某个"亮一档灰蓝"
+    在浅色主题下会变成深色板；直接用面板玻璃又会跟着偏暗的壁纸一起变成深色板
+    （用户反复反馈的「下拉还是深色」）。
     """
     if not _glass_on():
         return PANEL
-    return app_glass.rgba(_frost_surface(), _POPUP_GLASS_ALPHA)
+    return app_glass.rgba(_popup_surface(), _POPUP_GLASS_ALPHA)
 
 
 def _frost_popup_widget(widget) -> None:
@@ -339,6 +364,10 @@ def _frost_popup_widget(widget) -> None:
                     if not painted:
                         # 没壁纸时不能留全透明（会糊成一片）→ 圆角不透明底兜底
                         _draw_round_rect(obj, painter, PANEL)
+                    else:
+                        # 有壁纸：再压一层薄白纱，避免弹层跟着偏暗的壁纸一起变成深色板
+                        _draw_round_rect(obj, painter, "#FFFFFF",
+                                         int(round(255 * _POPUP_FROST_WASH)))
                     painter.end()
                 except Exception:
                     pass
@@ -392,12 +421,19 @@ def _popup_clear_own_bg(view) -> None:
     选择器（`QComboBox QAbstractItemView`），所以只影响背景，item 的字色/悬停/内边距
     仍由原 QSS 提供。壁纸不可用时置空为 "" —— 此时玻璃层会退回不透明兜底底，
     不能留全透明（会糊成一片）。
+
+    字色一并按弹层底的明暗取（见 `_popup_fg`）：弹层被白纱提亮成浅色后，深色主题的
+    白字会糊在浅底上。
     """
     if view is None:
         return
     try:
-        view.setStyleSheet("background: transparent;"
-                           if _glass_wallpaper_active() else "")
+        if not _glass_wallpaper_active():
+            view.setStyleSheet("")
+            return
+        fg = _popup_fg()
+        view.setStyleSheet(f"background: transparent; color: {fg};"
+                           f" selection-color: {fg};")
     except Exception:
         pass
 
@@ -407,7 +443,7 @@ def _harden_menu(menu) -> None:
 
     与下拉弹层同一个道理（见 `_popup_clear_own_bg`）：QMenu 也是独立顶层 popup，
     全局 QSS 给它的底是 `_popup_glass()`（壁纸平均色的实色）—— 不清掉的话菜单就是
-    一块与周围照片无关的纯色板。菜单项的字色 / 悬停底仍由全局 QSS 提供。
+    一块与周围照片无关的纯色板。
     """
     if menu is None:
         return
@@ -417,15 +453,47 @@ def _harden_menu(menu) -> None:
         return          # 平台不支持时静默退回不透明，菜单照常可用
     _frost_popup_widget(menu)
     _popup_clear_own_bg(menu)
+    try:
+        if _glass_wallpaper_active():
+            # 菜单项的字色/选中字色由全局 QSS 显式指定，这里必须同样显式覆盖
+            fg = _popup_fg()
+            menu.setStyleSheet(f"background: transparent;"
+                               f" QMenu::item, QMenu::item:selected {{ color: {fg}; }}")
+    except Exception:
+        pass
 
 
-def _draw_round_rect(widget, painter, color: str) -> None:
-    """按控件矩形画一个圆角实色块（无壁纸时弹出层的兜底底）。"""
+def _draw_round_rect(widget, painter, color: str, alpha: int = 255) -> None:
+    """按控件矩形画一个圆角色块（无壁纸时的兜底底 / 弹层的白色磨砂纱）。
+
+    alpha 用 0~255 整数：`QColor` 的函数式 rgba() 里 alpha 就是整数，传 0~1 浮点会被
+    截断成 0（历史坑），所以这里不经过 `app_glass.rgba()` 那种字符串入口。
+    """
     from PyQt6.QtCore import QRectF
     from PyQt6.QtGui import QPainterPath
+    c = QColor(color)
+    if alpha < 255:
+        c.setAlpha(max(0, min(255, int(alpha))))
     path = QPainterPath()
     path.addRoundedRect(QRectF(widget.rect()), _POPUP_RADIUS, _POPUP_RADIUS)
-    painter.fillPath(path, QColor(color))
+    painter.fillPath(path, c)
+
+
+def _popup_light_surface() -> bool:
+    """弹层底（压过白纱后）是不是**浅色**（决定弹层文字该用白字还是深字）。"""
+    if not _glass_wallpaper_active():
+        return False
+    c = QColor(_popup_surface())
+    return (c.red() + c.green() + c.blue()) / 3.0 >= 128
+
+
+def _popup_fg() -> str:
+    """弹层文字/选中文字色：随弹层底的明暗取反，保证可读（浅底用深字）。
+
+    深色主题的 `TEXT` 是白色；弹层被白纱提亮成浅色后就该换成浅色主题的文字色 ——
+    两个值都来自色板，不引入新颜色。
+    """
+    return _THEMES["light"]["TEXT"] if _popup_light_surface() else TEXT
 
 
 def _harden_combo_popup(combo) -> None:
@@ -768,9 +836,10 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                f"font-size: {FONT_SMALL}px; }}"
                f"QComboBox::drop-down {{ border: none; width: 22px; }}"
-               f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {TEXT};"
+               f"QComboBox QAbstractItemView {{ background: {_popup_glass()};"
+               f" color: {_popup_fg()};"
                f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T};"
-               f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
+               f"selection-color: {_popup_fg()}; border-radius: 10px; padding: 4px; }}")
     _BTN_ICON = (f"QPushButton {{ background: transparent; border: 1px solid {_gedge()};"
                  f"border-radius: {RADIUS_SM}px; }}"
                  f"QPushButton:hover {{ background: {HOVER_T}; border-color: {BORDER_SOFT}; }}")
@@ -851,10 +920,10 @@ def _global_dialog_qss() -> str:
         f"QFileDialog QHeaderView::section {{ background: {_in_bg}; color: {TEXT_DIM};"
         f" border: none; border-bottom: 1px solid {_popup_bd}; padding: 4px 8px; }}"
         f"QFileDialog QSplitter::handle {{ background: {_popup_bd}; }}"
-        f"QComboBox QAbstractItemView {{ background: {_popup_bg}; color: {TEXT};"
+        f"QComboBox QAbstractItemView {{ background: {_popup_bg}; color: {_popup_fg()};"
         f" border: 1px solid {_popup_bd}; border-radius: 12px; padding: 4px;"
         f" outline: none; selection-background-color: {_popup_sel};"
-        f" selection-color: {TEXT}; }}"
+        f" selection-color: {_popup_fg()}; }}"
         f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
         f" border-radius: {RADIUS_SM}px; }}"
         f"QComboBox QAbstractItemView::item:hover {{ background: {_popup_hover}; }}"
@@ -864,10 +933,11 @@ def _global_dialog_qss() -> str:
         f"QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {{ background: rgba(255,255,255,220); }}"
         f"QComboBox QAbstractItemView QScrollBar::add-line:vertical,"
         f"QComboBox QAbstractItemView QScrollBar::sub-line:vertical {{ height: 0; }}"
-        f"QMenu {{ background: {_menu_bg}; color: {TEXT}; border: 1px solid {_popup_bd};"
+        f"QMenu {{ background: {_menu_bg}; color: {_popup_fg()};"
+        f" border: 1px solid {_popup_bd};"
         f" border-radius: 12px; padding: 4px; }}"
         f"QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}"
-        f"QMenu::item:selected {{ background: {_menu_sel}; color: {TEXT};"
+        f"QMenu::item:selected {{ background: {_menu_sel}; color: {_popup_fg()};"
         f" border: 1px solid {_popup_bd}; }}"
         f"QMenu::item:hover {{ background: {_menu_hover}; }}"
         f"QMenu::separator {{ height: 1px; background: {_popup_hover};"
@@ -2892,9 +2962,10 @@ class _AgentSettingsDialog(QDialog):
             f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
             f"border: 1px solid {_focus_edge()}; background: {_in_focus}; }}"
             f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
-            f"color: {self._TEXT}; border: 1px solid {_gedge()};"
+            f"color: {_popup_fg()}; border: 1px solid {_gedge()};"
             f"border-radius: 12px; padding: 4px; outline: none;"
-            f"selection-background-color: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)}; }}"
+            f"selection-background-color: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)};"
+            f" selection-color: {_popup_fg()}; }}"
             f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
             f" border-radius: {RADIUS_SM}px; }}"
             f"QComboBox QAbstractItemView::item:hover {{ background: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)}; }}"
@@ -4318,8 +4389,10 @@ class _AgentSettingsDialog(QDialog):
         self.skill_wf_combo.setStyleSheet(
             f"QComboBox {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
-            f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {self._TEXT};"
-            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T}; }}")
+            f"QComboBox QAbstractItemView {{ background: {_popup_glass()};"
+            f" color: {_popup_fg()};"
+            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T};"
+            f" selection-color: {_popup_fg()}; }}")
         self.skill_wf_combo.currentIndexChanged.connect(self._on_skill_wf_changed)
         scope.addWidget(self.skill_wf_combo)
         scope.addStretch(1)
@@ -5947,8 +6020,10 @@ class _McpServerDialog(QDialog):
             f"QLineEdit, QComboBox {{ background: {_gfill(PANEL)}; color: {TEXT};"
             f"border: 1px solid {_gedge()}; border-radius: 6px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_focus_edge()}; }}"
-            f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {TEXT};"
-            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T}; }}")
+            f"QComboBox QAbstractItemView {{ background: {_popup_glass()};"
+            f" color: {_popup_fg()};"
+            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T};"
+            f" selection-color: {_popup_fg()}; }}")
         self.setStyleSheet(_mcp_qss)
         self._server = server or {}
         form = QFormLayout(self)
@@ -6141,8 +6216,10 @@ class _ProviderDialog(QDialog):
             f"QLineEdit, QComboBox {{ background: {_gfill(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {_gedge()}; border-radius: 6px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_focus_edge()}; }}"
-            f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {self._TEXT};"
-            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T}; }}")
+            f"QComboBox QAbstractItemView {{ background: {_popup_glass()};"
+            f" color: {_popup_fg()};"
+            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T};"
+            f" selection-color: {_popup_fg()}; }}")
         self.setStyleSheet(_pvd_qss)
         self._provider = provider or {}
         self._test_ok = False
