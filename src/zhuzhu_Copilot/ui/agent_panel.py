@@ -235,6 +235,69 @@ def _sheer(alpha: float, fallback: str) -> str:
 # 失焦立刻移除 —— Qt 的 effect 会让控件走离屏渲染，常驻会拖慢输入（性能优先）。
 _FOCUS_GLOW_BLUR = 16
 _FOCUS_GLOW_ALPHA = 170
+# 聚焦时的边缘色透明度：用户要「边缘泛光」而不是「取消边缘」—— 边缘必须还在，
+# 只是从一条实线变成一层半透明的光边，再叠上外发光。
+_FOCUS_EDGE_ALPHA = 0.55
+
+
+def _focus_edge() -> str:
+    """输入框聚焦时的边缘色：品牌蓝半透明（保留轮廓 + 光的观感）。"""
+    return app_glass.rgba(ACCENT, _FOCUS_EDGE_ALPHA)
+
+
+def _frost_popup_view(view) -> None:
+    """把下拉弹出层做成**玻璃**：无边框 + 半透明窗口。
+
+    弹出视图是独立顶层窗口，默认被系统填成实色，QSS 里的半透明底因此完全不生效
+    （这就是「下拉菜单没有磨砂玻璃材质」的根因）。必须同时设
+    WA_TranslucentBackground 与 FramelessWindowHint，半透明底才画得出来 ——
+    这样它能透出下方的对话/面板，与主界面是同一套玻璃材质。
+    """
+    if view is None:
+        return
+    try:
+        view.setWindowFlags(Qt.WindowType.Popup
+                            | Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.NoDropShadowWindowHint)
+        view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    except Exception:
+        pass      # 平台不支持时静默退回不透明，不影响功能
+
+
+# 弹出层玻璃底的不透明度：真半透明（配合 _frost_popup_view 才画得出来）。
+# 弹出层是浮在主界面之上的，半透明后能透出下方内容 —— 这才是「磨砂玻璃」，
+# 而不是把壁纸平均色压在深色底上混成的实色（那样看起来仍是深色块）。
+_POPUP_GLASS_ALPHA = 0.78
+
+
+def _popup_glass() -> str:
+    """下拉 / 菜单弹出层的玻璃底（玻璃关闭时退回不透明面板色）。"""
+    if not _glass_on():
+        return PANEL
+    return app_glass.rgba(PANEL, _POPUP_GLASS_ALPHA)
+
+
+def _harden_combo_popup(combo) -> None:
+    """让某个 QComboBox 的下拉弹出层玻璃化。
+
+    Qt 在 showPopup / Show 事件处理里**会重设视图的窗口标志**，所以不能在构造时
+    设置一次了事 —— 只能在每次弹出的 Show 事件后再补设（延后一拍，等 Qt 设完）。
+    """
+    if combo is None or getattr(combo, "_glass_popup_filter", None) is not None:
+        return
+    view = combo.view()
+    if view is None:
+        return
+
+    class _PopupFilter(QObject):
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Show:
+                QTimer.singleShot(0, lambda: _frost_popup_view(obj))
+            return False
+
+    filt = _PopupFilter(view)
+    view.installEventFilter(filt)
+    combo._glass_popup_filter = filt     # 保活：filter 被 GC 会导致弹出即崩
 
 
 def _install_focus_glow(widget) -> None:
@@ -268,6 +331,9 @@ def _install_focus_glow_all(root) -> None:
         return
     for w in root.findChildren((QLineEdit, QPlainTextEdit, QComboBox)):
         _install_focus_glow(w)
+    for c in root.findChildren(QComboBox):
+        _harden_combo_popup(c)      # 下拉弹出层也走玻璃材质
+
 
 
 def _gedge(alpha: float = 0.55) -> str:
@@ -520,7 +586,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                f"font-size: {FONT_SMALL}px; }}"
                f"QComboBox::drop-down {{ border: none; width: 22px; }}"
-               f"QComboBox QAbstractItemView {{ background: {_glass_tip_bg()}; color: {TEXT};"
+               f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {TEXT};"
                f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T};"
                f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
     _BTN_ICON = (f"QPushButton {{ background: transparent; border: 1px solid {_gedge()};"
@@ -572,7 +638,7 @@ def _global_dialog_qss() -> str:
     _in_hover = HOVER_T
     _tip_bg = _glass_tip_bg()      # Tooltip：壁纸生效时用壁纸平均色（磨砂观感）
     _tip_bd = ACCENT
-    _menu_bg, _menu_sel, _menu_hover = _glass_tip_bg(), HOVER_T, HOVER_T
+    _menu_bg, _menu_sel, _menu_hover = _popup_glass(), HOVER_T, HOVER_T
     _ctrl_qss = ""
     _base = (
         f"QMessageBox, QInputDialog, QFileDialog, QColorDialog, QProgressDialog {{"
@@ -2188,7 +2254,7 @@ class _MultiLineInputDialog(QDialog):
             f"QPlainTextEdit {{ background: {_in_bg}; color: {TEXT};"
             f"border: 1px solid {_bd}; border-radius: 8px; padding: 8px;"
             f"font-size: 13px; font-family: Consolas, 'Microsoft YaHei'; }}"
-            f"QPlainTextEdit:focus {{ border: 1px solid transparent;"
+            f"QPlainTextEdit:focus {{ border: 1px solid {_focus_edge()};"
             f" background: {_hover}; }}")
         lay.addWidget(self.edit, 1)
         hint = QLabel("回车 = 换行｜Ctrl + 回车 = 确定｜Esc = 取消")
@@ -2627,7 +2693,7 @@ class _AgentSettingsDialog(QDialog):
         # 弹出层跟随主题面板色；磨砂玻璃的观感由应用级 QSS 的玻璃填充提供
         # （见 app_glass.control_fill），不在这里写死颜色。
         # 下拉弹出层：磨砂玻璃底（壁纸平均色，不透明防叠黑块）
-        _popup_bg = _glass_tip_bg()
+        _popup_bg = _popup_glass()
         # 输入类控件是大表面：走玻璃填充（壁纸下不再是不透明的旧实色块）
         _in_bg = _gsurface(self._PANEL)
         _in_focus = _sheer(app_glass.SHEER_WASH, self._PANEL2)
@@ -2640,7 +2706,7 @@ class _AgentSettingsDialog(QDialog):
             f"color: {self._TEXT}; border: 1px solid {_gedge()};"
             "border-radius: 12px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
-            f"border: 1px solid transparent; background: {_in_focus}; }}"
+            f"border: 1px solid {_focus_edge()}; background: {_in_focus}; }}"
             f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
             f"color: {self._TEXT}; border: 1px solid {_gedge()};"
             f"border-radius: 12px; padding: 4px; outline: none;"
@@ -2913,7 +2979,7 @@ class _AgentSettingsDialog(QDialog):
             f"QPlainTextEdit {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
             "padding: 6px 10px; font-size: 13px; }}"
-            f"QPlainTextEdit:focus {{ border: 1px solid transparent; }}")
+            f"QPlainTextEdit:focus {{ border: 1px solid {_focus_edge()}; }}")
         lay.addWidget(self.disable_tools_edit)
         # 趣味互动：AI 随机截屏分析屏幕并弹出俏皮锐评气泡（涉及周期性全屏截图，默认开启）
         fun_lbl = QLabel("趣味互动")
@@ -5696,8 +5762,8 @@ class _McpServerDialog(QDialog):
             f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
             f"QLineEdit, QComboBox {{ background: {_gfill(PANEL)}; color: {TEXT};"
             f"border: 1px solid {_gedge()}; border-radius: 6px; padding: 6px 10px; }}"
-            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid transparent; }}"
-            f"QComboBox QAbstractItemView {{ background: {_glass_tip_bg()}; color: {TEXT};"
+            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_focus_edge()}; }}"
+            f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {TEXT};"
             f"border: 1px solid {BORDER}; selection-background-color: {CARD}; }}")
         self.setStyleSheet(_mcp_qss)
         self._server = server or {}
@@ -5890,7 +5956,7 @@ class _ProviderDialog(QDialog):
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
             f"QLineEdit, QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
-            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid transparent; }}"
+            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_focus_edge()}; }}"
             f"QComboBox QAbstractItemView {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; selection-background-color: {self._PANEL}; }}")
         self.setStyleSheet(_pvd_qss)
@@ -6605,6 +6671,7 @@ class _ArrowComboBox(QComboBox):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        _harden_combo_popup(self)      # 下拉弹出层走玻璃材质（半透明 + 无边框）
         self._arrow_angle = 0.0        # 箭头旋转角度：0=收起，180=展开
         self._arrow_open = False
         self._arrow_hover = False
@@ -9206,7 +9273,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             f"QLineEdit {{ background: {surf}; color: {TEXT};"
             f" border: 1px solid {BORDER}; border-radius: 6px;"
             f" padding: 4px 8px; font-size: 12px; }}"
-            f"QLineEdit:focus {{ border: 1px solid transparent; }}"
+            f"QLineEdit:focus {{ border: 1px solid {_focus_edge()}; }}"
             f"QLineEdit::placeholder {{ color: {TEXT_DIM}; }}")
         if self._web_tabs is not None:
             self._web_tabs.setStyleSheet(
@@ -12771,6 +12838,9 @@ class AgentPanel(QDialog):
         bottom.setSpacing(6)
         self.input = _DropTextEdit()
         _install_focus_glow(self.input)   # 聚焦边缘泛光（替代蓝色实线边框）
+        # 顶栏等处已建好的下拉：弹出层统一玻璃化（视图属性只能每次弹出时补设）
+        for _c in self.findChildren(QComboBox):
+            _harden_combo_popup(_c)
         self.input.setPlaceholderText("/ for commad @ for agent")
         self.input.setMinimumHeight(32)
         self.input.setMaximumHeight(110)
@@ -12778,7 +12848,7 @@ class AgentPanel(QDialog):
             f"QPlainTextEdit {{ background: {_gfill(PANEL)}; color: {TEXT};"
             f" border: 1px solid {_gedge()};"
             "border-radius: 10px; padding: 5px 10px; font-size: 14px; }}"
-            f"QPlainTextEdit:focus {{ border: 1px solid transparent; }}")
+            f"QPlainTextEdit:focus {{ border: 1px solid {_focus_edge()}; }}")
         self.input.submit.connect(self._send)   # Enter 发送（Shift+Enter 换行）
         self.input.textChanged.connect(self._cmd_debounce.start)   # 防抖：暂停后再刷候选
         self.input.textChanged.connect(self._sync_action_style)

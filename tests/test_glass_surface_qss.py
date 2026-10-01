@@ -32,11 +32,12 @@ def test_focus_hint_is_glow_not_blue_border(glass_state, offscreen_app):
 
     from zhuzhu_Copilot.ui import agent_panel as ap
 
-    # 1) 源码里不得再有「:focus + 实线边框」的写法
+    # 1) 源码里不得再有「:focus + 不透明实线边框」的写法（光边要经 _focus_edge）
     from pathlib import Path
     src = Path(ap.__file__).read_text(encoding="utf-8")
     bad = [ln.strip() for ln in src.splitlines()
-           if ":focus" in ln and "border: 1px solid" in ln and "transparent" not in ln]
+           if ":focus" in ln and "border: 1px solid {" in ln
+           and "_focus_edge" not in ln and "transparent" not in ln]
     assert not bad, f"仍有聚焦实线边框：{bad[:3]}"
 
     # 2) 聚焦时真的挂上泛光，失焦要立刻摘掉（否则一直走离屏渲染）。
@@ -65,6 +66,52 @@ def test_popup_and_menu_use_frosted_surface(glass_state):
            and "background: {PANEL}" in ln]
     assert not bad, f"弹出层仍是深色面板常量：{bad[:3]}"
     assert "_popup_bg = _glass_tip_bg()" in src
+
+
+def test_focus_keeps_a_glowing_edge(glass_state):
+    """聚焦提示 = **保留边缘**的半透明光边 + 外发光（用户要求的是泛光，不是取消边缘）。"""
+    from pathlib import Path
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True)
+    edge = ap._focus_edge()
+    assert edge.startswith("rgba(") and 0.2 <= _alpha(edge) <= 0.8, edge
+    src = Path(ap.__file__).read_text(encoding="utf-8")
+    n = sum(1 for ln in src.splitlines() if ":focus" in ln and "_focus_edge" in ln)
+    assert n >= 5, f"聚焦光边接入点太少：{n}"
+
+
+def test_popup_glass_is_translucent(glass_state):
+    """下拉 / 菜单弹出层底必须是**真半透明**。
+
+    原先走 frost_surface_color：它是把壁纸平均色压在主题深色底上混出的**实色**，
+    壁纸偏深时混出来还是深色块 —— 这就是「下拉菜单没有磨砂玻璃材质」的根因。
+    """
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=False)
+    assert ap._popup_glass().lower() == ap.PANEL.lower(), "玻璃关闭应回退不透明主题色"
+    glass_state.set_fields(persist=False, enabled=True)
+    css = ap._popup_glass()
+    assert css.startswith("rgba("), css
+    assert 0.4 <= _alpha(css) < 0.95, f"弹出层应半透明（可透出下方内容）：{css}"
+
+
+def test_combo_popup_is_made_frosted(glass_state, offscreen_app):
+    """弹出视图必须被设成无边框 + 半透明窗口，否则 QSS 的半透明底根本不生效。"""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QComboBox
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    combo = QComboBox()
+    ap._harden_combo_popup(combo)
+    assert combo._glass_popup_filter is not None, "未挂上弹出玻璃化过滤器"
+    view = combo.view()
+    ap._frost_popup_view(view)
+    assert view.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert view.windowFlags() & Qt.WindowType.FramelessWindowHint
 
 
 def test_gsurface_and_gfill_follow_glass_switch(glass_state):
