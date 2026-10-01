@@ -535,6 +535,18 @@ def test_root_veil_alpha_is_legible_and_frost_driven():
     assert g.root_veil_color("#101216").alpha() < a0
 
 
+def test_legible_fill_is_translucent_and_frost_driven():
+    """大表面（气泡/卡片）的半透明玻璃填充：必须有可读性地板，且随 frost 单调。"""
+    g.set_fields(bg_image="", enabled=True, persist=False)
+    s = g.legible_fill("#1F232C")
+    assert s.startswith("rgba("), f"玻璃开启时应是半透明 rgba：{s}"
+    # 可读性地板：alpha 不能太低（否则正文压在壁纸上）
+    alpha = float(s.split(",")[-1].rstrip(" )"))
+    assert 0.4 <= alpha <= 0.8, f"气泡填充 alpha 偏离可读区间：{alpha}"
+    g.set_fields(enabled=False, persist=False)
+    assert g.legible_fill("#1F232C") == "#1f232c", "关闭玻璃应回落实色"
+
+
 # ─────────────────────────── 5) 窗口装配 ───────────────────────────
 
 def test_install_is_idempotent_and_registers_surfaces():

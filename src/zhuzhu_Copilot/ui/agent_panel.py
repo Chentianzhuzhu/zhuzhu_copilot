@@ -14308,8 +14308,12 @@ class AgentPanel(QDialog):
           与深蓝只留给「状态/强调」保持一致；
         · 输出区：淡蓝字（LINK_COLOR）+ 深蓝竖线（ACCENT），让「工具调用 → 输出」有归属感。
         """
+        # 磨砂玻璃：AI 气泡与面板表面改为半透明玻璃填充（带可读性地板），
+        # 透出壁纸；用户气泡保留深蓝品牌色（强调色，保持实色更稳）。
+        _glass_card = app_glass.legible_fill(AI_BG) if _glass_on() else AI_BG
+        _glass_panel = app_glass.legible_fill(PANEL) if _glass_on() else PANEL
         return chat_bubbles.ChatStyle(
-            card=AI_BG,
+            card=_glass_card,
             border=BORDER,
             border_soft=BORDER_SOFT,
             dash=BORDER_SOFT,
@@ -14326,7 +14330,7 @@ class AgentPanel(QDialog):
             cmd_fg=TEXT,
             ok_fg=LINK_COLOR,
             hover=HOVER,
-            panel=PANEL,
+            panel=_glass_panel,
             bg=BG,
             think_bg=_mix_hex(ACCENT, AI_BG, 0.10),
             think_border=_mix_hex(ACCENT, BORDER, 0.30),

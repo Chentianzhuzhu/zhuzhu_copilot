@@ -1122,6 +1122,20 @@ def rgba(color, alpha: float) -> str:
     return f"rgba({c.red()}, {c.green()}, {c.blue()}, {a:.3f})"
 
 
+def legible_fill(color: str, p: Optional[GlassParams] = None) -> str:
+    """大表面（聊天气泡 / 卡片）的半透明玻璃填充：带**可读性地板**。
+
+    与 control_fill 的区别：control_fill 的 alpha = frost×opacity，透明度调低会
+    让正文直接压在壁纸上；这一层用 root_veil 同款地板（0.42 + frost×0.34），
+    保证气泡在壁纸上依然可读、又能透出壁纸。
+    """
+    q = p if p is not None else params()
+    if not q.enabled:
+        return QColor(color).name()
+    a = _ROOT_VEIL_FLOOR + _ROOT_VEIL_SPAN * max(0.0, min(1.0, q.frost))
+    return rgba(color, a)
+
+
 def control_fill(surface_color, p: Optional[GlassParams] = None) -> str:
     """小控件（按钮/输入框/列表项）的玻璃填充色。
 
