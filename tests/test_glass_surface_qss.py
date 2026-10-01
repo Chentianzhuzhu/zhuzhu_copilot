@@ -672,7 +672,7 @@ def test_combo_popup_shows_the_local_wallpaper_block(glass_state, offscreen_app,
     warm = rs[len(rs) // 2] - bs[len(bs) // 2]          # 中位数 r-b：橙色为正
     flat = QColor(ap._frost_surface())
     flat_warm = flat.red() - flat.blue()
-    wash = ap._POPUP_FROST_WASH         # 弹层还压了一层白色磨砂纱，色偏会按比例衰减
+    wash = ap._popup_frost_alpha()      # 弹层还压了一层白色磨砂纱，色偏会按比例衰减
     assert flat_warm < 5, f"前提不成立：整图平均色在 R/B 上应接近中性，实得 {flat_warm}"
     assert warm > flat_warm * (1 - wash) + 10, (
         f"弹层没显示本窗口那块壁纸（局部暖色 r-b={warm}，平均色 r-b={flat_warm}）"
@@ -682,13 +682,83 @@ def test_combo_popup_shows_the_local_wallpaper_block(glass_state, offscreen_app,
         "（白纱会把色偏按 (1-wash) 衰减，但仍应明显大于 0）")
 
 
+def test_popup_glass_follows_the_glass_sliders(glass_state, tmp_path):
+    """弹层的「磨砂程度」「透明度」必须跟随滑杆。
+
+    回归（用户反馈「下拉菜单…的透明度、磨砂程度…从未跟随系统设置」）：弹层底原先
+    写死 `_POPUP_GLASS_ALPHA = 0.88` 与固定白纱系数，两个滑杆怎么拖都没反应。
+    这里直接对取色入口取两次值，锁死「调滑杆 → 颜色真的变」。
+    """
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=True,
+                           bg_image=str(_bright_wallpaper(tmp_path)))
+
+    glass_state.set_param("frost", 0.05, persist=False)
+    thin = ap._popup_frost_alpha()
+    surface_thin = _mean_of(ap._popup_surface())
+    glass_state.set_param("frost", 0.95, persist=False)
+    thick = ap._popup_frost_alpha()
+    assert thick > thin + 0.25, f"磨砂程度没作用到弹层白纱：{thin:.2f} → {thick:.2f}"
+    assert _mean_of(ap._popup_surface()) > surface_thin + 40, \
+        "磨砂程度拉高后弹层底没变亮（白纱强度没跟）"
+
+    glass_state.set_param("opacity", 0.10, persist=False)
+    a_low = _alpha(ap._popup_glass())
+    glass_state.set_param("opacity", 1.00, persist=False)
+    a_high = _alpha(ap._popup_glass())
+    assert a_high > a_low + 0.15, f"透明度没作用到弹层底：{a_low:.2f} → {a_high:.2f}"
+
+
+def test_liquid_and_edge_layers_follow_the_sliders():
+    """「液态感」「边缘高光」「透明度」必须真的改变玻璃的流动/受光层。
+
+    回归（用户反馈「液态感调节效果从未生效」）：顶部受光 / 对角液光 / 底部微光 /
+    边缘反光这几层原先只长在 `GlassSurface` 里，而装配它的
+    `GlassSkin.add_surface()` 在整个应用里**从未被调用** → 三个滑杆拖了毫无反应。
+    这里直接把这几层画到一张透明图上，用「墨量」锁死「调滑杆 → 画面真的变」。
+    """
+    import dataclasses
+
+    from PyQt6.QtGui import QImage, QPainter
+
+    from zhuzhu_Copilot.core import app_glass
+
+    def ink(**kw) -> int:
+        fields = dict(enabled=True, blur=0, frost=0.5, edge=1.0, opacity=1.0, liquid=0.0)
+        fields.update(kw)
+        p = dataclasses.replace(app_glass.GlassParams(), **fields)
+        img = QImage(160, 100, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(0)
+        painter = QPainter(img)
+        app_glass.paint_glass_liquid(painter, img.rect(), p, radius=8, phase=0.0)
+        painter.end()
+        return sum(img.pixelColor(x, y).alpha()
+                   for y in range(0, 100, 4) for x in range(0, 160, 4))
+
+    liquid_off = ink(liquid=0.0)
+    liquid_on = ink(liquid=1.0)
+    assert liquid_on > liquid_off + 400, \
+        f"液态感滑杆对液光/底光毫无影响（墨量 {liquid_off} → {liquid_on}）"
+
+    edge_off = ink(edge=0.0, liquid=1.0)
+    assert liquid_on > edge_off + 400, \
+        f"边缘高光滑杆对受光/描边毫无影响（墨量 {edge_off} → {liquid_on}）"
+
+    op_low = ink(opacity=0.2, liquid=1.0)
+    assert liquid_on > op_low + 400, \
+        f"透明度滑杆对装饰层毫无影响（墨量 {op_low} → {liquid_on}）"
+
+
 def test_combo_popup_stays_light_over_a_dark_wallpaper(glass_state, offscreen_app, tmp_path):
     """壁纸区域偏暗时，弹层也不能跟着变成一块深色板。
 
-    用户反复反馈「下拉还是深色」——他当前的配置（cover + blur=7 + frost=0.42）下，
-    弹层本来取到的是那块**偏暗的壁纸**（实测 rgb(24,48,60)、亮度 70），看着就是一块
-    深色板。弹层是浮在主界面上的一层玻璃，必须压一层白色磨砂纱把它稳定在浅色，
-    同时把文字换成深字保证可读。
+    用户反复反馈「下拉还是深色」——弹层会取到**偏暗的那块壁纸**（实测 rgb(24,48,60)、
+    亮度 70），看着就是一块深色板。弹层是浮在主界面上的一层玻璃，必须压一层白色磨砂纱
+    把它提亮（强度跟随「磨砂程度」），同时把文字换成深字保证可读。
+
+    注意：磨砂程度要显式给高值 —— 测试进程会沿用用户真实 `glass.json` 里的参数，
+    不能假设是默认值。
     """
     from PyQt6.QtGui import QColor, QImage, QPainter
     from PyQt6.QtWidgets import QComboBox
@@ -703,6 +773,7 @@ def test_combo_popup_stays_light_over_a_dark_wallpaper(glass_state, offscreen_ap
     img.save(str(wall))
 
     glass_state.set_fields(persist=False, enabled=True, bg_image=str(wall))
+    glass_state.set_param("frost", 0.85, persist=False)
     ap.refresh_glass()
     assert ap._popup_light_surface(), "暗壁纸下弹层没被提亮 → 会是一块深色板"
     assert ap._popup_fg() == ap._THEMES["light"]["TEXT"], "浅底弹层应改用深字保证可读"

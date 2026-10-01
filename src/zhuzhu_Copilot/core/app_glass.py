@@ -590,6 +590,19 @@ def wallpaper_ok() -> bool:
     return _source_pixmap(path, mtime) is not None
 
 
+def veil_alpha(floor: Optional[float] = None, span: Optional[float] = None,
+               p: Optional[GlassParams] = None) -> float:
+    """磨砂纱（可读性地板）的 alpha = ``floor + span × frost``。
+
+    根背景、气泡/大表面填充、弹层白纱**共用同一条公式**：三处各自写死系数时，一动
+    「磨砂程度」滑杆就会有地方不跟（本模块此前正是如此）。
+    """
+    q = p if p is not None else params()
+    fl = _ROOT_VEIL_FLOOR if floor is None else max(0.0, min(1.0, float(floor)))
+    sp = _ROOT_VEIL_SPAN if span is None else max(0.0, min(1.0, float(span)))
+    return max(0.0, min(1.0, fl + sp * max(0.0, min(1.0, q.frost))))
+
+
 def root_veil_color(fallback: str, alpha_scale: float = 1.0) -> QColor:
     """根表面的磨砂纱颜色（壁纸平均色，带 alpha）。
 
@@ -599,8 +612,7 @@ def root_veil_color(fallback: str, alpha_scale: float = 1.0) -> QColor:
     c = QColor(frost_surface_color(fallback))
     # 刻意**不乘** opacity：这一层是可读性地板。若乘上去，用户把透明度调低
     # 正文就会重新压在照片上（用户反馈"设置项被遮挡"的第二个成因）。
-    a = (_ROOT_VEIL_FLOOR + _ROOT_VEIL_SPAN * max(0.0, min(1.0, q.frost))) \
-        * max(0.0, min(1.0, alpha_scale))
+    a = veil_alpha(p=q) * max(0.0, min(1.0, alpha_scale))
     c.setAlpha(int(round(255 * max(0.0, min(1.0, a)))))
     return c
 
@@ -881,6 +893,52 @@ def paint_glass_surface(painter: QPainter, rect, p: GlassParams,
     base.setAlpha(int(round(_FROST_ALPHA_MAX * p.frost * op)))
     if base.alpha() > 0:
         painter.fillRect(rect, base)
+
+    painter.restore()
+
+    # 3) 流动 + 受光装饰层（顶部受光 / 对角液光 / 底部微光 / 边缘反光）
+    paint_glass_liquid(painter, rect, p, rad, ph)
+
+
+def paint_glass_liquid(painter: QPainter, rect, p: GlassParams,
+                       radius: int = RADIUS_GLASS, phase: float = 0.0) -> None:
+    """玻璃的「流动 + 受光」装饰层：顶部受光 / 对角液光 / 底部微光 / 边缘反光。
+
+    **为什么单列一个函数**：这一层原先只长在 `GlassSurface` 里，而 `GlassSurface` 要靠
+    `GlassSkin.add_surface()` 装配 —— 那个方法在整个应用里**从未被调用过**，于是
+    「液态感」「边缘高光」「透明度」「磨砂程度」四个滑杆在真实界面上全都毫无反应
+    （用户反馈「液态感调节效果从未生效」「从未跟随系统设置走」）。
+    单列之后，走「窗口根」那条绘制路径的所有表面（主面板 / 各浮窗 / 设置页 / 下拉 / 菜单）
+    都能拿到这几层。
+
+    四个滑杆的作用点全在这一个函数里，改系数只改这里：
+      · edge    → 顶部受光强度 + 边缘反光描边强度
+      · liquid  → 顶部受光的纵向流动、对角液光的强度与横向摆动、底部微光强度
+      · opacity → 以上各层的整体强度缩放
+      · phase   → 流动相位（由 `GlassSkin` 的定时器推进；liquid_anim 关闭时为 0）
+    """
+    if painter is None or rect is None:
+        return
+    if rect.width() <= 0 or rect.height() <= 0 or not p.enabled:
+        return
+
+    from PyQt6.QtCore import QPointF, QRectF
+
+    r = QRectF(rect)
+    rad = max(0, int(radius))
+    ph = max(0.0, min(1.0, float(phase)))
+    e = max(0.0, min(1.0, p.edge))
+    li = max(0.0, min(1.0, p.liquid))
+    op = max(0.0, min(1.0, p.opacity))
+    if op <= 0.0:
+        return
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if rad > 0:
+        clip = QPainterPath()
+        clip.addRoundedRect(r, rad, rad)
+        painter.setClipPath(clip)
 
     # 3) 顶部受光（强度由 edge 定，纵向位置随 phase 流动）
     top_a = int(round(_TOPPGLOSS_ALPHA_MAX * e * op))
@@ -1167,6 +1225,12 @@ class GlassSkin(QObject):
                     surf.update()
                 except Exception:
                     pass
+        # 根表面（主面板 / 各浮窗 / 弹层 / 菜单）上的流动层也随相位重绘 ——
+        # 不重绘窗口的话，液态动效只在装配了 GlassSurface 的控件上才看得见。
+        try:
+            self._window.update()
+        except Exception:
+            pass
 
     def eventFilter(self, obj, ev):
         if obj is self._window and ev.type() == QEvent.Type.Resize:
@@ -1242,10 +1306,7 @@ def legible_fill(color: str, p: Optional[GlassParams] = None,
     q = p if p is not None else params()
     if not q.enabled:
         return QColor(color).name()
-    fl = _ROOT_VEIL_FLOOR if floor is None else max(0.0, min(1.0, float(floor)))
-    sp = _ROOT_VEIL_SPAN if span is None else max(0.0, min(1.0, float(span)))
-    a = fl + sp * max(0.0, min(1.0, q.frost))
-    return rgba(color, a)
+    return rgba(color, veil_alpha(floor=floor, span=span, p=q))
 
 
 def control_fill(surface_color, p: Optional[GlassParams] = None) -> str:

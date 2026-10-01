@@ -177,15 +177,25 @@ def _theme_setting() -> str:
     return v if v in ("dark", "light", "auto") else "light"
 
 
+# 小控件玻璃填充的最小 alpha：再低就看不出控件范围了（滑杆拉到底也有个底）
+_CTRL_FILL_MIN = 0.05
+
+
 def _gfill(color: str) -> str:
     """小控件（按钮 / 下拉 / 输入框）的补底色。
 
     玻璃开启时用极淡的**白色**洗色 —— 既看得出控件范围，又符合「禁止深色背景
     附着」的硬性要求（不能是一块深色底）；玻璃关闭时回退主题色。
+
+    强度**跟随系统设置**：alpha = 磨砂程度 × 透明度（与内核 `app_glass.control_fill`
+    同一语义）。原先写死 `SHEER_WASH`，所以拖这两个滑杆时按钮/下拉/输入框毫无变化
+    （用户反馈的「按钮元素…从未跟随系统设置」）。
     """
     if not _glass_on():
         return color
-    return app_glass.rgba("#FFFFFF", app_glass.SHEER_WASH)
+    p = app_glass.params()
+    return app_glass.rgba("#FFFFFF",
+                          max(_CTRL_FILL_MIN, min(0.85, p.frost * p.opacity)))
 
 
 def _gsurface(color: str) -> str:
@@ -265,16 +275,16 @@ _POPUP_RADIUS = 12
 _POPUP_VEIL_SCALE = 0.7
 
 
-# 弹出层玻璃底的不透明度：保留一点透明度（弹出层的观感要"透"），但不能太低，
-# 否则会与系统阴影 / 下层窗口叠成一块脏色。
-_POPUP_GLASS_ALPHA = 0.88
+# 弹出层玻璃底的不透明度：**跟随「透明度」滑杆**（floor + span × opacity）。
+# 原先写死 0.88，所以拖透明度滑杆时下拉/菜单纹丝不动（用户反馈的「从未跟随系统设置」）。
+# 留一个地板，避免透明度拉到底时文字糊在下层内容上。
+_POPUP_GLASS_FLOOR = 0.55
+_POPUP_GLASS_SPAN = 0.42
 
-# 弹出层白色磨砂纱强度（只作用于**自绘玻璃**的弹层）。
-# 弹层是浮在主界面上的一层玻璃：壁纸偏暗时它整块跟着变深（实测 rgb(24,48,60)、
-# 亮度 70），用户反复反馈的「下拉还是深色」就是这么来的。压一层薄白纱把它稳定在
-# 浅色（与主题的淡灰/白基调一致），壁纸纹理仍然透出来（不是实色板）。
-# 只压在弹层上、不动面板：面板要如实反映壁纸，弹层要保证"看得清、不显脏"。
-_POPUP_FROST_WASH = 0.45
+# 弹出层白色磨砂纱强度：alpha = floor + span × 磨砂程度（与根背景/气泡同一条公式，
+# 见 `app_glass.veil_alpha`）—— 弹层是浮层，压一层白纱才不会跟着偏暗的壁纸变深色板。
+_POPUP_FROST_FLOOR = 0.30
+_POPUP_FROST_SPAN = 0.45
 
 
 def _frost_surface() -> str:
@@ -307,16 +317,22 @@ def _frost_surface() -> str:
     ).name()
 
 
+def _popup_frost_alpha() -> float:
+    """弹层白纱强度 = floor + span × **磨砂程度**（跟随「磨砂程度」滑杆）。"""
+    return app_glass.veil_alpha(floor=_POPUP_FROST_FLOOR, span=_POPUP_FROST_SPAN)
+
+
 def _popup_surface() -> str:
     """弹层玻璃的**最终**底色（不透明）：面板玻璃 ⊕ 白色磨砂纱。
 
-    无壁纸时直接回退面板色 —— 此时没有壁纸可透，弹层应保持主题底色（不加白纱，
-    否则深色主题下会出现一块突兀的浅色板）。
+    纱的强度跟随「磨砂程度」（见 `_popup_frost_alpha`）—— 滑杆拉高，弹层更"毛"更亮；
+    拉到底则近乎直接透出壁纸。无壁纸时回退面板色（不加纱，否则深色主题下会冒出
+    一块突兀的浅色板）。
     """
     if not _glass_wallpaper_active():
         return PANEL
     base = QColor(_frost_surface())
-    w = _POPUP_FROST_WASH
+    w = _popup_frost_alpha()
     return QColor(
         int(round(base.red() * (1 - w) + 255 * w)),
         int(round(base.green() * (1 - w) + 255 * w)),
@@ -327,13 +343,15 @@ def _popup_surface() -> str:
 def _popup_glass() -> str:
     """下拉 / 菜单弹出层的玻璃底（玻璃关闭时退回不透明面板色）。
 
-    底取**与面板同一块玻璃**再压一层白纱（见 `_popup_surface`）：写死某个"亮一档灰蓝"
-    在浅色主题下会变成深色板；直接用面板玻璃又会跟着偏暗的壁纸一起变成深色板
-    （用户反复反馈的「下拉还是深色」）。
+    底取**与面板同一块玻璃**再压一层白纱（见 `_popup_surface`），不透明度跟随
+    「透明度」滑杆（见 `_POPUP_GLASS_FLOOR`）：写死某个"亮一档灰蓝"在浅色主题下会变成
+    深色板；直接用面板玻璃又会跟着偏暗的壁纸一起变成深色板（用户反馈的「下拉还是深色」）。
     """
     if not _glass_on():
         return PANEL
-    return app_glass.rgba(_popup_surface(), _POPUP_GLASS_ALPHA)
+    a = _POPUP_GLASS_FLOOR + _POPUP_GLASS_SPAN * max(
+        0.0, min(1.0, app_glass.params().opacity))
+    return app_glass.rgba(_popup_surface(), max(0.0, min(1.0, a)))
 
 
 def _frost_popup_widget(widget) -> None:
@@ -365,9 +383,10 @@ def _frost_popup_widget(widget) -> None:
                         # 没壁纸时不能留全透明（会糊成一片）→ 圆角不透明底兜底
                         _draw_round_rect(obj, painter, PANEL)
                     else:
-                        # 有壁纸：再压一层薄白纱，避免弹层跟着偏暗的壁纸一起变成深色板
+                        # 有壁纸：再压一层白纱，避免弹层跟着偏暗的壁纸一起变成深色板。
+                        # 强度跟随「磨砂程度」滑杆（见 `_popup_frost_alpha`）。
                         _draw_round_rect(obj, painter, "#FFFFFF",
-                                         int(round(255 * _POPUP_FROST_WASH)))
+                                         int(round(255 * _popup_frost_alpha())))
                     painter.end()
                 except Exception:
                     pass
@@ -698,6 +717,12 @@ def _paint_glass_root(widget, painter, rect, radius: int, fallback: str = None,
     # 磨砂纱：壁纸之上必须压一层纱，正文才可读（用户反馈"设置项被遮挡"）
     painter.fillRect(rect, app_glass.root_veil_color(fallback or BG, veil_scale))
     painter.restore()
+    # 液态玻璃的「流动 / 受光 / 边缘高光」层：跟随 液态感 / 边缘高光 / 透明度 三个滑杆。
+    # 原先这几层只长在 `GlassSurface` 上，而装配它的 `add_surface()` 从未被调用 ——
+    # 于是滑杆拖了完全没反应（用户反馈「液态感调节效果从未生效」）。
+    # 走窗口根这条路径的表面（主面板 / 各浮窗 / 设置页 / 下拉 / 菜单）统一在这里拿到它。
+    app_glass.paint_glass_liquid(painter, rect, app_glass.params(), radius,
+                                 getattr(skin, "phase", 0.0))
     return True
 
 
