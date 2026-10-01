@@ -291,18 +291,16 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_app_background",
-            "description": "设置 AI 面板的背景图与磨砂玻璃外观，参数即时生效（无需重启）。"
+            "description": "设置 AI 面板的背景图，即时生效（无需重启）。"
                            "op=set 设置背景图（image=本地图片路径；url=图片地址；"
-                           "也可先用 generate_image 生成图片再传其本地路径）；"
-                           "op=params 只调玻璃参数；op=clear 清除背景图；op=get 查询当前外观"
-                           "（op 缺省 get）。参数含义：blur 背景高斯模糊半径 0-48(px)、"
-                           "frost 磨砂程度 0-1、edge 边缘高光 0-1、opacity 透明度 0-1、"
-                           "liquid 液态感 0-1、liquid_anim 液态流动动效开关。",
+                           "也可先用 generate_image 生成图片再传其本地路径；"
+                           "只传 fit/blur/dim 则仅改这些观感参数，不动图片）；"
+                           "op=clear 清除背景图；op=get 查询当前背景（op 缺省 get）。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "op": {"type": "string",
-                           "description": "set / params / clear / get，缺省 get"},
+                           "description": "set / clear / get，缺省 get"},
                     "image": {"type": "string",
                               "description": "op=set 用：本地图片路径 "
                                              "(png/jpg/jpeg/bmp/webp)"},
@@ -311,17 +309,12 @@ TOOLS = [
                     "fit": {"type": "string",
                             "description": "背景适配：cover / contain / stretch / tile，"
                                            "缺省 cover"},
-                    "blur": {"type": "number", "description": "背景模糊半径 0-48（px）"},
-                    "frost": {"type": "number", "description": "磨砂程度 0-1"},
-                    "edge": {"type": "number", "description": "边缘高光 0-1"},
-                    "opacity": {"type": "number", "description": "透明度 0-1"},
-                    "liquid": {"type": "number", "description": "液态感 0-1"},
-                    "liquid_anim": {"type": "boolean",
-                                    "description": "液态流动动效（默认关闭，开启有 CPU 代价）"},
-                    "frameless": {"type": "boolean",
-                                  "description": "无边框玻璃窗口外壳（会换掉系统标题栏，默认关）"},
-                    "reset": {"type": "boolean",
-                              "description": "op=params 时先恢复默认外观再应用本次参数"}
+                    "blur": {"type": "number",
+                             "description": "高斯模糊半径（px，0-40）：0 为原图，"
+                                            "越大越糊、越不干扰正文阅读"},
+                    "dim": {"type": "number",
+                            "description": "压暗强度（%，0-100）：壁纸之上压主题底色的"
+                                           "比例，越高正文越清晰、壁纸越淡"}
                 },
                 "required": []
             }
@@ -4898,30 +4891,10 @@ def _create_plugin(description: str, kind: str, status_cb=None) -> dict:
     return ({"text": msg, "images": []} if ok else _blocked(msg))
 
 
-# ── 全局外观（背景图 + 磨砂玻璃参数） ─────────────────────────────
+# ── 全局背景图 ───────────────────────────────────────────────────
 
 _BG_MAX_BYTES = 24 * 1024 * 1024      # 背景图下载上限（挡住误给的超大文件）
 _BG_URL_TIMEOUT = 30
-
-
-def _apply_glass_params(args: dict) -> list:
-    """把参数落到玻璃内核，返回「已应用」的显示文本列表；未传的保持不动。"""
-    from zhuzhu_Copilot.core import app_glass
-    cur = app_glass.params()
-    done = []
-    for s in app_glass.PARAM_SPECS:
-        if args.get(s.key) is None:
-            continue
-        cur = cur.with_param(s.key, args.get(s.key))
-        done.append(f"{s.label}={app_glass.format_value(s, cur.value(s.key))}")
-    for key, label in (("liquid_anim", "液态流动动效"), ("frameless", "无边框外壳")):
-        if args.get(key) is None:
-            continue
-        cur = cur.with_fields(**{key: bool(args.get(key))})
-        done.append(f"{label}={'开' if getattr(cur, key) else '关'}")
-    if done:
-        app_glass.set_params(cur)
-    return done
 
 
 def _download_background(url: str) -> tuple:
@@ -4955,35 +4928,55 @@ def _download_background(url: str) -> tuple:
     return (tmp, "")
 
 
-def _set_app_background(args: dict) -> dict:
-    """set_app_background 工具：设置 AI 面板背景图与磨砂玻璃外观。
+# 背景可调项：工具参数名 → 壁纸参数名（模糊半径 px / 压暗强度 %）
+_BG_TUNING_ARGS = (("blur", "bg_blur"), ("dim", "bg_dim"))
 
-    op=set    收编图片（本地 image 或远程 url）并设为背景，可同时带玻璃参数
-    op=params 只改玻璃参数（未传的保持不动；reset=true 先恢复默认）
-    op=clear  清除背景图
-    op=get    查询当前外观
-    参数变更会被 UI 即时订阅并重绘，无需重启或重建面板。
+
+def _background_tuning(args: dict) -> dict:
+    """从工具参数里挑出模糊/压暗并转成壁纸参数键；未传或不是数字则忽略（不覆盖）。"""
+    out = {}
+    for arg_key, param_key in _BG_TUNING_ARGS:
+        raw = args.get(arg_key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            out[param_key] = float(raw)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _set_app_background(args: dict) -> dict:
+    """set_app_background 工具：设置 AI 面板背景图及其观感参数。
+
+    op=set    收编图片（本地 image 或远程 url）并设为背景，可同时带 fit/blur/dim；
+              只给 fit/blur/dim 不给图时仅改这些参数
+    op=clear  清除背景图（回到主题渐变，容器底色恢复不透明）
+    op=get    查询当前背景
+    变更会被 UI 即时订阅并重绘，无需重启或重建面板。
     """
-    from zhuzhu_Copilot.core import app_glass
+    from zhuzhu_Copilot.core import app_wallpaper
 
     op = str(args.get("op") or "get").strip().lower()
+    fit = str(args.get("fit") or "").strip().lower()
+    tuning = _background_tuning(args)
 
     if op == "get":
-        p = app_glass.params()
-        lines = [f"玻璃材质：{'开启' if p.enabled else '关闭'}",
-                 f"背景图：{p.bg_image or '（未设置，使用主题渐变）'}",
-                 f"背景适配：{p.bg_fit}"]
-        lines += [f"{s.label}：{app_glass.format_value(s, p.value(s.key))}"
-                  for s in app_glass.PARAM_SPECS]
-        lines.append(f"液态流动动效：{'开' if p.liquid_anim else '关'}")
-        lines.append(f"无边框外壳：{'开' if p.frameless else '关'}")
-        return {"text": "当前外观：\n- " + "\n- ".join(lines), "images": []}
+        p = app_wallpaper.params()
+        lines = [f"背景图：{p.bg_image or '（未设置，使用主题渐变）'}",
+                 f"背景适配：{p.bg_fit}",
+                 f"高斯模糊：{p.bg_blur:g} px",
+                 f"压暗强度：{p.bg_dim:g}%"]
+        return {"text": "当前背景：\n- " + "\n- ".join(lines), "images": []}
 
     if op == "clear":
-        ok, msg = app_glass.clear_background()
+        ok, msg = app_wallpaper.clear_background()
         return {"text": msg, "images": []} if ok else _blocked(msg)
 
     if op == "set":
+        if fit and fit not in app_wallpaper.BG_FITS:
+            return _blocked("[set_app_background] fit 仅支持 "
+                            + "、".join(app_wallpaper.BG_FITS))
         path = str(args.get("image") or "").strip()
         url = str(args.get("url") or "").strip()
         if not path and url:
@@ -4991,29 +4984,26 @@ def _set_app_background(args: dict) -> dict:
             if err:
                 return _blocked(err)
         if not path:
-            return _blocked("[set_app_background] op=set 需要 image（本地图片路径）"
-                            "或 url（图片地址）；也可先用 generate_image 生成再传其本地路径")
-        ok, msg, _stored = app_glass.import_background(path)
+            # 只调参数：改适配/模糊/压暗，不动图片
+            if fit:
+                tuning["bg_fit"] = fit
+            if not tuning:
+                return _blocked("[set_app_background] op=set 需要 image（本地图片路径）"
+                                "或 url（图片地址）；也可先用 generate_image 生成再传其本地路径")
+            app_wallpaper.set_fields(**tuning)
+            return {"text": "背景参数已更新：" + "、".join(
+                f"{k[3:]}={v:g}" if isinstance(v, float) else f"{k[3:]}={v}"
+                for k, v in tuning.items()) + "，即时生效。", "images": []}
+        if fit:
+            tuning["bg_fit"] = fit
+        if tuning:
+            app_wallpaper.set_fields(**tuning)
+        ok, msg, _stored = app_wallpaper.import_background(path)
         if not ok:
             return _blocked(f"[set_app_background] {msg}")
-        fit = str(args.get("fit") or "").strip().lower()
-        if fit in app_glass.BG_FITS:
-            app_glass.set_fields(bg_fit=fit)
-        applied = _apply_glass_params(args)
-        extra = ("\n已同步参数：" + "、".join(applied)) if applied else ""
-        return {"text": f"{msg}\n背景已即时生效（无需重启）。{extra}", "images": []}
+        return {"text": f"{msg}\n背景已即时生效（无需重启）。", "images": []}
 
-    if op == "params":
-        if bool(args.get("reset")):
-            app_glass.reset_all()
-        applied = _apply_glass_params(args)
-        if not applied:
-            return _blocked(
-                "[set_app_background] op=params 未收到任何参数。可用："
-                + "、".join(app_glass.param_keys()) + "、liquid_anim、frameless、fit")
-        return {"text": "外观参数已更新并即时生效：" + "、".join(applied), "images": []}
-
-    return _blocked(f"[set_app_background] 未知 op={op}，可选 set/params/clear/get")
+    return _blocked(f"[set_app_background] 未知 op={op}，可选 set/clear/get")
 
 
 def _new_project(path: str, kind: str = "generic", name: str = "") -> dict:

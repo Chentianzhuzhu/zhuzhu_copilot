@@ -120,10 +120,10 @@ def test_set_app_background_rejects_non_http_url():
     assert "http" in out.get("text", "")
 
 
-def test_set_app_background_params_require_values():
-    """op=params 不带任何参数时应给出可用参数清单，而不是静默成功。"""
+def test_set_app_background_rejects_unknown_op():
+    """未知 op 必须给出可选 op 清单，而不是静默成功。"""
     out = agent_tools._set_app_background({"op": "params"})
-    assert "blur" in out.get("text", "")
+    assert "set/clear/get" in out.get("text", "")
 
 
 # ---------------- D. 任务裁剪保护 ----------------

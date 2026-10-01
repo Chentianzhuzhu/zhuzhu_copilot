@@ -247,15 +247,23 @@ def test_popover_ratio_color_has_three_tiers():
 
 
 def test_popover_theme_aware_stylesheet():
-    """主题切换后 apply_theme 必须用新色板重生成样式（否则浅色下仍是深色卡片）"""
+    """主题切换后 apply_theme 必须用新色板重生成样式（否则浅色下仍是深色卡片）。
+
+    改的是**原始色板**而不是模块级 PANEL：统计卡片底取自 _base_color（见
+    _apply_surface_mode）—— 设了壁纸时 PANEL 会被覆写成 transparent，卡片底却必须
+    保持不透明，因此它只认原始色板。主题切换走的正是这条路径（_apply_colors 更新它）。
+    """
     pop = ap._TokenStatsPopover()
-    old = ap.PANEL
+    old = ap._BASE_PALETTE.get("PANEL")
     try:
-        ap.PANEL = "#ABCDEF"
+        ap._BASE_PALETTE["PANEL"] = "#ABCDEF"
         pop.apply_theme()
         assert "#ABCDEF" in pop.styleSheet()
     finally:
-        ap.PANEL = old
+        if old is None:
+            ap._BASE_PALETTE.pop("PANEL", None)
+        else:
+            ap._BASE_PALETTE["PANEL"] = old
         pop.apply_theme()
     assert "#ABCDEF" not in pop.styleSheet()
     pop.close()

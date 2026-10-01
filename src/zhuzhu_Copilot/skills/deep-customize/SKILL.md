@@ -15,7 +15,7 @@ description: 深度自定义总入口（Cordis 一切皆可替换/热插拔）�
   - **新增功能面板** → 用 `register_feature_panel`（title/width/height/python）把 panel.py 写进**当前工作流**，成为可拖拽扩展浮窗。
   - **新增/覆盖工具** → `edit_agent_file(name=<当前工作流>, file="tools.py")` 写入当前工作流 tools.py，绝不为单独一个工具新建工作流。
   - **自定义代码带第三方 import** → `set_feature_deps`（op=declare deps=["xxx"]）写入当前工作流 requirements.txt，代码顶部可带第三方 import，加载时自动补齐依赖。
-  - **小 UI 调整 / 钩子** → `set_app_background` 调外观（背景图 + 玻璃参数，见 app-background 技能），或 `edit_agent_file` 改 agent.py 钩子。
+  - **小 UI 调整 / 钩子** → `set_app_background` 换背景图（op=set/clear/get，fit 选 cover/contain/stretch/tile，blur 调模糊、dim 调压暗），或 `edit_agent_file` 改 agent.py 钩子。
 - **只有功能大且独立**（整套 Agent 人格、专用工具集，现有工作流完全承载不了）时才新建工作流（`create_workflow`）。
 - 判断口诀：**能不能塞进现有工作流面板.py / 工具.py / 子agent 注册？能就绝不新建。**
 
@@ -35,8 +35,9 @@ description: 深度自定义总入口（Cordis 一切皆可替换/热插拔）�
 - **插件（mcp/skill/combined/web 四型）**：`create_plugin` AI 生成可运行插件（含 MCP server +
   SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url + browser_open 打开给用户，
   操作者必须是用户本人，严禁 AI 与脚本自动对战）。
-- **外观（背景图 + 磨砂玻璃材质）**：`set_app_background` 设置全局背景图与五个玻璃维度
-  （模糊/磨砂/边缘高光/透明度/液态感），即时生效；完整用法见 app-background 技能。
+- **外观（背景图）**：`set_app_background` 设置全局背景图（本地路径 / 图片网址 / 先
+  generate_image 再传路径）、适配方式（cover/contain/stretch/tile）、高斯模糊
+  （blur，px）与压暗强度（dim，%），即时生效；设了背景后主界面容器底色自动透明。
 - **面板按钮（恒显示）**：`register_panel_btn` op=register 注册顶部按钮栏按钮。
 - **子 agent（小功能的常用落地通道，绑定当前工作流）**：`list_sub_agents` 看现状 → `register_sub_agent`
   （name/description/goal/allowed）注册进当前工作流，立即作为 `sub_<name>` 工具可调用，不新建工作流。

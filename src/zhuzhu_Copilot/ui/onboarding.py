@@ -551,7 +551,7 @@ class OnboardingWizard(QDialog):
 
 
 def build_wizard(parent=None) -> OnboardingWizard:
-    """构造向导并套上应用统一的弹窗外观（毛玻璃 + 尺寸下限 + 居中）。
+    """构造向导并套上应用统一的弹窗外观（尺寸下限 + 居中）。
 
     启动流程（首次安装先走指南）与设置里「重新查看」共用同一套外观，
     否则同一个向导会在两处呈现出不同大小。返回值由调用方负责 exec()。

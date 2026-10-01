@@ -2157,8 +2157,8 @@ class RichBlock(_PinMixin, _EmergeMixin, QWidget):
         root.addWidget(self._body)
         self._fix_vertical()
         # 透明区块：正文直接坐在面板底色上，浮现层据此遮底。
-        # 遮罩色必须**不透明**（要盖住旧字）且贴近真实背景：玻璃态下由 style.band 给出
-        # 「壁纸平均色压在面板色上」的合成色；直接用 style.bg（纯深色）会在流式落字时
+        # 遮罩色必须**不透明**（要盖住旧字）且贴近真实背景：由 style.band 给出
+        # 面板色的合成色；直接用 style.bg（纯深色）会在流式落字时
         # 每落一行闪一块黑 —— 这正是「输出正文时有黑色元素瞬间出现」的根因。
         self._emerge_init(style.band or style.bg, self._emerge_area)
 

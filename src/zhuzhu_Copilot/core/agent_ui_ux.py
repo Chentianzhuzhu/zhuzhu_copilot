@@ -13,8 +13,8 @@
   3. 窗口圆角蒙版                        —— ``apply_rounded_window``
   4. 主题色读取                          —— ``_panel_theme_col``
 
-新的全局磨砂玻璃外观内核在 ``core/app_glass.py``（参数化 + 面板级缓存），
-与包机制无关，任何窗口都可以直接装配。
+背景图（壁纸）设置在 ``core/app_wallpaper.py``，与包机制无关，
+任何窗口都可以直接装配。
 """
 
 import os
@@ -221,8 +221,7 @@ def apply_rounded_window(widget, radius=18):
     """
     try:
         import ctypes
-        maximized = bool(getattr(widget, "_glass_maximized", False)) \
-            or widget.isMaximized() or widget.isFullScreen()
+        maximized = widget.isMaximized() or widget.isFullScreen()
         if maximized:
             # 清除窗口区域设置，恢复矩形（最大化/全屏铺满屏幕无需圆角）
             user32 = ctypes.windll.user32

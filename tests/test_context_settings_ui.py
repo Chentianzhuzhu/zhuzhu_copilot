@@ -257,20 +257,20 @@ def test_settings_1m_copy_uses_input_output_wording():
     assert "窗口由输入+输出共用" in src                          # 动态说明（_context_hint_text）
 
 
-# ---------- 2.9 外观·玻璃页：不得把右侧内容区顶出可视范围 ----------
+# ---------- 2.9 背景页：不得把右侧内容区顶出可视范围 ----------
 
-def _appearance_page_dlg():
-    """构建设置对话框并构建「外观·玻璃」页（真实流程由设置页栈持有引用）"""
+def _wallpaper_page_dlg():
+    """构建设置对话框并构建「背景」页（真实流程由设置页栈持有引用）"""
     dlg = ap._AgentSettingsDialog()
-    dlg._stash_page = dlg._build_appearance_page()
+    dlg._stash_page = dlg._build_wallpaper_page()
     return dlg
 
 
-def test_appearance_page_fits_dialog_width():
-    """回归：外观页里「液态流动动效（持续重织，较耗 CPU，默认关闭）」这类长文案
-    会把单行最小宽撑得比右侧内容区还宽 —— QScrollArea 不会小于最小宽，只能被
-    裁掉，表现为右侧 UI 被挤压遮挡。现在长说明一律走 tooltip + 可换行 QLabel。"""
-    dlg = _appearance_page_dlg()
+def test_wallpaper_page_fits_dialog_width():
+    """回归：设置页里过长的说明文案会把单行最小宽撑得比右侧内容区还宽 ——
+    QScrollArea 不会小于最小宽，只能被裁掉，表现为右侧 UI 被挤压遮挡。
+    现在长说明一律走可换行 QLabel。"""
+    dlg = _wallpaper_page_dlg()
     try:
         page = dlg._stash_page
         page.resize(dlg.width() - 200, 600)     # 模拟右侧内容区实际可用宽
@@ -286,84 +286,82 @@ def test_appearance_page_fits_dialog_width():
         dlg.deleteLater()
 
 
-def test_appearance_page_sliders_cover_all_spec_keys():
-    """五个可调维度必须各有一根滑杆，且由 PARAM_SPECS 派生（内核加维度自动多滑杆）"""
-    from zhuzhu_Copilot.core import app_glass
-    dlg = _appearance_page_dlg()
+def test_wallpaper_page_fit_combo_covers_all_fits():
+    """适配方式下拉必须覆盖内核全部档位（内核加档位自动多一项）"""
+    from zhuzhu_Copilot.core import app_wallpaper
+    dlg = _wallpaper_page_dlg()
     try:
-        keys = set(dlg._glass_sliders.keys())
-        assert keys == set(app_glass.param_keys()), f"滑杆与规格不一致：{keys}"
+        combo = dlg.wallpaper_fit
+        assert combo.count() == len(app_wallpaper.BG_FITS)
+        assert {combo.itemData(i) for i in range(combo.count())} == set(app_wallpaper.BG_FITS)
+        assert combo.currentData() == app_wallpaper.params().bg_fit
     finally:
         dlg.deleteLater()
 
 
 # ---------- 2.10 壁纸根绘制：必须真的接管 ----------
 
-def test_paint_glass_root_takes_over_when_wallpaper_set(tmp_path):
-    """回归：`_paint_glass_root` 曾把 QRectF 误从 QtGui 导入 → 每次都 ImportError
-    被吞掉 → 恒返回 False，壁纸从未画上屏（用户反馈"图片无法正常显示"）。"""
+def test_wallpaper_paint_takes_over_when_wallpaper_set(tmp_path):
+    """壁纸可用时 `app_wallpaper.paint` 必须真的画上屏并返回 True
+    （用户反馈"图片无法正常显示"的回归守卫）。"""
     from PyQt6.QtGui import QPainter
     from PyQt6.QtCore import Qt
-    from zhuzhu_Copilot.core import app_glass
+    from zhuzhu_Copilot.core import app_wallpaper
 
     img = tmp_path / "wall.png"
     pm = ap.QPixmap(64, 64)
     pm.fill(ap.QColor("#2F52D8"))
     assert pm.save(str(img), "PNG")
-    app_glass.set_fields(bg_image=str(img), persist=False)
-
-    host = ap.QWidget()
-    host.resize(120, 80)
-    skin = app_glass.install(host, app_glass.RADIUS_WINDOW)
-    assert skin.background_blurred() is not None, "壁纸应能加载成位图"
-
-    out = ap.QPixmap(120, 80)
-    out.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(out)
+    app_wallpaper.set_fields(bg_image=str(img), persist=False)
     try:
-        took_over = ap._paint_glass_root(host, painter, out.rect(),
-                                         app_glass.RADIUS_WINDOW)
-    finally:
+        assert app_wallpaper.active() is True, "壁纸应能加载成位图"
+
+        out = ap.QPixmap(120, 80)
+        out.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(out)
+        try:
+            took_over = app_wallpaper.paint(painter, out.rect(), "#101216")
+        finally:
+            painter.end()
+        assert took_over is True, "壁纸生效时根绘制必须被接管（否则壁纸永远不上屏）"
+
+        # 压暗纱必须真实画上去：接管后的画面不能等于"只有壁纸"
+        bare = ap.QPixmap(120, 80)
+        bare.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(bare)
+        painter.drawPixmap(bare.rect(), pm)
         painter.end()
-    assert took_over is True, "壁纸生效时根绘制必须被接管（否则壁纸永远不上屏）"
-
-    # 磨砂纱必须真实画上去：接管后的画面不能等于"只有壁纸"
-    bare = ap.QPixmap(120, 80)
-    bare.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(bare)
-    bg = skin.background_blurred()
-    painter.drawPixmap(bare.rect(), bg, bg.rect())
-    painter.end()
-    assert out.toImage() != bare.toImage(), "磨砂纱没有画上去，正文会压在照片上"
-    host.deleteLater()
+        assert out.toImage() != bare.toImage(), "压暗纱没有画上去，正文会压在照片上"
+    finally:
+        app_wallpaper.set_fields(bg_image="", persist=False)
 
 
-def test_glass_root_bg_transparent_only_when_usable(tmp_path):
-    """根底转透明的**前提**是壁纸真的可用；否则必须保持主题底色（避免透明黑块）。"""
-    from zhuzhu_Copilot.core import app_glass
+def test_wallpaper_active_only_when_usable(tmp_path):
+    """`active()` 的前提是壁纸真的能解码；坏图与未设置都必须回落主题底色。"""
+    from zhuzhu_Copilot.core import app_wallpaper
     img = tmp_path / "w.png"
     pm = ap.QPixmap(32, 32)
     pm.fill(ap.QColor("#2F52D8"))
     assert pm.save(str(img), "PNG")
-    app_glass.set_fields(bg_image=str(img), persist=False)
-    assert ap._glass_root_bg("#101216") == "transparent"
+    app_wallpaper.set_fields(bg_image=str(img), persist=False)
+    assert app_wallpaper.active() is True
 
     junk = tmp_path / "broken.png"
     junk.write_bytes(b"broken")
-    app_glass.set_fields(bg_image=str(junk), persist=False)
-    assert ap._glass_root_bg("#101216") == "#101216", "坏图必须回落主题底色"
+    app_wallpaper.set_fields(bg_image=str(junk), persist=False)
+    assert app_wallpaper.active() is False, "坏图必须视为无壁纸（否则界面变黑块）"
 
 
 # ---------- 2.11 真实面板 paintEvent：崩溃回归（用户反馈"它直接崩溃了"） ----------
 
 def _panel_with_wallpaper(tmp_path):
     """构造真实 AgentPanel 并设置壁纸（与用户实际配置同路径）"""
-    from zhuzhu_Copilot.core import app_glass
+    from zhuzhu_Copilot.core import app_wallpaper
     img = tmp_path / "wall.png"
     pm = ap.QPixmap(96, 64)
     pm.fill(ap.QColor("#2F52D8"))
     assert pm.save(str(img), "PNG")
-    app_glass.set_fields(bg_image=str(img), persist=False)
+    app_wallpaper.set_fields(bg_image=str(img), persist=False)
     panel = ap.AgentPanel(None)
     panel.resize(900, 640)
     return panel
@@ -376,31 +374,31 @@ def test_panel_paintevent_does_not_crash_with_wallpaper(tmp_path):
 
     用 grab() 走真实绘制周期，壁纸开启时必须不抛异常。
     """
-    from zhuzhu_Copilot.core import app_glass
+    from zhuzhu_Copilot.core import app_wallpaper
     panel = _panel_with_wallpaper(tmp_path)
     try:
         panel.show()
         for _ in range(4):
             ap.QApplication.instance().processEvents()
         # 壁纸生效时根绘制应被接管（这是"壁纸是否上屏"的直接断言）
-        assert ap._glass_wallpaper_active() is True
+        assert app_wallpaper.active() is True
         grabbed = panel.grab()          # 真实 paintEvent 周期
         assert not grabbed.isNull()
         assert grabbed.toImage() != ap.QPixmap(1, 1).toImage()
 
         # 再关掉壁纸：必须同样不崩，并回落主题底色
-        app_glass.set_fields(bg_image="", persist=False)
+        app_wallpaper.set_fields(bg_image="", persist=False)
         grabbed2 = panel.grab()
         assert not grabbed2.isNull()
     finally:
-        app_glass.set_fields(bg_image="", persist=False)
+        app_wallpaper.set_fields(bg_image="", persist=False)
         panel.close()
         panel.deleteLater()
 
 
 def test_panel_paintevent_wallpaper_actually_renders(tmp_path):
     """壁纸必须真的改变画面（否则"设置了图片却看不到"会复发）"""
-    from zhuzhu_Copilot.core import app_glass
+    from zhuzhu_Copilot.core import app_wallpaper
     panel = _panel_with_wallpaper(tmp_path)
     try:
         panel.show()
@@ -408,7 +406,7 @@ def test_panel_paintevent_wallpaper_actually_renders(tmp_path):
             ap.QApplication.instance().processEvents()
         with_wall = panel.grab().toImage()
 
-        app_glass.set_fields(bg_image="", persist=False)
+        app_wallpaper.set_fields(bg_image="", persist=False)
         panel.update()
         for _ in range(4):
             ap.QApplication.instance().processEvents()
@@ -416,17 +414,16 @@ def test_panel_paintevent_wallpaper_actually_renders(tmp_path):
 
         assert with_wall != without_wall, "设置壁纸后画面没有任何变化 → 壁纸没有上屏"
     finally:
-        app_glass.set_fields(bg_image="", persist=False)
+        app_wallpaper.set_fields(bg_image="", persist=False)
         panel.close()
         panel.deleteLater()
 
 
-# ---------- 2.12 设置页结构与黑角回归 ----------
+# ---------- 2.12 设置页结构回归 ----------
 
 def test_settings_dialog_has_layout_and_children():
-    """回归：构造函数里曾出现**两份** frameless 布局块，第二份的
-    `QVBoxLayout(self)` 装不上（已有布局）→ root 变成孤儿布局，
-    后续 root.addWidget 全部丢失 → 设置页只剩壁纸、内容全无。
+    """回归：构造函数里曾出现**两份**布局块，第二份的 `QVBoxLayout(self)` 装不上
+    （已有布局）→ root 变成孤儿布局，后续 root.addWidget 全部丢失 → 设置页内容全无。
 
     契约：对话框必须有 layout，nav/stack 必须真实可见。
     """
@@ -437,102 +434,4 @@ def test_settings_dialog_has_layout_and_children():
         assert dlg.nav.isVisibleTo(dlg), "左侧导航不可见"
         assert dlg.stack.isVisibleTo(dlg), "右侧内容栈不可见"
     finally:
-        dlg.deleteLater()
-
-
-def test_frameless_glass_window_corners_are_transparent(tmp_path):
-    """回归：无边框 + 圆角裁剪后，未绘制的四角若不声明半透明背景就是黑块
-    （用户反馈"黑色背景残留"）。"""
-    from PyQt6.QtCore import Qt
-    from zhuzhu_Copilot.core import app_glass
-    img = tmp_path / "w.png"
-    pm = ap.QPixmap(32, 32)
-    pm.fill(ap.QColor("#2F52D8"))
-    assert pm.save(str(img), "PNG")
-    app_glass.set_fields(bg_image=str(img), frameless=True, persist=False)
-    dlg = ap._AgentSettingsDialog()
-    try:
-        dlg.show()
-        for _ in range(4):
-            ap.QApplication.instance().processEvents()
-        grabbed = dlg.grab().toImage()
-        corners = [(1, 1), (grabbed.width() - 2, 1),
-                   (1, grabbed.height() - 2),
-                   (grabbed.width() - 2, grabbed.height() - 2)]
-        for x, y in corners:
-            c = grabbed.pixelColor(x, y)
-            # 右上角属于自绘标题栏子控件（不透明主题色，正常）；要杜绝的是黑块
-            is_black = (c.alpha() == 255 and c.red() < 12
-                        and c.green() < 12 and c.blue() < 12)
-            assert not is_black, f"四角 ({x},{y}) 是黑块：{c.name()}"
-    finally:
-        dlg.close()
-        dlg.deleteLater()
-
-
-# ---------- 2.13 根绘制圆角与浮窗壁纸（用户反馈"大部分背景元素无法显示"） ----------
-
-def test_glass_root_radius_never_raises_for_non_frameless():
-    """回归：`_glass_root_radius` 曾引用裸名 RADIUS_NONE（实际是 app_glass 的常量）
-    → 非无边框窗口一律 NameError → 壁纸绘制失败 → 根底透明 → 黑块。
-    这正是"文件树/Git/任务清单/设置页大部分背景无法显示"的根因。"""
-    from PyQt6.QtCore import Qt
-    from zhuzhu_Copilot.core import app_glass
-
-    host = ap.QWidget()          # 普通窗口：非无边框
-    assert ap._glass_root_radius(host, 99) == app_glass.RADIUS_NONE
-    host.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-    assert ap._glass_root_radius(host, 99) == 99   # 无边框 → 用调用方半径
-    host.deleteLater()
-
-
-def test_float_window_paints_wallpaper_when_active(tmp_path):
-    """回归：浮窗（文件树/Git/任务清单基类）非无边框路径此前从未被测试覆盖——
-    NameError 被 paintEvent 的 except 吞掉后落到"透明根底 + 无壁纸"的黑块外观。"""
-    from zhuzhu_Copilot.core import app_glass
-
-    img = tmp_path / "w.png"
-    pm = ap.QPixmap(64, 64)
-    pm.fill(ap.QColor("#2F52D8"))
-    assert pm.save(str(img), "PNG")
-    app_glass.set_fields(bg_image=str(img), persist=False)
-
-    fw = ap._RoundedFloatWindow()
-    fw.resize(320, 420)
-    try:
-        fw.show()
-        for _ in range(4):
-            ap.QApplication.instance().processEvents()
-        grabbed = fw.grab().toImage()
-        buckets = {(grabbed.pixelColor(x, y).red() // 24,
-                    grabbed.pixelColor(x, y).green() // 24,
-                    grabbed.pixelColor(x, y).blue() // 24)
-                   for y in range(0, grabbed.height(), 10)
-                   for x in range(0, grabbed.width(), 10)}
-        # 纯色壁纸至少应呈现为带蓝调的覆盖层；关键是不能是"默认灰板/黑块"
-        centers = [grabbed.pixelColor(grabbed.width() // 2, yy)
-                   for yy in (grabbed.height() // 3, grabbed.height() // 2)]
-        assert any(c.blue() > c.red() for c in centers), \
-            f"浮窗没有画上蓝色壁纸：{[c.name() for c in centers]}"
-        assert len(buckets) >= 1
-    finally:
-        fw.close()
-        fw.deleteLater()
-
-
-def test_settings_dialog_is_frameless_when_chrome_enabled(tmp_path):
-    """回归：设置对话框曾只加自绘标题栏而不设 FramelessWindowHint——
-    系统框仍在、圆角/壁纸分支语义全错。外壳开启（frameless=true）时必须无边框。"""
-    from PyQt6.QtCore import Qt
-    from zhuzhu_Copilot.core import app_glass
-
-    app_glass.set_fields(frameless=True, persist=False)
-    assert ap._glass_chrome() is True
-    dlg = ap._AgentSettingsDialog()
-    try:
-        assert bool(dlg.windowFlags() & Qt.WindowType.FramelessWindowHint), \
-            "外壳开启时设置对话框必须无边框（自绘标题栏才成立）"
-        assert dlg.layout() is not None
-    finally:
-        dlg.close()
         dlg.deleteLater()

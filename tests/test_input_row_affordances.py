@@ -101,8 +101,8 @@ def test_session_combo_uses_self_drawing_arrow(panel):
 def test_session_combo_arrow_is_actually_painted(panel):
     """自绘箭头必须真的落在像素上（离屏抓图）。
 
-    判据不能再用「深色像素」：背景已随「禁止深色背景附着」改为透明磨砂，
-    深色背景消失后亮度判会测不到箭头。改为「右侧下拉区相对左侧参照区有明显差异像素」。
+    判据不能再用「深色像素」：背景已改为浅色面板底，深色背景消失后亮度判会测不到箭头。
+    改为「右侧下拉区相对左侧参照区有明显差异像素」。
     """
     img = panel.session_combo.grab().toImage()
     x0, x1 = max(1, img.width() - 18), max(2, img.width() - 6)

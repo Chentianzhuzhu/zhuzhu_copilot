@@ -2,7 +2,7 @@
 
 验证三件事：
 - tokens 常量合法且圆角有序；
-- 按钮/下拉/对话框共用的模块级 QSS 生产者与液态玻璃下拉、主窗口全局 QSS
+- 按钮/下拉/对话框共用的模块级 QSS 生产者与主窗口全局 QSS
   一律消费 tokens 常量，不再散落 6px / 10px 等魔法值；
 - 顶栏降载：tokens/工作流/模型统一并入「上下文统计」浮层（原 status_btn 已删除），
   缺失控件（骨架）时同样安全兜底、不抛异常。
@@ -54,15 +54,13 @@ def test_module_qss_producers_consume_tokens():
 
 
 def test_combo_popup_consumes_tokens():
-    """下拉/弹出视图的圆角与玻璃填充都走 tokens 与外观内核
+    """下拉/弹出视图的圆角与半透明填充都走 tokens
 
-    旧实现自带 `_glass_combo_qss` / `_glass_combo_view_qss` 两个「硬编码浅色玻璃」
-    样式串，已随 UI/UX 包机制一并移除；现在下拉的玻璃观感由应用级 `_QCOMBO` 承载
-    （底色取自 app_glass.control_fill 的参数化半透明填充，几何取自 tokens）。
+    旧实现的硬编码浅色样式串已随 UI/UX 包机制一并移除；现在下拉由应用级 `_QCOMBO`
+    承载（几何取自 tokens）。
     """
     _reapply("dark")
     assert f"border-radius: {tokens.RADIUS_SM}px" in ap._QCOMBO
-    assert "rgba(" in ap._QCOMBO, "下拉底色应是参数化玻璃填充而不是不透明实色"
 
 
 def test_global_qss_consumes_tokens():

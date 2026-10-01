@@ -88,3 +88,27 @@ def _qt_widget_teardown():
         app.processEvents()
     app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
+
+
+@pytest.fixture(autouse=True)
+def _reset_wallpaper_between_tests():
+    """用例之间复位壁纸状态（函数级，收尾执行）。
+
+    背景（真实耦合）：设了可用壁纸后，主界面容器底色会整体改 transparent
+    （模块级色板常量被覆写，见 agent_panel._apply_surface_mode）。色板是**进程级**
+    的，一个用例设了壁纸没清干净，后续用例就会在透明底上断言实色而假失败 ——
+    这类失败与被测逻辑无关，排查成本极高。
+    """
+    yield
+    try:
+        from zhuzhu_Copilot.core import app_wallpaper
+        app_wallpaper.set_params(app_wallpaper.WallpaperParams(), persist=False)
+        app_wallpaper.invalidate()
+    except Exception:
+        return
+    try:
+        from zhuzhu_Copilot.ui import agent_panel as _ap
+        if _ap._SURFACE_TRANSPARENT:
+            _ap.refresh_surface_mode()
+    except Exception:
+        pass
