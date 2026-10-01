@@ -216,6 +216,8 @@ class ChatStyle:
     tag_plan_bg: str = ""   # PLANNING 阶段胶囊底
     tag_exec_bg: str = ""   # EXEC 阶段胶囊底（与 PLANNING 区分）
     tool_shell: str = ""    # 工具行图标壳底（深蓝微调）
+    # 落字浮现的遮罩色：**必须不透明**（要盖住旧字）且贴近真实背景；留空则回退 bg
+    band: str = ""
     out_fg: str = ""        # 工具输出字色（淡蓝）
     out_line: str = ""      # 工具输出区左侧竖线色
     font_ui: str = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -1632,8 +1634,8 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
 
         self._seg_id = None      # 已绑定的思考段标识（换段 → 折叠态回到自动判定）
         self._fix_vertical()
-        # 正文坐落于卡片底（fill=卡片底），浮现只覆盖思考正文标签那一块（头行图标/胶囊不动）
-        self._emerge_init(style.think_bg_of(), self._emerge_area)
+        # 正文坐落于卡片底（fill=浮现遮罩色），浮现只覆盖思考正文标签那一块（头行图标/胶囊不动）
+        self._emerge_init(style.band or style.think_bg_of(), self._emerge_area)
 
     # ---------- 折叠钩子（见 _FoldMixin） ----------
     def _fold_label(self) -> QLabel:
@@ -1831,7 +1833,7 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
         self._body_lay = bl
         self._fix_vertical()
         # 工具行无气泡（坐在面板底色上），浮现只覆盖文字容器，图标壳保持清晰
-        self._emerge_init(style.bg, self._emerge_area)
+        self._emerge_init(style.band or style.bg, self._emerge_area)
 
     # ---------- 折叠钩子（见 _FoldMixin） ----------
     def _fold_label(self) -> QLabel:
@@ -2037,7 +2039,7 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         root.addWidget(self._fold_holder)
         self._fix_vertical()
         # 命令块正文坐在 panel 底上；浮现覆盖「命令 + 输出」两段（标题栏三点不参与）
-        self._emerge_init(style.panel, self._emerge_area)
+        self._emerge_init(style.band or style.panel, self._emerge_area)
 
     # ---------- 折叠钩子（见 _FoldMixin） ----------
     def _fold_label(self) -> QLabel:

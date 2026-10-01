@@ -439,6 +439,18 @@ def _install_focus_glow_all(root) -> None:
 
 
 
+def _glass_band() -> str:
+    """「落字浮现」遮罩色：**必须不透明**（要盖住旧字），且贴近真实背景。
+
+    玻璃开启时用「壁纸平均色压在面板色上」的合成色；玻璃关闭时就是主题底色。
+    原先这些区块直接拿 `style.bg`（纯深色）当遮罩 —— 流式输出时每落一行字就闪一块
+    黑（用户反馈「agent 输出正文时有黑色元素瞬间出现」）。
+    """
+    if not _glass_on():
+        return BG
+    return app_glass.frost_surface_color(PANEL)
+
+
 def _gedge(alpha: float = 0.55) -> str:
     """玻璃受光边缘色：纯白低透明度；玻璃关闭时退回主题边框色。"""
     if not _glass_on():
@@ -4239,8 +4251,8 @@ class _AgentSettingsDialog(QDialog):
         self.skill_wf_combo.setStyleSheet(
             f"QComboBox {{ background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
-            f"QComboBox QAbstractItemView {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; selection-background-color: {_sheer(app_glass.SHEER_WASH_STRONG, self._PANEL2)}; }}")
+            f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {self._TEXT};"
+            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T}; }}")
         self.skill_wf_combo.currentIndexChanged.connect(self._on_skill_wf_changed)
         scope.addWidget(self.skill_wf_combo)
         scope.addStretch(1)
@@ -5869,7 +5881,7 @@ class _McpServerDialog(QDialog):
             f"border: 1px solid {_gedge()}; border-radius: 6px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_focus_edge()}; }}"
             f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; selection-background-color: {CARD}; }}")
+            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T}; }}")
         self.setStyleSheet(_mcp_qss)
         self._server = server or {}
         form = QFormLayout(self)
@@ -6059,11 +6071,11 @@ class _ProviderDialog(QDialog):
         _pvd_qss = (
             f"QDialog {{ background: {'transparent' if _glass_chrome() else self._BG}; }}"
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
-            f"QLineEdit, QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
+            f"QLineEdit, QComboBox {{ background: {_gfill(self._PANEL)}; color: {self._TEXT};"
+            f"border: 1px solid {_gedge()}; border-radius: 6px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_focus_edge()}; }}"
-            f"QComboBox QAbstractItemView {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; selection-background-color: {self._PANEL}; }}")
+            f"QComboBox QAbstractItemView {{ background: {_popup_glass()}; color: {self._TEXT};"
+            f"border: 1px solid {_gedge()}; selection-background-color: {HOVER_T}; }}")
         self.setStyleSheet(_pvd_qss)
         self._provider = provider or {}
         self._test_ok = False
@@ -14815,6 +14827,7 @@ class AgentPanel(QDialog):
             tag_plan_bg=_sheer(app_glass.SHEER_WASH, _mix_hex(BORDER_SOFT, AI_BG, 0.55)),
             tag_exec_bg=_sheer(app_glass.SHEER_WASH_STRONG, _mix_hex(ACCENT, AI_BG, 0.32)),
             tool_shell=_sheer(app_glass.SHEER_WASH, _mix_hex(BORDER_SOFT, HOVER, 0.22)),
+            band=_glass_band(),
             out_fg=LINK_COLOR,
             out_line=ACCENT,
         )
@@ -16248,6 +16261,10 @@ class AgentPanel(QDialog):
         # 静默不弹（安装后「新手指南无法弹出」的成因之一）。调度的定时器会在 showEvent
         # 返回、事件循环空闲时才触发，提前调度不影响其余初始化顺序。
         QTimer.singleShot(650, self._maybe_show_onboarding)
+        # 面板内所有下拉的弹出层都挂上玻璃：构造期那批之外，后续动态建的 combo 也要覆盖
+        # （漏掉的 combo 弹出来就是一块灰蓝实色 —— 用户反馈的「下拉仍有深色残留」）。
+        for _c in self.findChildren(QComboBox):
+            _harden_combo_popup(_c)
         # 无边框（自定义玻璃）模式：窗口显示时切圆角（最大化时自动清除）
         self._apply_window_round()
         # 强制任务栏缩略图（owned window 默认不显示，需手动加 WS_EX_APPWINDOW）
