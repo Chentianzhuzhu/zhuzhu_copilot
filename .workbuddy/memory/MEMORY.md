@@ -40,11 +40,10 @@
   （managed python 无 PyQt6，直接跑会 ModuleNotFoundError）。
 - 离屏测试用 `QT_QPA_PLATFORM=offscreen`；offscreen 下 CJK 渲染成方块，
   因此**几何断言优于截图肉眼判断**。
-- **`agent_panel.py` 是 CRLF 行尾**（`tokens.py` 等其它文件是 LF），且**碰它的每个
-  环节都会把行尾规范化成 LF**：Edit/Write 工具会，裸 Python 写入也会被外部进程在后
-  续改回 LF（写完立刻读是 CRLF，稍后再读又变 LF）。对策：改动全部做完后**统一转换
-  一次并立即 `git add`**，再用 `git ls-files --eol` 复核（2026-10-01 二次踩坑：
-  裸转换 + 稍后检查 → `w/lf`，diff 4.2 万行）。
+- **仓库内 Python 文件一律 LF**（2026-10-01 起）。`agent_panel.py` 原本是仓库里唯一的
+  CRLF 文件，而工作区侧**每次写入都会被规范化成 LF**（Edit/Write 工具会，裸 Python
+  写入也会被外部进程随即改回），导致任何一次编辑都变成 4.2 万行整文件 diff（连续踩坑
+  两轮）。已由提交 `20deddf` 统一为 LF —— **不要再按 CRLF 写这个仓库的文件**。
 - `AgentPanel.__new__` 轻代理可跑渲染链路，但**不能 `show()`**：面板的
   `resizeEvent` 等回调会访问未初始化属性 → PyQt6 未捕获异常 → 进程 abort
   （表现为"无输出 + 退出码 127"）。集成测试用真 `QDialog` 基类初始化 +
