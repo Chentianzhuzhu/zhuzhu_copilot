@@ -266,17 +266,102 @@ def _frost_popup_view(view) -> None:
         pass      # 平台不支持时静默退回不透明，不影响功能
 
 
-# 弹出层玻璃底的不透明度：真半透明（配合 _frost_popup_view 才画得出来）。
-# 弹出层是浮在主界面之上的，半透明后能透出下方内容 —— 这才是「磨砂玻璃」，
-# 而不是把壁纸平均色压在深色底上混成的实色（那样看起来仍是深色块）。
-_POPUP_GLASS_ALPHA = 0.78
+# 弹出层玻璃的圆角（与 QSS 的 border-radius 保持一致）
+_POPUP_RADIUS = 12
+# 弹出层的磨砂纱强度：比主窗口薄（弹出层正文少、需要更亮的玻璃观感），
+# 主窗口那套地板会把弹出层压成一块偏暗的板子。
+_POPUP_VEIL_SCALE = 0.7
+
+
+# 弹出层玻璃底色：**比面板亮一档的灰蓝**。
+# 弹出层是独立顶层窗口，"半透明透出后面"看到的只是主窗口的深色内容，叠出来仍是
+# 一块深色板（用户反馈"下拉菜单仍然是深色背景"）。所以底本身就要用亮一档的玻璃色，
+# 才有磨砂玻璃的观感；配合圆角 + 浅色描边与主界面的玻璃同一调性。
+_POPUP_GLASS_BASE = "#3A4050"
+_POPUP_GLASS_ALPHA = 0.88
 
 
 def _popup_glass() -> str:
     """下拉 / 菜单弹出层的玻璃底（玻璃关闭时退回不透明面板色）。"""
     if not _glass_on():
         return PANEL
-    return app_glass.rgba(PANEL, _POPUP_GLASS_ALPHA)
+    return app_glass.rgba(_POPUP_GLASS_BASE, _POPUP_GLASS_ALPHA)
+
+
+def _frost_popup_widget(widget) -> None:
+    """把一个弹出层 widget 做成**磨砂玻璃**：半透明窗口 + 自绘「模糊壁纸 + 磨砂纱」。
+
+    弹出层浮在主窗口之上，只设半透明的话透出的是主窗口的深色内容，叠出来仍是一块
+    深色；所以这里复刻主窗口那套绘制：按弹出层屏幕位置取壁纸那块、模糊后铺上，再压
+    一层磨砂纱（纱比主窗口薄，见 _POPUP_VEIL_SCALE）。
+    """
+    if widget is None:
+        return
+    try:
+        widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    except Exception:
+        return      # 平台不支持时静默退回不透明，不影响功能
+    if getattr(widget, "_frost_paint_filter", None) is not None:
+        return
+
+    class _FrostPaint(QObject):
+        """在弹出层自己的绘制之前铺一层玻璃（过滤器先于 Qt 的 paintEvent 执行）。"""
+
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Paint:
+                try:
+                    painter = QPainter(obj)
+                    painted = _paint_glass_root(obj, painter, obj.rect(), _POPUP_RADIUS,
+                                                PANEL, veil_scale=_POPUP_VEIL_SCALE)
+                    if not painted:
+                        # 没壁纸时不能留全透明（会糊成一片）→ 圆角不透明底兜底
+                        _draw_round_rect(obj, painter, PANEL)
+                    painter.end()
+                except Exception:
+                    pass
+            return False
+
+    filt = _FrostPaint(widget)
+    widget.installEventFilter(filt)
+    widget._frost_paint_filter = filt      # 保活：filter 被 GC 会导致弹出即崩
+
+
+def _frost_popup_view(view) -> None:
+    """兼容入口：半透明设在顶层窗口上，玻璃**只挂在真正承载绘制的 viewport 上**。
+
+    两个坑：
+    1. 属性只能设在窗口/容器上 —— 若对 view（QListView）自身调 `setWindowFlags`，
+       会把它从 Qt 的 popup 容器里"拆"成独立窗口，破坏 popup 结构（弹出一块没有
+       内容的纯深色矩形）。
+    2. `QListView` 继承 `QAbstractScrollArea`：承载内容绘制的是它的 **viewport**，
+       view 自身只画边框/滚动条 —— 玻璃挂在 view 上是完全无效的（这就是上一版
+       「代码跑了但下拉还是深色」的原因）。
+    """
+    if view is None:
+        return
+    try:
+        win = view.window()
+    except Exception:
+        win = None
+    if win is not None and win is not view:
+        try:
+            win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        except Exception:
+            pass
+    try:
+        vp = view.viewport()
+    except Exception:
+        vp = None
+    _frost_popup_widget(vp if vp is not None else view)
+
+
+def _draw_round_rect(widget, painter, color: str) -> None:
+    """按控件矩形画一个圆角实色块（无壁纸时弹出层的兜底底）。"""
+    from PyQt6.QtCore import QRectF
+    from PyQt6.QtGui import QPainterPath
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(widget.rect()), _POPUP_RADIUS, _POPUP_RADIUS)
+    painter.fillPath(path, QColor(color))
 
 
 def _harden_combo_popup(combo) -> None:
@@ -292,14 +377,28 @@ def _harden_combo_popup(combo) -> None:
         return
 
     class _PopupFilter(QObject):
+        """弹出瞬间补设玻璃。
+
+        Qt 会重设视图的窗口标志，且不同平台 Show 事件可能派给视图、其父容器或顶层
+        窗口 —— 所以三处都试一遍（`_frost_popup_widget` 幂等，重复无副作用）。
+        """
+
         def eventFilter(self, obj, ev):
             if ev.type() == QEvent.Type.Show:
-                QTimer.singleShot(0, lambda: _frost_popup_view(obj))
+                def _apply():
+                    # 只玻璃化绘制目标（viewport）+ 顶层窗口的半透明属性；
+                    # 容器与 viewport 同时画会叠成双层磨砂纱，反而更暗。
+                    _frost_popup_view(obj)
+                QTimer.singleShot(0, _apply)
             return False
 
     filt = _PopupFilter(view)
     view.installEventFilter(filt)
     combo._glass_popup_filter = filt     # 保活：filter 被 GC 会导致弹出即崩
+
+    # 立即装一次：多数平台此时 view 已经挂在弹出容器上；部分平台 Show 事件不派给
+    # view（只派给容器），只靠上面那个过滤器会漏掉。幂等，重复无副作用。
+    _frost_popup_view(view)
 
 
 def _install_focus_glow(widget) -> None:
@@ -426,11 +525,13 @@ def _glass_root_radius(widget, default: int) -> int:
     return default if frameless else app_glass.RADIUS_NONE
 
 
-def _paint_glass_root(widget, painter, rect, radius: int, fallback: str = None) -> bool:
+def _paint_glass_root(widget, painter, rect, radius: int, fallback: str = None,
+                      veil_scale: float = 1.0) -> bool:
     """把窗口根背景交给玻璃内核绘制（背景图按 blur 模糊 + 圆角裁剪）。
 
     返回 True 表示已接管（调用方直接返回，不再走原主题底色）；
     False 表示维持原绘制路径。模糊位图由内核按参数签名缓存，逐帧零开销。
+    veil_scale 可压低磨砂纱强度（弹出层正文少，不需要主窗口那么厚的纱）。
     """
     if not _glass_wallpaper_active():
         return False
@@ -450,7 +551,7 @@ def _paint_glass_root(widget, painter, rect, radius: int, fallback: str = None) 
     painter.setClipPath(path)
     painter.drawPixmap(rect, bg, bg.rect())
     # 磨砂纱：壁纸之上必须压一层纱，正文才可读（用户反馈"设置项被遮挡"）
-    painter.fillRect(rect, app_glass.root_veil_color(fallback or BG))
+    painter.fillRect(rect, app_glass.root_veil_color(fallback or BG, veil_scale))
     painter.restore()
     return True
 
