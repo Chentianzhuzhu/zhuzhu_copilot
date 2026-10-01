@@ -654,3 +654,111 @@ def test_fold_estimation_is_monotonic_in_content_length():
     brs = cb._fold_est_lines("<br/>" * 20 + "x", 100000, fm)
     assert brs >= 20, brs
 
+
+# ---------------------------------------------------------------------------
+# 回合内区块**不得互相重叠**（用户反馈：思考 / 工具输出 / 命令输出 / 正文叠在一起）
+# ---------------------------------------------------------------------------
+# 根因：块高只钉了**下界**（setMinimumHeight），而 QVBoxLayout 会在
+# 「最小值 < 推荐值 < 最大值」之间做弹性分配，槽位与块高对不上 —— 长回合里后一块
+# 就骑到前一块身上。修法：块改用**固定高度**（min == max == 本块应有高度），并在
+# 回合高度上以「内部布局的真实最小需求」兜底。
+
+def _mixed_turn_blocks(reps: int = 4) -> list:
+    out_html = "".join(f"第 {i} 行：这是一段较长的输出内容。<br/>" for i in range(30))
+    blocks = []
+    for rep in range(reps):
+        blocks.append((cb.KIND_THINK, {"tag": "EXEC", "body": f"<div>{LONG_THINK}</div>",
+                                       "sid": rep}, (f"th{rep}", 0)))
+        blocks.append((cb.KIND_TOOL, {"name": "scan_drives", "meta": "target=D:/",
+                                      "params": {}, "out": out_html}, (f"tl{rep}", 0)))
+        blocks.append((cb.KIND_CMD, {"label": "run_command", "cmd": "dir /s",
+                                     "out": out_html}, (f"cmd{rep}", 0)))
+    blocks.append((cb.KIND_STREAM, {"html": "<div>最终结论：一切正常。</div>"}, ("body", 0)))
+    return blocks
+
+
+def _expand_fully(turn):
+    turn._toggle.click()
+    app.processEvents()
+    for _ in range(60):
+        if getattr(turn, "_reveal_rest", None):
+            turn._reveal_page()
+        app.processEvents()
+        if not getattr(turn, "_reveal_pending", None) and not getattr(turn, "_reveal_rest", None):
+            break
+    turn.relayout_heights(turn.width())
+    app.processEvents()
+
+
+def _assert_no_overlap(turn):
+    prev_bottom, prev_kind = None, None
+    for ref in turn._items:
+        w = ref.widget
+        if w.isHidden():
+            continue
+        g = w.geometry()
+        assert prev_bottom is None or g.top() >= prev_bottom - 1, (
+            f"{ref.kind} 与上一块 {prev_kind} 重叠：top={g.top()} < 上一块 bottom={prev_bottom}")
+        prev_bottom, prev_kind = g.bottom(), ref.kind
+
+
+def test_expanded_turn_blocks_do_not_overlap():
+    """展开执行过程后，思考/工具/命令/正文四类块的几何必须严格不重叠。"""
+    host = Host(760, 4000)
+    turn = _plain_turn(host)
+    host.show()
+    turn.render(_mixed_turn_blocks(), live=False, done=True)
+    app.processEvents()
+
+    _expand_fully(turn)
+    _assert_no_overlap(turn)
+
+    # 折回到收起态再展开一次：状态来回切换后同样不得错位
+    turn._toggle.click()
+    app.processEvents()
+    _expand_fully(turn)
+    _assert_no_overlap(turn)
+
+
+def test_turn_height_covers_inner_layout_minimum():
+    """回合高度必须 ≥ 内部布局的真实最小需求。
+
+    只按逐块 heightForWidth 累加会少算（块内布局的 minimumSize 会被折叠态标签的
+    minimumHeight 抬高，「继续显示」按钮也容易被漏掉）—— 少算时内容溢出容器，
+    滚动区里下一个气泡会骑到这个回合上。
+    """
+    host = Host(760, 4000)
+    turn = _plain_turn(host)
+    host.show()
+    turn.render(_mixed_turn_blocks(), live=False, done=True)
+    app.processEvents()
+
+    _expand_fully(turn)                       # 展开态（含「继续显示」）
+    need = turn._outer_pad() + turn._box_lay.minimumSize().height()
+    assert turn.minimumHeight() >= need - 2, \
+        f"展开态回合高度 {turn.minimumHeight()} < 布局需求 {need}"
+
+    turn._toggle.click()                      # 收起态
+    app.processEvents()
+    turn.relayout_heights(turn.width())
+    app.processEvents()
+    need = turn._outer_pad() + turn._box_lay.minimumSize().height()
+    assert turn.minimumHeight() >= need - 2, \
+        f"收起态回合高度 {turn.minimumHeight()} < 布局需求 {need}"
+
+
+def test_blocks_use_fixed_height_not_only_minimum():
+    """块高必须同时钉住上下界（固定高度），否则布局会弹性分配、槽位与块高对不上。"""
+    host = Host(760, 4000)
+    turn = _plain_turn(host)
+    host.show()
+    turn.render(_mixed_turn_blocks(1), live=False, done=True)
+    app.processEvents()
+    for ref in turn._items:
+        w = ref.widget
+        if w.isHidden():
+            continue
+        assert w.minimumHeight() == w.maximumHeight(), (
+            f"{ref.kind} 未钉成固定高度：min={w.minimumHeight()} max={w.maximumHeight()}")
+
+

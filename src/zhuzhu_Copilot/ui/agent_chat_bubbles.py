@@ -462,6 +462,12 @@ _IDLE_SLICE_MS = 6.0
 _PROC_PAGE = 12          # 一页显示的过程块数
 _REVEAL_CHUNK = 2        # 页内每次补显的块数（首次同步显示，其余进空闲切片）
 
+# 批量切换过程块可见性时是否暂停本回合布局。
+# 收益：单个 setVisible 会让父布局立即重排一次（隔离实测 13~46 ms/次，随回合内子项数
+# 增长），暂停后一批只付一次重排。正确性由「块用固定高度钉死」（见 `_measure_block`）
+# 保证：槽位与块高恒等，禁用期间也不会留下错位。
+_PAUSE_LAYOUT_ON_REVEAL = True
+
 
 class _IdleSpreader(QObject):
     """空闲切片执行器：把推迟的收尾动作分摊到事件循环空闲里逐个执行。
@@ -2340,6 +2346,8 @@ class ChatTurn(QWidget):
         self._inset = RIBBON_H // 2     # 顶部虚线相对容器顶部的偏移（徽章骑线）
         self._lay_w = -1                # 上次重算高度所用的宽度（去重用）
         self._hfw_cache: Optional[tuple] = None   # (width, height) 回合级高度缓存
+        self._lay_min_h = 0              # 内部布局的最小高度（回合高度兜底）
+        self._lay_min_dirty = False      # 可见性变化后是否需要重算上面的兜底值
         self._layer_dirty = True        # 布局参数（边距/开关/系统行）变了 → 下次必须全量重排
         self._live_applied: Optional[bool] = None  # 已下发的流式开关（未变则不重复遍历）
         self._reveal_pending: list = []  # 本页待补显的过程块（分片显示，见 _set_proc_visible）
@@ -2514,8 +2522,11 @@ class ChatTurn(QWidget):
                 self._proc_dirty = []
                 self.relayout_heights(monotonic=self._live)
             else:
+                pd = self._take_proc_dirty()
+                if pd:
+                    self._lay_min_dirty = True    # 可见性变了 → 兜底值要重算
                 self.relayout_heights(monotonic=self._live,
-                                      dirty=(dirty or []) + self._take_proc_dirty())
+                                      dirty=(dirty or []) + pd)
         finally:
             self.setUpdatesEnabled(True)
             self.update()
@@ -2588,8 +2599,9 @@ class ChatTurn(QWidget):
         if not refs:
             return False
         lay = self._box_lay
-        lay.setEnabled(False)
         dirty: list = []
+        if _PAUSE_LAYOUT_ON_REVEAL:      # 见常量说明
+            lay.setEnabled(False)
         try:
             for ref in refs:
                 if visible:
@@ -2609,7 +2621,8 @@ class ChatTurn(QWidget):
                                           QSizePolicy.Policy.Fixed)
                     dirty.append(ref)
         finally:
-            lay.setEnabled(True)
+            if _PAUSE_LAYOUT_ON_REVEAL:
+                lay.setEnabled(True)
         if dirty:
             # **不整表作废高度缓存**：把状态变过的块记入增量清单，让随后的重排只重测
             # 这些块。整表作废会把上百个未变的块重测一遍 —— 展开长回合时正是这类
@@ -2936,9 +2949,26 @@ class ChatTurn(QWidget):
                 total += h + ref.spacer.sizeHint().height()
             if self._settled:   # 开关常驻（按 _settled 判定，与 heightForWidth 同口径）
                 total += self._toggle.sizeHint().height()
+            if not self._more.isHidden():   # 「继续显示」也是布局里的一项，漏算会让回合矮一截
+                total += self._more.sizeHint().height()
             if not self._sys.isHidden():
                 total += _widget_hfw(self._sys, inner)
+        # 兜底用的「布局最小需求」：全量路径、或可见性刚变过（`_lay_min_dirty`）时重算。
+        # `minimumSize()` 会遍历全部子项，流式每 tick 都无条件调会把单帧成本顶上去
+        # （见 test_stream_emerge_cost），故只在需要时算。
+        if (not incremental) or self._lay_min_dirty:
+            # 用 `_box.sizeHint()` 而不是 `_box_lay.minimumSize()`：后者被 QLayout 内部
+            # 缓存（只在 invalidate 后重算），刚钉完块高时读到的往往是上一轮的值。
+            self._lay_min_h = self._box.sizeHint().height()
+            self._lay_min_dirty = False
         self._layer_dirty = False
+        # 兜底：回合高度必须 ≥ 内部布局的**真实**最小需求。
+        # 逐块计账用的是各块的 `heightForWidth`（块自己算），而块内布局的 `minimumSize`
+        # 会被**折叠态标签的 minimumHeight**（已钉到折叠上限）抬高 —— 少算时 QVBoxLayout
+        # 只能让块溢出容器，视觉上就是「思考气泡 / 工具调用输出 / 命令输出 / 正文互相
+        # 重叠」。这里直接以布局自己算出的最小尺寸为准：任何漏项（包括将来新增的行内
+        # 元素）都不会再让回合变矮。
+        total = max(total, self._outer_pad() + self._lay_min_h)
         # 只在**同一宽度**下沿用「只增不减」：宽度一变（滚动条出现/消失、面板缩放），
         # 旧高度是另一个换行宽度的结果，再拿来当上界就会把它永远钉住 ——
         # 长任务里滚动条随内容增长而出现时尤其明显，表现为正文上下不断有大片空白。
@@ -2984,14 +3014,28 @@ class ChatTurn(QWidget):
         if callable(pin):
             pin(inner)          # 先固定内部标签高度，再据此固定块高度
         h = _widget_hfw(wdg, inner)
+        # 槽位不得小于块自己算出的最小尺寸：块内布局的 `minimumSize` 会被**折叠态标签的
+        # minimumHeight**（已钉到折叠上限）抬高，可能大于 `heightForWidth` 的自算值。
+        # 只按 heightForWidth 给槽位时，`setMinimumHeight` 会把块就地撑高而槽位不变 ——
+        # 紧随其后的块便骑到它身上（用户看到的「块互相重叠」）。
+        try:
+            h = max(h, int(wdg.minimumSizeHint().height()))
+        except Exception:
+            pass
         # 只在**同一宽度**下沿用「只增不减」：宽度变了，旧最小高度是另一个换行宽度的
         # 结果，再拿来当上界就会把它永远钉住（正文上下持续留大片空白）。
         # 真实收缩（掉超过 HEIGHT_SHRINK_TOL）同样放行，只有小幅抖动才继续按只增不减处理。
         prev_min = wdg.minimumHeight()
         if monotonic and prev_pin_w == inner and prev_min - h <= HEIGHT_SHRINK_TOL:
             h = max(h, prev_min)
-        if _need_resize(wdg.minimumHeight(), h):
-            wdg.setMinimumHeight(h)
+        # 钉**固定高度**（而不是最小高度）：QVBoxLayout 对「最小值 < 推荐值 < 最大值」的
+        # 子项会按可用空间做弹性分配，槽位与实际高度可能对不上 —— 长回合里就表现为块
+        # 互相重叠（思考气泡 / 工具输出 / 命令输出 / 正文叠在一起）。把最小与最大都钉成
+        # 本块应有高度后，布局只能按该值精确分配。每次重排都会重钉，折叠态/内容变化仍
+        # 即时生效。
+        if (abs(wdg.minimumHeight() - h) >= _H_DELTA_EPS
+                or abs(wdg.maximumHeight() - h) >= _H_DELTA_EPS):
+            wdg.setFixedHeight(h)
         return h
 
     def _apply_live(self):
@@ -3109,8 +3153,15 @@ class ChatTurn(QWidget):
             h += _widget_hfw(ref.widget, inner) + ref.spacer.sizeHint().height()
         if self._settled:      # 开关一旦出现就常驻（不按 isHidden 判定，理由同上）
             h += self._toggle.sizeHint().height()
+        if not self._more.isHidden():   # 同 `relayout_heights`：「继续显示」也是一项
+            h += self._more.sizeHint().height()
         if not self._sys.isHidden():
             h += _widget_hfw(self._sys, inner)
+        # 与 `relayout_heights` 同一条兜底，且**必须同口径**（都用 `_lay_min_h`）：
+        # 若这里改用实时 `_box.sizeHint()`、那边用缓存值，二者会在流式期间短暂不一致，
+        # 包裹层（_TurnWrap）按本方法自钉高度就会比回合高出几十像素（表现为「多出量漂移」）。
+        if self._lay_min_h:
+            h = max(h, self._outer_pad() + self._lay_min_h)
         self._hfw_cache = (w, h)
         return h
 
