@@ -259,7 +259,7 @@ def _glass_root_radius(widget, default: int) -> int:
         frameless = bool(widget.windowFlags() & Qt.WindowType.FramelessWindowHint)
     except Exception:
         frameless = False
-    return default if frameless else RADIUS_NONE
+    return default if frameless else app_glass.RADIUS_NONE
 
 
 def _paint_glass_root(widget, painter, rect, radius: int, fallback: str = None) -> bool:
@@ -2424,6 +2424,10 @@ class _AgentSettingsDialog(QDialog):
         # 系统标题栏模式：root 直接作为对话框布局。两种模式 root 都必须装上。
         _glass = _glass_chrome()
         if _glass:
+            # 无边框外壳：换自绘标题栏（_frameless_titlebar 提供拖动/关闭）。
+            # 必须显式设置 FramelessWindowHint——只加自绘标题栏不换标志，系统框还在，
+            # 且非无边框窗口在 _glass_root_radius 里会走"不切圆角"分支。
+            self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
             # 无边框 + 圆角裁剪：四角不再绘制，必须声明半透明背景，
             # 否则未绘制的四角会显示为黑块（用户反馈"黑色背景残留"）。
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)

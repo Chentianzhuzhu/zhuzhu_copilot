@@ -468,3 +468,71 @@ def test_frameless_glass_window_corners_are_transparent(tmp_path):
     finally:
         dlg.close()
         dlg.deleteLater()
+
+
+# ---------- 2.13 根绘制圆角与浮窗壁纸（用户反馈"大部分背景元素无法显示"） ----------
+
+def test_glass_root_radius_never_raises_for_non_frameless():
+    """回归：`_glass_root_radius` 曾引用裸名 RADIUS_NONE（实际是 app_glass 的常量）
+    → 非无边框窗口一律 NameError → 壁纸绘制失败 → 根底透明 → 黑块。
+    这正是"文件树/Git/任务清单/设置页大部分背景无法显示"的根因。"""
+    from PyQt6.QtCore import Qt
+    from zhuzhu_Copilot.core import app_glass
+
+    host = ap.QWidget()          # 普通窗口：非无边框
+    assert ap._glass_root_radius(host, 99) == app_glass.RADIUS_NONE
+    host.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+    assert ap._glass_root_radius(host, 99) == 99   # 无边框 → 用调用方半径
+    host.deleteLater()
+
+
+def test_float_window_paints_wallpaper_when_active(tmp_path):
+    """回归：浮窗（文件树/Git/任务清单基类）非无边框路径此前从未被测试覆盖——
+    NameError 被 paintEvent 的 except 吞掉后落到"透明根底 + 无壁纸"的黑块外观。"""
+    from zhuzhu_Copilot.core import app_glass
+
+    img = tmp_path / "w.png"
+    pm = ap.QPixmap(64, 64)
+    pm.fill(ap.QColor("#2F52D8"))
+    assert pm.save(str(img), "PNG")
+    app_glass.set_fields(bg_image=str(img), persist=False)
+
+    fw = ap._RoundedFloatWindow()
+    fw.resize(320, 420)
+    try:
+        fw.show()
+        for _ in range(4):
+            ap.QApplication.instance().processEvents()
+        grabbed = fw.grab().toImage()
+        buckets = {(grabbed.pixelColor(x, y).red() // 24,
+                    grabbed.pixelColor(x, y).green() // 24,
+                    grabbed.pixelColor(x, y).blue() // 24)
+                   for y in range(0, grabbed.height(), 10)
+                   for x in range(0, grabbed.width(), 10)}
+        # 纯色壁纸至少应呈现为带蓝调的覆盖层；关键是不能是"默认灰板/黑块"
+        centers = [grabbed.pixelColor(grabbed.width() // 2, yy)
+                   for yy in (grabbed.height() // 3, grabbed.height() // 2)]
+        assert any(c.blue() > c.red() for c in centers), \
+            f"浮窗没有画上蓝色壁纸：{[c.name() for c in centers]}"
+        assert len(buckets) >= 1
+    finally:
+        fw.close()
+        fw.deleteLater()
+
+
+def test_settings_dialog_is_frameless_when_chrome_enabled(tmp_path):
+    """回归：设置对话框曾只加自绘标题栏而不设 FramelessWindowHint——
+    系统框仍在、圆角/壁纸分支语义全错。外壳开启（frameless=true）时必须无边框。"""
+    from PyQt6.QtCore import Qt
+    from zhuzhu_Copilot.core import app_glass
+
+    app_glass.set_fields(frameless=True, persist=False)
+    assert ap._glass_chrome() is True
+    dlg = ap._AgentSettingsDialog()
+    try:
+        assert bool(dlg.windowFlags() & Qt.WindowType.FramelessWindowHint), \
+            "外壳开启时设置对话框必须无边框（自绘标题栏才成立）"
+        assert dlg.layout() is not None
+    finally:
+        dlg.close()
+        dlg.deleteLater()
