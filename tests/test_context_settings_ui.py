@@ -352,3 +352,70 @@ def test_glass_root_bg_transparent_only_when_usable(tmp_path):
     junk.write_bytes(b"broken")
     app_glass.set_fields(bg_image=str(junk), persist=False)
     assert ap._glass_root_bg("#101216") == "#101216", "坏图必须回落主题底色"
+
+
+# ---------- 2.11 真实面板 paintEvent：崩溃回归（用户反馈"它直接崩溃了"） ----------
+
+def _panel_with_wallpaper(tmp_path):
+    """构造真实 AgentPanel 并设置壁纸（与用户实际配置同路径）"""
+    from zhuzhu_Copilot.core import app_glass
+    img = tmp_path / "wall.png"
+    pm = ap.QPixmap(96, 64)
+    pm.fill(ap.QColor("#2F52D8"))
+    assert pm.save(str(img), "PNG")
+    app_glass.set_fields(bg_image=str(img), persist=False)
+    panel = ap.AgentPanel(None)
+    panel.resize(900, 640)
+    return panel
+
+
+def test_panel_paintevent_does_not_crash_with_wallpaper(tmp_path):
+    """回归：paintEvent 里函数内 `from PyQt6.QtGui import QPainter` 会把 QPainter
+    变成函数局部名，顶部 `painter = QPainter(self)` 在绑定前执行 → UnboundLocalError
+    → 界面直接崩溃（crash_20261001_165356.log 实证）。
+
+    用 grab() 走真实绘制周期，壁纸开启时必须不抛异常。
+    """
+    from zhuzhu_Copilot.core import app_glass
+    panel = _panel_with_wallpaper(tmp_path)
+    try:
+        panel.show()
+        for _ in range(4):
+            ap.QApplication.instance().processEvents()
+        # 壁纸生效时根绘制应被接管（这是"壁纸是否上屏"的直接断言）
+        assert ap._glass_wallpaper_active() is True
+        grabbed = panel.grab()          # 真实 paintEvent 周期
+        assert not grabbed.isNull()
+        assert grabbed.toImage() != ap.QPixmap(1, 1).toImage()
+
+        # 再关掉壁纸：必须同样不崩，并回落主题底色
+        app_glass.set_fields(bg_image="", persist=False)
+        grabbed2 = panel.grab()
+        assert not grabbed2.isNull()
+    finally:
+        app_glass.set_fields(bg_image="", persist=False)
+        panel.close()
+        panel.deleteLater()
+
+
+def test_panel_paintevent_wallpaper_actually_renders(tmp_path):
+    """壁纸必须真的改变画面（否则"设置了图片却看不到"会复发）"""
+    from zhuzhu_Copilot.core import app_glass
+    panel = _panel_with_wallpaper(tmp_path)
+    try:
+        panel.show()
+        for _ in range(4):
+            ap.QApplication.instance().processEvents()
+        with_wall = panel.grab().toImage()
+
+        app_glass.set_fields(bg_image="", persist=False)
+        panel.update()
+        for _ in range(4):
+            ap.QApplication.instance().processEvents()
+        without_wall = panel.grab().toImage()
+
+        assert with_wall != without_wall, "设置壁纸后画面没有任何变化 → 壁纸没有上屏"
+    finally:
+        app_glass.set_fields(bg_image="", persist=False)
+        panel.close()
+        panel.deleteLater()

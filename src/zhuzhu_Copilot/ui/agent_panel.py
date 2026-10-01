@@ -14368,25 +14368,38 @@ class AgentPanel(QDialog):
         """
         # 壁纸分支**不受无边框影响**：无边框只决定圆角与标题栏，不该决定壁纸
         # 是否上屏（此前被挡住 → 开了无边框的用户永远看不到背景图）。
-        painter = QPainter(self)
-        glass_done = False
+        #
+        # 【致命陷阱，勿回退】本函数下方的无边框分支曾有
+        #   from PyQt6.QtGui import QPainter, ...
+        # 「函数内 import」会把 QPainter 变成**整个函数的局部名**，于是上面的
+        # `painter = QPainter(self)` 在局部名绑定前执行 → UnboundLocalError
+        # → paintEvent 抛异常 → 界面直接崩溃（用户反馈"它直接崩溃了"）。
+        # 这些名字模块级已导入，本函数内**严禁再 import**。
         try:
-            glass_done = _paint_glass_root(self, painter, self.rect(),
-                                           app_glass.RADIUS_WINDOW)
-            if glass_done and self._panel_frameless():
-                self._paint_frameless_edge(painter)
+            painter = QPainter(self)
         except Exception:
-            glass_done = False
-        finally:
-            painter.end()
+            painter = None            # 无法建立画笔（销毁中等异常路径）：走系统绘制
+        glass_done = False
+        if painter is not None:
+            try:
+                glass_done = _paint_glass_root(self, painter, self.rect(),
+                                               app_glass.RADIUS_WINDOW)
+                if glass_done and self._panel_frameless():
+                    self._paint_frameless_edge(painter)
+            except Exception:
+                glass_done = False
+            finally:
+                try:
+                    painter.end()
+                except Exception:
+                    pass
         if glass_done:
             return
         if not self._panel_frameless():
             super().paintEvent(event)
             return
         try:
-            from PyQt6.QtCore import QRectF
-            from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
+            from PyQt6.QtCore import QRectF   # QRectF 不在模块级导入清单里
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             # 1. 扩大绘制区域，超出窗口边界 2px，确保 DWM 圆角抗锯齿区域被覆盖
@@ -14404,7 +14417,6 @@ class AgentPanel(QDialog):
         """无边框窗口的边缘高光（玻璃厚度感）；painter 为 None 时自建。"""
         try:
             from PyQt6.QtCore import QRectF
-            from PyQt6.QtGui import QColor, QPainter, QPen
             p = painter if painter is not None else QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             # 外缘亮线（玻璃边缘反光）
