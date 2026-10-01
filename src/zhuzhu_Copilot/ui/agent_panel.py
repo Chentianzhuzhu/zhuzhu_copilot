@@ -13316,10 +13316,10 @@ class AgentPanel(QDialog):
             shown = (text or "").strip()
             if not shown:
                 return
-            # 展示裁剪：与前台同一条规则（见 chat_bubbles.clip_output）
-            shown, _clip_note = chat_bubbles.clip_output(shown)
-            if _clip_note:
-                shown = f"{shown}\n…{_clip_note}"
+            # 保留上限：与前台同一条规则（见 chat_bubbles.cap_output + _FoldMixin）
+            shown, _cap_note = chat_bubbles.cap_output(shown)
+            if _cap_note:
+                shown = f"{shown}\n…{_cap_note}"
             shown = _esc(shown).replace("\n", "<br/>")
             # 与前台同构：输出就地续写到对应工具行的 op 段（同区块「工具在上、输出在下」）
             if not self._attach_out_seg(segs, name, shown, cmd):
@@ -20671,12 +20671,11 @@ class AgentPanel(QDialog):
             st_c["last_cmd"] = ""          # 用后即清，防后续工具误带
         shown = (text or "").strip()
         if shown:
-            # 展示裁剪（行数/字数双限，见 chat_bubbles.clip_output）：超长输出只展开前若干行，
-            # 完整内容照旧随工具结果返回模型 —— 否则一次超长输出能把区块撑到数千像素高，
-            # 把思考气泡与回复正文挤出视野、并让相邻区块互相遮挡（用户反馈）。
-            shown, _clip_note = chat_bubbles.clip_output(shown)
-            if _clip_note:
-                shown = f"{shown}\n…{_clip_note}"
+            # 病态长度的保留上限（**不是展示上限**：超长输出的展示由气泡折叠负责，
+            # 点「展开全部」可见保留的全部内容 —— 见 chat_bubbles._FoldMixin）
+            shown, _cap_note = chat_bubbles.cap_output(shown)
+            if _cap_note:
+                shown = f"{shown}\n…{_cap_note}"
             shown = _esc(shown).replace("\n", "<br/>")
             # 输出挂载：结果就地续写到对应工具行的 op 段（同一区块内「工具在上、输出在下」），
             # 不再另起「执行结果」区块；找不到对应工具行时才退回独立 result 段。

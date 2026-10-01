@@ -211,34 +211,75 @@ def test_seg_sig_covers_output_so_block_refreshes_when_result_arrives():
     assert ap._seg_sig(seg) != before
 
 
-def test_long_output_is_clipped_for_display_with_note():
-    """超长输出的**展示**必须被裁剪（行数与字数双限）：否则单个工具块的换行高度
-    可达数千像素，把思考气泡与回复正文挤出视野、并挤压相邻区块（用户反馈）。
+def test_long_output_folds_instead_of_truncating():
+    """超长输出的**展示**必须是折叠而非截断：`_FoldMixin` 只把前缀铺进标签，
+    全文始终留在块里 —— 点「展开全部」必须能看到被折叠掉的剩余内容。
 
-    只裁剪展示：提示语要说明「完整内容已返回模型」，避免被误读成内容丢失。
+    历史缺陷：单个工具块能长到数千像素（一次 600 行输出 ≈ 10 屏），把思考气泡与回复
+    正文挤出视野、并让相邻区块互相遮挡。
     """
-    many_lines = "\n".join(f"第 {i} 行输出" for i in range(200))
-    shown, note = cb.clip_output(many_lines)
-    assert shown.count("\n") + 1 == cb.OUT_PREVIEW_LINES
-    assert str(cb.OUT_PREVIEW_LINES) in note and "已返回模型" in note
+    row = cb.ToolCallRow(STYLE, ap._line_icon)
+    long_out = "<br/>".join(f"第 {i} 行输出" for i in range(300))
+    row.set_content("read_file", "", {}, out=long_out)
 
-    one_long_line = "字" * (cb.OUT_PREVIEW_CHARS + 500)
-    shown2, note2 = cb.clip_output(one_long_line)
-    assert len(shown2) == cb.OUT_PREVIEW_CHARS and "已返回模型" in note2
+    assert row._fold_foldable(), "长输出必须判定为可折叠"
+    assert row._fold_btn.text() == cb.OUT_FOLD_TEXT and not row._fold_holder.isHidden(), \
+        "折叠态必须给出「展开全部」入口"
+    shown = row._out.text()
+    assert len(shown) < len(long_out), "折叠态不应把全文铺进标签（每次测量都要重排整篇）"
+    assert row._out.minimumHeight() == row._fold_limit_h(), \
+        "折叠态必须把输出标签钉在行数上限（否则块仍会被撑爆）"
 
-    short = "第一行\n第二行"
-    assert cb.clip_output(short) == (short, ""), "短输出不得被裁剪/加提示"
+    # 展开：全文必须回来（不截断）
+    row._fold_toggle()
+    assert row._fold_btn.text() == cb.FOLD_CLOSED_TEXT
+    assert long_out in row._out.text() or row._out.text() == long_out, \
+        "展开后必须看到完整输出（折叠不允许丢内容）"
+    assert row._out.minimumHeight() > row._fold_limit_h()
+
+    # 再收起：回到行数上限
+    row._fold_toggle()
+    assert row._out.minimumHeight() == row._fold_limit_h()
 
 
-def test_on_result_clips_what_the_block_would_render():
-    """端到端：超长工具结果落到 op 段时，渲染用的 html 必须是裁剪后的（块高受限）。"""
+def test_short_output_has_no_fold_control():
+    """短输出不出现折叠控件（工具行与输出区保持原样）"""
+    row = cb.ToolCallRow(STYLE, ap._line_icon)
+    row.set_content("read_file", "", {}, out="两行\n输出")
+    assert not row._fold_foldable()
+    assert row._fold_holder.isHidden()
+    assert row._fold_extra_h() == 0, "不可折叠时开关不得占高度"
+
+
+def test_on_result_keeps_full_output_for_expand():
+    """端到端：超长工具结果落到 op 段时**不得截断**（展示由折叠负责，不是这里裁）。"""
     segs = [{"type": "op", "name": "read_file", "html": "▎read_file"}]
     p = _res_panel(segs)
-    p._on_result("read_file", "\n".join(f"第 {i} 行" for i in range(500)), [])
+    raw = "\n".join(f"第 {i} 行" for i in range(500))
+    p._on_result("read_file", raw, [])
 
     out = segs[0].get("out") or ""
-    assert out.count("<br/>") + 1 <= cb.OUT_PREVIEW_LINES + 2, "成果文本未被裁剪 → 块会被撑爆"
-    assert "已返回模型" in out
+    assert out.count("<br/>") + 1 > cb.OUT_FOLD_LINES, "输出被截断了 → 展开后看不到全文"
+    assert all(f"第 {i} 行" in out for i in (0, 250, 499)), "折叠前必须保留完整内容"
+
+
+def test_safe_prefix_never_cuts_inside_a_tag():
+    """折叠前缀不得切在标签中间（残片会原样显示成文字）"""
+    def broken(s: str) -> bool:
+        """末尾是否留下未闭合的标签"""
+        return s.rfind("<") > s.rfind(">")
+
+    html = "甲<br/>乙<br/>丙"
+    assert cb.safe_prefix(html, 4) == "甲", "有换行边界时停在边界上"
+    assert cb.safe_prefix(html, 10) == "甲<br/>乙", "停在预算内最后一个换行边界上"
+    assert cb.safe_prefix(html, 999) == html, "预算够大时原样返回"
+
+    # 无换行边界的单行超长输出：退化为字符前缀，但不得把标签切成两半
+    for budget in range(1, 24):
+        out = cb.safe_prefix("<span>x</span>yyyy", budget)
+        assert not broken(out), f"预算 {budget} 切出了残片：{out!r}"
+        assert "<span>x</span>yyyy".startswith(out), "必须是原文前缀"
+    assert cb.safe_prefix("yyyy", 2) == "yy"
 
 
 def test_tool_row_keeps_output_hidden_until_it_arrives(host):
@@ -307,6 +348,67 @@ def test_output_accent_line_is_really_painted(host):
     near = (abs(got.red() - want.red()) <= 12 and abs(got.green() - want.green()) <= 12
             and abs(got.blue() - want.blue()) <= 12)
     assert near, f"输出竖线未画出强调色：实得 {got.name()}，期望 {want.name()}"
+
+
+# ---------- 超长输出：折叠在回合内真的限住了高度，展开能收回全文 ----------
+
+def _long_output_html(rows: int = 400) -> str:
+    return "<br/>".join(f"第 {i} 行：这是一段较长的工具输出内容。" for i in range(rows))
+
+
+def test_turn_bounds_height_for_long_output_and_expands(host):
+    """端到端：超长输出在回合里必须被折叠限高（不再把回合撑到数千像素），
+    点「展开全部」后回合高度随之增长、完整内容可见（不丢内容）。
+
+    历史缺陷：输出长度没有上限时，一个工具块就能长到数千像素，把思考气泡与回复
+    正文挤出视野、并让相邻区块互相遮挡。
+    """
+    segs = [
+        {"type": "think", "html": "先读文件再总结。" * 30},
+        {"type": "op", "name": "read_file", "html": "▎read_file",
+         "out": _long_output_html()},
+        {"type": "text", "raw": "最终结论：一切正常。"},
+    ]
+    p = _res_panel(segs)
+    turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
+    turn.render(p._seg_blocks(segs), live=True)
+    host.show()
+    app.processEvents()
+
+    tool = next(r.widget for r in turn._items if r.kind == cb.KIND_TOOL)
+    line_h = tool._line_height()
+    assert not tool._fold_holder.isHidden(), "超长输出必须给出「展开全部」入口"
+
+    bounded = turn.heightForWidth(turn.width())
+    # 输出被限在行数上限附近（允许思考块 + 正文 + 开关的固定开销），绝不应是数千像素
+    assert bounded < line_h * (cb.OUT_FOLD_LINES + 40), \
+        f"回合仍被超长输出撑爆：{bounded}px（折叠上限 {line_h * cb.OUT_FOLD_LINES}px）"
+
+    full = tool._fold_full
+    tool._fold_btn.click()
+    app.processEvents()
+    assert tool._out.text() == full, "展开后必须铺全文"
+    assert turn.heightForWidth(turn.width()) > bounded + line_h * 100, \
+        "展开后回合必须跟着长高（否则全文被回合总额压扁）"
+
+
+def test_command_block_output_folds_too(host):
+    """命令块（含「执行结果」段）的输出同样折叠：它是最容易产生超长文本的一类。"""
+    segs = [{"type": "op", "name": "run_command", "html": "▎run_command",
+             "cmd": "dir /s", "out": _long_output_html()}]
+    p = _res_panel(segs)
+    turn = host.add(cb.ChatTurn(STYLE, ap._line_icon))
+    turn.render(p._seg_blocks(segs), live=True)
+    host.show()
+    app.processEvents()
+
+    cmd = next(r.widget for r in turn._items if r.kind == cb.KIND_CMD)
+    assert cmd._fold_foldable(), "长输出的命令块必须判定为可折叠"
+    assert not cmd._fold_holder.isHidden()
+    assert cmd._body.minimumHeight() == cmd._fold_limit_h(), "命令块输出未钉在折叠上限"
+    cmd._fold_btn.click()
+    app.processEvents()
+    assert cmd._body.text() == cmd._fold_full, "展开后命令块必须铺全文"
 
 
 # ---------- B. 气泡底部外侧只剩打字指示器 ----------

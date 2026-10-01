@@ -482,7 +482,7 @@ def test_folded_long_thinking_paves_preview_then_full_on_expand():
         tb.set_content("PLANNING", full)
         _app.processEvents()
 
-        assert tb._body_html == full, "全文必须留在块内，供展开时使用"
+        assert tb._fold_full == full, "全文必须留在块内，供展开时使用"
         assert len(tb._body.text()) <= cb.THINK_PREVIEW_CHARS + 1, "折叠态铺了全文（每 tick 重排）"
         assert not tb._fold_btn.isHidden(), "长思考必须给出展开入口"
 
@@ -490,7 +490,7 @@ def test_folded_long_thinking_paves_preview_then_full_on_expand():
         _app.processEvents()
         assert tb._folded is False
         assert tb._body.text() == full, "展开后仍是前缀 = 用户报的「展开被截断」"
-        assert tb._body.minimumHeight() > tb._limit_h(), "展开态必须钉到全文高度"
+        assert tb._body.minimumHeight() > tb._fold_limit_h(), "展开态必须钉到全文高度"
 
         tb._fold_btn.click()
         _app.processEvents()
@@ -507,7 +507,7 @@ def test_think_preview_does_not_shrink_the_fold_decision():
     try:
         tb.set_content("PLANNING", "推" * (cb.THINK_PREVIEW_CHARS + 3000))
         _app.processEvents()
-        assert tb._is_foldable(), "前缀必须仍超过折叠行数上限"
+        assert tb._fold_foldable(), "前缀必须仍超过折叠行数上限"
         assert not tb._fold_btn.isHidden()
     finally:
         host.hide()

@@ -192,18 +192,18 @@ def test_think_fold_state_survives_streaming_growth():
         body = _long_body()
         think.set_live(True)
         think.set_content("PLANNING", _html(body), sid=0)
-        assert think._is_foldable(), "测试文本必须长到可折叠，否则本用例无意义"
+        assert think._fold_foldable(), "测试文本必须长到可折叠，否则本用例无意义"
 
-        think._toggle()                                  # 用户点「继续查看」
-        assert think._user_open is True and think._fold_btn.text() == "收起"
+        think._fold_toggle()                             # 用户点「继续查看」
+        assert think._fold_open is True and think._fold_btn.text() == "收起"
 
         think.set_content("PLANNING", _html(body + "继续思考中。"), sid=0)   # 同一段继续落字
-        assert think._user_open is True, \
+        assert think._fold_open is True, \
             "同一段思考继续落字时，用户的手动展开被下一个 tick 复位了（表现为状态反复回放）"
         assert think._fold_btn.text() == "收起", "折叠按钮文案被流式刷新重置"
 
         think.set_content("EXEC", _html(_long_body("另一段完全不同的思考：")), sid=7)
-        assert think._user_open is None, "换成另一段思考后应回到自动折叠判定"
+        assert think._fold_open is None, "换成另一段思考后应回到自动折叠判定"
     finally:
         win.hide()
         win.deleteLater()

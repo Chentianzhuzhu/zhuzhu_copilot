@@ -28,6 +28,7 @@ RADIUS_CMD = 10             # .cmd 命令块
 RADIUS_TILE = 9             # .tc-icon 图标壳
 RADIUS_CHIP = 7             # .kv em 参数 chip
 THINK_FOLD_LINES = 5        # 思考过程正文超过该行数即自动折叠
+OUT_FOLD_LINES = 12         # 工具/命令的执行结果超过该行数即自动折叠（可「展开全部」）
 DASH_PATTERN = (4, 4)       # 虚线线段的「实 4 / 空 4」节奏（px）
 
 # 字阶（px）

@@ -71,6 +71,7 @@ from zhuzhu_Copilot.ui.tokens import (
     RADIUS_SM,
     RADIUS_TILE,
     SPACING_XS,
+    OUT_FOLD_LINES,
     THINK_FOLD_LINES,
 )
 
@@ -92,21 +93,27 @@ THINK_HEAD_GAP = 8             # .tb-head margin-bottom
 TOOL_ICON = 30                 # .tc-icon 30x30
 TOOL_GLYPH_RATIO = 0.66        # 工具图标绘制比例（族底图 + 动作角标要在壳内看清）
 TOOL_OUT_GAP = 9               # 工具行与其输出之间的间距（输出紧贴该工具行下方）
-# 工具/命令输出在界面上的展示上限（行数 + 字数双限，超出的部分只回给模型）：
-# 单条输出长度没有上限时，一次 20000 字的工具结果就能把区块撑到数千像素高，
-# 把思考气泡与回复正文挤出视野、并让相邻区块互相遮挡（用户反馈）。此处按行数与
-# 字数取更严的一个，保证单块最多约一屏高；完整内容仍随工具结果返回模型。
-OUT_PREVIEW_LINES = 24
-OUT_PREVIEW_CHARS = 4000
 OUT_LINE_W = 2                 # 输出区左侧竖线宽（同系列工具的多次输出按同一视觉挂载）
 OUT_LINE_GAP = 9               # 竖线到输出文字的间距
+# 折叠态只铺进标签的输出前缀长度（字符）：与思考气泡同一手法（见 THINK_PREVIEW_CHARS）——
+# 全文入标签会让每次高度测量都重排整篇富文本，长输出下成本与篇幅成正比。工具输出不会
+# 像思考那样逐 tick 增长，故预算可以给得更宽，保证「任意窗口宽度下前缀都比折叠上限高」。
+OUT_PREVIEW_CHARS = 2400
+# 输出保留上限（字符）：**不是展示上限**（展示由折叠负责，点「展开全部」可见全文），
+# 仅防止单条病态输出把内存/会话文件撑爆（run_command 默认不限长）。超出的部分只回给模型。
+OUT_KEEP_CHARS = 200000
 THINK_ICON = 28                # .tb-head .icon 28x28
 # 折叠态只渲染的思考正文前缀长度（字符）：折叠态可见区就是前 5 行，全文入标签会让
 # **每个流式 tick 都重排一次整篇富文本**（长推理下成本随篇幅线性增长 → O(n²)），
 # 主线程被排满后气泡与打字指示器就会剧烈抖动。只铺前缀即把每 tick 成本压成常数，
-# 展开时（`_user_open is True`）再铺全文 —— 那时才是真的需要全部内容。
+# 展开时（`_fold_open is True`）再铺全文 —— 那时才是真的需要全部内容。
 # 取值远大于「任意气泡宽度下 5 行」的字数，保证前缀本身仍被判为可折叠（按钮不消失）。
 THINK_PREVIEW_CHARS = 1200
+# 折叠开关（PillButton）与正文之间的间距（px）：单独给一份，避免与各块内部的其它间距耦合
+FOLD_GAP = 8
+FOLD_CLOSED_TEXT = "收起"      # 展开态下的开关文案（点它收起回去）
+THINK_FOLD_TEXT = "继续查看"   # 思考气泡折叠态文案（与输出的措辞区分）
+OUT_FOLD_TEXT = "展开全部"     # 工具/命令输出折叠态文案
 CMD_PAD_V = 7                  # .cmd .bar padding: 7px 12px
 CMD_PAD_H = 13                 # .cmd .in / .out 左右内边距
 DOT_D = 8                      # .cmd .bar .dotbtn 直径
@@ -321,23 +328,37 @@ def _label_hfw(lbl: QLabel, width: int, ver: int) -> int:
     return val
 
 
-def clip_output(text: str) -> tuple:
-    """工具/命令输出的**展示**裁剪，返回 (展示文本, 提示语)。
+def safe_prefix(html: str, budget: int) -> str:
+    """按字符预算取 HTML 前缀，且保证**不切在标签中间**。
 
-    只影响界面展示（完整内容照旧随工具结果返回模型，见面板 `_on_result`）：行数与
-    字数取更严的一个，保证单条输出最多约一屏高 —— 否则一次 20000 字的工具结果就能把
-    区块撑到数千像素高，把思考气泡与回复正文挤出视野、并让相邻区块互相遮挡。
-    上限见 `OUT_PREVIEW_LINES` / `OUT_PREVIEW_CHARS`。
+    ① 优先停在完整的 `<br/>` 边界：工具/命令输出的换行结构都由它承载，按行切最整齐
+       （搜索范围放宽一个 `<br/>`，让「跨过预算一点但完整」的换行也能被选中）；
+    ② 没有换行边界（单行超长输出）时退化为字符前缀，只额外保证切点不落在某个未闭合的
+       标签内部 —— 切在标签中间会让 `<b` 这类残片直接显示成文字。
+    """
+    if len(html) <= budget:
+        return html
+    cut = html.rfind("<br/>", 0, int(budget) + len("<br/>"))
+    if cut > 0:
+        return html[:cut]
+    cut = int(budget)
+    lt = html.rfind("<", 0, cut)
+    if lt > html.rfind(">", 0, cut):
+        cut = max(0, lt)          # 切点落在未闭合的标签内：回退到该标签之前
+    return html[:cut]
+
+
+def cap_output(text: str) -> tuple:
+    """输出的**保留**上限，返回 (保留文本, 提示语)；展示折叠不在这里（见 `_FoldMixin`）。
+
+    只防病态长度（`run_command` 默认不限长）把内存与会话文件撑爆，不承担"让界面好看"
+    的职责 —— 界面由折叠负责，点「展开全部」即可看到这里保留的全部内容。上限见
+    `OUT_KEEP_CHARS`；提示语说明完整内容已返回模型，避免被误读成内容丢失。
     """
     src = str(text or "")
-    parts = src.split("\n")
-    if len(parts) > OUT_PREVIEW_LINES:
-        return "\n".join(parts[:OUT_PREVIEW_LINES]), (
-            f"（共 {len(parts)} 行，界面只展开前 {OUT_PREVIEW_LINES} 行，完整内容已返回模型）")
-    if len(src) > OUT_PREVIEW_CHARS:
-        return src[:OUT_PREVIEW_CHARS], (f"（界面只展开前 {OUT_PREVIEW_CHARS} 字，"
-                                         "完整内容已返回模型）")
-    return src, ""
+    if len(src) <= OUT_KEEP_CHARS:
+        return src, ""
+    return src[:OUT_KEEP_CHARS], f"（超出 {OUT_KEEP_CHARS} 字的部分未在界面保留，完整内容已返回模型）"
 
 
 def _widget_hfw(wid: QWidget, width: int) -> int:
@@ -1140,18 +1161,240 @@ class _PinMixin:
         self._pin_wrapping()
 
 
-class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
+class _FoldMixin:
+    """正文超行自动折叠 + 「展开/收起」开关：思考气泡、工具输出、命令输出共用一套。
+
+    折叠只改两件事：**铺进标签的正文**（折叠态只铺前缀）与**钉住的最小高度**（折叠态 =
+    行数上限）。全文始终留在 `_fold_full` 里、绝不丢弃，点开即看到完整内容 —— 因此界面
+    上不存在任何截断，「展开全部」名副其实。
+
+    子类只差四处，各自实现钩子给出：
+      · `_fold_label()`     哪条标签承载长正文（工具行/命令块都只折叠「输出」那一条）；
+      · `_fold_avail_w()`   该标签的可用宽度（图标壳 / 描边 / 内边距各不相同）；
+      · `_fold_gap()`       正文与开关之间的间距（由各自布局给出的实际值）；
+      · `_fold_preview()`   折叠态铺进标签的字符预算。
+    开关的位置由子类自己插进布局（各块结构不同），混入只负责状态、显隐、测量与遮罩。
+    """
+
+    _fold_open: Optional[bool] = None   # 用户手动选择：None = 自动（超出上限即折叠）
+    _folded = None                      # 折叠态缓存：仅在状态真的变化时改几何
+    _fold_handler: Optional[Callable[[], None]] = None
+    _fold_content_reset = True          # 内容非上一次的增长时复位手动展开（思考气泡置 False）
+
+    def _fold_init(self, style: ChatStyle, fill: str, open_text: str,
+                   icon_provider: IconProvider = None):
+        """创建开关与渐隐遮罩，返回开关控件（由子类放进自己的布局）。
+
+        `icon_provider` 可省：命令块在部分构造点拿不到图标提供者，此时开关就是纯文字。
+        """
+        self._fold_style = style
+        self._fold_provider = icon_provider
+        self._fold_open_text = open_text
+        self._fold_full = ""            # 全文（绝不截断，展开时铺它）
+        self._fold_full_key = None      # 全文高度缓存的键 (内容版本, 宽度)
+        self._fold_full_val = 0
+        self._fold_btn = PillButton(style, open_text, self._fold_chev(),
+                                    dashed=True, parent=self)
+        self._fold_btn.clicked.connect(self._fold_toggle)
+        self._fold_btn.hide()
+        self._fold_mask = _FadeMask(fill, self)
+        self._fold_mask.hide()
+        return self._fold_btn
+
+    def _fold_chev(self, rotated: int = 0) -> Optional[QIcon]:
+        """开关左侧的箭头图标（无图标提供者时为 None → 纯文字开关）"""
+        if self._fold_provider is None:
+            return None
+        icon = self._fold_provider("chev", FONT_SMALL, self._fold_style.accent)
+        return rotate_icon(icon, rotated, FONT_SMALL) if rotated else icon
+
+    def set_fold_handler(self, fn: Callable[[], None]):
+        """折叠态改变本块高度：必须让外层重钉回合高度，否则展开后被回合总额压扁/遮挡。"""
+        self._fold_handler = fn
+
+    # ---------- 子类钩子 ----------
+    def _fold_label(self) -> QLabel:
+        raise NotImplementedError
+
+    def _fold_avail_w(self, width: int = None) -> int:
+        raise NotImplementedError
+
+    def _fold_gap(self) -> int:
+        raise NotImplementedError
+
+    def _fold_preview(self) -> int:
+        raise NotImplementedError
+
+    def _fold_on_state(self, foldable: bool):
+        """折叠态收敛后的钩子：子类据此同步自己那层开关外壳的显隐。
+
+        默认无操作（思考气泡把开关直接放进主布局，不需要外壳）。"""
+
+    # ---------- 状态 ----------
+    def _fold_set_full(self, full_html: str):
+        """喂入新的全文。
+
+        内容**不是上一份的增长**（另一个工具的输出出现在同一控件上）时复位用户的手动展开：
+        否则上一个工具的展开状态会串到新内容上。思考气泡不适用这条（它的富文本被
+        `<div>` 包裹，增长时首尾都变），改由调用方按段标识 `sid` 判定 —— 见
+        `_fold_content_reset`。
+        """
+        old = self._fold_full
+        if self._fold_content_reset and old and not full_html.startswith(old):
+            self._fold_reset()
+        self._fold_full = full_html or ""
+
+    def _fold_reset(self):
+        """回到「自动」判定并把开关文案复位（换内容时调用）"""
+        self._fold_open = None
+        if self._fold_btn is not None and self._fold_btn.text() != self._fold_open_text:
+            self._fold_btn.setText(self._fold_open_text)
+            self._fold_btn.setIcon(self._fold_chev())
+
+    def _line_height(self) -> int:
+        """单行行高（px）：折叠上限按它折算"""
+        return max(1, self._fold_label().fontMetrics().lineSpacing())
+
+    def _fold_limit_h(self) -> int:
+        return self._line_height() * self._fold_lines()
+
+    def _fold_lines(self) -> int:
+        raise NotImplementedError
+
+    def _fold_full_h(self) -> int:
+        """全文（不截断）在可用宽度下的高度，带 (内容版本, 宽度) 缓存。
+
+        判定必须基于**全文**：若像思考气泡那样按「当前铺进标签的正文」判断，短前缀在超宽
+        窗口下可能不到折叠上限 → 判定在折叠/展开之间翻转（开关反复闪烁）。工具输出不会逐
+        帧增长，全文只在这里临时铺一次标签、测完立刻还原，成本可接受。
+        """
+        w = max(1, self._fold_avail_w())
+        key = (self._content_ver, w)
+        if self._fold_full_key == key:
+            return self._fold_full_val
+        lbl = self._fold_label()
+        saved_txt, saved_min = lbl.text(), lbl.minimumHeight()
+        lbl.setMinimumHeight(0)
+        lbl.setText(self._fold_full)
+        h = int(lbl.heightForWidth(w) or 0)
+        lbl.setText(saved_txt)
+        lbl.setMinimumHeight(saved_min)
+        self._fold_full_key, self._fold_full_val = key, h
+        return h
+
+    def _fold_foldable(self) -> bool:
+        return self._fold_full_h() > self._fold_limit_h()
+
+    def _fold_is_folded(self) -> bool:
+        return self._fold_foldable() and self._fold_open is not True
+
+    # ---------- 应用 ----------
+    def _fold_shown(self) -> str:
+        """当前该铺进标签的正文：展开态（或本来就短）给全文，否则给前缀 + 省略号。"""
+        full = self._fold_full
+        if self._fold_open is True or len(full) <= self._fold_preview():
+            return full
+        return safe_prefix(full, self._fold_preview()) + "…"
+
+    def _fold_apply_text(self) -> bool:
+        """按折叠态铺正文；与标签现状一致时不触碰标签（返回是否真的改了）。"""
+        want = self._fold_shown()
+        lbl = self._fold_label()
+        if want == lbl.text():
+            return False
+        lbl.setText(want)
+        return True
+
+    def _fold_visible_h(self, width: int = None) -> int:
+        """正文标签当前应占的高度：折叠态 = 行数上限，展开态 = 全文高度。
+
+        块高预算必须用它，而不是直接测标签：折叠态标签里铺的是**前缀**（比上限长，
+        为的是让折叠判定稳定），直接测就会按前缀申请高度 —— 块比可见内容高出一截，
+        底部留白（正是此前反复修掉的那类问题）。
+        """
+        w = self._fold_avail_w(width)
+        if w <= 0:
+            return 0
+        full = _label_hfw(self._fold_label(), w, self._content_ver)
+        limit = self._fold_limit_h()
+        return limit if (full > limit and self._fold_open is not True) else full
+
+    def _fold_pin(self, width: int = None):
+        """钉住正文标签的高度：折叠态 = 行数上限，展开态 = 全文高度。
+
+        **绝不允许钉入超过折叠上限的值**：否则本块真实高度远超 heightForWidth 的估算，
+        把整条回合撑爆、把下方开关压扁（与思考气泡同一条约束）。
+        """
+        target = self._fold_visible_h(width)
+        lbl = self._fold_label()
+        if target > 0 and _need_resize(lbl.minimumHeight(), target):
+            lbl.setMinimumHeight(target)
+
+    def _fold_extra_h(self) -> int:
+        """本块高度里属于「间距 + 开关」的那一份（不可折叠时为 0）"""
+        if not self._fold_foldable():
+            return 0
+        return self._fold_gap() + self._fold_btn.sizeHint().height()
+
+    def _fold_apply(self):
+        """收敛到目标折叠态：铺正文、钉高度、显隐开关与遮罩。
+
+        正文必须在**每次**调用时对齐当前折叠态：内容的更新（`_fold_set_full`）不改折叠态
+        本身，若只在状态翻转时铺正文，新到的输出就会因为「状态没变」而被跳过（实测踩到：
+        短输出到达后标签仍是空串）。
+        """
+        foldable = self._fold_foldable()
+        folded = foldable and self._fold_open is not True
+        self._fold_apply_text()
+        if self._folded == folded:
+            self._fold_pin()
+            self._fold_place_mask()
+            return
+        self._folded = folded
+        self._fold_on_state(foldable)      # 先让外壳显隐到位，再钉子项
+        self._fold_btn.setVisible(foldable)
+        self._fold_pin()
+        self._fold_mask.setVisible(folded)
+        self._fold_place_mask()
+        self.updateGeometry()
+
+    def _fold_place_mask(self):
+        """遮罩贴在折叠边界。用 `_folded` 判定而非 isVisible —— 面板未显示时 isVisible 恒为
+        False，据此判定会让遮罩在显示后落在错误位置。"""
+        if not self._folded:
+            return
+        lbl = self._fold_label()
+        p = lbl.mapTo(self, QPoint(0, 0))
+        y = p.y() + lbl.height() - FADE_H
+        self._fold_mask.setGeometry(p.x(), max(0, y), max(1, lbl.width()), FADE_H)
+        self._fold_mask.raise_()      # 覆盖在正文之上：控件创建顺序不保证叠放次序
+
+    def _fold_toggle(self):
+        opened = self._fold_open is not True
+        self._fold_open = opened
+        self._fold_btn.setText(FOLD_CLOSED_TEXT if opened else self._fold_open_text)
+        self._fold_btn.setIcon(self._fold_chev(180 if opened else 0))
+        self._fold_apply_text()      # 展开铺全文 / 收起回到前缀
+        self._bump_content()         # 折叠态影响高度 → 测量缓存失效
+        self._fold_apply()
+        if self._fold_handler is not None:
+            self._fold_handler()
+
+
+class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
     """思考过程气泡（demo .think-bubble）：卡片底 + 1px 边框 + 非对称圆角
     （左上 6 为「小尾巴」角），头行 = 图标壳 + 「思考过程」+ tag 胶囊（含三点），
-    正文超 THINK_FOLD_LINES 行自动折叠并以渐隐遮罩收尾。"""
+    正文超 THINK_FOLD_LINES 行自动折叠并以渐隐遮罩收尾（折叠机制见 `_FoldMixin`）。"""
+
+    # 思考正文被 <div> 包裹，同一段继续落字时首尾都会变 → 不能用「是否上一份的增长」判
+    # 同段；改由 sid（段标识）判定，故关掉基类的内容复位。
+    _fold_content_reset = False
 
     def __init__(self, style: ChatStyle, icon_provider: IconProvider,
                  parent: QWidget = None):
         super().__init__(parent)
         self._style = style
         self._icon_provider = icon_provider
-        self._user_open: Optional[bool] = None   # 用户手动展开/收起后不再自动判定
-        self._fold_handler: Optional[Callable[[], None]] = None
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(
             f"ThinkBubble {{ background: {style.think_bg_of()};"
@@ -1201,67 +1444,76 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
             f" font-family: {style.font_ui};")
         root.addWidget(self._body)
 
-        self._fold_btn = PillButton(style, "继续查看",
-                                    icon_provider("chev", FONT_SMALL, style.accent),
-                                    dashed=True, parent=self)
-        self._fold_btn.clicked.connect(self._toggle)
-        self._fold_btn.hide()
+        fold_btn = self._fold_init(style, style.think_bg_of(), THINK_FOLD_TEXT,
+                                   icon_provider)
         wrap = QHBoxLayout()
         wrap.setContentsMargins(0, 0, 0, 0)
         wrap.addStretch(1)
-        wrap.addWidget(self._fold_btn)
+        wrap.addWidget(fold_btn)
         wrap.addStretch(1)
         root.addLayout(wrap)
         # 末尾留白：外层若给了多余高度（历史重建/布局余量），余量全部落到底部，
-        # 避免被 QBoxLayout 摊到各子项之间，把正文与「继续查看」拉开大片空隙
+        # 避免被 QBoxLayout 摊到各子项之间，把正文与开关拉开大片空隙
         root.addStretch(1)
 
-        self._mask = _FadeMask(style.think_bg_of(), self)
-        self._mask.hide()
-        self._folded = None      # 折叠态缓存：仅在状态真正变化时改动几何
-        self._body_html = ""     # 思考正文全文（展开时才铺进标签，折叠态只铺前缀）
         self._seg_id = None      # 已绑定的思考段标识（换段 → 折叠态回到自动判定）
         self._fix_vertical()
         # 正文坐落于卡片底（fill=卡片底），浮现只覆盖思考正文标签那一块（头行图标/胶囊不动）
         self._emerge_init(style.think_bg_of(), self._emerge_area)
+
+    # ---------- 折叠钩子（见 _FoldMixin） ----------
+    def _fold_label(self) -> QLabel:
+        return self._body
+
+    def _fold_lines(self) -> int:
+        return THINK_FOLD_LINES
+
+    def _fold_preview(self) -> int:
+        return THINK_PREVIEW_CHARS
+
+    def _fold_gap(self) -> int:
+        return THINK_HEAD_GAP       # 正文与开关之间就是主布局的 spacing
+
+    def _fold_avail_w(self, width: int = None) -> int:
+        return int(width) if width else self._inner_w()
+
+    def _fold_foldable(self) -> bool:
+        """思考正文按**当前铺进标签的正文**判断（折叠态即前缀），而非全文。
+
+        长篇推理每 tick 都在落字，按全文测量等于每 tick 重排整篇富文本（O(n²)，主线程被
+        排满后气泡与指示器剧烈抖动 —— 这正是 THINK_PREVIEW_CHARS 存在的原因）。
+        THINK_PREVIEW_CHARS 取值远大于任意宽度下 5 行的字数，故前缀高度恒 > 折叠上限，
+        判定稳定不翻转（工具输出不逐帧增长，走基类的全文判定，见 `_FoldMixin._fold_full_h`）。
+        """
+        return self._full_h() > self._fold_limit_h()
 
     def _tag_style(self, tag: str):
         self._tag.setStyleSheet(
             f"QWidget {{ background: {self._style.tag_bg_of(tag)};"
             f" border-radius: {RADIUS_PILL}px; }}")
 
-    def set_fold_handler(self, fn: Callable[[], None]):
-        """展开/收起回调：折叠态改变本块高度，必须让外层重钉回合高度，
-        否则展开后正文会被回合总额压扁/遮挡。"""
-        self._fold_handler = fn
-
     # ---------- 内容 ----------
     def set_content(self, tag: str, body_html: str, sid=None, defer: bool = False):
-        """写入思考正文（**全文**存入 `_body_html`，标签按折叠态只铺前缀）。
+        """写入思考正文（全文交 `_fold_full` 保存，标签按折叠态只铺前缀）。
 
         关键：正文没变（长推理折叠后每 tick 前缀都不再变化）时整段短路 —— 既不重设
         富文本、也不重排、也不重复设样式。否则长推理下每 tick 都要重排整篇文档，
         主线程被排满后气泡与打字指示器剧烈抖动、消息区上下反复出现大片空白。
 
-        `sid` 是调用方（面板）下发的**段标识**（同一段思考持续落字时不变）：
-        只有换到另一段思考才复位 `_user_open`（用户点过「继续查看/收起」）。
-        此前每个 tick 无条件复位，用户一展开就被下一 tick 自动收起回去 ——
-        表现为折叠态/动画被反复回放。
+        `sid` 是调用方（面板）下发的**段标识**（同一段思考持续落字时不变）：只有换到
+        另一段思考才复位用户的手动展开（点过「继续查看/收起」）—— 此前每个 tick 无条件
+        复位，用户一展开就被下一 tick 自动收起回去，表现为折叠态/动画被反复回放。
         """
         if sid is not None and self._seg_id is not None and sid != self._seg_id:
-            self._user_open = None
-            if self._fold_btn.text() != "继续查看":
-                self._fold_btn.setText("继续查看")
-                self._fold_btn.setIcon(
-                    self._icon_provider("chev", FONT_SMALL, self._style.accent))
+            self._fold_reset()
         if sid is not None:
             self._seg_id = sid
-        self._body_html = body_html or ""
+        self._fold_set_full(body_html or "")
         if self._tag_text.text() != (tag or ""):
             self._tag_text.setText(tag or "")
             self._tag_style(tag or "")   # setStyleSheet 会触发样式重算，仅在阶段变化时做
         self._tag.setVisible(bool(tag))
-        if not self._apply_body():
+        if not self._fold_apply_text():
             return                        # 可见正文未变：几何/动效都不需要动
         self._body.setMinimumHeight(0)    # 重测前先解除旧钳制
         self._body.setMaximumHeight(16777215)
@@ -1269,7 +1521,7 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         if defer:
             self._deferred_fold = True    # 见 ToolCallRow.set_content 的 defer 说明
         else:
-            self._apply_fold()
+            self._fold_apply()
         self._emerge_touch()
 
     def resume_deferred(self):
@@ -1277,26 +1529,7 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         if not getattr(self, "_deferred_fold", False):
             return
         self._deferred_fold = False
-        self._apply_fold()
-
-    def _shown_html(self) -> str:
-        """当前应铺进标签的正文：折叠态只给前缀，展开态给全文。
-
-        折叠态可见区只有前 THINK_PREVIEW_CHARS 行内的一小段，铺全文没有意义，
-        却要把每 tick 的富文本重排成本从常数推到与篇幅成正比（长推理会拖垮主线程）。
-        """
-        full = self._body_html
-        if self._user_open is True or len(full) <= THINK_PREVIEW_CHARS:
-            return full
-        return full[:THINK_PREVIEW_CHARS] + "…"
-
-    def _apply_body(self) -> bool:
-        """按当前折叠态铺正文；正文与标签现状一致时不触碰标签。返回是否真的改了。"""
-        want = self._shown_html()
-        if want == self._body.text():
-            return False
-        self._body.setText(want)
-        return True
+        self._fold_apply()
 
     def _emerge_area(self) -> QRect:
         """思考正文区域：折叠态只到折叠上限（正文已被裁，波段必须贴可视底边）。
@@ -1305,7 +1538,7 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         """
         lbl = self._body
         full = self._full_h()
-        if full > self._limit_h() and self._user_open is not True:
+        if full > self._fold_limit_h() and self._fold_open is not True:
             return QRect()
         return QRect(lbl.x(), lbl.y(), max(1, lbl.width()), int(full))
 
@@ -1314,113 +1547,48 @@ class ThinkBubble(_PinMixin, _EmergeMixin, QFrame):
         super().set_live(live)
 
     # ---------- 折叠 ----------
-    def _line_height(self) -> int:
-        return max(1, self._body.fontMetrics().lineSpacing())
-
-    def _limit_h(self) -> int:
-        return self._line_height() * THINK_FOLD_LINES
-
     def _full_h(self) -> int:
-        w = self._inner_w()
-        return _label_hfw(self._body, w, self._content_ver)
-
-    def _is_foldable(self) -> bool:
-        return self._full_h() > self._limit_h()
+        """当前铺进标签的正文高度（折叠态即前缀高度，见 `_fold_foldable`）"""
+        return _label_hfw(self._body, self._inner_w(), self._content_ver)
 
     def _pin_wrapping(self, width: int = None):
-        """钉住正文高度：折叠态 = 5 行上限，展开态 = 全文高度。
-
-        **关键**：钉入的最小高度绝不允许超过折叠上限，否则该气泡真实高度远超
-        heightForWidth 的估算，把整条回合的高度撑爆、把下方的「继续查看」按钮压扁。
-        """
+        """钉住正文高度：折叠态 = 行数上限，展开态 = 全文高度（见 `_FoldMixin._fold_pin`）"""
         w = int(width) if width else self._inner_w()
         if w <= 0:
             return
         self._pin_w = w
-        full = _label_hfw(self._body, w, self._content_ver)
-        if full <= 0:
-            return
-        foldable = full > self._limit_h()
-        folded = foldable and self._user_open is not True
-        target = self._limit_h() if folded else full
-        if _need_resize(self._body.minimumHeight(), target):
-            self._body.setMinimumHeight(target)
-
-    def _apply_fold(self):
-        foldable = self._is_foldable()
-        folded = foldable and self._user_open is not True
-        if self._folded == folded:
-            self._pin_wrapping()
-            self._place_mask()
-            return
-        self._folded = folded
-        self._fold_btn.setVisible(foldable)
-        self._pin_wrapping()
-        self._mask.setVisible(folded)
-        self._place_mask()
-        self.updateGeometry()
-
-    def _place_mask(self):
-        """折叠遮罩定位：贴在折叠边界。用 _folded 判定而非 isVisible ——
-        面板未显示时 isVisible 恒为 False，据此判定会让遮罩在显示后落在错误位置。"""
-        if not self._folded:
-            return
-        m = self.layout().contentsMargins()
-        y = self._body.geometry().bottom() - FADE_H + 1
-        self._mask.setGeometry(m.left(), max(0, y),
-                               max(1, self.width() - m.left() - m.right()), FADE_H)
+        self._fold_pin(width)
 
     def _inner_w(self) -> int:
         """布局内区宽度：QFrame 的 1px 描边会把内区整体内缩，必须一并让出"""
         m = self.layout().contentsMargins()
         return max(1, self.width() - 2 * self.frameWidth() - m.left() - m.right())
 
-    def _toggle(self):
-        opened = self._user_open is not True
-        self._user_open = opened
-        self._fold_btn.setText("收起" if opened else "继续查看")
-        self._fold_btn.setIcon(rotate_icon(
-            self._icon_provider("chev", FONT_SMALL, self._style.accent),
-            180 if opened else 0, FONT_SMALL))
-        # 展开铺全文 / 收起回到前缀：这一步才能看到「被折叠掉的剩余推理」
-        self._apply_body()
-        self._bump_content()      # 折叠态影响高度 → 测量缓存失效
-        self._apply_fold()
-        # 展开/收起改变了本块高度：必须让外层重钉回合高度，否则整条回合仍按折叠态
-        # 的高度固定，长思考一展开就被压扁/遮挡（用户反馈的「展开被挤压」）。
-        if self._fold_handler is not None:
-            self._fold_handler()
-
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._apply_fold()
+        self._fold_apply()
 
     def heightForWidth(self, width: int) -> int:
         """本块在给定宽度下需要的高度（必须与 _pin_wrapping 钉出的真实高度一致，
         否则 ChatTurn 的最小高度会小于内容，Qt 会压扁最后一个不设最小值的子项）。
 
         描边（1px × 上下）与内边距都要计入：漏算描边会让真高比预算多 2px，
-        展开长思考时「继续查看」按钮被压掉两像素。
+        展开长思考时开关按钮被压掉两像素。
         """
         bd = 2 * self.frameWidth()
         m = self.layout().contentsMargins()
         inner = max(1, int(width) - bd - m.left() - m.right())
         h = bd + m.top() + m.bottom() + THINK_ICON + THINK_HEAD_GAP
-        full = _label_hfw(self._body, inner, self._content_ver)
-        foldable = full > self._limit_h()
-        folded = foldable and self._user_open is not True
-        h += self._limit_h() if folded else full
-        if foldable:
-            h += self._fold_btn.sizeHint().height() + THINK_HEAD_GAP
-        return h
+        h += self._fold_visible_h(inner)
+        return h + self._fold_extra_h()
 
 
-class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
+class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
     """工具调用行（demo .tool-call）：无气泡，图标壳 + 工具名 + meta + 参数 chip。
 
     工具执行结果**挂在本行下方**（`_out_box`：左侧淡蓝竖线 + 输出正文），不再另起
     「执行结果」区块 —— 一次工具调用在视图上就是一个整体：调用在上、输出在下，
-    中间由 TOOL_OUT_GAP 保持间距。
+    中间由 TOOL_OUT_GAP 保持间距。超长输出由 `_FoldMixin` 自动折叠（可「展开全部」）。
     """
 
     def __init__(self, style: ChatStyle, icon_provider: IconProvider,
@@ -1474,11 +1642,45 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
         ob.addWidget(self._out, 1)
         self._out_box.hide()      # 无输出时不占高度（工具行等价于原样）
         bl.addWidget(self._out_box)
+        # ---- 输出折叠开关（超长输出时出现，见 _FoldMixin）----
+        fold_btn = self._fold_init(style, style.bg, OUT_FOLD_TEXT, icon_provider)
+        self._fold_holder = QWidget(self._body)
+        hl = QHBoxLayout(self._fold_holder)
+        hl.setContentsMargins(0, FOLD_GAP, 0, 0)
+        hl.setSpacing(0)
+        hl.addStretch(1)
+        hl.addWidget(fold_btn)
+        hl.addStretch(1)
+        self._fold_holder.hide()
+        bl.addWidget(self._fold_holder)
         root.addWidget(self._body, 1)
         self._body_lay = bl
         self._fix_vertical()
         # 工具行无气泡（坐在面板底色上），浮现只覆盖文字容器，图标壳保持清晰
         self._emerge_init(style.bg, self._emerge_area)
+
+    # ---------- 折叠钩子（见 _FoldMixin） ----------
+    def _fold_label(self) -> QLabel:
+        return self._out
+
+    def _fold_lines(self) -> int:
+        return OUT_FOLD_LINES
+
+    def _fold_preview(self) -> int:
+        return OUT_PREVIEW_CHARS
+
+    def _fold_gap(self) -> int:
+        # 开关外面还套了一层 holder（自身已含 FOLD_GAP 上边距），holder 与输出区之间
+        # 由 _body_lay 的 spacing 隔开 —— 两份都要计入高度预算
+        return self._body_lay.spacing() + FOLD_GAP
+
+    def _fold_avail_w(self, width: int = None) -> int:
+        w = int(width) if width else self._inner_w()
+        return self._out_inner_w(self._body_inner_w(w))
+
+    def _fold_on_state(self, foldable: bool):
+        """开关外壳只在可折叠时占位：不可折叠时整层收起，工具行恢复为「一行调用 + 输出」"""
+        self._fold_holder.setVisible(foldable)
 
     def _emerge_area(self) -> QRect:
         """工具行文字区域：文字容器矩形（含标题/meta/chip/输出），图标壳与行样式不参与。"""
@@ -1506,8 +1708,8 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
                 w.deleteLater()
         for key, val in (params or {}).items():
             self._chip_lay.addWidget(self._chip(key, val))
-        # 输出正文：空则整块收起，工具行恢复为「一行调用」
-        self._out.setText(out or "")
+        # 输出正文：空则整块收起，工具行恢复为「一行调用」；超长则由 _FoldMixin 折叠
+        self._fold_set_full(out or "")
         if defer:
             # 隐藏过程块（历史回合收起态）：先只记下内层可见性，等空闲切片再 setVisible ——
             # 首次显示输出标签会触发整篇富文本排版，是长对话切换卡顿的大头（见 _IdleSpreader）
@@ -1517,18 +1719,24 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
             self._chips.setVisible(bool(params))
             self._out_box.setVisible(bool(out))
         self._bump_content()
+        if defer:
+            self._deferred_fold = True    # 折叠同样会铺富文本：一并推迟到空闲切片
+        else:
+            self._fold_apply()
         self._emerge_touch()
 
     def resume_deferred(self):
-        """应用被推迟的内层可见性（首次显示的输出标签排版在这里发生，见 set_content）"""
+        """应用被推迟的内层可见性与折叠态（首次显示输出标签的排版在这里发生）"""
         st = getattr(self, "_deferred_show", None)
-        if st is None:
-            return
-        self._deferred_show = None
-        meta, chips, out = st
-        self._meta.setVisible(meta)
-        self._chips.setVisible(chips)
-        self._out_box.setVisible(out)
+        if st is not None:
+            self._deferred_show = None
+            meta, chips, out = st
+            self._meta.setVisible(meta)
+            self._chips.setVisible(chips)
+            self._out_box.setVisible(out)
+        if getattr(self, "_deferred_fold", False):
+            self._deferred_fold = False
+            self._fold_apply()
 
     def _chip(self, key: str, value) -> QLabel:
         lbl = QLabel(f"<b>{key}</b>&nbsp;{value}")
@@ -1570,9 +1778,7 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
             if _need_resize(self._meta.minimumHeight(), h):
                 self._meta.setMinimumHeight(h)
         if not self._out_box.isHidden():
-            h = _label_hfw(self._out, self._out_inner_w(body), self._content_ver)
-            if _need_resize(self._out.minimumHeight(), h):
-                self._out.setMinimumHeight(h)
+            self._fold_pin(width)      # 输出标签：折叠态 = 行数上限，展开态 = 全文高度
 
     def heightForWidth(self, width: int) -> int:
         inner = self._body_inner_w(width)
@@ -1583,14 +1789,20 @@ class ToolCallRow(_PinMixin, _EmergeMixin, QWidget):
         if not self._chips.isHidden():
             h += self._body_lay.spacing() + self._chip_lay.heightForWidth(inner)
         if not self._out_box.isHidden():
-            h += self._body_lay.spacing() + _widget_hfw(self._out_box, inner)
+            # 输出区高度 = 它自己的上边距 + 输出标签当前应占的高度（含折叠上限）
+            h += self._body_lay.spacing() + TOOL_OUT_GAP + self._fold_visible_h(width)
+            h += self._fold_extra_h()      # 折叠开关（含间距）：仅可折叠时占高
         return max(TOOL_ICON, h)
 
 
-class CmdBlock(_PinMixin, _EmergeMixin, QFrame):
-    """执行命令块（demo .cmd）：圆角边框 + 标题栏三点 + `$ 命令` + 输出行。"""
+class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
+    """执行命令块（demo .cmd）：圆角边框 + 标题栏三点 + `$ 命令` + 输出行。
 
-    def __init__(self, style: ChatStyle, parent: QWidget = None):
+    输出行超长时由 `_FoldMixin` 折叠（可「展开全部」）；`$ 命令` 与标题栏不参与折叠。
+    """
+
+    def __init__(self, style: ChatStyle, icon_provider: IconProvider = None,
+                 parent: QWidget = None):
         super().__init__(parent)
         self._style = style
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1636,9 +1848,40 @@ class CmdBlock(_PinMixin, _EmergeMixin, QFrame):
             f" color: {style.ok_fg}; font-size: {FONT_SMALL}px;"
             f" font-family: {style.font_mono};")
         root.addWidget(self._body)
+        # ---- 输出折叠开关（超长输出时出现，见 _FoldMixin）----
+        fold_btn = self._fold_init(style, style.panel, OUT_FOLD_TEXT, icon_provider)
+        self._fold_holder = QWidget(self)
+        hl = QHBoxLayout(self._fold_holder)
+        hl.setContentsMargins(CMD_PAD_H, FOLD_GAP, CMD_PAD_H, CMD_PAD_V)
+        hl.setSpacing(0)
+        hl.addStretch(1)
+        hl.addWidget(fold_btn)
+        hl.addStretch(1)
+        self._fold_holder.hide()
+        root.addWidget(self._fold_holder)
         self._fix_vertical()
         # 命令块正文坐在 panel 底上；浮现覆盖「命令 + 输出」两段（标题栏三点不参与）
         self._emerge_init(style.panel, self._emerge_area)
+
+    # ---------- 折叠钩子（见 _FoldMixin） ----------
+    def _fold_label(self) -> QLabel:
+        return self._body
+
+    def _fold_lines(self) -> int:
+        return OUT_FOLD_LINES
+
+    def _fold_preview(self) -> int:
+        return OUT_PREVIEW_CHARS
+
+    def _fold_gap(self) -> int:
+        return FOLD_GAP + CMD_PAD_V   # 开关外壳的上 / 下内边距都要计入
+
+    def _fold_avail_w(self, width: int = None) -> int:
+        return max(1, int(width) - 2) if width else self._inner_w()
+
+    def _fold_on_state(self, foldable: bool):
+        """开关外壳只在可折叠时占位（不可折叠时命令块恢复为原样）"""
+        self._fold_holder.setVisible(foldable)
 
     def _emerge_area(self) -> QRect:
         """命令块正文区域：`$ 命令` 与输出两段的并集（标题栏不参与浮现）。
@@ -1661,24 +1904,31 @@ class CmdBlock(_PinMixin, _EmergeMixin, QFrame):
         self._bar_label.setText(label or "")
         self._cmd.setText(f'<span style="color:{self._style.accent};">$&nbsp;</span>'
                           f'{cmd_html}' if cmd_html else "")
-        self._body.setText(f'<span style="color:{self._style.muted};">ok</span>&nbsp;&nbsp;'
-                           f'{out_html}' if out_html else "")
+        # 输出行交给折叠机制：全文存 _fold_full，标签按折叠态铺前缀或全文
+        self._fold_set_full(f'<span style="color:{self._style.muted};">ok</span>&nbsp;&nbsp;'
+                            f'{out_html}' if out_html else "")
         if defer:
             self._deferred_show = (bool(cmd_html), bool(out_html))   # 见 ToolCallRow.set_content
         else:
             self._cmd.setVisible(bool(cmd_html))
             self._body.setVisible(bool(out_html))
         self._bump_content()
+        if defer:
+            self._deferred_fold = True    # 折叠同样会铺富文本：一并推迟到空闲切片
+        else:
+            self._fold_apply()
         self._emerge_touch()
 
     def resume_deferred(self):
-        """应用被推迟的内层可见性（见 ToolCallRow.set_content 的 defer 说明）"""
+        """应用被推迟的内层可见性与折叠态（见 ToolCallRow.set_content 的 defer 说明）"""
         st = getattr(self, "_deferred_show", None)
-        if st is None:
-            return
-        self._deferred_show = None
-        self._cmd.setVisible(st[0])
-        self._body.setVisible(st[1])
+        if st is not None:
+            self._deferred_show = None
+            self._cmd.setVisible(st[0])
+            self._body.setVisible(st[1])
+        if getattr(self, "_deferred_fold", False):
+            self._deferred_fold = False
+            self._fold_apply()
 
     def _inner_w(self) -> int:
         return max(1, self.width() - 2)
@@ -1688,20 +1938,22 @@ class CmdBlock(_PinMixin, _EmergeMixin, QFrame):
         if w <= 0:
             return
         self._pin_w = w
-        for lbl in (self._cmd, self._body):
-            if lbl.isHidden():
-                continue
-            h = _label_hfw(lbl, w, self._content_ver)
-            if _need_resize(lbl.minimumHeight(), h):
-                lbl.setMinimumHeight(h)
+        if not self._cmd.isHidden():
+            h = _label_hfw(self._cmd, w, self._content_ver)
+            if _need_resize(self._cmd.minimumHeight(), h):
+                self._cmd.setMinimumHeight(h)
+        if not self._body.isHidden():
+            self._fold_pin(width)      # 输出标签：折叠态 = 行数上限，展开态 = 全文高度
 
     def heightForWidth(self, width: int) -> int:
         inner = max(1, int(width) - 2)
 
         h = self.layout().itemAt(0).widget().sizeHint().height() + 2
-        for lbl in (self._cmd, self._body):
-            if not lbl.isHidden():
-                h += _label_hfw(lbl, inner, self._content_ver)
+        if not self._cmd.isHidden():
+            h += _label_hfw(self._cmd, inner, self._content_ver)
+        if not self._body.isHidden():
+            h += self._fold_visible_h(width)
+            h += self._fold_extra_h()      # 折叠开关（含间距）：仅可折叠时占高
         return h
 
 
@@ -2038,9 +2290,6 @@ class ChatTurn(QWidget):
         if self._user_open is not None:
             done = not self._user_open
         self._done = done
-        if not done:
-            # 展开过程区：先把空闲切片里未铺完的隐藏块同步补齐（展开必须立刻看到完整内容）
-            self._resume_deferred()
         # 批量操作期间禁重绘：setVisible/setMinimumHeight 各触发一次失效，
         # 禁重绘后中间状态不 paint，结束后一次 update，减少绘制开销
         self.setUpdatesEnabled(False)
@@ -2203,12 +2452,12 @@ class ChatTurn(QWidget):
             wid = self._make_block(kind, parent=None)
             is_proc = self._block_proc(kind, payload)
             # 历史回合（已结束）的过程块默认收起隐藏：内层可见性收尾推迟到空闲切片 ——
-            # 隐藏输出的首次显示会为整篇富文本排版，长对话上百块累积成秒级切换阻塞
+            # 隐藏输出的首次显示会为整篇富文本排版，长对话上百块累积成秒级加载阻塞
             # （见 _IdleSpreader）。进行中的回合（流式）不推迟：内容必须即时可见。
+            # 若用户在补显完成前就展开，_apply_proc_visible 会逐块就地补齐（幂等）。
             defer = is_proc and self._done
             self._update_block(wid, kind, payload, defer=defer)
             if defer:
-                self._deferred.append(wid)
                 _spreader().push(wid.resume_deferred)
             # 新块先同步流式状态再交付布局：占位/命令这类「一次成型」的块内容在创建时就
             # 已写入，只有此刻就带上 live，随后的首次布局重排才能把整块记为「刚浮现」。
@@ -2231,15 +2480,17 @@ class ChatTurn(QWidget):
 
     def _make_block(self, kind: str, parent: QWidget = None) -> QWidget:
         p = parent if parent is not None else self._box
-        if kind == KIND_THINK:
-            b = ThinkBubble(self._style, self._icon_provider, p)
-            # 思考气泡自带「继续查看」：展开/收起就地改高度，必须回报本回合重钉高度
+        if kind in (KIND_THINK, KIND_TOOL, KIND_CMD):
+            # 这三类都能就近折叠（思考气泡 / 工具输出 / 命令输出）：展开或收起会就地改高度，
+            # 必须回报本回合重钉高度，否则展开后被回合总额压扁、过程块互相遮挡。
+            if kind == KIND_THINK:
+                b = ThinkBubble(self._style, self._icon_provider, p)
+            elif kind == KIND_TOOL:
+                b = ToolCallRow(self._style, self._icon_provider, p)
+            else:
+                b = CmdBlock(self._style, self._icon_provider, p)
             b.set_fold_handler(self._on_block_resize)
             return b
-        if kind == KIND_TOOL:
-            return ToolCallRow(self._style, self._icon_provider, p)
-        if kind == KIND_CMD:
-            return CmdBlock(self._style, p)
         if kind == KIND_STREAM:
             return StreamBlock(self._style, p)
         return RichBlock(self._style, parent=p)
@@ -2259,16 +2510,6 @@ class ChatTurn(QWidget):
                             payload.get("out", ""), defer=defer)
         else:
             wid.set_html(payload.get("html", ""), defer=defer)
-
-    def _resume_deferred(self):
-        """把本回合所有推迟收尾的隐藏过程块就地补齐（用户在铺完前展开时同步调用：
-        展开必须先看到完整内容，不能等空闲切片）。已收尾的块 `resume_deferred` 为空操作。"""
-        pending, self._deferred = self._deferred, []
-        for wid in pending:
-            try:
-                wid.resume_deferred()
-            except RuntimeError:
-                pass                     # 控件已销毁：跳过
 
     def _wire(self, wid: QWidget):
         """新块接入链接点击与右键菜单（右键菜单事件按需从子控件冒泡到外层）。"""
