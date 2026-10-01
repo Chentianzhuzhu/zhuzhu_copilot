@@ -105,6 +105,27 @@ def test_code_preview_restyle_is_wired(glass_state):
     assert "self.refresh_glass_qss()" in seg, "构造末尾必须调用一次（懒建页也在其中）"
 
 
+def test_restyle_targets_real_panel_attributes():
+    """`_restyle_float_windows` 里写的名字必须是 AgentPanel 真实的浮窗属性。
+
+    真实缺陷（本轮）：这里曾写成 `_wt_win` 等带上划线的名字，而面板实际属性是
+    `wt_win` —— 遍历一个都取不到，浮窗永远刷不到新样式（用户反馈「工作树 / Git /
+    任务清单仍有残留」），而桩件测试照样通过。所以这里必须对着源码交叉验证。
+    """
+    import re
+    from pathlib import Path
+
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    src = Path(ap.__file__).read_text(encoding="utf-8")
+    seg = src[src.index("def _restyle_float_windows"):]
+    seg = seg[:seg.index("\n    def ", 10)]
+    names = re.findall(r'"(\w*win)"', seg)
+    assert len(names) == 4, f"应覆盖四个浮窗，实际 {names}"
+    for n in names:
+        assert f"self.{n} = " in src, f"{n} 不是 AgentPanel 的真实浮窗属性（刷新会全部失效）"
+
+
 def test_glass_refresh_restyles_all_float_windows(glass_state):
     """主面板刷新玻璃时必须逐个重设四个浮窗（否则开玻璃后仍是旧实色）。
 
@@ -120,7 +141,7 @@ def test_glass_refresh_restyles_all_float_windows(glass_state):
             seen.append(self)
 
     stubs = [_Stub() for _ in range(4)]
-    panel._wt_win, panel._git_win, panel._todos_win, panel._code_win = stubs
+    panel.wt_win, panel.git_win, panel.todos_win, panel.code_win = stubs
     ap.AgentPanel._restyle_float_windows(panel)
     assert seen == stubs, "四个浮窗都必须被重设样式"
 
@@ -141,10 +162,45 @@ def test_missing_float_window_is_tolerated(glass_state):
             ok.append(self)
 
     good = _Ok()
-    panel._wt_win, panel._git_win, panel._todos_win, panel._code_win = (
+    panel.wt_win, panel.git_win, panel.todos_win, panel.code_win = (
         None, _Boom(), None, good)
     ap.AgentPanel._restyle_float_windows(panel)
     assert ok == [good]
+
+
+def test_settings_dialog_restyles_on_glass_toggle(glass_state, offscreen_app):
+    """设置页在玻璃开关切换后必须重建页面（否则整页控件停在旧实色上）。
+
+    真实缺陷（本轮，用户直接反馈）：开着设置页勾选「启用磨砂玻璃材质」后，只有
+    根背景变成壁纸，左侧导航与右侧各子项仍是构造时的实色 —— 即「原有 UI 元素残留」。
+    """
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=False)
+    dlg = ap._AgentSettingsDialog(None)
+    try:
+        assert "rgba" not in dlg.nav.styleSheet(), "玻璃关闭时应为不透明主题色"
+        glass_state.set_fields(persist=False, enabled=True)   # 订阅回调 → 重建页面
+        assert "rgba(" in dlg.nav.styleSheet(), "开玻璃后设置页导航仍是旧实色"
+    finally:
+        dlg.done(0)
+
+
+def test_rebuild_pages_keeps_unsaved_input(glass_state, offscreen_app):
+    """重建页面不能丢掉用户尚未保存的文本（规则/提示词等编辑框）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    glass_state.set_fields(persist=False, enabled=False)
+    dlg = ap._AgentSettingsDialog(None)
+    try:
+        dlg._ensure_all_pages()
+        dlg.rules_edit.setPlainText("每行一条规则")
+        dlg.disable_tools_edit.setPlainText("grep")
+        dlg._rebuild_pages()
+        assert dlg.rules_edit.toPlainText() == "每行一条规则"
+        assert dlg.disable_tools_edit.toPlainText() == "grep"
+    finally:
+        dlg.done(0)
 
 
 def test_compact_button_is_not_squeezed():

@@ -2399,38 +2399,7 @@ class _AgentSettingsDialog(QDialog):
         self.setObjectName("agentSettingsDlg")
         self.setMinimumSize(991, 687)
         self.resize(991, 687)
-        # 有自定义背景图时根底交给玻璃内核绘制壁纸；否则用主题底色。
-        # （注意与无边框外壳无关：不换标题栏也能有壁纸背景。）
-        _dlg_bg = "transparent" if _glass_wallpaper_active() else self._BG
-        # 弹出层跟随主题面板色；磨砂玻璃的观感由应用级 QSS 的玻璃填充提供
-        # （见 app_glass.control_fill），不在这里写死颜色。
-        _popup_bg = self._PANEL
-        _popup_bd = self._BORDER
-        _popup_sel = self._PANEL2
-        _popup_hover = self._PANEL2
-        # 输入类控件是大表面：走玻璃填充（壁纸下不再是不透明的旧实色块）
-        _in_bg = _gsurface(self._PANEL)
-        _in_focus = _gsurface(self._PANEL2)
-        self.setStyleSheet(
-            # QDialog#agentSettingsDlg：透明背景仅作用于设置对话框自身，
-            # 避免级联到子 QMessageBox/QInputDialog 导致其背景透明变纯黑
-            f"QDialog#agentSettingsDlg {{ background: {_dlg_bg}; }}"
-            f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
-            f"QLineEdit, QPlainTextEdit, QComboBox {{ background: {_in_bg};"
-            f"color: {self._TEXT}; border: 1px solid {self._BORDER};"
-            "border-radius: 12px; padding: 6px 10px; }}"
-            f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
-            f"border: 1px solid {self._ACCENT}; background: {_in_focus}; }}"
-            f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
-            f"color: {self._TEXT}; border: 1px solid {_popup_bd};"
-            f"border-radius: 12px; padding: 4px; outline: none;"
-            f"selection-background-color: {_popup_sel}; }}"
-            f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
-        f" border-radius: {RADIUS_SM}px; }}"
-            f"QComboBox QAbstractItemView::item:hover {{ background: {_popup_hover}; }}"
-            f"QScrollBar:vertical {{ background: transparent; width: 8px; }}"
-            f"QScrollBar::handle:vertical {{ background: {self._BORDER};"
-            "border-radius: 4px; min-height: 30px; }}")
+        self.setStyleSheet(self._dialog_qss())
         s = agent_skills.load_settings()
         self._mcp_servers = agent_skills.load_mcp_servers()
 
@@ -2461,17 +2430,7 @@ class _AgentSettingsDialog(QDialog):
         # ---------- 左侧导航栏（矢量图标 + 文字） ----------
         self.nav = QListWidget()
         self.nav.setFixedWidth(176)
-        self.nav.setStyleSheet(
-            f"QListWidget {{ background: {_gsurface(self._PANEL)}; border: none;"
-            "padding-top: 10px; outline: none; }}"
-            f"QListWidget::item {{ color: {self._DIM}; padding: 12px 14px;"
-            "font-size: 13px; font-weight: 600; border: none;"
-            f"border-left: 3px solid transparent; }}"
-            f"QListWidget::item:hover {{ background: {self._PANEL2};"
-            f"color: {self._TEXT}; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
-            f"color: {self._ACCENT_HOVER};"
-            f"border-left: 3px solid {self._ACCENT_HOVER}; }}")
+        self.nav.setStyleSheet(self._nav_qss())
         # 图标尺寸与 QListWidget 默认值（16px）不同，必须显式同步，否则 QListView
         # 会按默认尺寸缩放/裁切图标。
         self.nav.setIconSize(QSize(_NAV_ICON_SIZE, _NAV_ICON_SIZE))
@@ -2540,14 +2499,12 @@ class _AgentSettingsDialog(QDialog):
                            "font-size: 13px; font-weight: 700;")
         save.setAutoDefault(False)
         save.clicked.connect(self._save)
-        cancel = QPushButton("取消")
-        cancel.setStyleSheet(f"background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
-                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                             "padding: 8px 24px; font-size: 13px; font-weight: 600;")
-        cancel.setAutoDefault(False)
-        cancel.clicked.connect(self.reject)
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setStyleSheet(self._cancel_btn_qss())
+        self.cancel_btn.setAutoDefault(False)
+        self.cancel_btn.clicked.connect(self.reject)
         btns.addWidget(save)
-        btns.addWidget(cancel)
+        btns.addWidget(self.cancel_btn)
         right.addLayout(btns)
         root.addLayout(right)
 
@@ -2555,6 +2512,130 @@ class _AgentSettingsDialog(QDialog):
         self.workflow_done.connect(self._on_workflow_done)
         self.workflow_progress.connect(self._on_workflow_progress)
         self.plugin_progress.connect(self._on_plugin_progress)
+        # 玻璃总开关变化 → 本对话框自己重建（控件底 QSS 在构造时固化）
+        self._glass_flags = self._glass_flags_now()
+        app_glass.subscribe(self._on_glass_params_changed)
+
+    def _dialog_qss(self) -> str:
+        """本对话框的根样式：输入类控件（输入框 / 多行文本 / 下拉框）的玻璃填充都在这里。
+
+        玻璃开关变化后必须重设（见 `_restyle_glass`）—— 否则这些控件会一直停在
+        构造时的旧实色底上。
+        """
+        # 有自定义背景图时根底交给玻璃内核绘制壁纸；否则用主题底色。
+        # （注意与无边框外壳无关：不换标题栏也能有壁纸背景。）
+        _dlg_bg = "transparent" if _glass_wallpaper_active() else self._BG
+        # 弹出层跟随主题面板色；磨砂玻璃的观感由应用级 QSS 的玻璃填充提供
+        # （见 app_glass.control_fill），不在这里写死颜色。
+        _popup_bg = self._PANEL
+        # 输入类控件是大表面：走玻璃填充（壁纸下不再是不透明的旧实色块）
+        _in_bg = _gsurface(self._PANEL)
+        _in_focus = _gsurface(self._PANEL2)
+        return (
+            # QDialog#agentSettingsDlg：透明背景仅作用于设置对话框自身，
+            # 避免级联到子 QMessageBox/QInputDialog 导致其背景透明变纯黑
+            f"QDialog#agentSettingsDlg {{ background: {_dlg_bg}; }}"
+            f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
+            f"QLineEdit, QPlainTextEdit, QComboBox {{ background: {_in_bg};"
+            f"color: {self._TEXT}; border: 1px solid {self._BORDER};"
+            "border-radius: 12px; padding: 6px 10px; }}"
+            f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
+            f"border: 1px solid {self._ACCENT}; background: {_in_focus}; }}"
+            f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
+            f"color: {self._TEXT}; border: 1px solid {self._BORDER};"
+            f"border-radius: 12px; padding: 4px; outline: none;"
+            f"selection-background-color: {self._PANEL2}; }}"
+            f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
+            f" border-radius: {RADIUS_SM}px; }}"
+            f"QComboBox QAbstractItemView::item:hover {{ background: {self._PANEL2}; }}"
+            f"QScrollBar:vertical {{ background: transparent; width: 8px; }}"
+            f"QScrollBar::handle:vertical {{ background: {self._BORDER};"
+            "border-radius: 4px; min-height: 30px; }}")
+
+    def _nav_qss(self) -> str:
+        """左侧导航样式（玻璃开关变化后需重设，故单独成函数）。"""
+        return (
+            f"QListWidget {{ background: {_gsurface(self._PANEL)}; border: none;"
+            "padding-top: 10px; outline: none; }}"
+            f"QListWidget::item {{ color: {self._DIM}; padding: 12px 14px;"
+            "font-size: 13px; font-weight: 600; border: none;"
+            f"border-left: 3px solid transparent; }}"
+            f"QListWidget::item:hover {{ background: {self._PANEL2};"
+            f"color: {self._TEXT}; }}"
+            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"color: {self._ACCENT_HOVER};"
+            f"border-left: 3px solid {self._ACCENT_HOVER}; }}")
+
+    def _glass_flags_now(self) -> tuple:
+        """影响「控件底是实色还是玻璃」的结构性开关（其余参数只改深浅，不重建）。"""
+        p = app_glass.params()
+        return (bool(p.enabled), bool(p.frameless))
+
+    def _on_glass_params_changed(self):
+        """玻璃材质 / 无边框外壳开关变化：重建页面，让控件底换成新的玻璃填充。
+
+        设置页控件底在构造时按当时的玻璃参数固化成 QSS 字符串，开关一拨（实色 ↔
+        玻璃）就必须重造，否则整页停在旧底色上 —— 用户反馈的「设置页左侧设置项、
+        右侧每个子项都残留原有 UI」正是这个（开着设置页勾选「启用磨砂玻璃材质」后，
+        只有根背景变了，控件还是旧实色）。
+        滑杆参数（磨砂程度 / 透明度）逐帧变化，重建会销毁正在拖动的滑杆，故不重建。
+        """
+        flags = self._glass_flags_now()
+        if flags == self._glass_flags:
+            return
+        self._glass_flags = flags
+        self._restyle_glass()
+
+    def _cancel_btn_qss(self) -> str:
+        """次级按钮（取消）底色：玻璃填充，开关变化后需重设。"""
+        return (f"background: {_gsurface(self._PANEL)}; color: {self._TEXT};"
+                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                "padding: 8px 24px; font-size: 13px; font-weight: 600;")
+
+    def _restyle_glass(self):
+        """玻璃开关变化后重建本对话框样式：根样式 + 导航 + 取消按钮 + 全部页面。"""
+        for apply in (lambda: self.setStyleSheet(self._dialog_qss()),
+                      lambda: self.nav.setStyleSheet(self._nav_qss()),
+                      lambda: self.cancel_btn.setStyleSheet(self._cancel_btn_qss())):
+            try:
+                apply()
+            except Exception:
+                pass
+        self._rebuild_pages()
+
+    def _rebuild_pages(self):
+        """按当前玻璃参数重建全部设置页，保留当前页、滚动位置与未保存的输入。"""
+        keep = {}
+        for name, w in list(vars(self).items()):
+            if isinstance(w, QPlainTextEdit):
+                keep[name] = w.toPlainText()
+            elif isinstance(w, QLineEdit):
+                keep[name] = w.text()
+        idx = self.stack.currentIndex()
+        scroll = self._page_scroll.verticalScrollBar().value()
+        while self.stack.count():
+            page = self.stack.widget(0)
+            self.stack.removeWidget(page)
+            page.deleteLater()
+        while self.stack.count() <= idx and self.stack.count() < len(self._page_builders):
+            self.stack.addWidget(self._page_builders[self.stack.count()]())
+        if self.stack.count():
+            self.stack.setCurrentIndex(min(idx, self.stack.count() - 1))
+        for name, text in keep.items():
+            w = getattr(self, name, None)
+            if isinstance(w, QPlainTextEdit):
+                w.setPlainText(text)
+            elif isinstance(w, QLineEdit):
+                w.setText(text)
+        self._page_scroll.verticalScrollBar().setValue(scroll)
+
+    def done(self, code: int):
+        """关闭时反订阅：订阅者先于参数模块销毁时，回调再碰已销毁的 Qt 对象会崩进程。"""
+        try:
+            app_glass.unsubscribe(self._on_glass_params_changed)
+        except Exception:
+            pass
+        super().done(code)
 
     # ---------- 各分组页面 ----------
     def paintEvent(self, event):
@@ -16057,7 +16138,7 @@ class AgentPanel(QDialog):
         它们的控件 QSS 按玻璃参数生成，而浮窗在启动时就已经建好 —— 参数变了不重设
         就会一直停在旧实色底上（用户反馈的「原有 UI 元素残留」）。
         """
-        for name in ("_wt_win", "_git_win", "_todos_win", "_code_win"):
+        for name in ("wt_win", "git_win", "todos_win", "code_win"):
             win = getattr(self, name, None)
             if win is None:
                 continue

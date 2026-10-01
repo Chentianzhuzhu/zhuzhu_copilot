@@ -92,9 +92,7 @@ def main():
     from zhuzhu_Copilot.ui import agent_panel as ap
     from zhuzhu_Copilot.ui.agent_panel import _AgentSettingsDialog, _NAV_ITEMS
 
-    # 真实数据目录里玻璃可能被关掉（那就只剩主题实色，看不出残留差异）：
-    # 这里强制开启材质 + 保留背景图，复核「有壁纸时的玻璃观感」。
-    app_glass.set_fields(persist=False, enabled=True)
+    # 用真实 QSettings 的玻璃参数复核（不修改），确认控件底是否真的走了玻璃填充
     p = app_glass.params()
     print(f"玻璃参数：enabled={p.enabled} bg_image={bool(p.bg_image)} "
           f"frost={p.frost} opacity={p.opacity} 壁纸可解码={app_glass.wallpaper_ok()}")
