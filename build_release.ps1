@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     一条命令完成：版本号同步 → 运行时/依赖组件准备 → 工作流种子 → 清理 → 打包 →
-    签名（主程序先于安装包签名）→ 生成 Inno Setup 安装包 → 签名 → 产物自检。
+    签名主程序 → 生成 Inno Setup 安装包（安装包与卸载器在编译期一并签名）→ 产物自检。
 
     相对旧脚本的改进：
       1. 单一入口：旧的独立打包脚本已删除，installer\build_setup.bat 退化为薄壳只调本脚本，
@@ -51,8 +51,8 @@ param(
     [string]$Python,
     [string]$CertSubject = 'zhutianliang',
     [string]$TimestampServer = 'http://timestamp.digicert.com',
-    [string]$PfxPassword = 'Zhutianliang.2026',
     [string]$Iscc = 'C:\Program Files\Inno Setup 7\ISCC.exe',
+    [string]$SignToolName = 'zhuzhu_sign',
     [switch]$NoSign,
     [switch]$SkipRuntime,
     [switch]$SkipSeed,
@@ -282,6 +282,7 @@ function Test-Prereq($PyInfo) {
         'build\zhuzhu_Copilot.spec',
         'scripts\generate_spec.py',
         'scripts\verify_release_artifact.py',
+        'scripts\sign_file.ps1',
         'installer\zhuzhu_Copilot.iss',
         'assets\icon.ico',
         'assets\admin.manifest')) {
@@ -360,7 +361,7 @@ try {
     if (-not $SkipApp)       { $stages += '生成 spec + 打包主程序' }
     if (-not $SkipApp -and -not $NoSign) { $stages += '签名主程序' }
     if (-not $SkipInstaller) { $stages += '编译安装包（Inno Setup）' }
-    if (-not $SkipInstaller -and -not $NoSign) { $stages += '签名安装包' }
+    if (-not $SkipInstaller -and -not $NoSign) { $stages += '校验安装包签名' }
     if (-not $SkipInstaller) { $stages += '产物自检 + 汇总' }
     $Script:StepTotal = $stages.Count
     $Script:StepNo = 0
@@ -491,14 +492,6 @@ try {
         $sig = Get-AuthenticodeSignature $mainExe
         if ($sig.Status -ne 'Valid') { Fail "主程序签名无效: $($sig.Status)（$($sig.StatusMessage)）" }
         Write-Ok "主程序已签名并带时间戳（$($sig.Status)）"
-
-        # 导出私钥供安装器补签 unins000.exe（密码与 .iss 的 /DMyAppPwd 一致）
-        $pfx = Join-Path $ProjectDir 'build\certs\zhutianliang.pfx'
-        New-Item -ItemType Directory -Force -Path (Split-Path $pfx) | Out-Null
-        if (Test-Path $pfx) { Remove-Item -Force $pfx }
-        $sec = ConvertTo-SecureString $PfxPassword -AsPlainText -Force
-        $cert | Export-PfxCertificate -FilePath $pfx -Password $sec -ErrorAction Stop | Out-Null
-        Write-Ok "已导出安装器签名私钥: build\certs\zhutianliang.pfx"
     } elseif (-not $SkipApp) {
         Write-Warn '已跳过主程序签名'
     }
@@ -507,7 +500,25 @@ try {
     if (-not $SkipInstaller) {
         Write-Stage '编译安装包（Inno Setup 7）'
         $iss = Join-Path $ProjectDir 'installer\zhuzhu_Copilot.iss'
-        $rc = Invoke-Exe -Exe $Iscc -Arguments @($iss, "/DMyAppPwd=$PfxPassword") -ViaCmd
+        $isccArgs = @($iss)
+        if (-not $NoSign) {
+            # 卸载器必须在【编译期】签名：Inno 只有在卸载器 EXE 自带签名时才会把
+            # 语言文本外置为 unins000.msg（签名不能改 EXE，见 SignedUninstaller 文档）。
+            # 若改成装完后补签，卸载器运行时会转去读并不存在的 unins000.msg 并当场中止。
+            # Inno 要求签名工具只能定义在编译器 IDE 或命令行上，这里用 -s 传入，
+            # 同时用 /DSIGNTOOL 让 .iss 按名引用（未传则不启用签名的 .iss 仍可单独编译）。
+            $signScript = Join-Path $ProjectDir 'scripts\sign_file.ps1'
+            if (-not (Test-Path $signScript)) { Fail "缺少签名脚本: $signScript" }
+            $signCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
+                       "`$q$signScript`$q -Target `$f " +
+                       "-CertSubject `$q$CertSubject`$q -TimestampServer `$q$TimestampServer`$q"
+            $isccArgs += "/DSIGNTOOL=$SignToolName"
+            $isccArgs += "-s$SignToolName=$signCmd"
+            Write-Info "卸载器/安装包由 SignTool '$SignToolName' 在编译期签名"
+        } else {
+            Write-Warn '已指定 -NoSign：安装包与卸载器均不签名'
+        }
+        $rc = Invoke-Exe -Exe $Iscc -Arguments $isccArgs -ViaCmd
         if ($rc -ne 0) { Fail "ISCC 编译失败（退出码 $rc）" }
         $setup = Join-Path $ProjectDir 'dist\zhuzhu Copilot Setup.exe'
         if (-not (Test-Path $setup)) { Fail "未生成安装包: $setup" }
@@ -515,15 +526,15 @@ try {
         Write-Ok "安装包已生成（$sz MB）"
     }
 
-    # ---- 10. 签名安装包 ------------------------------------------------
-    if (-not $SkipInstaller -and -not $NoSign -and $cert) {
-        Write-Stage '签名安装包'
+    # ---- 10. 校验安装包签名（已在编译期由 ISCC 完成，此处只验证）--------
+    if (-not $SkipInstaller -and -not $NoSign) {
+        Write-Stage '校验安装包签名'
         $setup = Join-Path $ProjectDir 'dist\zhuzhu Copilot Setup.exe'
-        Set-AuthenticodeSignature -FilePath $setup -Certificate $cert `
-            -HashAlgorithm SHA256 -TimestampServer $TimestampServer | Out-Null
         $sig = Get-AuthenticodeSignature $setup
-        if ($sig.Status -ne 'Valid') { Fail "安装包签名无效: $($sig.Status)（$($sig.StatusMessage)）" }
-        Write-Ok "安装包已签名并带时间戳（$($sig.Status)）"
+        if ($sig.Status -ne 'Valid') {
+            Fail "安装包签名无效: $($sig.Status)（$($sig.StatusMessage)）—— 检查 ISCC 的 SignTool 输出"
+        }
+        Write-Ok "安装包已在编译期签名并带时间戳（$($sig.Status)）"
     }
 
     # ---- 11. 产物自检 + 汇总 -------------------------------------------

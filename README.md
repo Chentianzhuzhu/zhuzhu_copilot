@@ -267,10 +267,11 @@ python src/main.py
 
 - **`installer\build_setup.bat`** 是薄壳入口，仅以 `powershell.exe -File build_release.ps1 %*` 转发参数，本身不再维护独立流程。
 - **版本号一处生效**：`-Version x.y.z` 会同步 `installer\zhuzhu_Copilot.iss`（`MyAppVersion`）、`src\zhuzhu_Copilot\update_check.py`（`APP_VERSION`）、`build\version_info.txt`（exe 文件属性版本）并回读校验。
-- **流程阶段**：环境体检 → 版本号同步 → 沙盒运行时打包（Node/Python 便携版）→ 依赖组件准备（VC++ 运行库 / d3dcompiler_47）→ 工作流种子快照 → 清理旧产物 → 生成 spec + 打包主程序 → 签名主程序 → 编译安装包 → 签名安装包 → 产物自检 + 汇总。
+- **流程阶段**：环境体检 → 版本号同步 → 沙盒运行时打包（Node/Python 便携版）→ 依赖组件准备（VC++ 运行库 / d3dcompiler_47）→ 工作流种子快照 → 清理旧产物 → 生成 spec + 打包主程序 → 签名主程序 → 编译安装包（安装包与卸载器在编译期一并签名）→ 校验安装包签名 → 产物自检 + 汇总。
 - **产物位置**：`dist\zhuzhu Copilot\`（PyInstaller onedir 目录，主程序 `zhuzhu Copilot.exe`）与安装包 `dist\zhuzhu Copilot Setup.exe`。自检会核对 exe 文件属性版本号与关键模块是否随包（`scripts/verify_release_artifact.py`），任一不合格即失败。
 - **PyInstaller spec**：`build\zhuzhu_Copilot.spec` 由 `scripts/generate_spec.py` 在打包前按仓库配置**实时重新生成**（单一事实来源，写与读之间无竞争窗口）；该文件被 `.gitignore` 显式白名单保留入库（`!build/zhuzhu_Copilot.spec`）。
-- **签名证书约定**：脚本从 `Cert:\CurrentUser\My` 中查找 Subject 含 `zhutianliang` 且带私钥的证书进行 Authenticode 签名（含时间戳）。私钥文件 `build\certs\zhutianliang.pfx` 由脚本在构建时导出，已被 `.gitignore` 排除（`build/certs/*.pfx`），**严禁提交到仓库**；公开的 `build/certs/zhutianliang.cer` 可入库。签名口令不写入仓库。
+- **签名证书约定**：脚本从 `Cert:\CurrentUser\My` 中查找 Subject 含 `zhutianliang` 且带私钥的证书进行 Authenticode 签名（含时间戳）。**私钥只留在证书库里，构建过程不导出任何 `.pfx` 文件**；公开的 `build/certs/zhutianliang.cer` 可入库。签名口令不写入仓库。
+- **卸载器签名必须在编译期完成**：`build_release.ps1` 以 `ISCC -s<名称>=<命令> /DSIGNTOOL=<名称>` 把 `scripts\sign_file.ps1` 注册为 SignTool，`.iss` 内 `SignedUninstaller=yes` 随之启用。Inno 只在卸载器 EXE 自带签名时才把语言文本外置为 `unins000.msg`（已签名的 EXE 不能再改），因此**绝不能改成「安装后用脚本补签 `unins000.exe`」**：那样卸载器运行时会转去读并不存在的 `unins000.msg`，卸载当场中止（退出码 0、什么都不删、连日志都写不出）。
 
 ---
 

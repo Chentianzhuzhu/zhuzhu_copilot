@@ -93,7 +93,7 @@ python src/main.py
 installer\build_setup.bat
 ```
 
-> **注意**：代码签名证书 `build/certs/zhutianliang.pfx` 为本地私钥文件，已被 `.gitignore` 排除，严禁提交到仓库。
+> **注意**：代码签名私钥只保留在证书库（`Cert:\CurrentUser\My`），构建过程不导出任何 `.pfx`，严禁提交私钥到仓库。安装包与卸载器均在 Inno Setup 编译期由 `scripts/sign_file.ps1` 签名（`ISCC -s` 注册 SignTool），不要在安装后再补签 `unins000.exe`。
 
 ---
 
