@@ -338,6 +338,30 @@ def _compress_data_url(data_url: str, max_width: int = 320, quality: int = 80) -
         return data_url
 
 
+# ══════════════ 内置工具的「等待上限」 ══════════════
+# 语义是「引擎愿意等多久」，不是「工具本身能跑多久」：超时只是放弃等待，
+# 后台线程仍在跑 —— 于是超时后模型拿到的是「已停止等待」而非真实结果，上下文与实际进度错位。
+_NO_WAIT_TIMEOUT_TOOLS = frozenset({
+    "run_command",      # 长命令（构建/训练/长脚本）天然无上限，由停止按钮取消
+    "create_plugin",    # 生成类：内部是完整 LLM 往返（设计 + 自检 + 可能自修），远超 40s
+})
+_DOWNLOAD_WAIT_TIMEOUT_S = 3600.0    # 下载：不按 40s 放弃（长下载由 UI 进度条 + 停止取消）
+_DEFAULT_WAIT_TIMEOUT_S = 40.0       # 其余内置工具：40s 后放弃等待，避免长阻塞
+
+
+def _tool_wait_timeout(name: str):
+    """内置工具的等待上限（None = 不设上限，只有 stop 可中断）。
+
+    单独成函数而不是内联三元：新增「生成类/长任务」工具时只需进
+    `_NO_WAIT_TIMEOUT_TOOLS`，不必在调用点堆条件（也便于测试直接断言）。
+    """
+    if name in _NO_WAIT_TIMEOUT_TOOLS:
+        return None
+    if name == "fast_download":
+        return _DOWNLOAD_WAIT_TIMEOUT_S
+    return _DEFAULT_WAIT_TIMEOUT_S
+
+
 def _call_with_stop(fn, stop_event, timeout: float = 30.0):
     """在独立 daemon 线程中执行 fn；超时或 stop 触发时放弃（线程后台自动回收）。
 
@@ -1123,10 +1147,7 @@ class AgentEngine:
         if name in self._builtin_names:
             # 内置工具（run_command 等）同样可能长时间阻塞 → 用带超时/可中断封装
             try:
-                # run_command 不设时间上限：长命令持续到完成或用户停止；
-                # 下载不设 40s 放弃：长任务由 UI 轮询快照渲染进度条，停止按钮可取消
-                timeout = None if name == "run_command" else \
-                    (3600.0 if name == "fast_download" else 40.0)
+                timeout = _tool_wait_timeout(name)
                 res = _call_with_stop(
                     self._with_edit_bucket(
                         lambda: self._exec_tool(name, args, allow_dangerous)),
@@ -1756,6 +1777,8 @@ class AgentEngine:
         # 办公读取/编辑后自动刷新右侧预览面板（读也刷新，便于看到最新保真渲染）
         "read_docx": "path", "read_pptx": "path", "read_xlsx": "path", "read_pdf": "path",
         "edit_docx": "path", "edit_pptx": "path", "edit_xlsx": "path",
+        # view_image：查看图片后自动在右侧预览面板展示
+        "view_image": "path",
     }
 
     def _preview_path_of(self, name: str, args: dict) -> str:
@@ -2365,10 +2388,19 @@ class AgentEngine:
                     # 完整工具输出直接进入上下文（用户要求禁止上下文截断限制）；
                     # 读取型工具的超长返回在此自动 LLM 结构化压缩进上下文，写入型保持完整。
                     context_text = self._condense_tool_text(name, text)
-                    self._messages.append({
-                        "role": "tool", "tool_call_id": call["id"],
-                        "content": context_text,   # 纯字符串更兼容（部分 API 拒绝数组 content）
-                    })
+                    # 如果工具返回了图片，以数组形式写入 tool 消息（支持多模态模型查看工具输出图片）
+                    if imgs:
+                        self._messages.append({
+                            "role": "tool", "tool_call_id": call["id"],
+                            "content": [{"type": "text", "text": context_text},
+                                        *({"type": "image_url",
+                                           "image_url": {"url": u, "detail": "high"}} for u in imgs)]
+                        })
+                    else:
+                        self._messages.append({
+                            "role": "tool", "tool_call_id": call["id"],
+                            "content": context_text,   # 纯字符串更兼容（部分 API 拒绝数组 content）
+                        })
                     answered.add(call["id"])
                     if imgs:
                         last_images = imgs   # 本轮全部截图喂给下一轮视觉验证，不做裁剪

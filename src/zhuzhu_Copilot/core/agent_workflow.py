@@ -1138,10 +1138,11 @@ def _ai_generate_workflow(desc: str, want: list) -> dict:
         "只输出用户要求生成的对应文件；代码必须真实可运行、无 mock、无占位 TODO。"
     )
     try:
-        # 显式超时（秒）：防止服务商无响应时线程无限阻塞，保证"卡死"可被兜底中断
+        # 超时用「长文本生成」档（agent_llm.GEN_TIMEOUT_S）：一次要产出整套核心文件代码，
+        # 固定 90s 在慢 Provider 上会把正常生成误报为失败。仍显式给定，避免无上限阻塞。
         resp = client.chat([{"role": "system", "content": sys_p},
                             {"role": "user", "content": desc}],
-                           max_tokens=4096, timeout=90)
+                           max_tokens=4096, timeout=agent_llm.GEN_TIMEOUT_S)
         text = (resp or {}).get("text") or ""
     except Exception as e:
         raise RuntimeError(f"LLM 调用失败: {e}") from e

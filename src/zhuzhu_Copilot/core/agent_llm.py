@@ -1721,6 +1721,12 @@ def _parse_responses_stream(stream, on_delta=None, on_reasoning=None, stop=None,
             "cache": {"hit": hit, "miss": miss}}
 
 
+# 长文本生成类请求（插件整页 HTML + 多个端点实现 / 整套工作流核心文件）的超时。
+# 单次就要产出数千 token，慢 Provider 上默认 60s 常常不够，会被误报成「生成失败」——
+# 与引擎侧「生成类工具不设放弃等待超时」保持一致（见 agent_engine._NO_WAIT_TIMEOUT_TOOLS）。
+GEN_TIMEOUT_S = 600.0
+
+
 class LLMClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL,
                  api_key: str = DEFAULT_API_KEY, model: str = DEFAULT_MODEL,

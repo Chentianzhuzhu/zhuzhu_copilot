@@ -4591,12 +4591,17 @@ class _AgentSettingsDialog(QDialog):
             "帮我做一个每日天气查询插件：读取本地城市，查询当天天气并生成出行建议")
         if not ok or not text.strip():
             return
+        # 类型选项含 web（三件套：技能 + MCP 工具 + 本地 HTTP 浏览器界面）——
+        # 可视化/图形化交互类插件的唯一正确选择，不能只在 AI 侧工具里可选。
+        _kinds = ["combined（工具+技能）", "web（工具+技能+本地网页界面）",
+                  "mcp（仅工具）", "skill（仅技能）"]
         kind, k_ok = QInputDialog.getItem(
-            self, "创建插件", "插件类型：", ["combined（工具+技能）", "mcp（仅工具）", "skill（仅技能）"],
-            0, False)
+            self, "创建插件", "插件类型：", _kinds, 0, False)
         if not k_ok:
             return
-        k = {"combined（工具+技能）": "combined", "mcp（仅工具）": "mcp",
+        k = {"combined（工具+技能）": "combined",
+             "web（工具+技能+本地网页界面）": "web",
+             "mcp（仅工具）": "mcp",
              "skill（仅技能）": "skill"}.get(kind, "combined")
         self._pbar_open("创建插件", "正在分析需求并生成插件设计…")
         threading.Thread(target=self._plugin_worker, args=(text.strip(), k), daemon=True).start()

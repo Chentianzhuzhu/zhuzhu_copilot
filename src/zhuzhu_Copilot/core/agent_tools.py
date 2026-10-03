@@ -730,7 +730,11 @@ TOOLS = [
             "description": "联网请求指定 URL（网页 HTML / JSON 接口 / raw 文件 / REST API），返回响应文本。"
                            "默认 GET；可指定 method/headers/body 发起 POST/PUT/DELETE 等调用 API。"
                            "keyword 指定后只返回页面内包含该关键词的段落（页面内精确检索），"
-                           "适合搜索抓到链接后直接定位所需信息。",
+                           "适合搜索抓到链接后直接定位所需信息。"
+                           "★支持本地与内网地址：http://127.0.0.1:<端口>/ 、http://localhost:... 、"
+                           "局域网/内网 IP（如 192.168.x.x）、内网域名均可直接抓取 —— 用它验证自建/生成的"
+                           "本地服务（插件 web UI、开发服务器）与内网系统页面；SPA 空壳会自动用独立"
+                           "浏览器渲染兜底。",
             "parameters": {"type": "object",
                            "properties": {
                                "url": {"type": "string", "description": "http/https 地址"},
@@ -1582,15 +1586,20 @@ TOOLS = [
         "function": {
             "name": "create_plugin",
             "description": "用自然语言描述创建可运行的插件（统一存入插件目录）：根据用户描述用 AI 生成 "
-                           "可运行的 MCP server 脚本（本地 stdio / 远程 SSE）+ 标准 SKILL.md 技能，"
+                           "可运行的 MCP server 脚本 + 标准 SKILL.md 技能，"
                            "并自动生成运行脚本、依赖、示例文件，自动登记到技能与 MCP 配置，创建后即时生效。"
+                           "**生成后会自动做冒烟自检**（语法编译 → web 型真起本地 HTTP 服务拉页面并逐个调 "
+                           "/api 端点 → mcp 型走 stdio tools/list 握手），未通过会把错误回灌给 AI 自动修正一轮；"
+                           "仍不通过则如实告知且**不登记 MCP**（避免坏 server 进注册表）。"
                            "需要图形化/可视化交互的能力（仪表盘/可视化面板/画布表单类工具）应选 web 型："
-                           "生成本地 HTTP Server + 浏览器界面（用户在浏览器直观操作）+ 同名 MCP 工具"
-                           "（LLM 与浏览器共用同一份状态）。web 型创建后必须立即调用 web_url + browser_open "
-                           "把浏览器界面打开给用户；操作者必须是用户本人，严禁 AI 自我演示、自问自答或与脚本/"
-                           "自动化程序互演。设计时优先把能力拆成 LLM 可以直接调用的工具"
-                           "（动作/查询粒度，如把流程拆成创建/推进校验/读取状态/回退），而不是生成"
-                           "LLM 无法直接操控的独立 GUI 应用。当用户想做一个独立功能/工具/能力并希望"
+                           "一次生成**三件套** —— SKILL.md 技能 + MCP 工具 + 本地 HTTP Server 浏览器界面"
+                           "（用户在浏览器直观操作，LLM 通过同名 MCP 工具操控同一份状态）。"
+                           "web 型创建后必须立即调用 web_url + browser_open 把浏览器界面打开给用户；"
+                           "操作者必须是用户本人，严禁 AI 自我演示、自问自答或与脚本/"
+                           "自动化程序互演；可用 web_fetch(\"http://127.0.0.1:<端口>/\") 复验本地页面"
+                           "（本地回环/内网地址已放开，可直接抓取）。设计时优先把能力拆成 LLM 可以直接"
+                           "调用的工具（动作/查询粒度，如把流程拆成创建/推进校验/读取状态/回退），而不是"
+                           "生成 LLM 无法直接操控的独立 GUI 应用。当用户想做一个独立功能/工具/能力并希望"
                            "沉淀为插件时使用。",
             "parameters": {"type": "object",
                            "properties": {
@@ -4116,36 +4125,61 @@ def cancel_active_download():
             pass
 
 
+# ══════════════ 本地/内网抓取策略 ══════════════
+# 用户决策：**完全放开** —— 需要抓取本地 HTTP 服务（自建插件 UI、dev server）与内网系统页面。
+# 代价必须明确记录：放开后模型可读取云元数据端点（169.254.169.254 / metadata.google.internal /
+# 100.100.100.200）拿到实例凭据。若将来要收紧，只需改这一处取值：
+#   "open"    不限目标（当前）—— 只有协议校验（http/https）仍在生效
+#   "private" 放开回环 + 私有网段，拦元数据端点与非 HTTP 管理端口
+#   "strict"  回环/私有/元数据一律拒绝（旧的默认行为）
+_NET_TARGET_POLICY = "open"
+# 云元数据端点：private/strict 档必须拦截（凭据泄露面）
+_METADATA_HOSTS = ("metadata.google.internal", "metadata", "instance-data")
+_METADATA_IPS = ("169.254.169.254", "fd00:ec2::254", "100.100.100.200")
+# 非 HTTP 的管理/数据库端口：private/strict 档拦截（SSH/Redis/MySQL/PG/WinRM…）
+_SENSITIVE_PORTS = (22, 23, 3306, 5432, 6379, 5985, 5986)
+
+
 def _ssrf_blocked(parsed) -> bool:
-    """SSRF 防护：host 解析到回环/链路本地/保留/内网地址，或端口为常见内部服务端口则拦截。
-    解析失败（无 host/DNS 异常）按拦截处理。"""
+    """按 `_NET_TARGET_POLICY` 判断目标是否应拒绝（仅本函数做「目标」判定，协议校验在调用方）。
+
+    open 档直接放行：任何 host/IP 都允许（含回环与内网）。
+    解析失败（无 host/DNS 异常）仍按拒绝处理——那通常意味着目标根本不可达。
+    """
     host = (parsed.hostname or "").strip()
     if not host:
         return True
+    if _NET_TARGET_POLICY == "open":
+        return False
     try:
         port = parsed.port
     except ValueError:
         port = None
-    # 常见内部管理端口（避免访问本地服务/元数据）
-    if port in (8080, 8000, 8888, 3000, 5000, 5001, 8443, 6379, 22, 3306, 5432, 23, 5985, 5986):
-        return True
-    # 本机/内网 host（含 127.x、10.x、192.168.x、169.254.x、域名 localhost）
     low_host = host.lower()
-    if low_host in ("localhost", "localhost.localdomain") or low_host.endswith(".local"):
+    if low_host in _METADATA_HOSTS:      # 云元数据端点：收紧档位下一律拦（凭据泄露面）
         return True
+    if port in _SENSITIVE_PORTS:
+        return True
+    if low_host in ("localhost", "localhost.localdomain") or low_host.endswith(".local"):
+        return _NET_TARGET_POLICY == "strict"
     try:
         infos = socket.getaddrinfo(host, port or (80 if parsed.scheme != "https" else 443),
                                    proto=socket.IPPROTO_TCP)
     except Exception:
-        return True   # DNS 解析失败按拦截处理
-    for af, _st, _pr, _cn, sockaddr in infos:
+        return True   # DNS 解析失败按拒绝处理
+    for _af, _st, _pr, _cn, sockaddr in infos:
         try:
             ip = ipaddress.ip_address(str(sockaddr[0]))
         except ValueError:
             continue
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-                or ip.is_global is False):
+        if str(ip) in _METADATA_IPS:
+            return True
+        if ip.is_loopback or ip.is_private:
+            # 回环与私有网段：只有 strict 档拒绝（private/open 都放行）
+            return _NET_TARGET_POLICY == "strict"
+        if (ip.is_link_local or ip.is_reserved or ip.is_multicast
+                or ip.is_unspecified or ip.is_global is False):
+            # 其余特殊网段（链路本地/保留/组播）：收紧档位一律拒绝
             return True
     return False
 
@@ -4159,13 +4193,14 @@ def _http_request(url: str, timeout: int = 15, max_bytes: int = 512 * 1024,
     import urllib.request
     from urllib.parse import urlparse
     method = (method or "GET").upper()
-    # SSRF/内网防护：仅允许 http/https，并拦截回环/链路本地/云元数据/内网保留网段与常见内部端口。
-    # 缺省拒绝，避免 AI 以用户身份无约束访问本地/内网/云元数据接口。
+    # 协议校验：仅 http/https（file:// / gopher:// 之类一律拒绝）。
+    # 目标地址的放行范围见 `_ssrf_blocked` 与 `_NET_TARGET_POLICY`（当前为 open：本地/内网可抓）。
     _scheme = (urlparse(url or "").scheme or "").lower()
     if _scheme not in ("http", "https"):
         raise urllib.error.URLError(f"仅允许 http/https 目标，已拒绝: {url}")
     if _ssrf_blocked(urlparse(url or "")):
-        raise urllib.error.URLError(f"目标为内网/回环/保留地址，已拒绝: {url}")
+        raise urllib.error.URLError(
+            f"目标在拒绝名单内（元数据端点/管理端口/特殊网段），已拒绝: {url}")
     hdrs = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -4338,10 +4373,12 @@ def _web_fetch(url: str, method: str = "GET", headers: dict = None,
         return _blocked("[web_fetch] 缺少 URL")
     if not url.lower().startswith(("http://", "https://")):
         return _blocked("[web_fetch] 仅支持 http/https 地址")
-    # SSRF 预检：直连与浏览器渲染兜底共用同一防护，内网/回环/保留地址一律拒绝
+    # 目标放行范围由 `_ssrf_blocked` / `_NET_TARGET_POLICY` 统一决定（当前 open：本地回环、
+    # 内网、私有网段都能抓）；直连与浏览器渲染兜底共用同一判定，避免两条路径口径不一。
     from urllib.parse import urlparse as _up
     if _ssrf_blocked(_up(url)):
-        return _blocked(f"[web_fetch] 目标为内网/回环/保留地址，已拒绝: {url}")
+        return _blocked(f"[web_fetch] 目标在拒绝名单内"
+                        f"（元数据端点/管理端口/特殊网段），已拒绝: {url}")
     text = ""
     http_err = ""
     try:
@@ -4627,8 +4664,10 @@ def _generate_image(prompt: str, ratio: str = "1:1", dest_dir: str = "") -> dict
                 raw = base64.b64decode(b64)
             else:
                 from urllib.parse import urlparse as _up
-                if (_up(url).scheme or "").lower() != "https" or _ssrf_blocked(_up(url)):
-                    raise ValueError(f"图片源非 https 或为内网/回环地址，已拒绝: {url}")
+                # 仅协议校验：图片源允许 http/https（本地/内网图片服务同样可用）
+                if (_up(url).scheme or "").lower() not in ("http", "https") \
+                        or _ssrf_blocked(_up(url)):
+                    raise ValueError(f"图片源协议不合法或命中拒绝名单，已拒绝: {url}")
                 with urllib.request.urlopen(url, timeout=60) as rr:
                     raw = rr.read()
             path = base / f"img_{stamp}_{i}.png"
@@ -4903,10 +4942,12 @@ def _fast_download(url: str, dest_dir: str) -> dict:
     url = (url or "").strip()
     if not url:
         return _blocked("[fast_download] 缺少下载地址（url）")
-    # SSRF/协议校验：仅允许 http/https，拦截内网/回环/元数据/敏感端口
+    # 协议校验（仅 http/https）+ 目标放行范围（见 _ssrf_blocked / _NET_TARGET_POLICY）。
+    # 本地服务与内网地址同样允许下载：自建插件导出的文件、内网文件服务都用得上。
     if (urlparse(url).scheme or "").lower() not in ("http", "https") \
             or _ssrf_blocked(urlparse(url)):
-        return _blocked(f"[fast_download] 目标协议或地址不合法（内网/回环/元数据已拦截）: {url}")
+        return _blocked(f"[fast_download] 目标协议不合法或命中拒绝名单"
+                        f"（当前策略 {_NET_TARGET_POLICY}）：{url}")
     dest = (dest_dir or "").strip() or WORKDIR or os.getcwd()
     try:
         os.makedirs(dest, exist_ok=True)

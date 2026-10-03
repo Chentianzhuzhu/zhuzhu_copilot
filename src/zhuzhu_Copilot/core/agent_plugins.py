@@ -1,9 +1,10 @@
 """插件系统：统一管理 MCP 连接与标准技能（SKILL.md）两种扩展。
 
 插件 = 一个目录 ~/.zhuzhu_Copilot/plugins/<name>/：
-  plugin.json     插件元数据（名称/描述/类型/启用状态/构成）
-  SKILL.md        标准技能文件（skill / combined 型插件）
-  server.py       本地 stdio MCP server 脚本（mcp / combined 型插件）
+  plugin.json     插件元数据（名称/描述/类型/启用状态/构成 + 自检结果 verified/verify_detail）
+  SKILL.md        标准技能文件（skill / combined / web 型插件）
+  server.py       本地服务脚本：stdio MCP server（mcp/combined 型）；web 型同文件兼作
+                  本地 HTTP Server（浏览器 UI + /api/*），并内置 `--selftest` 离线自检入口
   deploy.py       远程 SSE 部署脚本（mcp / combined 型插件，可选）
   requirements.txt  Python 依赖（可选）
   examples/       示例资源文件（可选）
@@ -12,6 +13,11 @@
   mcp      仅提供 MCP 工具（本地 stdio 或远程 SSE）
   skill    仅提供标准技能 SKILL.md
   combined 同时提供技能与 MCP 工具
+  web      三件套：SKILL.md 技能 + MCP 工具 + 本地 HTTP 浏览器界面（可视化交互类）
+
+生成链路（`create_plugin_from_nl`）：AI 设计 → 落盘 → **冒烟自检**（py_compile → web 打
+HTTP 端点 / mcp 走 stdio tools/list）→ 未过则把错误回灌给模型自修（有界轮数）→ 通过才登记
+MCP（避免坏 server 进注册表，每次会话都拉起报错）。
 
 MCP 传输由 plugin.json 声明（可组合「远程 MCP server + 本地 SKILL.md 技能」的市场插件）：
   mcp_type = stdio（默认，命令跑 server.py / deploy.py）| sse（远程，需 mcp_url）
@@ -23,6 +29,7 @@ MCP 传输由 plugin.json 声明（可组合「远程 MCP server + 本地 SKILL.
 
 from zhuzhu_Copilot import app_identity
 import json
+import os
 import re
 import shutil
 import sys
@@ -623,8 +630,6 @@ def create_plugin_from_nl(description: str, kind: str = "combined", on_status=No
     """用自然语言描述创建插件（真实 AI 生成）：生成 SKILL.md + MCP server 脚本，
     并自动登记到技能目录与 mcp_servers.json。返回 (ok, message)。
     on_status 可选回调，用于生成阶段及时反馈 (百分比, 文案)。"""
-    from zhuzhu_Copilot.core import agent_llm
-
     def rep(pct, msg):
         if callable(on_status):
             try:
@@ -650,73 +655,282 @@ def create_plugin_from_nl(description: str, kind: str = "combined", on_status=No
         return False, "AI 返回的插件名不合法，请换一种描述重试"
     if plugin_dir(name).exists():
         return False, f"插件「{name}」已存在，请换名或删除后重试"
-    summary = spec.get("summary") or ""
-    skill_md = spec.get("skill_md") or ""
-    tools = spec.get("tools") or []
+
+    rep(60, "AI 已完成设计，正在写入插件文件…")
+    ok, err = _write_plugin_files(name, kind, spec)
+    rep(85, "正在冒烟自检（语法 / HTTP 端点 / MCP tools）…")
+    verified, detail = _verify_plugin(name, kind) if ok else (False, err)
+    # 自检未过 → 把错误回灌给模型让它自己修（有界次数，避免生成时长失控）
+    repairs = 0
+    while not verified and repairs < _VERIFY_MAX_REPAIRS:
+        repairs += 1
+        rep(85 + repairs * 3, f"自检未通过，正在让 AI 修正（第 {repairs} 次）…")
+        try:
+            fixed = _ai_generate_spec(_repair_desc(desc, kind, detail), kind)
+        except Exception as e:
+            detail = f"{detail}；修正轮 AI 调用失败: {e}"
+            break
+        if not fixed:
+            detail = f"{detail}；修正轮 AI 未返回有效设计"
+            break
+        # 修正轮一律写回**原插件目录**：目录名/登记名已定，不允许改名
+        ok2, err2 = _write_plugin_files(name, kind, fixed)
+        if not ok2:
+            detail = err2
+            break
+        spec = fixed
+        verified, detail = _verify_plugin(name, kind)
+
+    rep(96, "正在登记技能与 MCP 配置…")
+    d = plugin_dir(name)
+    parts = _spec_parts(spec, kind)
+    has_skill, has_mcp = parts["has_skill"], parts["has_mcp"]
+    try:
+        meta = {"name": name, "kind": kind, "enabled": True,
+                "description": parts["summary"] or desc,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "verified": bool(verified), "verify_detail": detail}
+        # 登记 MCP：本地 server.py → stdio（本地部署）。
+        # **只在自检通过时登记**：坏 server 一旦进注册表，每次会话都会拉起并报错刷屏。
+        if has_mcp and verified:
+            servers = agent_skills.load_mcp_servers()
+            mcp_name = f"{name}-mcp"
+            meta["mcp_name"] = mcp_name
+            entry = {"name": mcp_name, "type": "stdio",
+                     "command": agent_runtime.python_interpreter(),
+                     "args": [str(d / "server.py")]}
+            servers[:] = [s for s in servers if s.get("name") != mcp_name]   # 幂等：同名覆盖
+            servers.append(entry)
+            agent_skills.save_mcp_servers(servers)
+        # 登记技能：SKILL.md 复制到技能目录（技能是纯文档，不受 server 自检结果影响）
+        if has_skill:
+            ok_s, _msg = agent_skills.create_md_skill(
+                name, parts["summary"], parts["skill_md"])
+            if ok_s:
+                meta["skill_name"] = name
+        _write_meta(name, meta)
+    except OSError as e:
+        return False, f"创建插件失败: {e}"
+
+    lines = [f"已创建插件「{name}」（{kind} 型）", f"描述: {parts['summary'] or desc}"]
+    if has_mcp and verified:
+        lines.append(f"MCP: 本地 stdio {d / 'server.py'}（已登记并即时生效）")
+    if has_skill:
+        lines.append(f"技能: /{name} 或对话描述即可调用")
+    if kind == "web":
+        lines.append("浏览器界面: 先调用 web_url 工具获取访问地址，"
+                     "再用 browser_open 打开给用户（浏览器与 AI 共用同一份状态）。"
+                     "操作者必须是用户本人，严禁 AI 自我演示或与脚本 AI 自动对战")
+        lines.append("自检可用 web_fetch(url=\"http://127.0.0.1:<端口>/\") 复验页面与 "
+                     "/api/<端点>（本地回环地址已放开，可直接抓取）。")
+    if verified:
+        lines.append(f"✅ 冒烟自检通过：{detail}")
+    else:
+        lines.append("⚠️ 冒烟自检未通过，本次**未登记 MCP**（避免坏服务器进注册表）："
+                     f"{detail}")
+        lines.append(f"插件文件在 {d}，可用 read_file/write_file 修正后重试；"
+                     "或重新调用 create_plugin 换一种描述。")
+    return True, "\n".join(lines)
+
+
+def _spec_parts(spec: dict, kind: str) -> dict:
+    """从 AI 返回的设计 JSON 提取各产物（web 型与 mcp 型的字段名不同，统一在这里归一）。"""
+    skill_md = str(spec.get("skill_md") or "")
     api = spec.get("api") or []
     web_page = str(spec.get("web_page") or "").strip()
-    deps = [str(x).strip() for x in (spec.get("dependencies") or []) if str(x).strip()]
-    has_skill = bool(skill_md.strip())
+    tools = spec.get("tools") or []
     if kind == "web":
-        # web 型：本地 HTTP Server + 浏览器 UI；MCP 工具由 API 端点自动映射（需 api 非空）
+        # web 型：MCP 工具由 API 端点自动映射（api 与 web_page 缺一不可）
         has_mcp = bool(api) and bool(web_page)
     else:
         has_mcp = (kind in ("mcp", "combined")) and bool(tools)
-    rep(80, "AI 已完成设计，正在写入插件文件…")
+    return {"summary": spec.get("summary") or "", "skill_md": skill_md,
+            "tools": tools, "api": api, "web_page": web_page,
+            "deps": [str(x).strip() for x in (spec.get("dependencies") or [])
+                     if str(x).strip()],
+            "has_skill": bool(skill_md.strip()), "has_mcp": has_mcp}
+
+
+def _write_plugin_files(name: str, kind: str, spec: dict) -> tuple:
+    """把设计写成插件文件（skill/web/mcp 三件套按类型落盘）。返回 (ok, 说明/错误)。
+
+    缺必需产物时**不落盘**并返回可读原因 —— 该原因会回灌给模型触发自修
+    （见 create_plugin_from_nl 的修正轮），比写出一个空 server.py 更有价值。
+    """
+    parts = _spec_parts(spec, kind)
+    if kind == "web":
+        if not parts["web_page"]:
+            return False, "web 型缺少 web_page（单页 HTML），无法生成浏览器界面"
+        if not parts["api"]:
+            return False, "web 型缺少 api 端点（需 2-6 个），浏览器与 MCP 工具都依赖它"
+    if kind in ("mcp", "combined") and not parts["tools"]:
+        return False, f"{kind} 型缺少 tools（需 1-5 个可调用工具）"
+    if kind == "skill" and not parts["has_skill"]:
+        return False, "skill 型缺少 skill_md"
     try:
         d = plugin_dir(name)
         d.mkdir(parents=True, exist_ok=True)
-        if has_skill:
-            (d / "SKILL.md").write_text(skill_md, encoding="utf-8")
-        if has_mcp:
-            if kind == "web":
-                (d / "server.py").write_text(
-                    _assemble_web_server_py(name, web_page, api), encoding="utf-8")
-            else:
-                (d / "server.py").write_text(_assemble_server_py(name, tools), encoding="utf-8")
-        if deps:
-            (d / "requirements.txt").write_text("\n".join(deps), encoding="utf-8")
+        if parts["has_skill"]:
+            (d / "SKILL.md").write_text(parts["skill_md"], encoding="utf-8")
+        if parts["has_mcp"]:
+            src = (_assemble_web_server_py(name, parts["web_page"], parts["api"])
+                   if kind == "web" else _assemble_server_py(name, parts["tools"]))
+            if not src:
+                return False, "server.py 组装结果为空（api/tools 结构不完整）"
+            (d / "server.py").write_text(src, encoding="utf-8")
+        if parts["deps"]:
+            (d / "requirements.txt").write_text("\n".join(parts["deps"]), encoding="utf-8")
         examples = spec.get("examples") or {}
         if isinstance(examples, dict) and examples:
             ex = d / "examples"
             ex.mkdir(parents=True, exist_ok=True)
             for k, v in examples.items():
                 (ex / str(k)).write_text(str(v), encoding="utf-8")
-        meta = {"name": name, "kind": kind, "enabled": True,
-                "description": summary or desc,
-                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")}
-        # 登记 MCP：本地 server.py → stdio（本地部署）
-        if has_mcp:
-            servers = agent_skills.load_mcp_servers()
-            mcp_name = f"{name}-mcp"
-            meta["mcp_name"] = mcp_name
-            servers.append({"name": mcp_name, "type": "stdio",
-                            "command": agent_runtime.python_interpreter(),
-                            "args": [str(d / "server.py")]})
-            agent_skills.save_mcp_servers(servers)
-        # 登记技能：SKILL.md 复制到技能目录
-        if has_skill:
-            ok, msg = agent_skills.create_md_skill(name, summary, skill_md)
-            if not ok:
-                # 技能已存在或失败时仍保留插件，仅提示
-                pass
-            else:
-                meta["skill_name"] = name
-        _write_meta(name, meta)
-        rep(98, "保存元数据完成…")
-        lines = [f"已创建插件「{name}」（{kind} 型）",
-                 f"描述: {summary or desc}"]
-        if has_mcp:
-            lines.append(f"MCP: 本地 stdio {d / 'server.py'}")
-        if has_skill:
-            lines.append(f"技能: /{name} 或对话描述即可调用")
-        if kind == "web":
-            lines.append("浏览器界面: 先调用 web_url 工具获取访问地址，"
-                         "再用 browser_open 打开给用户（浏览器与 AI 共用同一份状态）。"
-                         "操作者/玩家必须是用户本人，严禁 AI 自己与自己或与脚本 AI 自动对战")
-        return True, "\n".join(lines)
+        return True, ""
     except OSError as e:
-        return False, f"创建插件失败: {e}"
+        return False, f"写入插件文件失败: {e}"
+
+
+# ── 冒烟自检：语法 → 真跑（web 打 HTTP 端点；mcp/combined 走 stdio tools/list 握手） ──
+_VERIFY_MAX_REPAIRS = 1          # 自修轮数上限（一轮足够修常见错误，再多会把生成时长拖长）
+_VERIFY_TIMEOUT_S = 30.0         # 单个子进程自检时限（含解释器启动）
+
+
+def _plugin_interpreter() -> str:
+    """自检用解释器：与 MCP 登记一致（同一运行时，依赖可见）。"""
+    try:
+        return agent_runtime.python_interpreter()
+    except Exception:
+        return sys.executable
+
+
+def _run_subprocess(cmd: list, stdin_text: str = "", cwd=None, timeout: float = None) -> tuple:
+    """跑一次子进程并返回 (returncode, stdout, stderr)；超时/异常按失败处理。"""
+    import subprocess
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"      # 生成物含中文，固定编码避免控制台编码干扰
+    try:
+        p = subprocess.run(cmd, input=stdin_text.encode("utf-8") if stdin_text else None,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           cwd=str(cwd) if cwd else None, env=env,
+                           timeout=timeout or _VERIFY_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return -1, "", f"自检超时（>{int(timeout or _VERIFY_TIMEOUT_S)}s）"
+    except Exception as e:
+        return -1, "", str(e)
+    return p.returncode, (p.stdout or b"").decode("utf-8", "replace"), \
+        (p.stderr or b"").decode("utf-8", "replace")
+
+
+def _mcp_handshake(server: Path) -> tuple:
+    """向生成的 server.py 发 initialize + tools/list，校验工具清单。返回 (ok, 说明)。
+
+    stdin 关闭即触发生成物的主循环退出（`for line in stdin` 读到 EOF），无需额外握手协议。
+    """
+    reqs = "\n".join([
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    ]) + "\n"
+    rc, out, err = _run_subprocess([_plugin_interpreter(), str(server)], stdin_text=reqs,
+                                   cwd=server.parent)
+    if rc == -1:
+        return False, err or "启动失败"
+    tools, inited = None, False
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("id") == 1:
+            inited = bool(msg.get("result"))
+        if msg.get("id") == 2:
+            res = msg.get("result") or {}
+            tools = res.get("tools")
+    if not inited:
+        return False, f"MCP initialize 无有效响应（stderr: {(err or '')[-300:] or '空'}）"
+    if not tools:
+        return False, "MCP tools/list 返回空工具集"
+    bad = [t for t in tools if not t.get("name") or "inputSchema" not in t]
+    if bad:
+        return False, f"以下工具缺少 name/inputSchema: {[t.get('name') for t in bad]}"
+    return True, f"MCP 工具 {len(tools)} 个：{', '.join(t['name'] for t in tools[:8])}"
+
+
+def _verify_plugin(name: str, kind: str) -> tuple:
+    """生成后冒烟校验，返回 (ok, 说明或错误)。
+
+    三层（只要能跑就真跑，绝不只看文件存在）：
+      1) 语法：`py_compile` 编译 server.py；
+      2) web 型：`server.py --selftest` —— 起本地 HTTP，拉页面 + 逐个调 /api 端点；
+      3) mcp/combined 型：stdio 发 initialize + tools/list，校验工具清单可解析。
+    """
+    d = plugin_dir(name)
+    server = d / "server.py"
+    if kind == "skill":
+        md = d / "SKILL.md"
+        if not md.is_file():
+            return False, "缺少 SKILL.md"
+        text = md.read_text(encoding="utf-8", errors="replace")
+        if "name:" not in text or "description:" not in text:
+            return False, "SKILL.md 缺少 frontmatter（需 name/description 字段）"
+        return True, f"技能文档 {len(text)} 字符（skill 型无需 server）"
+    if not server.is_file():
+        return False, "缺少 server.py"
+    # 先装依赖再自检：运行时会按 requirements.txt 自动装（见 agent_deps.ensure_dir_deps），
+    # 自检若跳过这一步，凡带第三方依赖的插件都会因 ImportError 被误判为不合格。
+    if (d / "requirements.txt").is_file():
+        try:
+            from zhuzhu_Copilot.core import agent_deps
+            agent_deps.ensure_dir_deps(d)
+        except Exception:
+            pass          # 装依赖失败交给下面的自检报错（错误信息更具体）
+    py = _plugin_interpreter()
+    rc, _out, err = _run_subprocess([py, "-m", "py_compile", str(server)], cwd=d)
+    if rc != 0:
+        return False, f"server.py 语法编译失败：{(err or '').strip()[-500:]}"
+    if kind == "web":
+        rc, out, err = _run_subprocess([py, str(server), "--selftest"], cwd=d)
+        data = {}
+        for line in reversed((out or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                break
+        if not data:
+            return False, (f"未拿到自检结果（退出码 {rc}）："
+                           f"{(err or '').strip()[-400:] or 'stdout 为空'}")
+        if not data.get("ok"):
+            # 分开列「页面问题」与「端点问题」：修法完全不同，别让模型猜
+            why = []
+            if data.get("error"):
+                why.append(str(data["error"]))
+            eps = data.get("endpoints") or {}
+            bad = {k: v for k, v in eps.items() if v != "ok"}
+            if bad:
+                why.append("端点失败 " + json.dumps(bad, ensure_ascii=False))
+            return False, "；".join(why) or "自检未通过（未给出原因）"
+        ok_mcp, mcp_msg = _mcp_handshake(server)
+        if not ok_mcp:
+            return False, mcp_msg
+        return True, (f"页面 {data.get('page_bytes')} 字节、"
+                      f"{len(data.get('endpoints') or {})} 个端点全部调通；{mcp_msg}")
+    return _mcp_handshake(server)
+
+
+def _repair_desc(desc: str, kind: str, detail: str) -> str:
+    """构造「回灌错误让模型自修」的输入（沿用原需求 + 明确列出失败原因与修正要求）。"""
+    return (f"{desc}\n\n"
+            f"【上一次生成的插件（类型 {kind}）未通过自检，请修正后重新输出**完整** JSON】\n"
+            f"自检错误：{detail}\n"
+            f"修正要求：①保持同一插件名，不要改名；②只修有问题的部分，其余字段照原样重发；"
+            f"③web 型必须给出完整单页 HTML（全部资源内联、无外网 CDN）与可用的 /api 端点实现；"
+            f"④端点实现必须能从 args 取参、读写 _STATE、返回可读文本且不抛异常。")
 
 
 def _ai_generate_spec(desc: str, kind: str) -> dict:
@@ -740,18 +954,33 @@ def _ai_generate_spec(desc: str, kind: str) -> dict:
     if kind == "web":
         sys_p = (
             common_rule +
-            "本插件为 **web 型（本地 Server + 浏览器界面）**：为「需要图形化/可视化交互」的能力而生"
-            "（如仪表盘、可视化面板、画布/表单类交互工具等）——AI 生成一个本地 HTTP 服务：用户在浏览器里直观"
-            "操作/观看，LLM 通过同名 MCP 工具操控同一份共享状态。\n"
+            "本插件为 **web 型（三件套：SKILL.md + MCP 工具 + 本地 HTTP 浏览器界面）**："
+            "为「需要图形化/可视化交互」的能力而生（如仪表盘、可视化面板、画布/表单类交互工具等）"
+            "——AI 生成一个本地 HTTP 服务：用户在浏览器里直观操作/观看，LLM 通过同名 MCP 工具"
+            "操控同一份共享状态。\n"
             "**硬性要求：①插件创建后，AI 必须立即调用 web_url 获取地址并用 browser_open 在浏览器里"
             "打开界面给用户；②图形化界面的操作者必须是用户本人——界面必须提供可供真人点击/输入/拖拽"
             "的交互控件（按钮/表单/画布等），状态变化由用户操作驱动；③严禁 AI 自我演示、自问自答或与脚本/"
             "自动化程序互演，AI 只负责通过 MCP 工具读写共享状态、辅助用户（如校验输入、"
             "展示状态、提示规则），状态推进必须由用户亲手在浏览器里完成。**\n"
+            "**工程质量硬性要求（违反会被自动自检拦下并打回重做）**：\n"
+            "  · web_page 必须是一份**完整可独立运行**的单页 HTML（含 <html>/<head>/<body>），"
+            "所有样式与脚本**全部内联**，严禁外网 CDN/字体/图片/接口依赖（离线必须可用）；\n"
+            "  · 页面加载后立即 `fetch('/api/state')` 渲染当前状态；每次操作后刷新状态，"
+            "并在页面上显示「操作结果/错误提示」区域（禁止静默失败）；\n"
+            "  · **必须提供 `state` 端点（GET，无参数，返回当前状态的完整文本/JSON 摘要）**，"
+            "供页面首屏与 LLM 读取；其余端点为动作/查询粒度（创建/推进/校验/回退/重置等）；\n"
+            "  · 每个端点的 implementation：从 args dict 取参（数字/布尔要能容忍字符串），"
+            "读写模块级共享状态 _STATE（dict），**返回可读文本**，"
+            "所有异常自行 try/except 并返回错误说明文本（**绝不允许抛出**）；\n"
+            "  · 端点数量 2-6 个，命名语义化（小写+下划线），读状态用 GET、写操作用 POST。\n"
             "输出严格 JSON（不要 markdown 代码块包裹），字段如下：\n"
             "{\n"
             '  "name": "插件名（英文，字母数字下划线连字符，≤50字符，小写）",\n'
             '  "summary": "一句话用途简介（中文）",\n'
+            '  "skill_md": "（必填）该插件的 SKILL.md 正文（含 frontmatter 的 name/description，'
+            '中文）：写清何时使用本插件、先 web_url+browser_open 打开界面给用户、'
+            '严禁 AI 自我演示/与脚本互演、以及可用的 MCP 工具与浏览器操作如何配合",\n'
             '  "web_page": "（必填）完整单页 HTML 字符串（UTF-8，标题用插件名；操作界面直接用 '
             '<div>/<table>/canvas 绘制；页面内 JS 用 fetch 调用同源 /api/<端点名> 完成状态读写与操作；'
             '禁止引用外部 CDN/外网资源，全部内联；中文界面）",\n'
@@ -794,7 +1023,7 @@ def _ai_generate_spec(desc: str, kind: str) -> dict:
         )
     sys_p += f"用户描述: {desc}\n插件类型: {kind}"
     if kind == "web":
-        sys_p += "（web 型只需 name/summary/web_page/api）"
+        sys_p += "（web 型需要 name/summary/skill_md/web_page/api 五项，其余可省）"
     elif kind == "skill":
         sys_p += "（skill 只需 name/summary/skill_md）"
     elif kind == "mcp":
@@ -805,7 +1034,7 @@ def _ai_generate_spec(desc: str, kind: str) -> dict:
         res = client.chat(
             [{"role": "system", "content": sys_p},
              {"role": "user", "content": desc}],
-            max_tokens=8192)
+            max_tokens=8192, timeout=agent_llm.GEN_TIMEOUT_S)
         text = (res.get("text") or "").strip()
     except Exception:
         raise
@@ -924,6 +1153,11 @@ _HANDLERS = {{
 ''' + _mcp_skeleton(name)
 
 
+# 生成物统一的入口守卫（web 型需要在它**之前**插入自检函数：Python 按执行顺序解析，
+# 守卫里调用的名字必须在守卫执行时已定义）
+_MCP_ENTRY_GUARD = 'if __name__ == "__main__":\n    main()'
+
+
 def _mcp_skeleton(name: str) -> str:
     """MCP JSON-RPC 分发骨架（_handle/main）：mcp 与 web 型 server.py 共用。
     TOOLS/_HANDLERS 由上层组装函数注入，此处只负责协议分发与启动主循环。"""
@@ -980,8 +1214,65 @@ def main():
             stdout.flush()
 
 
-if __name__ == "__main__":
-    main()
+{_MCP_ENTRY_GUARD}
+'''
+
+
+# ── 生成后自检（web 型 server.py 内置的离线自检入口） ────────────────────────
+# 为什么放进生成物本身：自检要起 HTTP、逐个打端点，还得在**目标环境**里跑（解释器/依赖
+# 与运行时一致）。把入口写进 server.py 后，主程序只需 `python server.py --selftest` 并解析
+# 最后一行 JSON，不必在外部重复一份「怎么调这个 server」的知识（新增端点自动被覆盖）。
+# 输出走 stdout.buffer（utf-8 固定），避免 Windows 控制台编码把中文错误信息写坏。
+_WEB_SELFTEST_SRC = '''
+
+# ---------- 离线自检（生成后由主程序调用：python server.py --selftest） ----------
+
+def _selftest():
+    """起本地 HTTP，拉取 / 与每个 /api 端点，打印一行 JSON 结论后返回退出码。
+
+    判据（任一不满足即视为不合格，错误信息会回灌给模型修正）：
+      · 页面字节数 >= 200（挡住空壳/未生成 HTML）
+      · 每个 /api 端点都能按声明的 GET/POST 调通，且返回 {"ok": true}
+    """
+    import urllib.request
+
+    out = {"ok": True, "page_bytes": 0, "endpoints": {},
+           "tools": [t.get("name") for t in TOOLS], "error": ""}
+    try:
+        _start_http()
+        base = f"http://127.0.0.1:{_WEB_PORT}"
+        with urllib.request.urlopen(base + "/", timeout=5) as r:
+            out["page_bytes"] = len(r.read())
+    except Exception as e:
+        out["ok"], out["error"] = False, f"HTTP 服务或页面加载失败: {e}"
+
+    if out["ok"]:
+        for ep in _HANDLERS:
+            if ep == "web_url":
+                continue
+            try:
+                method = _API_METHODS.get(f"/api/{ep}", "POST")
+                data = None if method == "GET" else b"{}"
+                req = urllib.request.Request(base + f"/api/{ep}", data=data,
+                                             method=method,
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    body = json.loads(r.read().decode("utf-8", "replace"))
+                if body.get("ok"):
+                    out["endpoints"][ep] = "ok"
+                else:
+                    out["ok"] = False
+                    out["endpoints"][ep] = f"端点返回失败: {body.get('error')}"
+            except Exception as e:
+                out["ok"] = False
+                out["endpoints"][ep] = f"端点调用异常: {e}"
+    if out["ok"] and out["page_bytes"] < 200:
+        out["ok"] = False
+        out["error"] = f"页面仅 {out['page_bytes']} 字节，疑似未生成有效 HTML"
+
+    sys.stdout.buffer.write(json.dumps(out, ensure_ascii=False).encode("utf-8") + b"\\n")
+    sys.stdout.buffer.flush()
+    return 0 if out["ok"] else 1
 '''
 
 
@@ -1158,7 +1449,9 @@ def _start_http():
         "        if resp is not None:\n"
         "            stdout.write(json.dumps(resp, ensure_ascii=False).encode(\"utf-8\") + b\"\\n\")\n"
         "            stdout.flush()\n\n\n",
-        "def main():\n    _start_http()   # 先起本地 Web 服务，浏览器随时可访问\n"
+        "def main():\n"
+        "    if \"--selftest\" in sys.argv:\n        sys.exit(_selftest())\n"
+        "    _start_http()   # 先起本地 Web 服务，浏览器随时可访问\n"
         "    stdin = sys.stdin.buffer\n    stdout = sys.stdout.buffer\n"
         "    for line in stdin:\n"
         "        if not line.strip():\n            continue\n"
@@ -1168,7 +1461,8 @@ def _start_http():
         "        resp = _handle(msg)\n"
         "        if resp is not None:\n"
         "            stdout.write(json.dumps(resp, ensure_ascii=False).encode(\"utf-8\") + b\"\\n\")\n"
-        "            stdout.flush()\n\n\n")
+        "            stdout.flush()\n\n\n").replace(
+        _MCP_ENTRY_GUARD, _WEB_SELFTEST_SRC + "\n\n" + _MCP_ENTRY_GUARD, 1)
 
 
 def skill_md_path(name: str) -> str:
