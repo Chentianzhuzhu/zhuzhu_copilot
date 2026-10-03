@@ -532,6 +532,31 @@ body.has-cursor .cursor-glow { opacity: 1; }
 .empty-state p { color: var(--ink-dim); }
 .empty-hint { margin-top: 10px; font-size: 14px; color: var(--ink-faint); }
 
+/* ---------- 站点地图（/sitemap） ---------- */
+.sitemap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 18px; }
+.sitemap-card {
+  position: relative; display: flex; flex-direction: column; gap: 7px;
+  padding: 26px 30px 30px; border: 1px solid var(--line-strong);
+  background: linear-gradient(160deg, var(--black-soft), #0a0a0a);
+  transition: transform .3s var(--ease), border-color .3s, box-shadow .3s;
+}
+.sitemap-card:hover { transform: translateY(-5px); border-color: var(--blue-bright); box-shadow: 0 24px 50px -26px rgba(0, 0, 0, .9); }
+.sitemap-index { font-family: var(--font-mono); font-size: 12px; letter-spacing: .24em; color: var(--blue-bright); }
+.sitemap-label { font-family: var(--font-display); font-weight: 700; font-size: 19px; }
+.sitemap-path { font-family: var(--font-mono); font-size: 12px; color: var(--ink-faint); word-break: break-all; }
+.sitemap-desc { color: var(--ink-dim); font-size: 14px; line-height: 1.8; }
+.sitemap-arrow { position: absolute; top: 26px; right: 28px; color: var(--ink-faint); transition: color .3s, transform .3s var(--ease); }
+.sitemap-arrow svg { width: 18px; height: 18px; display: block; }
+.sitemap-card:hover .sitemap-arrow { color: var(--blue-bright); transform: translateX(4px); }
+.sitemap-foot {
+  margin-top: 44px; padding-top: 26px; border-top: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: center; justify-content: space-between;
+}
+.sitemap-note { color: var(--ink-faint); font-size: 14px; }
+.sitemap-note a { color: var(--ink-dim); border-bottom: 1px solid var(--line-strong); }
+.sitemap-note a:hover { color: var(--white); }
+.sitemap-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
 /* ---------- 页脚 ---------- */
 .footer { border-top: 1px solid var(--line); padding: 46px 0 38px; background: linear-gradient(180deg, transparent, rgba(20, 20, 20, .85)); }
 .footer-inner { width: min(1200px, 92%); margin: 0 auto; display: flex; flex-wrap: wrap; gap: 18px 40px; align-items: center; justify-content: space-between; }

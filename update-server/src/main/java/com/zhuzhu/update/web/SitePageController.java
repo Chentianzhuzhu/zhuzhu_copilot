@@ -36,6 +36,24 @@ public class SitePageController {
     private static final String CSS_PATH = "/css/site.css";
     private static final String JS_PATH = "/js/site.js";
 
+    /** HTML 站点地图里的一条：路径 + 名称 + 一句话说明 */
+    public record SitePage(String path, String label, String desc) {
+    }
+
+    /**
+     * HTML 站点地图的条目清单。
+     *
+     * <p>路径必须与 {@link #sitemap(HttpServletRequest)} 收录进 XML 的路径完全一致 ——
+     * 两个清单漂移会出现「页面在 HTML 索引里、却对爬虫不可见」（或反之）。
+     * 静态回归套件（update-server/tests）会比对二者，别只改一边。
+     */
+    static final List<SitePage> SITE_PAGES = List.of(
+            new SitePage("/", "首页", "产品总览：核心能力、界面实拍、数据一览与常见问题"),
+            new SitePage("/gallery", "界面实拍", "各功能界面的真实截图与说明"),
+            new SitePage("/download", "下载安装", "最新安装包下载与历史版本更新日志"),
+            new SitePage("/faq", "常见问题", "安装、使用与安全相关的问答"),
+            new SitePage("/about", "关于我们", "团队介绍与联系方式"));
+
     private final ContentService contentService;
     private final StatsService statsService;
     private final UpdateService updateService;
@@ -97,6 +115,25 @@ public class SitePageController {
     }
 
     /* ---------------- SEO 文件 ---------------- */
+
+    /**
+     * HTML 站点地图：给**人看**的全站页面索引。
+     *
+     * <p>为什么不给 {@code /sitemap.xml} 套 XSL 样式表：Chromium 已正式弃用并将在
+     * Chrome 158（2026-11-17）移除 XSLT（含 {@code <?xml-stylesheet?>} 处理指令），
+     * Firefox / WebKit 也宣布跟进 —— 依赖它的美化会在几周内失效。因此 XML 只留给爬虫，
+     * 人看的是这个真页面，样式与全站共用同一套站点样式。
+     */
+    @GetMapping("/sitemap")
+    public String sitemapPage(HttpServletRequest req, Model model) {
+        Map<String, Object> site = contentService.get();
+        String name = str(site.get("title"), "WinAppMigrator");
+        String view = render(req, model, "sitemap", "/sitemap", "站点地图", "sitemap",
+                joinTitle("站点地图", name),
+                "本站全部页面的索引：核心功能、界面实拍、下载安装、常见问题与关于我们。");
+        model.addAttribute("sitePages", SITE_PAGES);
+        return view;
+    }
 
     @GetMapping(value = "/robots.txt", produces = "text/plain;charset=UTF-8")
     @ResponseBody

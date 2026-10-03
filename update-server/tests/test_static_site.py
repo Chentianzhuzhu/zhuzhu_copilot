@@ -293,6 +293,39 @@ class TestSeoAssets(unittest.TestCase):
         self.assertEqual({"/", "/gallery", "/download", "/faq", "/about"} - listed, set(),
                          "存在未收录到 sitemap 的页面路由")
 
+    def test_html_sitemap_page_registered(self) -> None:
+        """站点地图要有一个**给人看**的 HTML 页（XML 只给爬虫）。
+
+        背景：原先页脚的「站点地图」直接指向 /sitemap.xml —— 点开是一屏原始 XML。
+        不能靠给 XML 套 XSL 美化：Chromium 已弃用并将在 Chrome 158（2026-11-17）
+        移除 XSLT，Firefox / WebKit 也宣布跟进。故改为独立 HTML 页。
+        """
+        controller = read(JAVA / "web/SitePageController.java")
+        self.assertIn('@GetMapping("/sitemap")', controller, "未注册 HTML 站点地图路由")
+        self.assertIn('model.addAttribute("sitePages"', controller, "未向模板下发条目清单")
+        self.assertTrue((TEMPLATES / "sitemap.html").exists(), "缺少 sitemap.html 模板")
+
+    def test_html_sitemap_paths_match_xml_entries(self) -> None:
+        """HTML 站点地图与 XML 的路径集合必须一致。
+
+        两边漂移就会出现「页面在人看的索引里、却对爬虫不可见」（或反之），
+        而两个清单分别在 Java 的两个地方维护，必须由测试钉住。
+        """
+        controller = read(JAVA / "web/SitePageController.java")
+        html_paths = set(re.findall(r'new SitePage\("([^"]+)"', controller))
+        self.assertTrue(html_paths, "未解析到 HTML 站点地图条目（正则可能已失效）")
+        block = re.search(r"List<SeoSupport\.Entry>\s+entries\s*=\s*List\.of\((.*?)\);", controller, re.S)
+        xml_paths = set(re.findall(r'new SeoSupport\.Entry\("([^"]+)"', block.group(1)))
+        self.assertEqual(html_paths, xml_paths,
+                         f"HTML 与 XML 站点地图路径不一致：仅 HTML={html_paths - xml_paths}，"
+                         f"仅 XML={xml_paths - html_paths}")
+
+    def test_sitemap_links_point_to_html_page(self) -> None:
+        """页脚与错误页的「站点地图」入口要指向 HTML 页，而不是原始 XML。"""
+        for name in ("fragments/blocks.html", "error.html"):
+            self.assertIn('href="/sitemap"', read(TEMPLATES / name),
+                          f"{name} 的站点地图链接未指向 HTML 页")
+
     def test_head_declares_og_image_metadata(self) -> None:
         """分享卡片需要宽高与替代文本；宽高只在品牌封面下声明，且必须与封面实际尺寸一致。"""
         head = read(TEMPLATES / "fragments/head.html")
