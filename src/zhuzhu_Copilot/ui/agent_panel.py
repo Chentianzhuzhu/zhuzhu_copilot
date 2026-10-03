@@ -445,25 +445,43 @@ def _input_bg() -> str:
     return PANEL
 
 
+def _wallpaper_foreground() -> str:
+    """壁纸之上叠加的输入框前景色（文字 / 光标 / 描边同源）。
+
+    **为什么不能固定纯黑**：壁纸会压一层可调深度的纱（bg_dim），深色壁纸 + 深色纱叠出来
+    的底可以很暗（实测 #14161B 壁纸下光标处合成底只有 1.20:1 对比度）—— 黑光标压在
+    那上面等于看不见，用户感受就是「点进输入框没有闪烁光标」。按壁纸**实际绘制结果**的
+    相对亮度在黑白之间取对比度更高的一侧，即可在任意自定义背景上保持可见，
+    同时仍然是 Qt 原生光标（Qt 无独立 caret-color，光标色跟随 QSS `color`）与原生闪烁。
+    """
+    try:
+        lum = app_wallpaper.rendered_luminance(_base_color("BG"))
+    except Exception:
+        lum = None
+    if lum is None:
+        return "#000000"           # 取不到亮度（无实例/解码失败）：退回原行为
+    return "#FFFFFF" if lum < app_wallpaper.FOREGROUND_SWITCH_LUM else "#000000"
+
+
 def _input_border() -> str:
-    """输入框描边色：壁纸下改纯黑。
+    """输入框描边色：壁纸下取与前景同源的可见色（详见 _wallpaper_foreground）。
 
     浅灰描边（#E3E8F0）压在花背景上会糊成「透明」，输入框边界立不住；
-    纯黑描边与蓝色泛光、纯黑光标共同构成完整的可读性组合。
+    因此壁纸下描边与文字/光标用同一个高对比色，共同构成完整的可读性组合。
     非壁纸场景维持主题边框色。
     """
     if _feedback_boosted():
-        return "#000000"
+        return _wallpaper_foreground()
     return BORDER
 
 
 def _input_fg() -> str:
-    """输入框文字色（光标色系随文字，Qt 无独立 caret-color API）：壁纸下纯黑。
+    """输入框文字色（光标色系随文字，Qt 无独立 caret-color API）：壁纸下取高对比色。
 
-    纯黑文字 + 纯黑光标在花背景上对比度最高；非壁纸场景维持主题文字色。
+    见 _wallpaper_foreground：亮壁纸取纯黑、暗壁纸取纯白，二者都与脚下底色对比度最高。
     """
     if _feedback_boosted():
-        return "#000000"
+        return _wallpaper_foreground()
     return TEXT
 
 

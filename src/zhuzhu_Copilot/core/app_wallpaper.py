@@ -226,13 +226,15 @@ def _notify() -> None:
 
 
 def _clear_caches() -> None:
-    """丢弃解码/模糊缓存：换图、清图、切换数据目录都必须调用，
-    否则会拿旧图的模糊结果画在新设置上。"""
+    """丢弃解码/模糊/亮度缓存：换图、清图、切换数据目录都必须调用，
+    否则会拿旧图的模糊/亮度结果画（或配）在新设置上。"""
     _source_cache.clear()
     for cache in (_fit_cache, _blur_cache):
         cache["key"] = None
         cache["value"] = None
         cache["src"] = None
+    _lum_cache["key"] = None
+    _lum_cache["value"] = None
 
 
 def invalidate() -> None:
@@ -398,6 +400,26 @@ _fit_cache: dict = {"key": None, "value": None, "src": None}
 _blur_cache: dict = {"key": None, "value": None, "src": None}
 
 
+def _draw_fitted(painter: QPainter, src: QPixmap, size: QSize,
+                 fit: str, backdrop: str) -> None:
+    """把 ``src`` 按适配方式画进 ``size`` 的画布（调用方负责画笔与画布底色）。
+
+    画布底必须是 ``backdrop``（主题底色）而不是透明：contain 的留白区若保持透明，
+    模糊会把透明混进图里，整张壁纸都会发暗并与下层混色。
+    抽成独立函数是为了让 paint 路径（带缓存）与亮度采样路径（无缓存）共用同一套摆版语义。
+    """
+    if fit == "tile":
+        painter.fillRect(QRect(0, 0, size.width(), size.height()), QBrush(src))
+    elif fit == "stretch":
+        painter.drawPixmap(QRect(0, 0, size.width(), size.height()), src)
+    else:
+        mode = (Qt.AspectRatioMode.KeepAspectRatio if fit == "contain"
+                else Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+        scaled = src.scaled(size, mode, Qt.TransformationMode.SmoothTransformation)
+        painter.drawPixmap((size.width() - scaled.width()) // 2,
+                           (size.height() - scaled.height()) // 2, scaled)
+
+
 def _fitted(src: QPixmap, size: QSize, fit: str, backdrop: str) -> QPixmap:
     """按适配方式把图摆进 ``size`` 的画布，返回与绘制区同尺寸的**不透明**位图（含缓存）。
 
@@ -405,8 +427,8 @@ def _fitted(src: QPixmap, size: QSize, fit: str, backdrop: str) -> QPixmap:
     透明相混而发暗，只有让可见区正好等于整张画布、把这段过渡带推到画布之外，
     四边才不会露出一条发暗的边（cover 模式下尤其明显）。
 
-    画布底填 ``backdrop``（主题底色）而不是透明：contain 的留白区若保持透明，
-    模糊同样会把透明混进图里，整张壁纸都会发暗并与下层混色。
+    注意本缓存**只留最近一份**：任何"顺手用它量点别的"的调用都会把背景绘制的缓存顶掉，
+    导致每帧重新摆版（见 ``rendered_luminance`` 为何绕开本函数）。
     """
     key = (src.cacheKey(), size.width(), size.height(), fit, backdrop)
     cached = _fit_cache["value"]
@@ -419,16 +441,7 @@ def _fitted(src: QPixmap, size: QSize, fit: str, backdrop: str) -> QPixmap:
     base.fill(_c if _c.isValid() else QColor(_SCRIM_FALLBACK))
     painter = QPainter(base)
     try:
-        if fit == "tile":
-            painter.fillRect(base.rect(), QBrush(src))
-        elif fit == "stretch":
-            painter.drawPixmap(base.rect(), src)
-        else:
-            mode = (Qt.AspectRatioMode.KeepAspectRatio if fit == "contain"
-                    else Qt.AspectRatioMode.KeepAspectRatioByExpanding)
-            scaled = src.scaled(size, mode, Qt.TransformationMode.SmoothTransformation)
-            painter.drawPixmap((size.width() - scaled.width()) // 2,
-                               (size.height() - scaled.height()) // 2, scaled)
+        _draw_fitted(painter, src, size, fit, backdrop)
     finally:
         painter.end()
     _fit_cache.update(key=key, value=base, src=src)
@@ -529,3 +542,83 @@ def _scrim_color(color: str, dim: float = DIM_DEFAULT) -> QColor:
         c = QColor(_SCRIM_FALLBACK)
     c.setAlphaF(_num(dim, DIM_MIN, DIM_MAX, DIM_DEFAULT) / 100.0)
     return c
+
+
+# ══════════════════════════ 亮度查询（前景配色依据） ══════════════════════════
+#
+# 有控件要**压在壁纸之上**（底部输入框的文字/光标/描边）：它必须知道"脚下这块底到底是亮
+# 还是暗"，才能挑前景色 —— 固定用一个色在亮/暗壁纸上必有一半不可见。实测深色壁纸
+# （#14161B）+ 纯黑前景的对比度只有 1.20:1，用户会认为"光标不见了"。
+# 因此按 paint() 的**同一套顺序**（适配 → 模糊 → 压暗纱）算平均相对亮度。
+
+_LUM_SAMPLE = 8                 # 采样边长：8×8 已足够代表整体明暗，且只需迭代 64 个像素
+_lum_cache: dict = {"key": None, "value": None}
+
+# 黑/白前景的对比度交点：相对亮度低于此值取白、高于取黑时对比度更高。
+# 推导：(L+0.05)/0.05 == 1.05/(L+0.05) → L = sqrt(0.0525) - 0.05 ≈ 0.179
+FOREGROUND_SWITCH_LUM = 0.179
+
+
+def _relative_luminance(r: float, g: float, b: float) -> float:
+    """WCAG 相对亮度（0=黑，1=白）。入参为 0~255 的 sRGB 分量。"""
+    def _lin(v: float) -> float:
+        v /= 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+
+def rendered_luminance(scrim: str = _SCRIM_FALLBACK,
+                       size: int = _LUM_SAMPLE) -> Optional[float]:
+    """当前壁纸**实际绘制结果**的平均相对亮度（0=纯黑，1=纯白）。
+
+    与 ``paint()`` 同源：同一套适配摆版语义 + 同一层压暗纱（唯一省略的是高斯模糊，
+    因为模糊是加权平均、**不改变均值**，对"整体明暗"没有影响）。
+    ``scrim`` 必须是调用方压纱时用的**原始底色**（主界面传 ``_base_color("BG")``）。
+
+    返回 None 表示「没有可用壁纸」（未设图 / 解码失败 / 尚无 QGuiApplication）——
+    调用方应退回主题色，而不是把 None 当成 0（纯黑）用。
+    """
+    p = load()
+    pm = _source_pixmap(p.bg_image) if p.bg_image else None
+    if pm is None or pm.isNull():
+        return None
+    size = max(1, int(size))
+    key = (pm.cacheKey(), size, p.bg_fit, round(float(p.bg_blur), 2),
+           round(float(p.bg_dim), 2), scrim)
+    if _lum_cache["key"] == key and _lum_cache["value"] is not None:
+        return _lum_cache["value"]
+    try:
+        # 独立小画布，**绕开 _fitted/_blurred**：那两条缓存只留最近一份，量亮度会把
+        # 背景绘制的全尺寸摆版顶掉 → 每帧重算（性能红线）。
+        # 不模糊是刻意的：模糊是加权平均，**均值不变**，对"整体明暗"没有影响。
+        canvas = QPixmap(size, size)
+        if canvas.isNull():
+            return None
+        _c = QColor(scrim)
+        canvas.fill(_c if _c.isValid() else QColor(_SCRIM_FALLBACK))
+        painter = QPainter(canvas)
+        try:
+            _draw_fitted(painter, pm, QSize(size, size), p.bg_fit, scrim)
+        finally:
+            painter.end()
+        small = canvas.toImage()
+        sr = sg = sb = 0.0
+        n = 0
+        for y in range(small.height()):
+            for x in range(small.width()):
+                c = small.pixelColor(x, y)
+                sr += c.red(); sg += c.green(); sb += c.blue()
+                n += 1
+        if n == 0:
+            return None
+        sc = _scrim_color(scrim, p.bg_dim)
+        a = sc.alphaF()
+        # 压暗纱与壁纸在 sRGB 空间做 alpha 合成（与 QPainter 的绘制行为一致）
+        r = sr / n * (1 - a) + sc.red() * a
+        g = sg / n * (1 - a) + sc.green() * a
+        b = sb / n * (1 - a) + sc.blue() * a
+        val = _relative_luminance(r, g, b)
+    except Exception:
+        return None
+    _lum_cache.update(key=key, value=val)
+    return val

@@ -392,11 +392,66 @@ def test_input_caret_blinks_with_native_caret(tmp_path):
         ap.refresh_surface_mode()
 
 
-def test_input_black_border_and_caret_on_wallpaper(tmp_path, monkeypatch):
-    """壁纸 + 浅色主题下输入框要「立得住」：描边纯黑、文字/光标纯黑，泛光为蓝色。
+def _contrast_ratio(hex_a: str, hex_b: str) -> float:
+    """WCAG 对比度（1:1 ~ 21:1），用于判定「压在壁纸上的前景是否看得见」。"""
+    def _lum(h: str) -> float:
+        c = QColor(h)
+        def _lin(v: float) -> float:
+            v /= 255.0
+            return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        return (0.2126 * _lin(c.red()) + 0.7152 * _lin(c.green())
+                + 0.0722 * _lin(c.blue()))
+    la, lb = _lum(hex_a), _lum(hex_b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
 
-    回归场景：浅灰描边压在花背景上糊成「透明」，输入框边界看不出；
-    用户要求描边改纯黑、输入时光标纯黑，聚焦仍走蓝色泛光。
+
+def test_input_foreground_picks_higher_contrast_side(tmp_path):
+    """输入框前景（文字/光标/描边同源）必须取与脚下壁纸**对比度更高**的一侧。
+
+    回归（用户反馈）：自定义背景下「鼠标点击输入框没有闪烁光标」。光标本身在正常闪烁
+    （原生光标 + 620ms 周期，见 test_input_caret_blinks_with_native_caret），问题是
+    **配色**：此前壁纸态把前景硬编码成纯黑，而壁纸会压一层可调深度的纱 —— 深色壁纸
+    （#14161B）下光标处合成底与纯黑的对比度实测只有 1.20:1，等于看不见。
+    改为按壁纸实际绘制结果的相对亮度在黑白之间二选一后，四种典型底色都 ≥ 4:1。
+    """
+    from zhuzhu_Copilot.core import app_wallpaper as aw
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    cases = [
+        ("#F2F4F8", "#000000", "亮壁纸取黑"),     # 近白
+        ("#3A7BD5", "#000000", "亮蓝取黑"),
+        ("#8A8F98", "#000000", "中灰取黑"),
+        ("#14161B", "#FFFFFF", "暗壁纸取白"),     # 用户实际踩到的场景
+    ]
+    for color, expect, why in cases:
+        w.set_fields(bg_image=_solid_png(tmp_path, color), bg_blur=0, bg_dim=0,
+                     persist=False)
+        ap.refresh_surface_mode()
+        try:
+            fg = ap._input_fg()
+            bd = ap._input_border()
+            lum = aw.rendered_luminance(ap._base_color("BG"))
+            assert lum is not None, "壁纸生效时亮度必须可测"
+            assert fg == expect, f"{color}（{why}）前景应为 {expect}，实得 {fg}"
+            assert bd == fg, "描边必须与前景同源（否则边界在花背景上立不住）"
+            qss = ap._input_qss()
+            assert f"color: {fg}" in qss and f"border: 1px solid {bd}" in qss
+            # 用真实合成底验证对比度：拿亮度反推最亮/最暗两种极端底不现实，
+            # 这里直接核对比度数学（黑/白对同一亮度谁更高由 switch 阈值决定）
+            ref = "#000000" if lum >= aw.FOREGROUND_SWITCH_LUM else "#FFFFFF"
+            assert fg == ref, f"{color} 未取对比度更高的一侧（亮度={lum:.3f}）"
+        finally:
+            w.set_fields(bg_image="", persist=False)
+            ap.refresh_surface_mode()
+
+
+def test_input_border_and_caret_follow_wallpaper_foreground(tmp_path, monkeypatch):
+    """壁纸 + 任意主题下输入框「立得住」：描边与文字/光标同源，聚焦泛光为蓝色。
+
+    回归场景：浅灰描边压在花背景上糊成「透明」，输入框边界看不出。
+    修法：壁纸态描边取与文字/光标同一个高对比色（见 _wallpaper_foreground），
+    不再固定纯黑 —— 纯黑在暗壁纸上同样看不见。
     主题用 monkeypatch 固定（不依赖机器上 QSettings 的真实值），light / dark 各验一遍。
     """
     from PyQt6.QtGui import QPalette
@@ -406,22 +461,25 @@ def test_input_black_border_and_caret_on_wallpaper(tmp_path, monkeypatch):
     app = QApplication.instance()
     assert app is not None
 
-    # ── 壁纸 + 任意主题：描边/文字（光标随文字色）纯黑，聚焦蓝色泛光 ──
+    # ── 壁纸 + 任意主题：描边 == 前景（文字/光标），且对底色有足够对比度 ──
     for theme in ("light", "dark"):
         monkeypatch.setattr(ap, "_resolve_theme", lambda t=theme: t)
-        w.set_fields(bg_image=_solid_png(tmp_path), persist=False)
+        w.set_fields(bg_image=_solid_png(tmp_path), bg_blur=0, bg_dim=0, persist=False)
         ap.refresh_surface_mode()
         try:
+            fg = ap._input_fg()
             qss = ap._input_qss()
-            assert ap._input_border() == "#000000", f"{theme}主题壁纸下描边必须纯黑"
-            assert ap._input_fg() == "#000000", f"{theme}主题壁纸下文字/光标必须纯黑"
-            assert "border: 1px solid #000000" in qss
-            assert "color: #000000" in qss
+            assert fg in ("#000000", "#FFFFFF"), f"壁纸下前景必须黑白二选一，实得 {fg}"
+            assert ap._input_border() == fg, f"{theme}主题壁纸下描边须与前景同源"
+            assert f"border: 1px solid {fg}" in qss
+            assert f"color: {fg}" in qss
             assert "background: transparent" in qss, "前置：壁纸下底仍全透明"
+            # 实心蓝底（#2F52D8）下应取到 ≥3:1 的对比度（可读性底线）
+            assert _contrast_ratio(fg, "#2F52D8") >= 3.0, "前景对底色的对比度不足"
 
             # 光标色随文字色（Qt 无独立 caret-color API）：用非默认色反证
-            # 「QSS color → 调色板」同步机制成立，再结合上面的 color: #000000
-            # 即可确认光标为纯黑（默认调色板本就是黑，直接断言会恒真，必须反证）。
+            # 「QSS color → 调色板」同步机制成立，再结合上面的 color: <fg>
+            # 即可确认光标与文字同色（默认调色板本就是黑，直接断言会恒真，必须反证）。
             probe = QPlainTextEdit()
             try:
                 probe.setStyleSheet("QPlainTextEdit { color: #010203; }")
