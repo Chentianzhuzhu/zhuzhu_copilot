@@ -119,13 +119,13 @@ GET /api/update/check?version=1.0.0&platform=windows
 | 站点图标 | `/favicon.ico` `/favicon.svg` `/apple-touch-icon.png` | 多尺寸，含 SVG |
 | 应用清单 | `/site.webmanifest` | 按库内站名生成 |
 | 分享主图 | `/og/og-cover.png` | 1200×630，可在后台「SEO → 社交分享图」替换 |
-| 静态官网 | `/website/` | 独立单页，由 nginx 直接提供（文件放 `/var/www/website/`） |
+| 旧静态官网 | `/website/` | 已下线，nginx 301 归并到 `/`（避免与本站重复收录） |
 
-> **静态官网的部署**：本仓库不再包含该静态站的源文件（`website/` 目录已移除），
-> 服务器上 `/var/www/website/` 内的 `index.html` / `robots.txt` / `sitemap.xml` /
-> `design_preview.png` 即线上现状，直接在该目录维护即可（nginx 规则见
-> `deploy/nginx.conf` 的 `location /website/`）。
-> 历史版本可用 `git show 30f582d:website/index.html` 取回。
+> **关于 `/website/`**：早先另有一个纯静态官网单页由 nginx 直接提供（文件放
+> `/var/www/website/`）。它的 canonical / JSON-LD 把 `https://<域名>/website/` 声明成
+> 正式官网，与本站（Spring 服务端渲染，canonical 取自 `SITE_BASE_URL`）形成两个「官方站」，
+> 会被判为重复站点。现已从仓库移除（需要时用 `git show 30f582d:website/index.html` 取回），
+> 并在 `deploy/nginx.conf` 里 301 归并到 `/`；服务器上的 `/var/www/website/` 可自行删除。
 
 > **双品牌收录**：后台「页脚信息与 SEO」提供 `seo.keywords`（搜索关键词）与 `seo.alternateNames`（副品牌别名）。
 > 后者写入结构化数据的 `alternateName`，让「zhuzhu Copilot」与「WinAppMigrator」被识别为同一款软件，
