@@ -145,7 +145,7 @@ from zhuzhu_Copilot.ui.tokens import (
     SPACING_SM,
     SPACING_XS,
 )
-from zhuzhu_Copilot.ui.widgets import add_brand_footer
+from zhuzhu_Copilot.ui.widgets import ArrowComboBox, add_brand_footer
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
 _THEMES = {
@@ -186,12 +186,11 @@ _FOCUS_GLOW_ALPHA_ON_WALLPAPER = 255
 # 光标闪烁周期（ms）：壁纸下闪得更勤，光标才不会被背景淹没（Qt 默认 1000ms）
 _CURSOR_FLASH_MS = 1000
 _CURSOR_FLASH_MS_ON_WALLPAPER = 620
-# 输入光标宽度（px）：默认 1px 太细，花背景上几乎看不见
-# 使用自定义光标方案，不需要调节此值
-_CURSOR_WIDTH = 1
-_CURSOR_WIDTH_ON_WALLPAPER = 1
-# 自定义光标宽度（px）：始终可见的黑色竖线
-_CUSTOM_CURSOR_WIDTH = 3
+# 输入光标宽度（px）：Qt 默认 1px 太细，花背景上几乎看不见。
+# 注意**不能**靠自绘静态竖线来「始终可见」——静态自绘会盖住原生光标、
+# 表现为「光标一直在但不闪烁」。加宽原生光标既是 Qt 支持的做法，也保留原生闪烁。
+_CURSOR_WIDTH = 2
+_CURSOR_WIDTH_ON_WALLPAPER = 3
 
 # 全局滚动条滑块不透明度：淡灰极简，滑块压到 30% 半透明（悬停提亮到 55% 保持可辨）
 _SCROLLBAR_OPACITY = 0.30
@@ -271,9 +270,10 @@ def apply_cursor_flash() -> None:
 def apply_input_caret(widget) -> None:
     """按当前背景状态设定输入框光标宽度：壁纸下加宽一档。
 
-    透明底上光标直接压在壁纸像素上，加宽（本函数）+ 加快闪烁
-    （apply_cursor_flash）是 Qt 里增强光标对比度的仅有两个真实手段。
-    非壁纸浅色底上 1px 光标也难见，故默认档也已加宽。
+    透明底 + 花背景会吃掉细光标，加宽（本函数）+ 加快闪烁（apply_cursor_flash）
+    是 Qt 里增强光标对比度的仅有两个真实手段。**必须保留原生光标**：Qt 没有
+    caret-color API，光标色随 QSS `color`（壁纸下已改纯黑，见 _input_fg），
+    而闪烁由 Qt 的闪烁计时器驱动 —— 自绘静态竖线既不闪、又会盖住原生光标。
     """
     if widget is None:
         return
@@ -2677,7 +2677,7 @@ class _AgentSettingsDialog(QDialog):
         theme_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         theme_lbl.setFixedWidth(70)
         theme_row.addWidget(theme_lbl)
-        self.theme_combo = QComboBox()
+        self.theme_combo = _ArrowComboBox()
         self.theme_combo.addItem("深色", "dark")
         self.theme_combo.addItem("浅色", "light")
         self.theme_combo.addItem("按时间自动（8-20 浅色）", "auto")
@@ -2739,7 +2739,7 @@ class _AgentSettingsDialog(QDialog):
         pref_lbl.setStyleSheet(
             f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
         lay.addWidget(pref_lbl)
-        self.panel_mode_combo = QComboBox()
+        self.panel_mode_combo = _ArrowComboBox()
         self.panel_mode_combo.addItem("贴附主面板（独立窗口靠边悬浮）", "attach")
         self.panel_mode_combo.addItem("融入主面板（与主面板同一窗口）", "dock")
         saved_mode = _panel_mode_setting()
@@ -2820,7 +2820,7 @@ class _AgentSettingsDialog(QDialog):
         fun_interval_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         fun_interval_lbl.setFixedWidth(70)
         fun_interval_row.addWidget(fun_interval_lbl)
-        self.fun_interval_combo = QComboBox()
+        self.fun_interval_combo = _ArrowComboBox()
         self.fun_interval_combo.addItem("1~3 分钟", "frequent")
         self.fun_interval_combo.addItem("3~6 分钟", "normal")
         self.fun_interval_combo.addItem("5~10 分钟", "relaxed")
@@ -2836,7 +2836,7 @@ class _AgentSettingsDialog(QDialog):
         mode_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         mode_lbl.setFixedWidth(70)
         mode_row.addWidget(mode_lbl)
-        self.mode_combo = QComboBox()
+        self.mode_combo = _ArrowComboBox()
         self.mode_combo.addItem("AskBeforeEdit（每步操作确认）", "ask")
         self.mode_combo.addItem("Edit（仅非白名单 bash 命令确认）", "edit")
         self.mode_combo.addItem("YOLO（无确认直行，不设任何限制）", "yolo")
@@ -3221,7 +3221,7 @@ class _AgentSettingsDialog(QDialog):
         think_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         think_lbl.setFixedWidth(70)
         think_row.addWidget(think_lbl)
-        self.think_combo = QComboBox()
+        self.think_combo = _ArrowComboBox()
         self.think_combo.addItem("跟随自动（按工作力度）", "auto")
         self.think_combo.addItem("始终开启（强制思考）", "on")
         self.think_combo.addItem("始终关闭（不思考）", "off")
@@ -3739,7 +3739,7 @@ class _AgentSettingsDialog(QDialog):
         scope = QHBoxLayout()
         scope.setSpacing(8)
         scope.addWidget(QLabel("工作流作用域:"))
-        self.skill_wf_combo = QComboBox()
+        self.skill_wf_combo = _ArrowComboBox()
         self.skill_wf_combo.setMinimumWidth(240)
         self.skill_wf_combo.setStyleSheet(
             f"QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
@@ -3954,7 +3954,7 @@ class _AgentSettingsDialog(QDialog):
         wf_lbl = QLabel("对话流")
         wf_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         wf_row.addWidget(wf_lbl)
-        self.agent_wf = QComboBox()
+        self.agent_wf = _ArrowComboBox()
         self.agent_wf.currentIndexChanged.connect(self._reload_agent_view)
         wf_row.addWidget(self.agent_wf, 1)
         lay.addLayout(wf_row)
@@ -4197,7 +4197,7 @@ class _AgentSettingsDialog(QDialog):
         preset_lbl = QLabel("内置工作流")
         preset_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         preset_row.addWidget(preset_lbl)
-        self.wf_preset_combo = QComboBox()
+        self.wf_preset_combo = _ArrowComboBox()
         self.wf_preset_combo.setStyleSheet(_QCOMBO)   # 主题自适应下拉（浅色下避免黑底黑字）
         self.wf_preset_combo.setMinimumWidth(260)
         preset_row.addWidget(self.wf_preset_combo, 1)
@@ -4796,7 +4796,7 @@ class _AgentSettingsDialog(QDialog):
         fit_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         fit_lbl.setFixedWidth(70)
         fit_row.addWidget(fit_lbl)
-        self.wallpaper_fit = QComboBox()
+        self.wallpaper_fit = _ArrowComboBox()
         for fit, label in (("cover", "铺满裁切"), ("contain", "完整显示"),
                            ("stretch", "拉伸铺满"), ("tile", "平铺重复")):
             self.wallpaper_fit.addItem(label, fit)
@@ -5545,7 +5545,7 @@ class _McpServerDialog(QDialog):
         self.name_edit.setPlaceholderText("服务器名称，如 Excel、WPS")
         form.addRow("名称", self.name_edit)
 
-        self.type_combo = QComboBox()
+        self.type_combo = _ArrowComboBox()
         self.type_combo.addItem("stdio（本地命令）", "stdio")
         self.type_combo.addItem("sse（远程 URL）", "sse")
         if server:
@@ -5554,7 +5554,7 @@ class _McpServerDialog(QDialog):
         self.type_combo.currentIndexChanged.connect(self._sync_type)
         form.addRow("类型", self.type_combo)
 
-        self.template_combo = QComboBox()
+        self.template_combo = _ArrowComboBox()
         for tpl, _ in _MCP_TEMPLATES:
             self.template_combo.addItem(tpl)
         self.template_combo.currentIndexChanged.connect(self._apply_template)
@@ -5748,7 +5748,7 @@ class _ProviderDialog(QDialog):
         form.setSpacing(12)
 
         # 预设服务商：一键填入主流 coding/Agent 服务商（仍需填 Key 并测试）
-        self.preset_combo = QComboBox()
+        self.preset_combo = _ArrowComboBox()
         self.preset_combo.addItem("（自定义 / 手动填写）", None)
         for p in agent_llm.PRESET_PROVIDERS:
             self.preset_combo.addItem(p["name"], p)
@@ -5822,7 +5822,7 @@ class _ProviderDialog(QDialog):
             "多模态（视觉）模型逗号分隔，留空按模型名自动识别；自动选择模式下视觉任务优先路由到这些模型")
         form.addRow("多模态模型", self.multimodal_edit)
 
-        self.protocol_combo = QComboBox()
+        self.protocol_combo = _ArrowComboBox()
         self.protocol_combo.addItem("Chat Completions（/v1/chat/completions）", "chat")
         self.protocol_combo.addItem("Responses API（/v1/responses）", "responses")
         pidx = self.protocol_combo.findData(self._provider.get("protocol", "chat"))
@@ -6430,83 +6430,12 @@ def attach_combo_checkmark(combo, check_color=None):
         return False
 
 
-class _ArrowComboBox(QComboBox):
-    """带旋转动画下拉箭头的 QComboBox：展开时箭头旋转 180° 指向向上，收起时转回向下。
+class _ArrowComboBox(ArrowComboBox):
+    """兼容别名：下拉箭头自绘组件已收敛到 `ui/widgets.ArrowComboBox`。
 
-    深色主题下样式表常把原生下拉箭头覆盖消失，此组件在右侧下拉区自绘箭头，
-    并配合 hover/展开状态变色，作为模型选择菜单的微交互点缀。
+    主面板 / 设置页 / Copilot 浮层共用同一实现 —— 三处各自拼 QSS 时箭头要么变方块、
+    要么被样式表吃掉，收敛到一处后新增下拉只写 `_ArrowComboBox()` 即可。
     """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._arrow_angle = 0.0        # 箭头旋转角度：0=收起，180=展开
-        self._arrow_open = False
-        self._arrow_hover = False
-        self._arrow_anim = QPropertyAnimation(self, b"arrowAngle", self)
-        self._arrow_anim.setDuration(160)
-        self._arrow_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-    # ---------- 动画属性 ----------
-    def get_arrowAngle(self) -> float:
-        return self._arrow_angle
-
-    def set_arrowAngle(self, a: float):
-        self._arrow_angle = a
-        self.update()
-
-    arrowAngle = pyqtProperty(float, get_arrowAngle, set_arrowAngle)
-
-    # ---------- 展开/收起触发旋转动画 ----------
-    def showPopup(self):
-        super().showPopup()
-        self._run_arrow(True)
-
-    def hidePopup(self):
-        super().hidePopup()
-        self._run_arrow(False)
-
-    def _run_arrow(self, opening: bool):
-        self._arrow_open = opening
-        self._arrow_anim.stop()
-        self._arrow_anim.setStartValue(self._arrow_angle)
-        self._arrow_anim.setEndValue(180.0 if opening else 0.0)
-        self._arrow_anim.start()
-
-    def enterEvent(self, e):
-        self._arrow_hover = True
-        self.update()
-        super().enterEvent(e)
-
-    def leaveEvent(self, e):
-        self._arrow_hover = False
-        self.update()
-        super().leaveEvent(e)
-
-    def paintEvent(self, e):
-        super().paintEvent(e)
-        # 在右侧下拉区自绘旋转箭头（∨ 形折线，展开后旋转 180° 变为 ∧）
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        arrow_w = 22   # 与样式表 ::drop-down 宽度一致，预留箭头区域
-        cx = self.rect().right() - arrow_w / 2
-        cy = self.rect().center().y()
-        p.save()
-        p.translate(cx, cy)
-        p.rotate(self._arrow_angle)
-        color = ACCENT if (self._arrow_open or self._arrow_hover) else TEXT_DIM
-        pen = QPen(QColor(color))
-        pen.setWidthF(1.6)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        s = 4.0
-        path = QPainterPath()
-        path.moveTo(-s, -s * 0.5)
-        path.lineTo(0.0, s * 0.5)
-        path.lineTo(s, -s * 0.5)
-        p.drawPath(path)
-        p.restore()
-        p.end()
 
 
 class _TurnWrap(QWidget):
@@ -6693,9 +6622,11 @@ class FlowLayout(QLayout):
 class _DropTextEdit(QPlainTextEdit):
     """多行输入框：自动换行、高度自适应（42~140px）、Enter 发送（Shift+Enter 换行）、
     文件拖放（重写 drag/drop，不依赖事件冒泡）。
-    
-    自定义光标渲染：Qt 默认光标太细且闪烁，在花色背景上几乎不可见。
-    通过重写 paintEvent 绘制自定义黑色竖线，确保始终可见。
+
+    光标不用自绘：曾重写 paintEvent 画一条静态黑色竖线「保证始终可见」，结果是
+    原生光标被盖住 → 光标一直显示却**不闪烁**（用户反馈）。现改为原生光标加宽
+    （见 apply_input_caret）+ 缩短闪烁周期（见 apply_cursor_flash），
+    颜色随 QSS `color`（壁纸下纯黑，见 _input_fg），闪烁交给 Qt。
     """
     submit = pyqtSignal()          # 用户按 Enter（发送）
     fileDropped = pyqtSignal(list)  # 拖入的文件路径列表
@@ -6752,33 +6683,6 @@ class _DropTextEdit(QPlainTextEdit):
     def has_pending_composition(self) -> bool:
         """输入法是否处于组合态（拼字未上屏，文档中读不到内容）"""
         return bool((self._ime_preedit or "").strip())
-    
-    def paintEvent(self, event):
-        """重写绘制事件：在默认渲染基础上叠加自定义光标。"""
-        super().paintEvent(event)
-        # 检查是否有焦点且光标不在选择状态
-        if not self.hasFocus() or self.textCursor().hasSelection():
-            return
-        cursor = self.textCursor()
-        if cursor.position() <= 0:
-            return
-        # 获取光标矩形
-        cr = self.cursorRect(cursor)
-        if cr.width() <= 0 or cr.height() <= 0:
-            return
-        # 绘制自定义黑色竖线光标
-        from PyQt6.QtGui import QPainter
-        p = QPainter(self.viewport())
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)  # 禁用抗锯齿，让竖线更清晰
-        p.setPen(Qt.PenStyle.SolidLine)
-        p.setBrush(Qt.GlobalColor.black)
-        x = cr.x()
-        y = cr.y()
-        w = _CUSTOM_CURSOR_WIDTH
-        h = cr.height()
-        # 绘制竖线（比默认光标更粗）
-        p.fillRect(x, y, w, h, Qt.GlobalColor.black)
-        p.end()
 
     def _has_files(self, e) -> bool:
         return e.mimeData().hasUrls()
@@ -9052,7 +8956,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         mode_row = QHBoxLayout(self.mode_row)
         mode_row.setContentsMargins(0, 0, 0, 0)
         mode_row.setSpacing(6)
-        self.mode = QComboBox()
+        self.mode = _ArrowComboBox()
         for label, key in (("自动", "auto"), ("Web", "web"), ("Markdown", "md"),
                            ("图片", "img"), ("表格 xlsx", "xlsx"), ("文档 docx", "docx"),
                            ("幻灯片 pptx", "pptx"), ("文本/代码", "text"),
@@ -15196,6 +15100,25 @@ class AgentPanel(QDialog):
     def _dock_column(self, side: str) -> QWidget:
         return self._dock_left if side == "left" else self._dock_right
 
+    def _apply_dock_surface(self):
+        """按当前表面色就地刷新两侧 dock 栏容器的底色。
+
+        为什么必须有这一步：栏容器是 `_build_ui` 期建好的（见 `_make_dock_column`），
+        而「设/清背景」走的是 `_retheme` **快路径**（不重建控件树，只逐面板
+        `apply_surface_theme`）—— 漏了栏容器就会出现「面板自己透明了、身后那层栏底
+        还是实色块」：融入主面板（用户主用形态）下整个侧栏看上去根本没透明
+        （用户反馈的「设了背景后文件树 / Git / todos / 预览面板底色不透明」）。
+        """
+        for side in ("left", "right"):
+            try:
+                col = self._dock_column(side)
+                if col is None:
+                    continue
+                col.setStyleSheet(f"QWidget#dockCol{side} "
+                                  f"{{ background: {_panel_surface('BG')}; border: none; }}")
+            except Exception:
+                pass      # 栏容器未建 / 已销毁：不是关键路径，静默跳过
+
     def _dock_layout(self, side: str) -> QVBoxLayout:
         col = self._dock_column(side)
         return col.property("_dock_lay") if col is not None else None
@@ -17912,6 +17835,10 @@ class AgentPanel(QDialog):
         _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
         _set(getattr(self, "token_btn", None), _BTN_GHOST)
         _set(getattr(self, "input", None), _input_qss())
+        # 光标宽度 / 闪烁周期随壁纸状态走：输入框在快路径下不重建，
+        # 不在这里补一刀就会残留旧档位（壁纸下光标仍细得看不见）。
+        apply_input_caret(getattr(self, "input", None))
+        apply_cursor_flash()
         _set(getattr(self, "attach_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
         _set(getattr(self, "optimize_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
         _set(getattr(self, "action_btn", None), _BTN_PRIMARY)
@@ -20602,6 +20529,9 @@ class AgentPanel(QDialog):
             except Exception:
                 pass
             # 5) 壁纸层与侧栏自绘窗口重绘（表面色/描边色都变了）
+            #    dock 栏容器与 4 个侧栏面板都要刷新：只刷面板会留下「面板透明、
+            #    身后栏底仍是实色块」的半透明界面（见 _apply_dock_surface）。
+            self._apply_dock_surface()
             try:
                 for _nm in ("todos_win", "git_win", "wt_win", "code_win"):
                     _w = getattr(self, _nm, None)

@@ -319,11 +319,11 @@ def test_focus_glow_and_cursor_flash_boost_on_wallpaper(tmp_path):
 
 
 def test_input_bg_transparent_and_caret_boost_on_wallpaper(tmp_path):
-    """壁纸下输入框底必须全透明，对比度改由「泛光 + 自定义光标」兜底。
+    """壁纸下输入框底必须全透明，对比度改由「泛光 + 加宽的原生光标」兜底。
 
     回归场景：输入框曾用半透明 scrim 保对比度，叠在花背景上显得浑浊；
-    用户要求底一律透明。光标通过重写 paintEvent 绘制自定义竖线，
-    确保在花色背景上始终可见（不再依赖 Qt 默认闪烁光标）。
+    用户要求底一律透明。光标不再自绘 —— 加宽原生光标（见 apply_input_caret）
+    即可在花色背景上看清，同时保留 Qt 的原生闪烁。
     """
     from PyQt6.QtWidgets import QApplication
     from zhuzhu_Copilot.ui import agent_panel as ap
@@ -336,7 +336,6 @@ def test_input_bg_transparent_and_caret_boost_on_wallpaper(tmp_path):
         w.set_fields(bg_image=_solid_png(tmp_path), persist=False)
         ap.refresh_surface_mode()
         assert ap._input_bg() == "transparent", "壁纸下输入框底必须全透明"
-        # 自定义光标方案：通过 paintEvent 绘制，不依赖 cursorWidth
         # 断言：有 focus glow（确保光标区域有视觉反馈）
         blur, alpha = ap._focus_glow_params()
         assert blur > ap._FOCUS_GLOW_BLUR, "壁纸下边缘光必须加粗"
@@ -345,6 +344,48 @@ def test_input_bg_transparent_and_caret_boost_on_wallpaper(tmp_path):
         w.set_fields(bg_image="", persist=False)
         ap.refresh_surface_mode()
         assert ap._input_bg() == ap.PANEL, "无壁纸时恢复面板底色"
+    finally:
+        edit.deleteLater()
+        w.set_fields(bg_image="", persist=False)
+        ap.refresh_surface_mode()
+
+
+def test_input_caret_blinks_with_native_caret(tmp_path):
+    """输入光标必须「看得见 + 会闪」：加宽原生光标，禁用自绘静态光标。
+
+    回归（用户反馈，两条）：
+      ① 自定义背景模式下点进输入框看不到光标 —— 原生 1px 光标被花背景吃掉；
+      ② 输入文字时「只有光标显示、不闪烁」—— 曾用 paintEvent 自绘一条静态黑色竖线
+         「保证始终可见」，它盖住了原生光标，原生闪烁因此完全看不出来。
+    修法：删掉自绘，改用原生闪烁光标并把宽度提到 2px（壁纸下 3px）。
+    """
+    from PyQt6.QtWidgets import QApplication
+    from zhuzhu_Copilot.ui import agent_panel as ap
+    from zhuzhu_Copilot.ui.agent_panel import _DropTextEdit
+
+    app = QApplication.instance()
+    assert app is not None
+
+    # ① 组件不得再自绘静态光标（自绘静态线 = 光标永不消失 → 表现为不闪烁）
+    assert "paintEvent" not in _DropTextEdit.__dict__, \
+        "输入框重新自绘光标会再次盖住原生闪烁光标"
+    assert not hasattr(ap, "_CUSTOM_CURSOR_WIDTH"), "自绘光标常量应已随实现一并删除"
+
+    # ② 闪烁周期必须 > 0（Qt 里 0 = 不闪烁），且宽度在两种模式下都要够粗
+    edit = _DropTextEdit()
+    try:
+        w.set_fields(bg_image=_solid_png(tmp_path), persist=False)
+        ap.refresh_surface_mode()
+        ap.apply_input_caret(edit)
+        assert app.cursorFlashTime() > 0, "闪烁周期为 0 时光标不会闪"
+        assert edit.cursorWidth() == ap._CURSOR_WIDTH_ON_WALLPAPER
+        assert edit.cursorWidth() >= 2, "壁纸下光标过细会在花背景上消失"
+
+        w.set_fields(bg_image="", persist=False)
+        ap.refresh_surface_mode()
+        ap.apply_input_caret(edit)
+        assert edit.cursorWidth() == ap._CURSOR_WIDTH
+        assert edit.cursorWidth() >= 2, "非壁纸下 1px 光标同样难看清"
     finally:
         edit.deleteLater()
         w.set_fields(bg_image="", persist=False)

@@ -30,6 +30,7 @@ RADIUS_CHIP = 7             # .kv em 参数 chip
 THINK_FOLD_LINES = 5        # 思考过程正文超过该行数即自动折叠
 OUT_FOLD_LINES = 12         # 工具/命令的执行结果超过该行数即自动折叠（可「展开全部」）
 DASH_PATTERN = (4, 4)       # 虚线线段的「实 4 / 空 4」节奏（px）
+COMBO_ARROW_W = 22          # 下拉框右侧箭头预留宽度（自绘 chevron 与 QSS ::drop-down 必须同值）
 
 # 字阶（px）
 FONT_CAPTION = 11  # 最小辅助文字（角标）

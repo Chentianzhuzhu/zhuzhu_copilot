@@ -14,6 +14,9 @@
   ③ 侧栏内的滚动区域必须**显式**带 `QScrollBar` 规则 —— 控件一旦设有样式表，未提及
      的子控件会退回系统默认外观，浅色主题下就是一条深灰滚动条。
 
+另有 ④ 壁纸透明态翻转（走快路径，不重建控件树）时 dock 栏容器必须一起刷新 ——
+面板本身透明了、身后栏底仍是实色块，看上去就是「面板没透明」。
+
 本文件用 `AgentPanel.__new__` 轻代理（不构造整面板，避免 MCP/托盘等副作用），
 只调被测方法，不为控件调 show()。
 """
@@ -187,3 +190,61 @@ def test_apply_theme_syncs_both_palettes(monkeypatch):
     finally:
         _restore_palette(original)
         ap.apply_theme()          # 还原模块状态（_APPLIED_THEME 等），按真实设置重绑
+
+
+# ---------- ④ 壁纸透明态翻转：dock 栏容器必须跟着刷新 ----------
+
+def test_apply_dock_surface_refreshes_columns(tmp_path):
+    """设/清背景时 dock 栏容器必须一起换底。
+
+    回归（用户反馈）：首次设置背景后，文件树 / Git / todos / 预览面板「底色不透明」。
+    设/清背景走 `_retheme` **快路径**（不重建控件树，只逐面板 apply_surface_theme），
+    面板自己透明了，但**身后那层 dockCol 栏底仍是实色块** —— 融入主面板时整片侧栏
+    看上去就没透明。
+    """
+    from PyQt6.QtGui import QColor, QPixmap
+    from zhuzhu_Copilot.core import app_wallpaper as aw
+
+    p = _proxy()
+    p._dock_left = QWidget()
+    p._dock_left.setObjectName("dockColleft")
+    p._dock_right = QWidget()
+    p._dock_right.setObjectName("dockColright")
+    img_path = tmp_path / "wall.png"
+    pm = QPixmap(64, 64)
+    pm.fill(QColor("#2F52D8"))
+    assert pm.save(str(img_path), "PNG")
+    try:
+        # 无壁纸：栏底回落原始色板实色
+        aw.set_fields(bg_image="", persist=False)
+        ap.refresh_surface_mode()
+        p._apply_dock_surface()
+        assert ap._base_color("BG") in p._dock_left.styleSheet()
+        assert "transparent" not in p._dock_left.styleSheet()
+
+        # 首次设置背景（透明态 False → True，正是快路径）
+        aw.set_fields(bg_image=str(img_path), persist=False)
+        ap.refresh_surface_mode()
+        p._apply_dock_surface()
+        for col in (p._dock_left, p._dock_right):
+            assert "background: transparent" in col.styleSheet(), \
+                f"{col.objectName()} 栏底未随壁纸透明：{col.styleSheet()}"
+    finally:
+        aw.set_fields(bg_image="", persist=False)
+        ap.refresh_surface_mode()
+        p._dock_left.deleteLater()
+        p._dock_right.deleteLater()
+
+
+def test_retheme_fast_path_refreshes_dock_columns():
+    """`_retheme` 快路径必须显式调用 `_apply_dock_surface()`（源码级接线契约）。
+
+    只刷 4 个面板窗口、漏掉栏容器是这次缺陷的成因；两个调用点相距很远，
+    用行为断言不易覆盖，故直接对快路径分支做源码断言（读盘，不用 inspect.getsource）。
+    """
+    src = (Path(__file__).resolve().parents[1]
+           / "src/zhuzhu_Copilot/ui/agent_panel.py").read_text(encoding="utf-8")
+    assert "if not _did_theme_change:" in src, "快路径分支不见了，本用例需同步更新"
+    fast_path = src.split("if not _did_theme_change:")[1].split("慢路径开始拆树前")[0]
+    assert "_apply_dock_surface()" in fast_path, \
+        "快路径漏了 dock 栏容器刷新 → 面板透明但栏底仍是实色块"

@@ -262,5 +262,106 @@ def test_shutdown_is_idempotent(panel):
     panel.shutdown()
 
 
+# ---------- 深色模式下的残留浅色元素（卡片 / 分隔线） ----------
+
+def _restore_palette():
+    """把 styles.PALETTE 还原回真实主题，避免污染同进程内其它用例。"""
+    from zhuzhu_Copilot.ui import agent_panel, styles
+    styles.set_palette(agent_panel._resolve_theme())
+    mw._regen_qss()
+
+
+def test_cards_and_dividers_follow_theme_switch(panel, monkeypatch):
+    """切换深浅主题后，页面里的卡片与分隔线必须跟着换色。
+
+    回归（用户反馈，见截图）：深色模式下「部分元素仍是浅色」—— 卡片 / 分隔线的底色是
+    构建期内联进各自 QSS 的，而主题切换不会重建控件（只重刷根样式与按钮/标签），
+    漏刷就留下白底卡片压在深色面板上。约定：实现 apply_theme() 的控件由
+    CopilotPanel._apply_theme 统一刷新。
+    """
+    from zhuzhu_Copilot.ui import styles
+    from zhuzhu_Copilot.ui.widgets import Card
+
+    cards = panel.findChildren(Card)
+    dividers = panel.findChildren(mw._Divider)
+    assert len(cards) >= 4, f"浮层应有各页卡片，实得 {len(cards)}"
+    assert dividers, "浮层应有分区分隔线"
+
+    try:
+        monkeypatch.setattr(mw.CopilotPanel, "_current_theme", lambda self: "light")
+        styles.set_palette("light")
+        mw._regen_qss()
+        panel._apply_theme()
+        for c in cards:
+            assert styles.LIGHT_PALETTE["card"] in c.styleSheet(), c.styleSheet()
+
+        monkeypatch.setattr(mw.CopilotPanel, "_current_theme", lambda self: "dark")
+        styles.set_palette("dark")
+        mw._regen_qss()
+        panel._apply_theme()
+        for c in panel.findChildren(Card):
+            ss = c.styleSheet()
+            assert styles.DARK_PALETTE["card"] in ss, f"深色下卡片仍是浅色：{ss}"
+            assert styles.LIGHT_PALETTE["card"] not in ss, f"深色下残留浅色卡片：{ss}"
+        for d in panel.findChildren(mw._Divider):
+            assert styles.DARK_PALETTE["border"] in d.styleSheet(), d.styleSheet()
+        # 右下角通知弹窗是独立顶层窗口（无 parent），不在上面的控件树遍历里；
+        # 卡片底写在弹窗内部的 toast 容器上，故扫其整棵子树。
+        assert panel.toast is not None
+        from PyQt6.QtWidgets import QWidget as _QW
+        toast_ss = "".join([panel.toast.styleSheet() or ""]
+                           + [w.styleSheet() or "" for w in panel.toast.findChildren(_QW)])
+        assert styles.DARK_PALETTE["card"] in toast_ss, \
+            "深色下通知弹窗仍是浅色卡片（独立窗口需单独刷新）"
+    finally:
+        _restore_palette()
+
+
+# ---------- 下拉箭头：必须是自绘 chevron，不能是方块 ----------
+
+def _arrow_has_notch(img, bg: str) -> bool:
+    """箭头区「顶行中间有缺口」= chevron；实心方块没有缺口。"""
+    xs, ys = [], []
+    for y in range(3, img.height() - 3):
+        for x in range(max(0, img.width() - 40), img.width() - 3):
+            if img.pixelColor(x, y).name() != bg:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return False
+    x0, x1, y0 = min(xs), max(xs), min(ys)
+    row = [img.pixelColor(x, y0).name() != bg for x in range(x0, x1 + 1)]
+    filled = [i for i, f in enumerate(row) if f]
+    if not filled:
+        return False
+    return any(not row[i] and filled[0] < i < filled[-1] for i in range(len(row)))
+
+
+def test_dropdown_arrow_is_self_drawn_chevron_not_square(panel):
+    """下拉箭头必须是自绘 chevron。
+
+    回归（用户反馈，见截图）：箭头渲染成一个实心小方块 —— styles.GLOBAL_QSS 用
+    「透明左右边框 + 实心上边框」拼三角，Qt 的 QSS 不支持 CSS 三角，会把它画成
+    5x5 实心块；而只接管 ::drop-down 又会吃掉原生箭头。故箭头统一由
+    ui/widgets.ArrowComboBox 自绘。
+    """
+    from zhuzhu_Copilot.ui import styles
+    from zhuzhu_Copilot.ui.widgets import ArrowComboBox
+
+    assert isinstance(panel.theme_combo, ArrowComboBox), "主题下拉未用自绘箭头组件"
+    assert isinstance(panel.drive_combo, ArrowComboBox), "盘符下拉未用自绘箭头组件"
+    assert "down-arrow" not in styles.GLOBAL_QSS, \
+        "QSS 里的 border 三角会被 Qt 渲染成方块，必须由 ArrowComboBox 自绘"
+
+    combo = panel.theme_combo
+    combo.resize(300, 38)
+    assert combo.count() > 0, "主题下拉应有候选项"
+    combo.show()
+    _pump(80)
+    img = combo.grab().toImage()
+    bg = img.pixelColor(img.width() // 2, img.height() // 2).name()
+    assert _arrow_has_notch(img, bg), "下拉箭头是实心方块（chevron 应在顶行中间留缺口）"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

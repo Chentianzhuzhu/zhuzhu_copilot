@@ -12,6 +12,7 @@ from PyQt6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
 from zhuzhu_Copilot.ui.tokens import (
+    COMBO_ARROW_W,
     FONT_BASE,
     FONT_BODY,
     FONT_CAPTION,
@@ -83,7 +84,13 @@ def _scrollbar_handle_hover() -> str:
 
 
 def _build_global_qss() -> str:
-    """按当前 PALETTE 生成全局 QSS（主窗口基础样式，浅色/深色随主题重建）"""
+    """按当前 PALETTE 生成全局 QSS（主窗口基础样式，浅色/深色随主题重建）
+
+    下拉箭头**不在这里画**：Qt 的 QSS 不支持 CSS 那种「透明边框拼三角」的写法，
+    `border-top` + 透明左右边会被渲染成一个实心小方块（用户反馈的「下拉箭头是方块」）。
+    箭头统一由 `ui/widgets.ArrowComboBox` 在 paintEvent 里自绘（可随 hover/展开换色），
+    这里只保留与自绘箭头等宽的 `::drop-down` 预留位。
+    """
     return f"""
 QMainWindow {{
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -171,15 +178,7 @@ QLineEdit:focus, QComboBox:focus {{
 
 QComboBox::drop-down {{
     border: none;
-    width: 30px;
-}}
-
-QComboBox::down-arrow {{
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {PALETTE['text_secondary']};
-    margin-right: 8px;
+    width: {COMBO_ARROW_W}px;
 }}
 
 QComboBox QAbstractItemView {{

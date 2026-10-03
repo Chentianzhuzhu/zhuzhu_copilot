@@ -9,7 +9,7 @@ from typing import List
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QComboBox, QPushButton, QListWidget, QListWidgetItem, QProgressBar,
+    QPushButton, QListWidget, QListWidgetItem, QProgressBar,
     QTextEdit, QMessageBox, QApplication,
     QFileDialog, QDialog, QScrollArea, QFrame, QSystemTrayIcon, QMenu,
     QStackedWidget, QButtonGroup, QGraphicsOpacityEffect
@@ -28,7 +28,7 @@ from zhuzhu_Copilot.ui import styles   # 主题切换时按最新 PALETTE/GLOBAL
 from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
 from zhuzhu_Copilot.ui.widgets import (
     Card, AppItemDelegate, DataDirDialog,
-    UninstallConfirmDialog, ToastNotification, SwitchButton
+    UninstallConfirmDialog, ToastNotification, SwitchButton, ArrowComboBox
 )
 # DownloadDialog / AgentPanel 为懒加载：打开对应面板时才导入，
 # 避免启动时加载 agent_engine→agent_llm(urllib) 等重型模块链拖慢首屏
@@ -443,6 +443,23 @@ def _icon_button(text: str, svg_tpl: str, kind: str = "ghost", height: int = 40)
     return btn
 
 
+class _Divider(QFrame):
+    """1px 主题分隔线。
+
+    QFrame 不会跟着 PALETTE 自动换色 —— 底色是构建期内联进 QSS 的，
+    主题切换时控件不重建 → 深色下会残留一条浅灰线。故提供 apply_theme()，
+    由 CopilotPanel._apply_theme 统一刷新（与 Card 同一套约定）。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(1)
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.setStyleSheet(f"background: {PALETTE['border']}; border: none;")
+
+
 class _IconTitleButton(QPushButton):
     """标题栏矢量图标按钮：悬停切换高亮色，无 emoji"""
 
@@ -853,13 +870,25 @@ class CopilotPanel(QFrame):
             if getattr(self, "_ver_lbl", None) is not None:
                 self._ver_lbl.setStyleSheet(
                     f"font-size: 11px; color: {PALETTE['text_secondary']};")
-            # 卡片底（左右两栏）
-            card_qss = (f"QWidget#card {{ background-color: {PALETTE['card']};"
-                        f" border-radius: 14px; border: 1px solid {PALETTE['border']}; }}")
-            for _card in (getattr(self, "_left_card", None),
-                          getattr(self, "_right_card", None)):
-                if _card is not None:
-                    _card.setStyleSheet(card_qss)
+            # 卡片底 / 分隔线：两者都在页面构建期建好、QSS 里内联了主题色，主题切换
+            # 不会重建控件 → 必须按新色逐个重刷（用户反馈的「深色下卡片仍是浅色」就是
+            # 漏了这一步）。约定：自带 apply_theme() 的控件由这里统一刷新，
+            # 将来新增同类控件只要实现该方法即可自动受益。
+            for _w in self.findChildren(QWidget):
+                _fn = getattr(_w, "apply_theme", None)
+                if callable(_fn):
+                    try:
+                        _fn()
+                    except Exception:
+                        pass
+            # 右下角通知弹窗是**独立顶层窗口**（无 parent），上面的控件树遍历到不了它，
+            # 需单独刷新，否则切深色后它仍是浅色卡片。
+            _toast = getattr(self, "toast", None)
+            if _toast is not None:
+                try:
+                    _toast.apply_theme()
+                except Exception:
+                    pass
             # 搜索框
             if hasattr(self, "search_edit"):
                 self.search_edit.setStyleSheet(_SEARCH_QSS)
@@ -1211,7 +1240,7 @@ class CopilotPanel(QFrame):
         dl._hint = True
         dl.setStyleSheet(_FIELD_LABEL)
         drive_row.addWidget(dl)
-        self.drive_combo = QComboBox()
+        self.drive_combo = ArrowComboBox()
         self._populate_drives()
         drive_row.addWidget(self.drive_combo, 1)
         layout.addLayout(drive_row)
@@ -1330,7 +1359,7 @@ class CopilotPanel(QFrame):
         lbl.setStyleSheet(_FIELD_LABEL)
         lbl.setFixedWidth(70)
         theme_row.addWidget(lbl)
-        self.theme_combo = QComboBox()
+        self.theme_combo = ArrowComboBox()
         self.theme_combo.addItem("深色", "dark")
         self.theme_combo.addItem("浅色", "light")
         self.theme_combo.addItem("按时间自动（8-20 浅色）", "auto")
@@ -1408,10 +1437,8 @@ class CopilotPanel(QFrame):
         return lbl
 
     def _divider(self) -> QFrame:
-        f = QFrame()
-        f.setFixedHeight(1)
-        f.setStyleSheet(f"background: {PALETTE['border']}; border: none;")
-        return f
+        """分区之间的 1px 分隔线（底色随主题重建，见 _Divider）"""
+        return _Divider()
 
     def _clear_info(self):
         """清空详情区：递归移除并销毁所有子项（widget 与嵌套 layout）。

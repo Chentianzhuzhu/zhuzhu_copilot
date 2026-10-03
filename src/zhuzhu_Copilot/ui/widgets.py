@@ -5,15 +5,17 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QCheckBox, QSizePolicy, QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
-    QFileIconProvider, QApplication
+    QFileIconProvider, QApplication, QComboBox
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QFileInfo, QPoint, QTimer, QObject, QPropertyAnimation,
     QParallelAnimationGroup, QEasingCurve, pyqtSignal, pyqtProperty
 )
-from PyQt6.QtGui import QColor, QPainter, QIcon, QFont, QFontMetrics, QPixmap, QPen
+from PyQt6.QtGui import (QColor, QPainter, QIcon, QFont, QFontMetrics, QPixmap,
+                         QPainterPath, QPen)
 
 from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
+from zhuzhu_Copilot.ui.tokens import COMBO_ARROW_W
 
 # 卸载/安装类程序名，图标无意义，查找主程序时排除
 _BANNED_EXE = {
@@ -95,18 +97,110 @@ class SwitchButton(QWidget):
         p.drawEllipse(int(round(x)), pad, d, d)
 
 
+class ArrowComboBox(QComboBox):
+    """带旋转动画下拉箭头的 QComboBox：收起时 chevron 朝下，展开后旋转 180° 朝上。
+
+    为什么必须自绘：一旦样式表接管了 `QComboBox::drop-down`，Qt 就**不再绘制原生箭头**；
+    而 QSS 又画不出三角 —— 用「透明左右边框 + 实心上边框」拼三角会被 Qt 渲染成一个
+    实心小方块（用户反馈「下拉箭头是个方块」）。自绘是同时满足
+    「箭头存在 / 形状正确 / 随主题与 hover 换色」的唯一做法。
+
+    箭头预留宽度与 QSS `::drop-down` 取同一 Design Token（COMBO_ARROW_W），两处不会漂移。
+    颜色在绘制时实时读 PALETTE，因此主题切换无需重建控件。
+    """
+
+    ARROW_W = COMBO_ARROW_W      # 与 QSS ::drop-down 宽度同源
+    ARROW_HALF = 4.0             # chevron 半宽（px）
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._arrow_angle = 0.0        # 箭头旋转角度：0=收起，180=展开
+        self._arrow_open = False
+        self._arrow_hover = False
+        self._arrow_anim = QPropertyAnimation(self, b"arrowAngle", self)
+        self._arrow_anim.setDuration(160)
+        self._arrow_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    # ---------- 动画属性 ----------
+    def get_arrowAngle(self) -> float:
+        return self._arrow_angle
+
+    def set_arrowAngle(self, a: float):
+        self._arrow_angle = a
+        self.update()
+
+    arrowAngle = pyqtProperty(float, get_arrowAngle, set_arrowAngle)
+
+    # ---------- 展开/收起触发旋转动画 ----------
+    def showPopup(self):
+        super().showPopup()
+        self._run_arrow(True)
+
+    def hidePopup(self):
+        super().hidePopup()
+        self._run_arrow(False)
+
+    def _run_arrow(self, opening: bool):
+        self._arrow_open = opening
+        self._arrow_anim.stop()
+        self._arrow_anim.setStartValue(self._arrow_angle)
+        self._arrow_anim.setEndValue(180.0 if opening else 0.0)
+        self._arrow_anim.start()
+
+    def enterEvent(self, e):
+        self._arrow_hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._arrow_hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def apply_theme(self):
+        """主题切换后重绘箭头（颜色在 paintEvent 实时取 PALETTE，只需重绘）。"""
+        self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        # 在右侧下拉区自绘旋转箭头（∨ 形折线，展开后旋转 180° 变为 ∧）
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx = self.rect().right() - self.ARROW_W / 2
+        cy = self.rect().center().y()
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(self._arrow_angle)
+        color = PALETTE["primary"] if (self._arrow_open or self._arrow_hover) \
+            else PALETTE["text_secondary"]
+        pen = QPen(QColor(color))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        s = self.ARROW_HALF
+        path = QPainterPath()
+        path.moveTo(-s, -s * 0.5)
+        path.lineTo(0.0, s * 0.5)
+        path.lineTo(s, -s * 0.5)
+        p.drawPath(path)
+        p.restore()
+        p.end()
+
+
 class Card(QWidget):
+    """浮层内的内容卡片：圆角底 + 细描边（纯黑+淡灰+白+深蓝四色系）。
+
+    QSS 里内联了主题色，**必须**提供 `apply_theme()`：卡片是在页面构建期建好的，
+    主题切换时控件不会被重建，只有重新按当前 PALETTE 生成 QSS 才能跟着换色
+    （用户反馈的「深色模式下卡片仍是浅色」就是漏了这一步）。
+    """
+
     def __init__(self, title="", parent=None):
         super().__init__(parent)
         self.setObjectName("card")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"""
-            QWidget#card {{
-                background-color: {PALETTE['card']};
-                border-radius: 14px;
-                border: 1px solid {PALETTE['border']};
-            }}
-        """)
+        self._title_label = None
 
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(18, 16, 18, 16)
@@ -114,8 +208,23 @@ class Card(QWidget):
 
         if title:
             title_label = QLabel(title)
-            title_label.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {PALETTE['text']};")
+            title_label.setObjectName("cardTitle")
+            self._title_label = title_label
             self.layout.addWidget(title_label)
+        self.apply_theme()
+
+    def apply_theme(self):
+        """按当前 PALETTE 重建卡片与标题的样式（幂等，主题切换时由外层统一调用）。"""
+        self.setStyleSheet(f"""
+            QWidget#card {{
+                background-color: {PALETTE['card']};
+                border-radius: 14px;
+                border: 1px solid {PALETTE['border']};
+            }}
+        """)
+        if self._title_label is not None:
+            self._title_label.setStyleSheet(
+                f"font-size: 16px; font-weight: 700; color: {PALETTE['text']};")
 
 class PrimaryButton(QPushButton):
     def __init__(self, text, parent=None):
@@ -610,24 +719,10 @@ class ToastNotification(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        self.setStyleSheet(f"""
-            QLabel {{ background: transparent; }}
-            QPushButton {{
-                background: transparent; border: none; border-radius: 12px;
-                color: {PALETTE['text_secondary']}; font-size: 14px; font-weight: 700;
-            }}
-            QPushButton:hover {{ background: {PALETTE['hover']}; color: {PALETTE['danger']}; }}
-        """)
         root = QWidget(self)
         root.setObjectName("toast")
         root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        root.setStyleSheet(f"""
-            QWidget#toast {{
-                background-color: {PALETTE['card']};
-                border: 1px solid {PALETTE['border']};
-                border-radius: 14px;
-            }}
-        """)
+        self._root = root
         shadow = QGraphicsDropShadowEffect(root)
         shadow.setBlurRadius(40)
         shadow.setColor(QColor(0, 0, 0, 96))
@@ -648,12 +743,10 @@ class ToastNotification(QWidget):
 
         texts = QVBoxLayout()
         texts.setSpacing(4)
-        self._title = QLabel()
-        self._title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {PALETTE['text']};")
+        self._title = QLabel()          # 文案配色统一由 apply_theme() 落地
         texts.addWidget(self._title)
         self._body = QLabel()
         self._body.setWordWrap(True)
-        self._body.setStyleSheet(f"font-size: 12px; color: {PALETTE['text_secondary']};")
         texts.addWidget(self._body)
         lay.addLayout(texts, 1)
 
@@ -664,6 +757,38 @@ class ToastNotification(QWidget):
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.clicked.connect(self._close_now)
         lay.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+        self.apply_theme()
+
+    def apply_theme(self):
+        """按当前 PALETTE 重建弹窗配色（壁纸/主题切换时由外部调用）。
+
+        弹窗是无父窗口的独立顶层窗口，不随主面板控件树遍历到 —— 构造期烘焙的主题色
+        若不主动重刷，切到深色后弹窗会仍是浅色卡片（与浮层卡片同一类缺陷）。
+        强调条颜色在 show_toast 时按需取色，不在这里固定。
+        """
+        self.setStyleSheet(f"""
+            QLabel {{ background: transparent; }}
+            QPushButton {{
+                background: transparent; border: none; border-radius: 12px;
+                color: {PALETTE['text_secondary']}; font-size: 14px; font-weight: 700;
+            }}
+            QPushButton:hover {{ background: {PALETTE['hover']}; color: {PALETTE['danger']}; }}
+        """)
+        root = getattr(self, "_root", None)
+        if root is not None:
+            root.setStyleSheet(f"""
+                QWidget#toast {{
+                    background-color: {PALETTE['card']};
+                    border: 1px solid {PALETTE['border']};
+                    border-radius: 14px;
+                }}
+            """)
+        if getattr(self, "_title", None) is not None:
+            self._title.setStyleSheet(
+                f"font-size: 13px; font-weight: 700; color: {PALETTE['text']};")
+        if getattr(self, "_body", None) is not None:
+            self._body.setStyleSheet(
+                f"font-size: 12px; color: {PALETTE['text_secondary']};")
 
     def show_toast(self, title: str, message: str, warn: bool = False, duration: int = 6000):
         """显示/刷新右下角弹窗并重新滑入"""
