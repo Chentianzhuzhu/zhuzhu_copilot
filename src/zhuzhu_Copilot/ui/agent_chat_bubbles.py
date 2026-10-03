@@ -2995,14 +2995,27 @@ class ChatTurn(QWidget):
             self._toggle_handler()        # 让面板按新高度重新钉定（消除残留空白）
 
     def _place_toggle(self):
-        """把开关（与「继续显示」）放到最后一个过程块之后（demo 中 .proc-ctrl 紧随 .ai-proc）；
-        收起态下没有过程块，开关自然落到正文之前。位置未变时不重复插拔，
-        避免流式刷新期间反复触发布局失效。"""
-        idx = 0
-        for i, ref in enumerate(self._items):
+        """把开关（与「继续显示」）放到过程区末尾、**正文之前**（demo `.proc-ctrl` 紧随
+        `.ai-proc`）。位置未变时不重复插拔，避免流式刷新期间反复触发布局失效。
+
+        下标必须从布局**实际位置反查**，不能用「每项占 2 个槽」的算术推：done 回合的隐藏
+        过程块走延迟建块（见 `_insert_blocks` 的 defer_create），只登记 spacer 一项、不占
+        widget 槽，按算术推出的下标整体偏大，被末尾夹住后开关就跑到回合最底部 —— 即用户
+        反馈的「重启后『查看执行过程』跑到气泡末尾，点开后与正文挤在一起」。
+
+        锚点取**正文之前的最后一个过程块**：正文之后还跟着过程块时（收尾又跑了一步工具），
+        锚点若取「最后一个过程块」同样会把开关顶到正文下面去。
+        """
+        anchor = None
+        for ref in self._items:
             if ref.is_proc:
-                idx = i * 2 + 2
-        idx = min(idx, max(0, self._box_lay.count() - 1))
+                anchor = ref
+            elif anchor is not None:
+                break                    # 已进入正文：开关停在过程区末尾
+        idx = 0
+        if anchor is not None:
+            pos = self._box_lay.indexOf(anchor.spacer)
+            idx = pos + 1 if pos >= 0 else self._box_lay.count()
         if idx != self._toggle_idx or self._toggle.parent() is not self._box:
             self._toggle_idx = idx
             self._box_lay.removeWidget(self._toggle)

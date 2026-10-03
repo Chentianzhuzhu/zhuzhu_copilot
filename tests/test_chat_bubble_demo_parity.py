@@ -766,3 +766,82 @@ def test_blocks_use_fixed_height_not_only_minimum():
             f"{ref.kind} 未钉成固定高度：min={w.minimumHeight()} max={w.maximumHeight()}")
 
 
+# ---------------------------------------------------------------------------
+# 开关位置：**必须在正文之前**（用户反馈：重启后「查看执行过程」跑到气泡末尾）
+# ---------------------------------------------------------------------------
+# 根因：`_place_toggle` 曾用「每项占 2 个布局槽」的算术推下标，而 done 回合的隐藏过程块
+# 走延迟建块（只登记 spacer、不建 widget）**只占 1 槽** —— 下标整体偏大、被末尾夹住，
+# 开关就落到回合最底部（正文与时间行之下）。锚点改为「正文之前的最后一个过程块」，
+# 下标从 `_box_lay.indexOf(spacer)` 反查，与块是否已建控件无关。
+
+def _toggle_slot(turn) -> int:
+    return turn._box_lay.indexOf(turn._toggle)
+
+
+def test_toggle_precedes_body_on_restored_turn(host):
+    """重启恢复的回合（过程块全部延迟建块）：开关必须在正文之前，而不是气泡末尾。"""
+    host_w = Host(760, 4000)
+    turn = _plain_turn(host_w)
+    host_w.show()
+    blocks = [
+        (cb.KIND_THINK, {"tag": "PLANNING", "body": "<div>思考</div>"}, ("a", 0)),
+        (cb.KIND_TOOL, {"name": "scan", "meta": "", "params": {}}, ("b", 0)),
+        (cb.KIND_STREAM, {"html": "<div>最终回复正文</div>", "proc": False}, ("c", 0)),
+    ]
+    turn.render(blocks, live=False, done=True)
+    app.processEvents()
+    body = next(r for r in turn._items if r.sig == ("c", 0))
+    assert _toggle_slot(turn) < turn._box_lay.indexOf(body.widget), \
+        "开关必须排在正文之前（跑到末尾即用户反馈的缺陷）"
+    assert _toggle_slot(turn) < turn._box_lay.indexOf(turn._sys), \
+        "开关必须在系统时间行之上（不得压到回合底部）"
+
+
+def test_toggle_precedes_body_when_proc_blocks_trail_the_reply(host):
+    """正文之后还跟着过程块（收尾又跑了一步工具）：开关仍须留在正文之前。
+
+    锚点若取「最后一个过程块」会把开关顶到正文下面 —— 展开后过程区与正文挤在一起。
+    """
+    host_w = Host(760, 4000)
+    turn = _plain_turn(host_w)
+    host_w.show()
+    blocks = [
+        (cb.KIND_THINK, {"tag": "PLANNING", "body": "<div>思考</div>"}, ("a", 0)),
+        (cb.KIND_STREAM, {"html": "<div>最终回复正文</div>", "proc": False}, ("b", 0)),
+        (cb.KIND_CMD, {"label": "run_command", "cmd": "dir", "out": "ok"}, ("c", 0)),
+    ]
+    turn.render(blocks, live=False, done=True)
+    app.processEvents()
+    body = next(r for r in turn._items if r.sig == ("b", 0))
+    assert _toggle_slot(turn) < turn._box_lay.indexOf(body.widget), \
+        "末尾还有过程块时，开关同样必须排在正文之前"
+
+    _expand_fully(turn)
+    assert turn._toggle.geometry().bottom() <= body.widget.geometry().top(), \
+        "展开后开关不得与正文重叠"
+
+
+def test_toggle_does_not_overlap_reply_after_expand(host):
+    """收起 ↔ 展开来回切换后，开关与正文/过程块的几何都不得重叠。"""
+    host_w = Host(760, 4000)
+    turn = _plain_turn(host_w)
+    host_w.show()
+    turn.render(_mixed_turn_blocks(2), live=False, done=True)
+    app.processEvents()
+    for _round in range(2):
+        _expand_fully(turn)
+        t = turn._toggle.geometry()
+        for ref in turn._items:
+            w = ref.widget
+            if w is None or w.isHidden():
+                continue
+            g = w.geometry()
+            assert t.bottom() <= g.top() or t.top() >= g.bottom(), (
+                f"开关与 {ref.kind} 重叠：toggle={t.top()}~{t.bottom()} "
+                f"block={g.top()}~{g.bottom()}")
+        turn._toggle.click()          # 收起，进入下一轮
+        app.processEvents()
+        turn.relayout_heights(turn.width())
+        app.processEvents()
+
+
