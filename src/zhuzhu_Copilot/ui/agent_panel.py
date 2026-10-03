@@ -643,6 +643,47 @@ def _round_icon_btn_qss(diameter: int) -> str:
             f"background: {HOVER}; }}")
 
 
+def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
+    """主题自适应滚动条样式（**唯一来源**）：轨道透明、滑块随主题（30% 半透明淡灰）。
+
+    ⚠ 必须覆盖**全部子控件**（track / handle / add-page / sub-page / add-line / sub-line /
+    箭头）：Qt 的规矩是「样式表只接管了一部分时，没被提到的子控件退回**平台原生绘制**」——
+    Windows 风格会用抖动(dither)图案铺满槽底，视觉上就是一片**密密麻麻的麻点**叠在壁纸上
+    （用户截图右侧那条）。此前全局 QSS 只定义了 `:vertical` 与 `::handle`、漏掉
+    `add-page/sub-page`，于是滑块是主题色、上下槽底却成了原生麻点。
+    both=False 时仅生成垂直滚动条。
+
+    定义位置必须在 `_global_dialog_qss` **之前**：后者在模块导入期就会经 apply_theme →
+    _apply_colors → _apply_global_dialog_qss 求值，排在后面会 NameError（被 try 吞掉后
+    应用级 QSS 在导入期静默不生效）。
+    """
+    _handle = _scrollbar_handle()
+    _handle_hover = _scrollbar_handle_hover()
+    v = (f"QScrollBar:vertical {{ background: transparent; width: {width + 4}px; }}"
+         f"QScrollBar::handle:vertical {{ background: {_handle};"
+         f"border-radius: {radius}px; min-height: 30px; margin: 0 2px; }}"
+         f"QScrollBar::handle:vertical:hover {{ background: {_handle_hover}; }}"
+         f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
+         f"{{ background: transparent; }}"
+         f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
+         f"{{ background: transparent; width: 0px; height: 0px; }}"
+         f"QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical"
+         f"{{ image: none; width: 0px; height: 0px; }}")
+    if not both:
+        return v
+    return v + (
+        f"QScrollBar:horizontal {{ background: transparent; height: {width + 4}px; }}"
+        f"QScrollBar::handle:horizontal {{ background: {_handle};"
+        f"border-radius: {radius}px; min-width: 30px; margin: 2px 0; }}"
+        f"QScrollBar::handle:horizontal:hover {{ background: {_handle_hover}; }}"
+        f"QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal"
+        f"{{ background: transparent; }}"
+        f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal"
+        f"{{ background: transparent; width: 0px; height: 0px; }}"
+        f"QScrollBar::left-arrow:horizontal, QScrollBar::right-arrow:horizontal"
+        f"{{ image: none; width: 0px; height: 0px; }}")
+
+
 def _global_dialog_qss() -> str:
     """原生对话框全局样式表（QMessageBox/QInputDialog/QFileDialog/QColorDialog/QMenu/
     QToolTip 等）：用当前主题常量实时换色，实现默认 UI/UX 双模式自适应。
@@ -704,12 +745,6 @@ def _global_dialog_qss() -> str:
         f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
         f" border-radius: {RADIUS_SM}px; }}"
         f"QComboBox QAbstractItemView::item:hover {{ background: {_popup_hover}; }}"
-        f"QComboBox QAbstractItemView QScrollBar:vertical {{ background: transparent; width: 8px; }}"
-        f"QComboBox QAbstractItemView QScrollBar::handle:vertical {{ background: rgba(255,255,255,170);"
-        f" border: 1px solid rgba(120,130,145,60); border-radius: 4px; min-height: 24px; }}"
-        f"QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {{ background: rgba(255,255,255,220); }}"
-        f"QComboBox QAbstractItemView QScrollBar::add-line:vertical,"
-        f"QComboBox QAbstractItemView QScrollBar::sub-line:vertical {{ height: 0; }}"
         f"QMenu {{ background: {_menu_bg}; color: {TEXT};"
         f" border: 1px solid {_popup_bd};"
         f" border-radius: 12px; padding: 4px; }}"
@@ -721,15 +756,12 @@ def _global_dialog_qss() -> str:
         f" margin: 6px 10px; }}"
         f"QToolTip {{ background: {_tip_bg}; color: {TEXT}; border: 1px solid {_tip_bd};"
         f" border-radius: 8px; padding: 4px 8px; }}"
-        f"QScrollBar:vertical {{ background: transparent; width: 10px; }}"
-        f"QScrollBar::handle:vertical {{ background: {_scrollbar_handle()}; border-radius: 5px;"
-        f" min-height: 30px; }}"
-        f"QScrollBar::handle:vertical:hover {{ background: {_scrollbar_handle_hover()}; }}"
-        f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
-        f"QScrollBar:horizontal {{ background: transparent; height: 10px; }}"
-        f"QScrollBar::handle:horizontal {{ background: {_scrollbar_handle()}; border-radius: 5px;"
-        f" min-width: 30px; }}"
-        f"QScrollBar::handle:horizontal:hover {{ background: {_scrollbar_handle_hover()}; }}"
+        # 滚动条：**必须用 _scrollbar_css 这一份完整实现**。此前这里手写过两份"半套"
+        # 规则（只定义 :vertical 与 ::handle，漏掉 add-page/sub-page）→ 槽底退回原生
+        # 抖动图案 = 用户截图里那片密密麻麻的麻点。窄一档的宽度只对下拉弹层覆盖即可，
+        # 覆盖范围（add-page 等）仍由下面这份完整实现提供。
+        + _scrollbar_css(10, 5, both=True)
+        + f"QComboBox QAbstractItemView QScrollBar:vertical {{ width: {SPACING_SM}px; }}"
     ) + _ctrl_qss
     return _base
 
@@ -797,33 +829,6 @@ def apply_theme() -> str:
 
 
 apply_theme()   # 模块加载即按设置/时间确定初始主题
-
-
-def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
-    """主题自适应滚动条样式：轨道透明、滑块随主题（30% 半透明淡灰）。
-    both=False 时仅生成垂直滚动条。
-    """
-    _handle = _scrollbar_handle()
-    _handle_hover = _scrollbar_handle_hover()
-    v = (f"QScrollBar:vertical {{ background: transparent; width: {width + 4}px; }}"
-         f"QScrollBar::handle:vertical {{ background: {_handle};"
-         f"border-radius: {radius}px; min-height: 30px; margin: 0 2px; }}"
-         f"QScrollBar::handle:vertical:hover {{ background: {_handle_hover}; }}"
-         f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
-         f"{{ background: transparent; }}"
-         f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
-         f"{{ background: transparent; width: 0px; height: 0px; }}")
-    if not both:
-        return v
-    return v + (
-        f"QScrollBar:horizontal {{ background: transparent; height: {width + 4}px; }}"
-        f"QScrollBar::handle:horizontal {{ background: {_handle};"
-        f"border-radius: {radius}px; min-width: 30px; margin: 2px 0; }}"
-        f"QScrollBar::handle:horizontal:hover {{ background: {_handle_hover}; }}"
-        f"QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal"
-        f"{{ background: transparent; }}"
-        f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal"
-        f"{{ background: transparent; width: 0px; height: 0px; }}")
 
 
 def _app_icon_path() -> str:
@@ -2317,10 +2322,7 @@ class _ConfirmDialog(QDialog):
             f"background: {_in_bg}; color: {TEXT_DIM}; border: 1px solid {_bd};"
             "border-radius: 8px; padding: 10px; font-size: 12px; font-family: Consolas;"
             "selection-background-color: rgba(255,255,255,120);"
-            "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-            "QScrollBar::handle:vertical { background: rgba(255,255,255,90);"
-            "border-radius: 4px; min-height: 24px; }"
-            "QScrollBar::add-line, QScrollBar::sub-line { height: 0px; }")
+            + _scrollbar_css(4, 3, both=False))
         lay.addWidget(arg_txt, 1)
 
         if name in _HIDE_CONTENT_TOOLS:
@@ -2643,9 +2645,8 @@ class _AgentSettingsDialog(QDialog):
             f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
             f" border-radius: {RADIUS_SM}px; }}"
             f"QComboBox QAbstractItemView::item:hover {{ background: {self._PANEL2}; }}"
-            f"QScrollBar:vertical {{ background: transparent; width: 8px; }}"
-            f"QScrollBar::handle:vertical {{ background: {self._BORDER};"
-            "border-radius: 4px; min-height: 30px; }}")
+            # 滚动条同样走唯一来源，避免"只接管一半 → 槽底退回原生麻点"
+            + _scrollbar_css(4, 3, both=False))
 
     def _nav_qss(self) -> str:
         """左侧导航样式。"""
@@ -9072,13 +9073,18 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 f"QTabBar::tab:hover {{ background: {_hover}; }}")
         self.html_view.setStyleSheet(
             f"QTextBrowser {{ background: {surf}; color: {TEXT};"
-            f"border: 1px solid {_bd}; border-radius: 6px; }}")
+            f"border: 1px solid {_bd}; border-radius: 6px; }}"
+            # 滚动条必须一并写出（走唯一来源）：本控件自带样式表，未被子控件规则覆盖的
+            # 槽底会退回平台原生抖动图案 —— 就是那排密密麻麻的麻点。
+            + _scrollbar_css(6, 3, both=True))
         self.text.setStyleSheet(
             f"QPlainTextEdit {{ background: {surf}; color: {TEXT};"
-            f"border: 1px solid {_bd}; border-radius: 6px; padding: 6px; }}")
+            f"border: 1px solid {_bd}; border-radius: 6px; padding: 6px; }}"
+            + _scrollbar_css(6, 3, both=True))
         self.img_scroll.setStyleSheet(
             f"QScrollArea {{ background: {surf}; border: none; }}"
-            f"QScrollArea > QWidget > QWidget {{ background: {surf}; }}")
+            f"QScrollArea > QWidget > QWidget {{ background: {surf}; }}"
+            + _scrollbar_css(6, 3, both=True))
         self.img_label.setStyleSheet(f"background: {surf};")
         # 提示芯片：「提示面」保持实色底（与 Tooltip 同策略，可读性优先）
         self._office_loading.setStyleSheet(
@@ -10930,14 +10936,9 @@ class GitLogWindow(_RoundedFloatWindow):
         lay.addLayout(head)
 
         self.list = QListWidget()
-        # 表面/描边色见 _panel_surface / _panel_stroke：壁纸模式下透明（透出/自绘壁纸）
-        _surf = _panel_surface("PANEL")
-        _bd = _panel_stroke("BORDER")
-        self.list.setStyleSheet(
-            f"QListWidget {{ background: {_surf}; color: {TEXT};"
-            f"border: 1px solid {_bd}; border-radius: 6px; padding: 4px; }}")
         self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.list.setItemDelegate(_HtmlListDelegate(self.WIDTH - 40, self.list))
+        self._apply_surface_qss()      # 列表底 + 滚动条（构建/换肤共用同一来源，见下）
         lay.addWidget(self.list, 1)
         self._set_view(self._view, do_refresh=False)
         # 顶部拖拽把手：自由拖动 + 位置持久化 + 融入主面板（置于整个面板最上方）
@@ -10949,6 +10950,22 @@ class GitLogWindow(_RoundedFloatWindow):
         self._install_resize_edges(host=self.parent())
         self.apply_saved_panel_size()
 
+    def _apply_surface_qss(self):
+        """列表底 + **滚动条**样式（构建与换肤共用同一来源，两处不会漂移）。
+
+        表面/描边色见 `_panel_surface` / `_panel_stroke`：壁纸模式下透明（透出/自绘壁纸）。
+
+        为什么滚动条必须写在这里而不是靠外层补：面板是自己的 widget 级样式表，
+        Qt 对**未被子控件规则覆盖**的部分会退回平台原生绘制 —— 槽底（add-page/sub-page）
+        就是这样变成 Windows 的原生抖动图案（一排密密麻麻的麻点）。此前本窗口两处
+        各自手写列表 QSS 且**漏掉滚动条规则**，`apply_surface_theme` 一刷新就把
+        `_apply_side_scrollbars` 补上的规则覆盖掉，麻点随即出现。
+        """
+        self.list.setStyleSheet(
+            f"QListWidget {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 6px; padding: 4px; }}"
+            + _scrollbar_css(6, 3, both=True))
+
     def apply_surface_theme(self):
         """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
         try:
@@ -10956,11 +10973,7 @@ class GitLogWindow(_RoundedFloatWindow):
         except Exception:
             pass
         try:
-            _surf = _panel_surface("PANEL")
-            _bd = _panel_stroke("BORDER")
-            self.list.setStyleSheet(
-                f"QListWidget {{ background: {_surf}; color: {TEXT};"
-                f"border: 1px solid {_bd}; border-radius: 6px; padding: 4px; }}")
+            self._apply_surface_qss()
         except Exception:
             pass
 
@@ -17877,12 +17890,16 @@ class AgentPanel(QDialog):
             pass
 
     def _apply_side_scrollbars(self):
-        """给四个侧栏窗口内的滚动区域补上**主题滚动条样式**。
+        """给四个侧栏窗口内的滚动区域补上**完整**的主题滚动条样式（兜底，幂等）。
 
-        这些控件各自的样式表只描述自身；而 Qt 的规则是：控件一旦设有样式表，未显式
-        提及的子控件会退回**系统默认**外观 —— 浅色主题下就残留一条深灰滚动条（用户
-        反馈的「Copilot 面板残留白色/深色元素」）。侧栏窗口每次重建都是新实例，这里
-        按当前主题统一补一次；将来新增侧栏只要名字进列表就自动受益。
+        Qt 的规则：控件一旦设有样式表，**未被子控件规则覆盖**的部分会退回系统默认外观 ——
+        浅色主题下残留深灰滚动条，Windows 下槽底还会变成原生抖动图案（一片密密麻麻的
+        麻点叠在壁纸上）。侧栏窗口每次重建都是新实例，这里按当前主题统一补一次；
+        将来新增侧栏只要名字进列表就自动受益。
+
+        判据用 `add-page`（而非"有没有 QScrollBar"）：只要接管了滚动条却漏掉槽底
+        （只写 :vertical + ::handle 的半套规则），照样会退化成原生麻点 —— 用"提过
+        QScrollBar 就算数"会把这种半套规则放过去，正是本次缺陷的成因。
         """
         from PyQt6.QtWidgets import QAbstractScrollArea
         qss = _scrollbar_css(6, 3, both=True)
@@ -17893,7 +17910,7 @@ class AgentPanel(QDialog):
             try:
                 for _sa in _w.findChildren(QAbstractScrollArea):
                     _cur = _sa.styleSheet() or ""
-                    if "QScrollBar" not in _cur:
+                    if "add-page" not in _cur:
                         _sa.setStyleSheet(_cur + qss)
             except Exception:
                 pass

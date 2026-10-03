@@ -28,8 +28,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest                                                        # noqa: E402
-from PyQt6.QtWidgets import (QApplication, QScrollArea, QVBoxLayout,  # noqa: E402
-                             QWidget)
+from PyQt6.QtWidgets import (QApplication, QListWidget, QScrollArea,  # noqa: E402
+                             QVBoxLayout, QWidget)
 
 from zhuzhu_Copilot.ui import agent_panel as ap                      # noqa: E402
 
@@ -86,6 +86,98 @@ def test_side_scrollbar_qss_keeps_existing_local_rules():
     qss = sa.styleSheet()
     assert "background: transparent" in qss, "原有规则被覆盖"
     assert "QScrollBar:vertical" in qss
+
+
+# ---------- ③b 滚动条槽底的「密密麻麻的麻点」 ----------
+#
+# 用户截图：Git 面板右侧一条**细密的点阵**（叠在自定义背景上）。
+# 成因：Qt 的规矩是「样式表只接管了一部分时，没被提到的子控件退回**平台原生绘制**」——
+# 旧实现的滚动条规则只写了 `:vertical` + `::handle`，漏掉槽底（add-page / sub-page），
+# 于是滑块是主题色、上下槽底变成 Windows 原生的抖动(dither)图案。
+# 合成窗口实测：旧规则 210 行里 184 行（88%）高频交替；补全后只剩滑块圆角的 10 行（5%）。
+
+_SCROLLBAR_SUBCONTROLS = ("add-page", "sub-page", "add-line", "sub-line",
+                          "up-arrow", "down-arrow", "left-arrow", "right-arrow")
+
+
+def test_scrollbar_css_covers_every_subcontrol():
+    """滚动条样式必须覆盖**全部**子控件（唯一来源：_scrollbar_css）。"""
+    css = ap._scrollbar_css(6, 3, both=True)
+    for token in _SCROLLBAR_SUBCONTROLS:
+        assert token in css, f"滚动条样式漏了子控件 {token} → 会退回原生绘制（麻点）"
+
+
+def test_global_qss_scrollbars_are_complete():
+    """应用级 QSS 是下拉弹层 / 设置页 / 对话框的兜底，滚动条部分必须完整。
+
+    回归：全局 QSS 曾手写「半套」规则（只有 :vertical + ::handle），用户在下拉菜单里
+    看到的那排麻点就是这么来的。
+    """
+    g = ap._global_dialog_qss()
+    for axis in ("vertical", "horizontal"):
+        assert f"add-page:{axis}" in g, g[-600:]
+        assert f"sub-page:{axis}" in g, g[-600:]
+
+
+def test_git_panel_keeps_scrollbar_rules_after_surface_refresh():
+    """Git 面板换肤后列表仍须带完整滚动条规则。
+
+    回归（本次根因）：该窗口过去在 __init__ 与 apply_surface_theme 里**各自手写**
+    列表 QSS 且都漏掉滚动条规则，于是换肤（换主题 / 开关自定义背景都会走）会把
+    `_apply_side_scrollbars` 补上的规则覆盖掉，麻点随即出现。
+    """
+    win = ap.GitLogWindow()
+    try:
+        assert "add-page" in win.list.styleSheet(), "构造后列表就缺滚动条规则"
+        win.apply_surface_theme()
+        assert "add-page" in win.list.styleSheet(), \
+            "apply_surface_theme 覆盖了滚动条规则 → 槽底会退回原生抖动图案"
+    finally:
+        win.close()
+        win.deleteLater()
+
+
+def test_side_scrollbars_complete_partial_qss():
+    """`_apply_side_scrollbars` 必须能补全「半套」滚动条规则。
+
+    判据用 add-page 而不是"有没有 QScrollBar"：只提过 QScrollBar 却漏掉槽底的半套规则
+    照样会退化成原生麻点 —— 旧判据正是把它放过去了。
+    """
+    p = _proxy()
+    holder = QWidget()
+    partial = QListWidget(holder)
+    partial.setStyleSheet(
+        "QListWidget { background: transparent; }"
+        "QScrollBar:vertical { background: transparent; width: 8px; }"
+        "QScrollBar::handle:vertical { background: rgba(120,130,150,80); }")
+    p.wt_win = holder
+    for nm in ("git_win", "todos_win", "code_win"):
+        setattr(p, nm, None)
+
+    p._apply_side_scrollbars()
+    qss = partial.styleSheet()
+    assert "add-page:vertical" in qss, "半套滚动条规则未被补全"
+    assert "sub-page:vertical" in qss
+    # 幂等：再调一次不叠加
+    p._apply_side_scrollbars()
+    assert partial.styleSheet() == qss
+
+
+def test_code_preview_views_carry_scrollbar_rules():
+    """预览面板的内容视图（富文本 / 代码 / 图片滚动区）自带样式表时也要带滚动条规则。
+
+    这里用**源码断言**而不是构造 CodePreviewWindow：该类在本测试模块的环境下构造会让
+    进程直接退出（WebEngine 需要 ShareOpenGLContexts，见 tests/test_app_wallpaper.py
+    顶部注释）。契约本身是"这三处 setStyleSheet 必须拼上 _scrollbar_css"，
+    源码级断言足以守住，且不受平台不稳定影响（直接读盘，不用 inspect.getsource）。
+    """
+    src = (Path(__file__).resolve().parents[1]
+           / "src/zhuzhu_Copilot/ui/agent_panel.py").read_text(encoding="utf-8")
+    for name in ("html_view", "text", "img_scroll"):
+        idx = src.find(f"self.{name}.setStyleSheet(")
+        assert idx > 0, f"{name} 未找到样式表设置"
+        seg = src[idx:idx + 600]
+        assert "_scrollbar_css(" in seg, f"{name} 的样式表缺 _scrollbar_css（会出麻点）"
 
 
 # ---------- ② 气泡宽度跟随视口 ----------
