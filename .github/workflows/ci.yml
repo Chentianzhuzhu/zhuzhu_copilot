@@ -6,7 +6,7 @@ on:
   pull_request:
 
 # Windows runner 控制台默认是 cp1252：脚本/用例把中文打到 stdout 会直接
-# UnicodeEncodeError 崩掉（python-check 的 gen_site_seo --check 就栽在这）。
+# UnicodeEncodeError 崩掉（曾把某个 --check 脚本整段打挂）。
 # 只影响标准流编码，不改文件系统与子进程解码的默认行为。
 env:
   PYTHONIOENCODING: utf-8
@@ -24,9 +24,6 @@ jobs:
         run: python -m compileall -q src mcp_servers
       - name: Ruff 静态检查
         run: ruff check src mcp_servers --statistics || true
-
-      - name: 静态官网 SEO 产物与配置一致（website/site.seo.json）
-        run: python scripts/gen_site_seo.py --check
 
   security-engine-tests:
     runs-on: windows-latest

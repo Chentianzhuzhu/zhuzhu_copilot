@@ -53,7 +53,7 @@ if not _os.path.isdir(_os.path.join(_root, 'build/runtime_bundle/runtime')):
     _runtime_datas = []
 # d3dcompiler_47.dll：精简 Win10/11 常被裁剪，Chromium/QtWebEngine 编译 shader 必需。
 # 随应用目录分发（Windows DLL 搜索顺序：exe 目录优先于 System32），缺系统组件也能启动。
-# 由 build_sign.ps1 / build_setup.bat 从本机 System32 复制到 build/redist/。
+# 由 build_release.ps1 / build_setup.bat 从本机 System32 复制到 build/redist/。
 _d3d_path = _os.path.join(_root, 'build/redist/d3dcompiler_47.dll')
 _d3d_datas = [(_d3d_path, '.')] if _os.path.isfile(_d3d_path) else []
 # 现成工作流种子：由 scripts/prepare_workflow_seed.py 在构建期快照用户目录全部

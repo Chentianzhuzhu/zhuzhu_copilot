@@ -20,7 +20,7 @@ RADIUS_MD = 12     # 面板 / 弹出视图 / 卡片
 RADIUS_LG = 16     # 聊天气泡 / 大圆角容器
 RADIUS_PILL = 999  # 胶囊：高度一半以上即视为全圆（按钮 / tag / 徽章）
 
-# 事件流聊天气泡几何（1:1 取自 ui_style_demo/index.html，仅几何不含颜色）
+# 事件流聊天气泡几何（气泡设计规范值，仅几何不含颜色）
 BUBBLE_RADIUS_USER = 18     # .msg 非对称圆角：左上/右上/左下 18
 BUBBLE_RADIUS_USER_TAIL = 6  # .msg 右下「小尾巴」角 6
 BUBBLE_RADIUS_THINK_TAIL = 6  # .think-bubble 左上「小尾巴」角 6

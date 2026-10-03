@@ -13,9 +13,7 @@
 | `mcp_servers/` | 本地 MCP 服务器 |
 | `installer/` | Inno Setup 安装脚本 |
 | `update-server/` | Spring Boot 更新服务器（详见其内 README） |
-| `website/` | 官网静态页面 |
 | `scripts/` | 构建 / 打包 / 部署辅助脚本 |
-| `app/` | 独立的 Android 语音笔记子项目（Kotlin） |
 
 ## 环境搭建
 
@@ -28,9 +26,11 @@ python src/main.py
 ## 构建与打包
 
 ```powershell
-# Cython 编译 + 代码签名 + PyInstaller
-.\build_sign.ps1
-# 生成安装包（Inno Setup）
+# 一条命令完成：体检 → 运行时/种子 → 打包 → 签名 → Inno Setup → 产物自检
+.\build_release.ps1
+# 只体检不构建
+.\build_release.ps1 -DryRun
+# 兼容入口（薄壳，等价于上面的命令）
 installer\build_setup.bat
 ```
 

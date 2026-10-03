@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
-"""事件流聊天气泡「1:1 复刻 demo」的结构 / 样式 / 行为回归。
+"""事件流聊天气泡的结构 / 样式 / 行为回归。
 
 被测对象：
 - `src/zhuzhu_Copilot/ui/agent_chat_bubbles.py`：事件流气泡组件（外形与排版）
 - `src/zhuzhu_Copilot/ui/agent_panel.py`：段 → 区块的结构映射与回合渲染入口
 
 守护三类契约：
-1. 结构对应：demo（ui_style_demo/index.html）的每个可见节点都有明确对应的组件，
-   且组件注释标注了其 demo 来源（禁止「差不多像」的模糊实现）；
-2. 样式参数：圆角 / 内边距 / 虚线节奏 / 图标壳尺寸与 demo 一致；颜色一律由
-   ChatStyle 注入，组件模块内不得出现 #RRGGBB 字面量（换肤能力的硬前提）；
+1. 结构对应：每个可见节点都有明确对应的组件，且组件注释标注了其结构来源
+   （禁止「差不多像」的模糊实现）；
+2. 样式参数：颜色一律由 ChatStyle 注入，组件模块内不得出现 #RRGGBB 字面量
+   （换肤能力的硬前提）；
 3. 关键行为：思考正文超行自动折叠、回合完成后过程区整体收起且可再展开、
    流式增量只重建内容变化的块、折叠后回合高度真实收缩。
+
+注：原先还比对 `ui_style_demo/index.html`（设计基准页）与组件的节点一致性，
+该演示页已随仓库清理移除，故只保留「组件侧必须实现并标注每个节点」这一半。
 """
 import os
 import re
@@ -30,13 +33,12 @@ from zhuzhu_Copilot.ui import agent_panel as ap                     # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 
-DEMO_HTML = Path(__file__).resolve().parents[1] / "ui_style_demo" / "index.html"
 MODULE_PATH = (Path(__file__).resolve().parents[1] / "src" / "zhuzhu_Copilot"
                / "ui" / "agent_chat_bubbles.py")
 EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
 COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
 
-# demo 的关键可见节点 → 必须在组件模块中以「demo .xxx」标注来源（可追溯，不靠猜）
+# 事件流气泡的关键可见节点 → 必须在组件模块里实现并标注结构来源（可追溯，不靠猜）
 DEMO_NODES = (
     "msg", "ai-turn", "cost-ribbon", "vline", "think-bubble", "tb-head",
     "tool-call", "tc-icon", "kv", "cmd", "stream", "proc-btn", "fold-btn",
@@ -101,23 +103,16 @@ def _seg_block(seg, i=0):
     return _blocks([seg])[0]
 
 
-# ---------- 1. 结构对应：demo 节点都有组件承载 ----------
+# ---------- 1. 结构对应：关键节点都有组件承载 ----------
 
 def test_every_demo_node_is_implemented_and_attributed():
-    """demo 的每个关键节点都要在组件模块里标注来源，避免「自创风格」而非复刻。"""
+    """每个关键节点都要在组件模块里实现并标注来源，避免「差不多像」的模糊实现。"""
     src = MODULE_PATH.read_text(encoding="utf-8")
     missing = [n for n in DEMO_NODES if f".{n}" not in src]
-    assert not missing, f"组件模块缺少这些 demo 节点的对应实现/标注：{missing}"
+    assert not missing, f"组件模块缺少这些节点的对应实现/标注：{missing}"
 
 
-def test_demo_file_still_has_those_nodes():
-    """反向校验：断言用的节点确实来自 demo，而不是测试自造。"""
-    html = DEMO_HTML.read_text(encoding="utf-8")
-    missing = [n for n in DEMO_NODES if f".{n}" not in html]
-    assert not missing, f"demo 中不存在这些节点（测试基准失准）：{missing}"
-
-
-# ---------- 2. 样式参数：几何与 demo 一致 + 无硬编码颜色 ----------
+# ---------- 2. 样式参数：无硬编码颜色 ----------
 
 def test_component_module_has_no_hardcoded_colors():
     """颜色必须全部由 ChatStyle 注入：模块内出现 #RRGGBB 就说明有人写死了主题色，

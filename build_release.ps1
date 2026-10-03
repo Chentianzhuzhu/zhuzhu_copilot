@@ -7,7 +7,7 @@
     签名（主程序先于安装包签名）→ 生成 Inno Setup 安装包 → 签名 → 产物自检。
 
     相对旧脚本的改进：
-      1. 单一入口：旧的 build_sign.ps1 / installer\build_setup.bat 退化为薄壳，只调本脚本，
+      1. 单一入口：旧的独立打包脚本已删除，installer\build_setup.bat 退化为薄壳只调本脚本，
          不再各自维护一套流程（此前两者步骤不一致：.bat 不签名、不生成工作流种子）。
       2. 构建解释器自动探测：不再盲信 PATH 上的 python（沙盒/系统里可能装着缺少
          PyInstaller 的解释器），自动挑选同时具备 PyInstaller + PyQt6 的解释器。

@@ -15,7 +15,7 @@
 #define MyLegacyExeName "WinAppMigrator.exe"
 ; 用户数据目录名（与 src/zhuzhu_Copilot/app_identity.py 的 DATA_DIR_NAME 保持一致）
 #define MyDataDir ".zhuzhu_Copilot"
-; 签名私钥密码：由 build_sign.ps1 以 /DMyAppPwd=<密码> 传入，这里提供兜底默认
+; 签名私钥密码：由 build_release.ps1 以 /DMyAppPwd=<密码> 传入，这里提供兜底默认
 #ifndef MyAppPwd
 #define MyAppPwd "Zhutianliang.2026"
 #endif

@@ -22,11 +22,8 @@
 | `mcp_servers/local_mcp_server.py` | 本地 MCP 服务器 |
 | `installer/` | Inno Setup 安装脚本 |
 | `update-server/` | Spring Boot 更新服务器 |
-| `website/` | 官网静态页面 |
 | `scripts/` | 构建/打包/部署辅助脚本 |
-| `account-book-backend/` | 独立 Node.js 后端（Express + SQLite） |
-| `go-game/` | Go 语言游戏子项目 |
-| `app/` | Android 语音笔记子项目（Kotlin） |
+```
 
 ---
 
@@ -86,10 +83,13 @@ python src/main.py
 ### 打包编译
 
 ```powershell
-# Cython 编译 + 代码签名 + PyInstaller
-.\build_sign.ps1
+# 一条命令完成：体检 → 运行时/种子 → 打包 → 签名 → Inno Setup → 产物自检
+.\build_release.ps1
 
-# 生成安装包（Inno Setup）
+# 只体检不构建
+.\build_release.ps1 -DryRun
+
+# 兼容入口（薄壳，等价于上面的命令）
 installer\build_setup.bat
 ```
 

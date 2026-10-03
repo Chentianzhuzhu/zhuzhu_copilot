@@ -8,7 +8,7 @@
     「`"[" 后面缺少类型名称`」「表达式中缺少右")"」这类**看起来与中文无关**的语法错，
     并连带报出 `Write-Ok "瀛樺湪 $p"` 这种乱码字符串 —— 极难从表象定位到编码问题。
 
-对照：同目录的 build_sign.ps1 带 BOM，从未出过该问题（本用例即锁住这个差异）。
+对照：同目录带 BOM 的脚本从未出过该问题（本用例即锁住这个差异）。
 
 为什么只查 .ps1：cmd.exe 读 .bat 用的是 OEM 代码页，给 .bat 加 UTF-8 BOM 反而可能被
 当成命令的一部分；.bat 的中文乱码只是控制台显示问题，不影响语法，故不在本契约内。
@@ -42,7 +42,7 @@ def test_ps1_scripts_exist():
 def test_found_the_known_build_scripts():
     """关键脚本必须被扫到（它们是本契约的主要保护对象）。"""
     names = {p.name for p in _scripts()}
-    assert {"build_release.ps1", "build_sign.ps1"} <= names, names
+    assert "build_release.ps1" in names, names
 
 
 def test_non_ascii_ps1_has_utf8_bom():

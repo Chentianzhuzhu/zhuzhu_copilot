@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://chentian.dpdns.org/website/sitemap.xml

@@ -13,9 +13,7 @@
 | `mcp_servers/` | 本地 MCP 服务器 |
 | `installer/` | Inno Setup 安装脚本 |
 | `update-server/` | Spring Boot 更新服务器（详见其内 README） |
-| `website/` | 官网静态页面（SEO 产物由 `scripts/gen_site_seo.py` 依据 `website/site.seo.json` 生成） |
 | `scripts/` | 构建 / 打包 / 部署辅助脚本 |
-| `app/` | 独立的 Android 语音笔记子项目（Kotlin） |
 
 ## 环境搭建
 
@@ -28,9 +26,11 @@ python src/main.py
 ## 构建与打包
 
 ```powershell
-# Cython 编译 + 代码签名 + PyInstaller
-.\build_sign.ps1
-# 生成安装包（Inno Setup）
+# 一条命令完成：体检 → 运行时/种子 → 打包 → 签名 → Inno Setup → 产物自检
+.\build_release.ps1
+# 只体检不构建
+.\build_release.ps1 -DryRun
+# 兼容入口（薄壳，等价于上面的命令）
 installer\build_setup.bat
 ```
 
@@ -40,6 +40,4 @@ installer\build_setup.bat
 
 - 提交信息格式：`type(scope): 描述`（feat / fix / style / perf / refactor / chore）
 - 临时诊断脚本请加 `_` 前缀（已被 `.gitignore` 排除），不要提交
-- 官网静态页的标题 / 描述 / 关键词 / 域名只在 `website/site.seo.json` 里改，
-  再执行 `python scripts/gen_site_seo.py`（会同步 `index.html` 头部、`robots.txt`、`sitemap.xml`）
 - 构建产物（`build/`、`dist/`、`src/build/`）、TTS 音频输出（`tts_output/`）不入库
