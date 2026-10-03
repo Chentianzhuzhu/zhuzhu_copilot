@@ -46,6 +46,19 @@ class SiteTimestampServiceTest {
     }
 
     @Test
+    @DisplayName("时间统一截断到秒，不对外暴露微秒噪声")
+    void ofTruncatesToSeconds() {
+        LocalDateTime contentAt = LocalDateTime.of(2026, 10, 2, 13, 31, 35, 183_211_000);
+        long mediaMillis = LocalDateTime.of(2026, 10, 2, 13, 30, 42, 749_000_000)
+                .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+
+        SiteTimestampService.Timestamps ts = SiteTimestampService.of(contentAt, null, mediaMillis);
+
+        assertEquals("2026-10-02T13:31:35", ts.contentUpdatedAtIso(), "内容更新时间应截断到秒");
+        assertEquals("2026-10-02T13:30:42", ts.mediaUpdatedAtIso(), "媒体库更新时间应截断到秒");
+    }
+
+    @Test
     @DisplayName("来源缺失时保持 null，不编造默认值")
     void ofKeepsNullsWhenMissing() {
         SiteTimestampService.Timestamps ts = SiteTimestampService.of(null, null, 0L);

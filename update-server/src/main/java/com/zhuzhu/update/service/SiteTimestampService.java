@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -78,6 +79,10 @@ public class SiteTimestampService {
      *
      * <p>单独抽出便于单元测试直接构造边界情形（全部缺失 / 只有版本 / 媒体时间戳为 0）。
      *
+     * <p>时间统一截断到**秒**：库里的 {@code LocalDateTime} 带微秒（如
+     * {@code 2026-10-02T13:31:35.183211}），直接对外暴露既噪声大、又暗示了我们并不
+     * 保证的亚秒精度；截断后对外契约稳定为一个固定形状。
+     *
      * @param mediaMillis 媒体库最新修改时间，{@code <= 0} 视为「没有媒体」
      */
     public static Timestamps of(LocalDateTime contentUpdatedAt, AppVersion latest, long mediaMillis) {
@@ -85,7 +90,12 @@ public class SiteTimestampService {
                 ? null : latest.getCreatedAt().toLocalDate();
         LocalDateTime media = mediaMillis <= 0L
                 ? null : LocalDateTime.ofInstant(Instant.ofEpochMilli(mediaMillis), ZoneId.systemDefault());
-        return new Timestamps(contentUpdatedAt, release, media);
+        return new Timestamps(truncate(contentUpdatedAt), release, truncate(media));
+    }
+
+    /** 截断到秒；null 原样返回 */
+    private static LocalDateTime truncate(LocalDateTime value) {
+        return value == null ? null : value.truncatedTo(ChronoUnit.SECONDS);
     }
 
     /** 统一的页面展示口径：一律「yyyy-MM-dd」，日期或时刻都适用；为空时返回空串 */

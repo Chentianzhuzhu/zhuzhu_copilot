@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import http.client
 import json
 import os
@@ -38,6 +39,9 @@ DEFAULT_API = "https://api.github.com"
 DEFAULT_UPLOAD_API = "https://uploads.github.com"
 USER_AGENT = "zhuzhu-copilot-release"
 CHUNK = 1024 * 1024
+
+# 生效的代理（由 main 按「--proxy > 环境变量」解析后写入）；None 表示直连
+PROXY: str | None = None
 
 
 class ReleaseError(RuntimeError):
@@ -69,8 +73,10 @@ def request_json(method: str, url: str, token: str, payload: dict | None = None)
     req.add_header("User-Agent", USER_AGENT)
     if data is not None:
         req.add_header("Content-Type", "application/json")
+    handlers = [urllib.request.ProxyHandler({"https": PROXY, "http": PROXY})] if PROXY else []
+    opener = urllib.request.build_opener(*handlers)
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with opener.open(req, timeout=120) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:400]
@@ -78,6 +84,21 @@ def request_json(method: str, url: str, token: str, payload: dict | None = None)
     except urllib.error.URLError as e:
         raise ReleaseError(f"{method} {url} 无法连接：{e.reason}") from e
     return json.loads(body) if body.strip() else {}
+
+
+def proxy_from_env(explicit: str | None) -> str | None:
+    """代理优先级：显式参数 > HTTPS_PROXY/https_proxy 环境变量。
+
+    api.github.com 在部分网络下会被直连阻断（连接被重置），此时唯一出路是走一个
+    能到达它的代理；脚本对 API 调用与大文件上传都走同一个代理。
+    """
+    if explicit:
+        return explicit
+    for key in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return None
 
 
 def get_release(repo: str, tag: str, token: str, api: str) -> dict | None:
@@ -106,11 +127,28 @@ def delete_asset(repo: str, asset_id: int, token: str, api: str) -> None:
     request_json("DELETE", f"{api}/repos/{repo}/releases/assets/{asset_id}", token)
 
 
+def proxy_auth_header(proxy: urllib.parse.SplitResult) -> dict[str, str]:
+    """代理地址里带 user:pass 时补上 Proxy-Authorization（凭据不回显）"""
+    if not proxy.username:
+        return {}
+    raw = f"{urllib.parse.unquote(proxy.username)}:{urllib.parse.unquote(proxy.password or '')}"
+    return {"Proxy-Authorization": "Basic " + base64.b64encode(raw.encode()).decode()}
+
+
 def upload_asset(upload_base: str, repo: str, release_id: int, asset: Path,
                  name: str, token: str) -> dict:
-    """流式上传单个资产；显式 Content-Length，避免把大文件读进内存"""
+    """流式上传单个资产；显式 Content-Length，避免把大文件读进内存。
+
+    设置了代理时走 CONNECT 隧道，TLS 仍按 uploads.github.com 校验，
+    因此代理只转发密文、看不到令牌。
+    """
     parsed = urllib.parse.urlsplit(upload_base)
-    conn = http.client.HTTPSConnection(parsed.hostname or "", parsed.port or 443, timeout=3600)
+    host = parsed.hostname or ""
+    port = parsed.port or 443
+    conn = http.client.HTTPSConnection(host, port, timeout=3600)
+    if PROXY:
+        proxy = urllib.parse.urlsplit(PROXY)
+        conn.set_tunnel(host, port, headers=proxy_auth_header(proxy))
     path = f"{parsed.path}/repos/{repo}/releases/{release_id}/assets?{urllib.parse.urlencode({'name': name})}"
     size = asset.stat().st_size
     try:
@@ -167,8 +205,13 @@ def main() -> int:
     ap.add_argument("--prerelease", action="store_true", help="标记为预发布")
     ap.add_argument("--api-base", default=DEFAULT_API, help="GitHub API 基址")
     ap.add_argument("--upload-base", default=DEFAULT_UPLOAD_API, help="资产上传基址")
+    ap.add_argument("--proxy", default=None,
+                    help="HTTPS 代理，如 http://127.0.0.1:7890；默认读 HTTPS_PROXY / ALL_PROXY")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不发起请求")
     args = ap.parse_args()
+
+    global PROXY
+    PROXY = proxy_from_env(args.proxy)
 
     asset = Path(args.asset)
     if not asset.is_file():
@@ -187,6 +230,7 @@ def main() -> int:
     print(f"tag      : {tag}（APP_VERSION={version}）")
     print(f"资产     : {asset}  ({human_size(asset.stat().st_size)})")
     print(f"资产名   : {asset_name}")
+    print(f"代理     : {PROXY or '（直连）'}")
     print(f"草稿/预发: {args.draft} / {args.prerelease}")
 
     if args.dry_run:
