@@ -365,45 +365,6 @@ def _open_agent_panel(app):
     return panel
 
 
-def _show_onboarding_first(app) -> None:
-    """首次安装：在打开主面板之前，先把新手指南单独走完（模态阻塞）。
-
-    指南是模态的：若与面板同时弹出，两个窗口会一并出现在屏幕上、主次混乱。
-    这里把启动顺序钉成「启动动画 → 新手指南 → 主面板」——指南结束后
-    （完成 / 跳过 / 直接关窗）一律写入「已看过」标记，面板自身的自动弹出判定
-    （AgentPanel._maybe_show_onboarding）随之落空，因此不会二次弹出。
-    """
-    try:
-        from zhuzhu_Copilot.ui.onboarding import (
-            build_wizard, is_first_run, mark_first_run_done)
-    except Exception as _e:
-        print(f"[onboarding] 加载向导失败: {_e!r}", flush=True)
-        return
-    try:
-        if not is_first_run():
-            return
-    except Exception as _e:
-        print(f"[onboarding] 首次运行判定失败: {_e!r}", flush=True)
-        return
-    try:
-        dlg = build_wizard()
-    except Exception as _e:
-        print(f"[onboarding] 构造向导失败: {_e!r}", flush=True)
-        return
-    try:
-        dlg.exec()
-    except Exception as _e:
-        print(f"[onboarding] 向导执行异常: {_e!r}", flush=True)
-    finally:
-        # 无论「完成 / 跳过 / 关窗」都要落标记，否则面板打开后会再弹一次
-        try:
-            mark_first_run_done()
-        except Exception:
-            pass
-    if getattr(dlg, "_theme_changed", False):
-        _reapply_theme(app)
-
-
 def _sync_app_palette(app) -> None:
     """把「设置里的主题」同步到应用级调色板（styles.PALETTE → QApplication 调色板）。
 
@@ -422,31 +383,10 @@ def _sync_app_palette(app) -> None:
         print(f"[theme] 应用调色板下发失败: {_e!r}", flush=True)
 
 
-def _reapply_theme(app) -> None:
-    """指南里改了主题时重新应用。
-
-    agent_panel 的模块级颜色常量是**导入时**绑定的，而指南构造时已经把它导了进来，
-    所以先重绑它的色板（内部会一并同步 styles.PALETTE），再把调色板下发给应用。
-    """
-    try:
-        from zhuzhu_Copilot.ui import agent_panel as _ap
-        _ap.apply_theme()
-    except Exception as _e:
-        print(f"[onboarding] 主题重应用失败: {_e!r}", flush=True)
-    _sync_app_palette(app)
-
-
 def main():
     # 旧版（WinAppMigrator）遗留数据迁移：注册表设置 + 用户数据目录。
-    # 必须早于「新手指南判定取样」，否则老用户升级会被误判为全新安装而重复弹指南。
+    # 必须最先执行：后续所有读取 QSettings / 用户数据目录的代码都依赖迁移后的状态。
     app_identity.ensure_migrated()
-    # 新手指南判定取样：必须在任何「首次运行自动生成文件」动作之前记录用户数据目录是否已存在，
-    # 否则程序启动自身创建的 ~/.zhuzhu_Copilot 会让「全新安装」被误判为「老用户升级」→ 指南不弹。
-    try:
-        from zhuzhu_Copilot.ui.onboarding import capture_startup_state
-        capture_startup_state()
-    except Exception:
-        pass
     install_excepthook()
     install_thread_excepthook()
     install_native_crash_hook()
@@ -527,11 +467,9 @@ def main():
     def _close_splash_then_open_panel():
         # 先关闭启动动画窗口，再进入后续流程（避免面板先出、启动窗还在的重叠感）
         splash.finish_and_close()
-        # 首次安装：先把新手指南走完，再打开 AI 面板（顺序见该函数说明）
-        _show_onboarding_first(app)
         _open_panel()
 
-    # 启动动画展示 2 秒后自动关闭，之后依次进入新手指南（仅首次运行）与 AI 面板。
+    # 启动动画展示 2 秒后自动关闭，随后进入 AI 面板（无引导环节，双击即直达面板）。
     QTimer.singleShot(2000, _close_splash_then_open_panel)
     sys.exit(app.exec())
 

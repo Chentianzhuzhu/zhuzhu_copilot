@@ -65,7 +65,6 @@ def _build_panel() -> AgentPanel:
     mw.CopilotPanel._init_update_check = lambda self: None
     mw.CopilotPanel._check_admin = lambda self: None
     mw.CopilotPanel._setup_tray = lambda self: None
-    AgentPanel._maybe_show_onboarding = lambda self: None
     p = AgentPanel(None)
     p.resize(1000, 900)
     p.show()

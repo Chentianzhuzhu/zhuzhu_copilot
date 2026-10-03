@@ -8,7 +8,7 @@
   4. 新作用域已有设置时不覆盖（用户升级后的改动优先）；
   5. 进程内只迁移一次；
   6. 迁移未执行/失败时 data_root() 回退旧目录；
-  7. main.py 的迁移调用早于新手指南取样（否则老用户升级会重复弹指南）。
+  7. main.py 的迁移调用早于 QApplication 创建（其后即开始读设置）。
 
 所有用例把家目录与 QSettings 后端隔离到临时目录（Ini 后端 + 临时路径），
 不触碰真实用户数据与注册表。
@@ -213,8 +213,9 @@ def test_suite_never_points_data_root_at_real_user_dir():
 
 # ---------------- 入口顺序契约 ----------------
 
-def test_main_migrates_before_onboarding_sampling():
+def test_main_migrates_before_touching_settings_or_qt():
+    """旧版数据迁移必须最先执行：后续读取 QSettings / 用户数据目录的代码都依赖它。"""
     src = (Path(__file__).resolve().parents[1] / "src" / "main.py").read_text(encoding="utf-8")
     migrate_at = src.index("app_identity.ensure_migrated()")
-    sample_at = src.index("capture_startup_state()")
-    assert migrate_at < sample_at, "迁移必须早于新手指南取样，否则老用户升级会重复弹指南"
+    qt_at = src.index("app = QApplication(sys.argv)")
+    assert migrate_at < qt_at, "迁移必须早于 QApplication 创建（其后即开始读设置）"

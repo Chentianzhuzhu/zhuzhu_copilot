@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     zhuzhu Copilot 发布流水线（重构版 · 单一入口 · 全 PowerShell）
 
@@ -14,8 +14,8 @@
       3. 版本号一处生效：-Version 5.1.2 自动同步 installer\zhuzhu_Copilot.iss、
          src\zhuzhu_Copilot\update_check.py（APP_VERSION）、build\version_info.txt
          （exe 文件属性版本），并回读校验。
-      4. 产物自检：打包后核对 exe 内是否含关键模块（含 ui.onboarding —— 曾漏打包导致
-         「首次安装新手指南不弹」）与文件属性版本号，不合格即刻失败。
+      4. 产物自检：打包后核对 exe 内是否含关键模块（曾漏打包导致对应功能静默失效）
+         与文件属性版本号，不合格即刻失败。
       5. 分阶段可跳过（-SkipApp/-SkipInstaller/...）、可演练（-DryRun）、全程日志留档。
 
     前置依赖（缺失会给出明确指引并在体检阶段失败）：
@@ -540,7 +540,7 @@ try {
         }
         Write-Ok "exe 版本号校验通过（$Version）"
 
-        # 11.2 关键模块随包自检（含 ui.onboarding：曾漏打包导致新手指南不弹）
+        # 11.2 关键模块随包自检（曾漏打包导致对应功能静默失效）
         $rc = Invoke-Exe -Exe $PyInfo.Exe -Arguments (@($PyInfo.Pre) +
             @('scripts\verify_release_artifact.py', $mainExe))
         if ($rc -ne 0) { Fail '产物自检未通过：关键模块缺失（详见上方输出）' }

@@ -127,3 +127,63 @@ def test_relayout_bubble_width_is_idempotent():
     p._bubble_widgets[0].setMaximumWidth = lambda w: calls.append(w)
     p._relayout_messages()
     assert not calls
+
+
+# ---------- ④ 应用级色板与面板色板必须同源 ----------
+
+def _restore_palette(original: dict) -> None:
+    """把 styles.PALETTE 还原回进入用例前的主题，避免污染同进程内其它用例。"""
+    from zhuzhu_Copilot.ui import styles
+    keep = "dark" if original.get("bg_top") == styles.DARK_PALETTE["bg_top"] else "light"
+    styles.set_palette(keep)
+
+
+def test_app_palette_follows_theme_setting(monkeypatch):
+    """应用级色板必须跟随 agent_theme。
+
+    真实缺陷：styles.PALETTE 的模块默认值是深色，而主窗口移除后没有人再调 set_palette，
+    启动时调色板固定停在深色；agent_panel 却按设置出图（设置是浅色）→
+    对话框深底 + 白色卡片混搭（用户反馈「深色模式下居然有浅色元素」）。
+    """
+    import main
+    from PyQt6.QtGui import QPalette
+    from zhuzhu_Copilot.ui import styles
+
+    original = dict(styles.PALETTE)
+    try:
+        monkeypatch.setattr(main, "_resolve_theme_mode", lambda: "light")
+        main._sync_app_palette(app)
+        assert styles.PALETTE["bg_top"] == styles.LIGHT_PALETTE["bg_top"], "浅色设置应得到浅色应用色板"
+        assert app.palette().color(QPalette.ColorRole.Window).name().lower() == \
+            styles.LIGHT_PALETTE["bg_top"].lower(), "浅色色板必须真的下发到应用"
+
+        monkeypatch.setattr(main, "_resolve_theme_mode", lambda: "dark")
+        main._sync_app_palette(app)
+        assert styles.PALETTE["bg_top"] == styles.DARK_PALETTE["bg_top"]
+        assert app.palette().color(QPalette.ColorRole.Window).name().lower() == \
+            styles.DARK_PALETTE["bg_top"].lower()
+    finally:
+        _restore_palette(original)
+
+
+def test_apply_theme_syncs_both_palettes(monkeypatch):
+    """agent_panel.apply_theme() 必须同时同步 styles.PALETTE，保证两套色板同源。
+
+    否则在面板内切换主题时只更新一侧，混搭会再次出现。
+    """
+    from zhuzhu_Copilot.ui import styles
+
+    original = dict(styles.PALETTE)
+    try:
+        monkeypatch.setattr(ap, "_resolve_theme", lambda: "dark")
+        ap.apply_theme()
+        assert styles.PALETTE["bg_top"] == styles.DARK_PALETTE["bg_top"], \
+            "apply_theme(dark) 后应用级色板应同步为深色"
+
+        monkeypatch.setattr(ap, "_resolve_theme", lambda: "light")
+        ap.apply_theme()
+        assert styles.PALETTE["bg_top"] == styles.LIGHT_PALETTE["bg_top"], \
+            "apply_theme(light) 后应用级色板应同步为浅色"
+    finally:
+        _restore_palette(original)
+        ap.apply_theme()          # 还原模块状态（_APPLIED_THEME 等），按真实设置重绑

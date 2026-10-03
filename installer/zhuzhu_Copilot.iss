@@ -67,9 +67,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Registry]
 ; 卸载时清除本程序在注册表里的用户数据（HKCU\Software\zhuzhu_Copilot，QSettings 存储）。
-; 修复「首次安装（卸载后重装）打开程序新手指南无法弹出」：新手指南的「已看过」标记
-; agent_first_run_done 就存在这里，此前卸载只删 %USERPROFILE%\.zhuzhu_Copilot（数据目录），
-; 注册表残留会让重装后被误判为「已看过」→ 指南永不弹出（也不断累积其他陈旧 UI 偏好）。
+; 此前卸载只删 %USERPROFILE%\.zhuzhu_Copilot（数据目录），注册表分支会残留下来并不断
+; 累积陈旧 UI 偏好（主题/外观等），重装后读到的是上一轮的旧值。
 ; 现在卸载即清空注册表分支，与「卸载清除用户数据」的行为保持一致。
 Root: HKCU; Subkey: "Software\zhuzhu_Copilot"; Flags: uninsdeletekey
 ; 旧版分支（HKCU\Software\WinAppMigrator）一并清理：本安装包为原地升级（AppId 不变），

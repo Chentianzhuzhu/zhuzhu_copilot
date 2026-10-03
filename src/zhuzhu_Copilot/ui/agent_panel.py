@@ -2577,15 +2577,6 @@ class _AgentSettingsDialog(QDialog):
         right.addWidget(self._page_scroll, 1)
 
         btns = QHBoxLayout()
-        # 「重新查看新手指南」入口：文字链接样式，靠左
-        guide = QPushButton("重新查看新手指南")
-        guide.setStyleSheet(f"background: transparent; color: {self._DIM}; border: none;"
-                            "font-size: 12px; text-decoration: underline; padding: 6px 8px;")
-        guide.setAutoDefault(False)
-        guide.setCursor(Qt.CursorShape.PointingHandCursor)
-        guide.setToolTip("再次打开首次安装时的分步新手指南（含设置介绍与初始偏好）")
-        guide.clicked.connect(self._open_guide)
-        btns.addWidget(guide)
         btns.addStretch(1)
         save = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), "保存")
         save.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
@@ -5521,19 +5512,6 @@ class _AgentSettingsDialog(QDialog):
             self._reload_skill_list(self._current_skill_workflow())
         else:
             QMessageBox.warning(self, "删除失败", msg)
-
-    def _open_guide(self, *_):
-        """重新打开新手指南（复用父面板的打开逻辑；无父面板时独立打开）"""
-        p = self.parent()
-        if p is not None and hasattr(p, "_open_onboarding"):
-            p._open_onboarding()
-            return
-        try:
-            from zhuzhu_Copilot.ui.onboarding import OnboardingWizard
-            OnboardingWizard(parent=self).exec()
-        except Exception:
-            pass
-
 
 class _McpServerDialog(QDialog):
     """单个 MCP 服务器配置：stdio（命令+参数）或 SSE（URL）"""
@@ -16050,12 +16028,6 @@ class AgentPanel(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)   # 统一补丁已为 QDialog 深色化标题栏
-        # 首次运行：UI 就绪后展示新手指南（一次性，之后可在设置里重新打开）。
-        # 【必须最先调度】后续原生调用（DWM 圆角 / 任务栏图标 / 停靠面板同步 / 管理员拖放等）
-        # 任一抛异常都不能让引导调度被跳过 —— 此前该调度位于 showEvent 末尾，前面出错即
-        # 静默不弹（安装后「新手指南无法弹出」的成因之一）。调度的定时器会在 showEvent
-        # 返回、事件循环空闲时才触发，提前调度不影响其余初始化顺序。
-        QTimer.singleShot(650, self._maybe_show_onboarding)
         # 无边框模式：窗口显示时切圆角（最大化时自动清除）
         self._apply_window_round()
         # 强制任务栏缩略图（owned window 默认不显示，需手动加 WS_EX_APPWINDOW）
@@ -16159,76 +16131,6 @@ class AgentPanel(QDialog):
             if blk is not None:
                 blk.hide()
                 blk.deleteLater()
-
-    def _maybe_show_onboarding(self, _attempt: int = 0):
-        """首次运行自动弹出新手指南（一次性；已标记/已打开过则跳过）。
-
-        失败必须留痕并退避重试：此前判定异常被 `except: return` 静默吞掉，
-        安装后「指南不弹」既无提示也无日志，无法排查。
-        """
-        if getattr(self, "_onboarding_opened", False):
-            return
-        if _attempt == 0:
-            if getattr(self, "_onboarding_triggered", False):
-                return
-            self._onboarding_triggered = True
-        try:
-            from zhuzhu_Copilot.ui.onboarding import is_first_run
-            first = bool(is_first_run())
-        except Exception as _e:
-            print(f"[onboarding] 首次运行判定失败（第 {_attempt + 1} 次）: {_e!r}",
-                  flush=True)
-            if _attempt < 2:
-                self._schedule_onboarding_retry(_attempt + 1)
-            return
-        if not first:
-            return
-        self._open_onboarding()
-
-    def _schedule_onboarding_retry(self, attempt: int):
-        """退避重试：判定失败后延迟再试一次（独立方法，便于测试注入同步重试）。
-
-        定时器由 Qt 事件循环驱动（不阻塞 UI）；重试次数很少（最多 2 次），
-        避免引导因一次瞬时失败（模块加载/磁盘抖动）而永久不弹。
-        """
-        QTimer.singleShot(1200, lambda: self._maybe_show_onboarding(attempt))
-
-    def _open_onboarding(self):
-        """打开新手指南向导（首次运行或设置里「重新查看」入口共用）。"""
-        try:
-            from zhuzhu_Copilot.ui.onboarding import build_wizard, mark_first_run_done
-        except Exception as _e:
-            print(f"[onboarding] 加载向导失败: {_e!r}", flush=True)
-            return
-        try:
-            # 外观（尺寸下限 / 居中）统一由 build_wizard 处理，
-            # 与启动流程里「首次安装先走指南」那一次保持完全一致
-            dlg = build_wizard(parent=self)
-        except Exception as _e:
-            print(f"[onboarding] 构造向导失败: {_e!r}", flush=True)
-            return
-
-        self._onboarding_opened = True   # 自动弹出的一次性守卫（设置里「重新查看」不受限制）
-        if dlg.exec():
-            mark_first_run_done()
-            # 向导里写入的偏好即时生效
-            try:
-                self._apply_agent_settings()
-            except Exception:
-                pass
-            try:
-                self._sync_todos_win()
-            except Exception:
-                pass
-            try:
-                self._on_fun_settings_changed()
-            except Exception:
-                pass
-            if getattr(dlg, "_theme_changed", False):
-                try:
-                    self._retheme()
-                except Exception:
-                    pass
 
     def moveEvent(self, e):
         super().moveEvent(e)

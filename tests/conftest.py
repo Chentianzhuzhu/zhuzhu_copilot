@@ -45,29 +45,6 @@ def _isolated_data_root(tmp_path_factory):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _no_onboarding_modal():
-    """测试内一律屏蔽新手指南模态向导（全局，集中一处）。
-
-    背景（真实缺陷）：AgentPanel 构造时 `QTimer.singleShot(650, self._maybe_show_onboarding)`，
-    在首次运行状态（`onboarding.is_first_run()` 为真——本机即是）会弹出 OnboardingWizard
-    并 `dlg.exec()`。离屏环境下无人可点击，**嵌套事件循环永不返回** → 整个 pytest 会话挂死：
-    实测 test_copilot_popover_host.py / test_dock_layout.py 双双卡满超时，
-    全量 `pytest tests/` 跑 30 分钟以上不结束（faulthandler 栈顶落在
-    agent_panel.py `_open_onboarding` 的 `dlg.exec()`）。
-
-    用例只验证面板自身行为，无任何用例断言引导流程 → 统一打桩为无操作。
-    """
-    mp = pytest.MonkeyPatch()
-    try:
-        from zhuzhu_Copilot.ui.agent_panel import AgentPanel
-        mp.setattr(AgentPanel, "_maybe_show_onboarding", lambda self: None)
-    except Exception:
-        pass   # 无 PyQt6 / 非 UI 场景：不影响其余用例
-    yield
-    mp.undo()
-
-
-@pytest.fixture(scope="session", autouse=True)
 def _qt_widget_teardown():
     yield
     try:

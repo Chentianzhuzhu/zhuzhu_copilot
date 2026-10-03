@@ -21,8 +21,8 @@ if _src not in _sys.path:
 
 # ui 包子模块清单：按包内实际 *.py 文件枚举（不依赖逐个手写，新增子模块自动纳入）。
 # 原因见 hiddenimports：ui/*.py 若被 Cython 编译为 .pyd，PyInstaller 无法分析其内部
-# 延迟导入，未声明的子模块会被整包漏掉（曾导致 ui.onboarding 漏打包：
-# 首次安装打开程序新手指南静默不弹）。
+# 延迟导入，未声明的子模块会被整包漏掉（曾导致某个 ui 子模块漏打包、
+# 对应功能静默不生效）。
 import glob as _glob
 _ui_modules = [
     'zhuzhu_Copilot.ui.' + _os.path.splitext(_os.path.basename(_p))[0]
@@ -85,8 +85,8 @@ a = Analysis(
         'zhuzhu_Copilot.ui.agent_panel',
         # ui 包子模块全量声明：Cython 加固后 ui/*.py 会编译成 .pyd，PyInstaller 无法分析
         # 二进制模块内部的（函数内）延迟导入 —— 未在此声明的 ui 子模块会被整包漏掉，
-        # 表现为「功能静默失效」（如漏掉 ui.onboarding → 首次安装打开程序新手指南不弹，
-        # 仅打印一行异常）。这里按包内实际 *.py 文件自动枚举，新增 ui 子模块无需改 spec。
+        # 表现为「功能静默失效」（仅打印一行异常）。这里按包内实际 *.py 文件自动枚举，
+        # 新增 ui 子模块无需改 spec。
         *_ui_modules,
         'zhuzhu_Copilot.core.agent_llm',
         'zhuzhu_Copilot.core.agent_screen',

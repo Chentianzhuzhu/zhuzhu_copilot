@@ -49,13 +49,6 @@ def test_multiline_input_dialog_has_no_settings_only_attrs():
     assert "self._open_guide" not in src
 
 
-def test_settings_dialog_keeps_guide_entry():
-    """「重新查看新手指南」入口仍保留在设置对话框（其内部真实定义了 _DIM/_open_guide）。"""
-    src = inspect.getsource(ap._AgentSettingsDialog)
-    assert "重新查看新手指南" in src
-    assert "def _open_guide" in src
-
-
 # ---------------- B. 工具 schema 契约 ----------------
 
 def _tool_names() -> set:

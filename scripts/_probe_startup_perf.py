@@ -68,7 +68,6 @@ def _simulate_real_order(app) -> None:
          f"{'已完成' if preload_done else '未完成，将拖慢下一步'}）", t)
 
     from zhuzhu_Copilot.ui.agent_panel import AgentPanel
-    AgentPanel._maybe_show_onboarding = lambda self: None
     t = time.perf_counter()
     panel = AgentPanel(None)
     panel.resize(1000, 900)
@@ -137,7 +136,6 @@ def main():
     mw.CopilotPanel._init_update_check = lambda self: None
     mw.CopilotPanel._check_admin = lambda self: None
     mw.CopilotPanel._setup_tray = lambda self: None
-    ap.AgentPanel._maybe_show_onboarding = lambda self: None
 
     t = time.perf_counter()
     panel = ap.AgentPanel(None)

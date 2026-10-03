@@ -73,7 +73,6 @@ import time, sys
 from PyQt6.QtWidgets import QApplication
 app = QApplication(sys.argv)
 import zhuzhu_Copilot.ui.agent_panel as ap
-ap.AgentPanel._maybe_show_onboarding = lambda self: None
 _T0 = time.perf_counter()
 p = ap.AgentPanel(None)
 _T1 = time.perf_counter()
@@ -86,7 +85,6 @@ import time, sys
 from PyQt6.QtWidgets import QApplication
 app = QApplication(sys.argv)
 import zhuzhu_Copilot.ui.agent_panel as ap
-ap.AgentPanel._maybe_show_onboarding = lambda self: None
 p = ap.AgentPanel(None)
 p.show(); app.processEvents()
 _T0 = time.perf_counter()
@@ -102,7 +100,6 @@ import time, sys
 from PyQt6.QtWidgets import QApplication
 app = QApplication(sys.argv)
 import zhuzhu_Copilot.ui.agent_panel as ap
-ap.AgentPanel._maybe_show_onboarding = lambda self: None
 p = ap.AgentPanel(None)
 p.show(); app.processEvents()
 # _finish_startup_init 由 QTimer.singleShot(0) 排入，此处驱动它并计时
@@ -124,7 +121,6 @@ import time, sys
 from PyQt6.QtWidgets import QApplication
 app = QApplication(sys.argv)
 import zhuzhu_Copilot.ui.agent_panel as ap
-ap.AgentPanel._maybe_show_onboarding = lambda self: None
 p = ap.AgentPanel(None)
 p.show(); app.processEvents()
 try:

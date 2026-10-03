@@ -273,7 +273,6 @@ def main():
     mw.CopilotPanel._init_update_check = lambda self: None
     mw.CopilotPanel._check_admin = lambda self: None
     mw.CopilotPanel._setup_tray = lambda self: None
-    AgentPanel._maybe_show_onboarding = lambda self: None
 
     _wrap(AgentPanel, "_switch_to")
     _wrap_finish(AgentPanel, "_finish_switch")

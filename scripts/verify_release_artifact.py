@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 r"""发布产物自检：确认打包出来的 exe 里「确实含有」关键模块。
 
-背景（真实缺陷）：Cython/打包环节一旦漏掉某个 ui 子模块（如 zhuzhu_Copilot.ui.onboarding），
-程序不会报错，只是对应功能静默失效 —— 曾导致「首次安装打开程序新手指南不弹」，
+背景（真实缺陷）：Cython/打包环节一旦漏掉某个子模块（如 zhuzhu_Copilot.core.app_wallpaper），
+程序不会报错，只是对应功能静默失效 —— 曾导致「首次安装打开程序某功能不弹/不生效」，
 排查成本很高。此脚本在打包后立刻核对，把这类问题拦在发布之前。
 
 做法：PyInstaller onedir 的 exe 内嵌 PYZ 归档，归档目录（TOC）里以明文保存模块全名，
@@ -10,7 +10,7 @@ r"""发布产物自检：确认打包出来的 exe 里「确实含有」关键�
 
 用法：
     python scripts/verify_release_artifact.py "dist\zhuzhu Copilot\zhuzhu Copilot.exe"
-    python scripts/verify_release_artifact.py <exe> --require zhuzhu_Copilot.ui.onboarding
+    python scripts/verify_release_artifact.py <exe> --require zhuzhu_Copilot.core.app_wallpaper
 退出码：0 = 全部通过；1 = 有缺失（并打印缺失清单）。
 """
 import argparse
@@ -20,9 +20,9 @@ import sys
 
 # 默认必查模块：覆盖「漏打包即静默失效」的关键功能入口
 DEFAULT_REQUIRED = [
-    "zhuzhu_Copilot.ui.onboarding",       # 首次安装新手指南（本脚本的由来）
     "zhuzhu_Copilot.ui.agent_panel",      # 主面板
     "zhuzhu_Copilot.ui.main_window",      # Copilot 浮层宿主
+    "zhuzhu_Copilot.ui.agent_chat_bubbles",  # 事件流气泡（模块内延迟导入）
     "zhuzhu_Copilot.core.agent_engine",   # Agent 引擎
     "zhuzhu_Copilot.core.agent_tools",    # 工具层
     "zhuzhu_Copilot.core.agent_skills",   # 技能

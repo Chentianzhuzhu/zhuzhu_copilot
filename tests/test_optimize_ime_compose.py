@@ -51,7 +51,6 @@ def panel():
         mp.setattr("zhuzhu_Copilot.ui.desktop_pet.ensure_pet", lambda w: None)
     except Exception:
         pass
-    mp.setattr(AgentPanel, "_maybe_show_onboarding", lambda self: None)
     p = AgentPanel(None)
     p.resize(1000, 900)
     p.show()
