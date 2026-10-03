@@ -1,4 +1,4 @@
-# Sign Inno Setup generated uninstaller (unins000.exe) with the zhutianliang
+﻿# Sign Inno Setup generated uninstaller (unins000.exe) with the zhutianliang
 # code-signing certificate so the UAC elevation prompt shows a trusted publisher.
 # Invoked by the installer via: sign_uninstaller.ps1 -PfxPath ... -Password ... -Target ...
 param(
