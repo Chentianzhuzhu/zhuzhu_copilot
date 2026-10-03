@@ -1038,6 +1038,24 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "view_image",
+            "description": "查看本地图片文件，将图片转换为 data URL 格式返回，供模型上下文使用。"
+                           "当用户发送本地图片路径（如 C:\\Users\\xxx\\image.png）或需要分析某张图片时使用。"
+                           "支持格式：png/jpg/jpeg/bmp/webp/gif/tiff。"
+                           "max_width 可控制图片宽度上限（默认 1200px），用于压缩大图减少上下文占用。"
+                           "返回结果包含 data URL，模型可直接查看图片内容。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "path": {"type": "string",
+                                        "description": "图片文件路径（绝对路径或基于工作目录的相对路径）"},
+                               "max_width": {"type": "integer",
+                                             "description": "最大宽度（像素），默认 1200；超出则等比缩放"}},
+                           "required": ["path"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_pptx",
             "description": "生成 PowerPoint 演示文稿（.pptx）：首页标题 + 多页内容页。"
                            "**页数要够、内容要详**：主题类 PPT 建议 12-25 页（重要主题可更多），"
@@ -3096,6 +3114,9 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
             return _generate_image(str(args.get("prompt", "")),
                                    str(args.get("ratio", "1:1")),
                                    str(args.get("dest_dir", "")))
+        if name == "view_image":
+            return _view_image(str(args.get("path", "")),
+                               _sub("agent_sandbox").to_int(args.get("max_width", 1200)))
         if name == "create_docx":
             _paras, _err = _require_list(args, "paragraphs", "create_docx")
             if _err:
@@ -4622,6 +4643,76 @@ def _generate_image(prompt: str, ratio: str = "1:1", dest_dir: str = "") -> dict
                     + "\n把这些路径作为 create_docx/create_pptx/create_xlsx 的 image 参数传入。",
             "images": []}
 
+
+def _view_image(path: str, max_width: int = 1200) -> dict:
+    """查看本地图片文件，转换为 data URL 返回给模型上下文。
+
+    支持格式：png/jpg/jpeg/bmp/webp/gif/tiff。
+    当 max_width 超过原始宽度时不缩放，否则等比缩小以减少上下文占用。
+    """
+    import base64
+    from pathlib import Path
+
+    path = str(path).strip()
+    if not path:
+        return _blocked("[view_image] 缺少 path（图片文件路径）")
+
+    p = _resolve(path)
+    if not p.is_file():
+        return _blocked(f"[view_image] 文件不存在或不是文件：{p}")
+
+    ext = p.suffix.lower()
+    mime_map = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".bmp": "image/bmp", ".gif": "image/gif", ".webp": "image/webp",
+        ".tiff": "image/tiff", ".tif": "image/tiff",
+    }
+    mime_type = mime_map.get(ext)
+    if not mime_type:
+        return _blocked(
+            f"[view_image] 不支持的图片格式：{ext}，"
+            "支持：png/jpg/jpeg/bmp/webp/gif/tiff"
+        )
+
+    try:
+        raw = p.read_bytes()
+    except PermissionError:
+        return _blocked(f"[view_image] 权限不足，无法读取：{p}")
+    except Exception as e:
+        return _blocked(f"[view_image] 读取失败：{e}")
+
+    # 如果指定了 max_width，用 Pillow 缩放（如有）
+    if max_width and ext in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"):
+        try:
+            from PIL import Image as PILImage
+            img = PILImage.open(p)
+            w, h = img.size
+            if w > max_width:
+                new_h = int(h * max_width / w)
+                img = img.resize((max_width, new_h), PILImage.Resampling.LANCZOS)
+                buf = img.tobytes("raw", img.mode)
+                # 重新编码为 JPEG 以压缩
+                import io
+                jpeg_buf = io.BytesIO()
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(jpeg_buf, format="JPEG", quality=85)
+                raw = jpeg_buf.getvalue()
+        except ImportError:
+            pass  # Pillow 未安装则跳过缩放，直接返回原图
+        except Exception:
+            pass  # 缩放失败则返回原图
+
+    b64 = base64.b64encode(raw).decode("ascii")
+    data_url = f"data:{mime_type};base64,{b64}"
+
+    size_kb = len(raw) / 1024
+    return {
+        "text": f"已查看图片：{p}\n"
+                f"格式：{ext}，大小：{size_kb:.1f} KB\n"
+                f"（图片已转换为 data URL 并入上下文）",
+        "images": [data_url],
+    }
 
 
 # 只读 git 白名单：仅允许查询类子命令，改写/推送/回退等危险操作一律拒绝

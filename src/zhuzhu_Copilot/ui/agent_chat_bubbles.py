@@ -220,6 +220,7 @@ class ChatStyle:
     band: str = ""
     out_fg: str = ""        # 工具输出字色（淡蓝）
     out_line: str = ""      # 工具输出区左侧竖线色
+    dot: str = ""           # 命令块标题栏三点的**实色**（壁纸模式下也必须可见）；留空则回退 border
     font_ui: str = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
     font_mono: str = 'Consolas, "Cascadia Code", "Courier New", monospace'
 
@@ -244,6 +245,17 @@ class ChatStyle:
 
     def out_line_of(self) -> str:
         return self.out_line or self.accent
+
+    def dot_of(self) -> str:
+        """命令块标题栏三点的实色。
+
+        **不能直接用 `border`**：壁纸透出模式会把 BORDER 覆写成 transparent（让描边让位
+        给壁纸，是有意设计），而圆点是「实心装饰」—— 透明掉就等于三个圆点整个消失
+        （用户反馈的「自定义背景下命令气泡左侧三点不见了」）。故由面板侧单独传入
+        **未受透明覆写**的原始描边色（见 AgentPanel._chat_style 的 `_base_color`），
+        壁纸开与不开都取到实色；老构造点未给该字段时回退 border，与既有版本行为一致。
+        """
+        return self.dot or self.border
 
 
 IconProvider = Callable[[str, int, str], QIcon]
@@ -475,7 +487,13 @@ class _IdleSpreader(QObject):
     """空闲切片执行器：把推迟的收尾动作分摊到事件循环空闲里逐个执行。
 
     调用方只 push 一个无参可调用对象；控件已销毁时其内部抛出的 RuntimeError 被吞掉
-    （回合被移除/重建后残留的任务直接跳过，不影响其余任务）。"""
+    （回合被移除/重建后残留的任务直接跳过，不影响其余任务）。
+
+    队列语义：这些动作**可丢弃**（富文本排版等收尾）——用户主动交互时 `drop_pending`
+    让路，控件持有的延迟标志保证真正展开时同步补齐（幂等）。因此它只服务「可重做」的
+    工作：不可丢的建块任务不允许进这条队列（历史回合隐藏过程块的建块改由展开路径同步
+    发起，见 ChatTurn._insert_blocks 的说明）。
+    """
 
     def __init__(self):
         super().__init__()
@@ -534,17 +552,26 @@ class PillButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAutoDefault(False)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        border_style = "dashed" if dashed else "solid"
-        border_color = style.dash if dashed else style.border
+        self._dashed = bool(dashed)
+        self._apply_style(style)
+        if icon is not None:
+            self.setIcon(icon)
+            self.setIconSize(QSize(FONT_SMALL, FONT_SMALL))
+
+    def _apply_style(self, style: ChatStyle):
+        """按样式快照重设 QSS（构造与 `restyle` 共用同一来源，避免两处漂移）"""
+        border_style = "dashed" if self._dashed else "solid"
+        border_color = style.dash if self._dashed else style.border
         self.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {style.accent};"
             f" font-family: {style.font_ui}; font-size: {FONT_SMALL}px; font-weight: 600;"
             f" border: 1px {border_style} {border_color};"
             f" border-radius: {RADIUS_PILL}px; padding: 5px 16px; }}"
             f"QPushButton:hover {{ background: {style.hover}; border-style: solid; }}")
-        if icon is not None:
-            self.setIcon(icon)
-            self.setIconSize(QSize(FONT_SMALL, FONT_SMALL))
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤（不重建控件）：主题/表面色变化时由 `ChatTurn.restyle` 调用。"""
+        self._apply_style(style)
 
 
 class DotsLabel(QWidget):
@@ -745,6 +772,14 @@ class _FadeMask(QWidget):
         self.setFixedHeight(FADE_H)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
+    def set_color(self, color: str):
+        """更新渐变终色（后缀底色变了，遮罩不跟着变就会在折叠边缘露出旧色）"""
+        try:
+            self._color = QColor(color)
+        except Exception:
+            return
+        self.update()
+
     def paintEvent(self, _e):
         p = QPainter(self)
         g = QLinearGradient(0, 0, 0, self.height())
@@ -807,6 +842,17 @@ class _EmergeBand(QWidget):
         self.hide()
 
     # ---------- 外部接口 ----------
+    def set_fill(self, fill: str):
+        """更新遮罩底色（主题/表面色变化时由区块 restyle 调用）"""
+        try:
+            self._fill = QColor(fill)
+        except Exception:
+            return
+        # 底图按 fill 合成，缓存与合成缓冲区全部作废，下一次绘制重建
+        self._cache = None
+        self._buf = None
+        self.update()
+
     def touch(self, by_geometry: bool = False):
         """正文内容 / 几何变化后由所属区块调用：记录落字时刻并推进波前。
 
@@ -1162,6 +1208,11 @@ class _EmergeMixin:
     def _emerge_init(self, fill: str, area: Callable[[], QRect]):
         self._emerge = _EmergeBand(self, fill, area)
 
+    def _emerge_fill(self, fill: str):
+        """换肤时更新浮现遮罩色（旧色会与新的背景色不一致 → 落字瞬间闪色块）"""
+        if self._emerge is not None:
+            self._emerge.set_fill(fill)
+
     def _emerge_touch(self, by_geometry: bool = False):
         if self._emerge is not None:
             self._emerge.touch(by_geometry=by_geometry)
@@ -1294,6 +1345,7 @@ class _FoldMixin:
         self._fold_style = style
         self._fold_provider = icon_provider
         self._fold_open_text = open_text
+        self._fold_fill = fill            # 遮罩终色（换肤时由 _fold_restyle 更新）
         self._fold_parts: list = []      # 各段全文（与 `_fold_targets()` 一一对应）
         self._fold_full = ""             # 各段拼接（非空判定 / 长度口径，兼容既有调用方）
         self._fold_h_key = None          # 各段全文高度缓存的键 (内容版本, 宽度)
@@ -1305,6 +1357,18 @@ class _FoldMixin:
         self._fold_mask = _FadeMask(fill, self)
         self._fold_mask.hide()
         return self._fold_btn
+
+    def _fold_restyle(self, style: ChatStyle, fill: str):
+        """原地换肤折叠区（开关按钮 + 渐隐遮罩），供各区块 restyle 调用。"""
+        self._fold_style = style
+        self._fold_fill = fill
+        btn = getattr(self, "_fold_btn", None)
+        if btn is not None:
+            btn.restyle(style)
+            btn.setIcon(self._fold_chev(180 if self._fold_open else 0))
+        mask = getattr(self, "_fold_mask", None)
+        if mask is not None:
+            mask.set_color(fill)
 
     def _fold_chev(self, rotated: int = 0) -> Optional[QIcon]:
         """开关左侧的箭头图标（无图标提供者时为 None → 纯文字开关）"""
@@ -1572,13 +1636,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._style = style
         self._icon_provider = icon_provider
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(
-            f"ThinkBubble {{ background: {style.think_bg_of()};"
-            f" border: 1px solid {style.think_border_of()};"
-            f" border-top-left-radius: {BUBBLE_RADIUS_THINK_TAIL}px;"
-            f" border-top-right-radius: {RADIUS_LG}px;"
-            f" border-bottom-right-radius: {RADIUS_LG}px;"
-            f" border-bottom-left-radius: {RADIUS_LG}px; }}")
+        self._apply_style(style)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(THINK_PAD_H, THINK_PAD_V, THINK_PAD_H, THINK_PAD_V)
@@ -1592,11 +1650,11 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._icon = _tile(style, icon_provider("think", FONT_BODY + 3, style.icon_color),
                            THINK_ICON, RADIUS_SM)
         hl.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
-        title = QLabel("思考过程")
-        title.setStyleSheet(
+        self._title = QLabel("思考过程")
+        self._title.setStyleSheet(
             f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
             f" font-family: {style.font_ui}; background: transparent;")
-        hl.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        hl.addWidget(self._title, 0, Qt.AlignmentFlag.AlignVCenter)
         hl.addStretch(1)
         self._tag = QWidget(head)
         self._tag.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1637,6 +1695,45 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         # 正文坐落于卡片底（fill=浮现遮罩色），浮现只覆盖思考正文标签那一块（头行图标/胶囊不动）
         self._emerge_init(style.band or style.think_bg_of(), self._emerge_area)
 
+    def _apply_style(self, style: ChatStyle):
+        """按样式快照重设外壳 QSS（构造与 `restyle` 共用，避免两处漂移）"""
+        self.setStyleSheet(
+            f"ThinkBubble {{ background: {style.think_bg_of()};"
+            f" border: 1px solid {style.think_border_of()};"
+            f" border-top-left-radius: {BUBBLE_RADIUS_THINK_TAIL}px;"
+            f" border-top-right-radius: {RADIUS_LG}px;"
+            f" border-bottom-right-radius: {RADIUS_LG}px;"
+            f" border-bottom-left-radius: {RADIUS_LG}px; }}")
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤：只重设 QSS 与派生色，**不重建控件、不重排**（主题切换性能的关键）。
+
+        与构造期写死的 QSS 一一对应；正文 HTML 由面板侧按主题版本重建后经
+        `set_content` 重新灌入（见 AgentPanel._retheme 的快速路径）。
+        """
+        self._style = style
+        self._apply_style(style)
+        self._title.setStyleSheet(
+            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
+            f" font-family: {style.font_ui}; background: transparent;")
+        self._tag_style(getattr(self, "_tag_name", "") or "")
+        self._tag_text.setStyleSheet(
+            f"color: {style.tag_fg}; font-size: {FONT_CAPTION}px; background: transparent;")
+        self._dots._color = style.tag_fg
+        self._body.setStyleSheet(
+            f"background: transparent; color: {style.text_dim};"
+            f" font-size: {FONT_BODY}px; line-height: 1.75;"
+            f" font-family: {style.font_ui};")
+        self._icon.setStyleSheet(
+            f"background: {style.icon_shell}; border: 1px solid {style.border};"
+            f" border-radius: {RADIUS_SM}px;")
+        self._icon.setPixmap(_tile_pixmap(
+            self._icon_provider("think", FONT_BODY + 3, style.icon_color),
+            THINK_ICON))
+        self._fold_restyle(style, style.think_bg_of())
+        self._emerge_fill(style.band or style.think_bg_of())
+        self._bump_content()
+
     # ---------- 折叠钩子（见 _FoldMixin） ----------
     def _fold_label(self) -> QLabel:
         return self._body
@@ -1664,6 +1761,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         return self._full_h() > self._fold_limit_h()
 
     def _tag_style(self, tag: str):
+        self._tag_name = tag or ""      # restyle 时按同一阶段取色（不重建控件）
         self._tag.setStyleSheet(
             f"QWidget {{ background: {self._style.tag_bg_of(tag)};"
             f" border-radius: {RADIUS_PILL}px; }}")
@@ -1775,6 +1873,7 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
         self._icon_provider = icon_provider
+        self._icon_kind = "tool"        # 最近一次渲染的图标 kind（restyle 据此重取图标）
         # 先放通用占位图标：真实工具名在 set_content 时才知道（那时换成专属图标）
         self._icon = _tile(style, icon_provider("tool", FONT_BASE + 2, style.icon_color),
                            TOOL_ICON, RADIUS_TILE, ratio=TOOL_GLYPH_RATIO,
@@ -1868,8 +1967,9 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
         self._title.setText(name or "")
         # 图标 kind 优先取调用方给的 ico（技能/插件/并行等伪 kind），未给则按工具名解析；
         # 每个工具/伪 kind 都有自己的专属图标（tool_icons 表）。
+        self._icon_kind = ico or name or "tool"     # restyle 时按同一 kind 重取图标
         self._icon.setPixmap(_tile_pixmap(
-            self._icon_provider(ico or name or "tool", FONT_BASE + 2,
+            self._icon_provider(self._icon_kind, FONT_BASE + 2,
                                 self._style.icon_color),
             TOOL_ICON, TOOL_GLYPH_RATIO))
         # 图标气泡提示：说明这一行在调用什么（工具用途 / 技能说明 / 所属插件），
@@ -1924,6 +2024,40 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
 
     def _inner_w(self) -> int:
         return self._body_inner_w(self.width())
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤工具行（标题/meta/chip/输出区/图标壳 + 折叠区），不重建控件。"""
+        self._style = style
+        self._title.setStyleSheet(
+            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
+            f" font-family: {style.font_mono}; background: transparent;")
+        self._meta.setStyleSheet(
+            f"color: {style.muted}; font-size: {FONT_CAPTION}px;"
+            f" font-family: {style.font_mono}; background: transparent;")
+        for i in range(self._chip_lay.count()):
+            it = self._chip_lay.itemAt(i)
+            w = it.widget() if it is not None else None
+            if isinstance(w, QLabel):
+                w.setStyleSheet(
+                    f"background: {style.tag_bg}; color: {style.tag_fg};"
+                    f" border-radius: {RADIUS_CHIP}px; padding: 4px 10px;"
+                    f" font-size: {FONT_CAPTION}px; font-family: {style.font_mono};")
+        self._out_line.setStyleSheet(
+            f"background: {style.out_line_of()}; border-radius: {OUT_LINE_W // 2}px;")
+        self._out.setStyleSheet(
+            f"background: transparent; color: {style.out_fg_of()};"
+            f" font-size: {FONT_SMALL}px; font-family: {style.font_mono}; line-height: 1.6;")
+        # 图标壳：壳底 + 描边 + 图标线条色全部随主题
+        self._icon.setStyleSheet(
+            f"background: {style.tool_shell_of()}; border: 1px solid {style.border};"
+            f" border-radius: {RADIUS_TILE}px;")
+        self._icon.setPixmap(_tile_pixmap(
+            self._icon_provider(self._icon_kind or "tool", FONT_BASE + 2,
+                                style.icon_color),
+            TOOL_ICON, TOOL_GLYPH_RATIO))
+        self._fold_restyle(style, style.bg)
+        self._emerge_fill(style.band or style.bg)
+        self._bump_content()
 
     def _body_inner_w(self, width: int) -> int:
         """文字列（标题/meta/输出）的可用宽度：块宽再让出左侧图标壳与它的间距。
@@ -1996,14 +2130,20 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         bar.setStyleSheet(
             f"QWidget {{ background: transparent;"
             f" border-bottom: 1px solid {style.border}; }}")
+        self._bar = bar                # restyle 时重设标题栏描边
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(CMD_PAD_H, CMD_PAD_V, CMD_PAD_H, CMD_PAD_V)
         bl.setSpacing(DOT_GAP)
+        self._dots_w = []              # 三个小圆点（restyle 时重设底色）
+        # 用 dot_of() 而非 border：壁纸透出模式会把 BORDER 覆写为 transparent（描边让位给
+        # 壁纸是有意设计），圆点是「实心装饰」，直接取 border 会在自定义背景下整个消失。
         for _ in range(3):
             dot = QLabel(bar)
             dot.setFixedSize(DOT_D, DOT_D)
-            dot.setStyleSheet(f"background: {style.border}; border-radius: {DOT_D // 2}px;")
+            dot.setStyleSheet(f"background: {style.dot_of()};"
+                              f" border-radius: {DOT_D // 2}px;")
             bl.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+            self._dots_w.append(dot)
         bl.addSpacing(CMD_PAD_H)
         self._bar_label = QLabel("")
         self._bar_label.setStyleSheet(
@@ -2045,6 +2185,33 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
     def _fold_label(self) -> QLabel:
         """遮罩贴在最下方那段（命令在上、输出在下）"""
         return self._body
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤命令块（外壳/标题栏/三点/命令与输出字色 + 折叠区）"""
+        self._style = style
+        self.setStyleSheet(
+            f"CmdBlock {{ background: {style.panel};"
+            f" border: 1px solid {style.border}; border-radius: {RADIUS_CMD}px; }}")
+        self._bar.setStyleSheet(
+            f"QWidget {{ background: transparent;"
+            f" border-bottom: 1px solid {style.border}; }}")
+        for dot in self._dots_w:
+            dot.setStyleSheet(f"background: {style.dot_of()};"
+                              f" border-radius: {DOT_D // 2}px;")
+        self._bar_label.setStyleSheet(
+            f"color: {style.text_dim}; font-size: {FONT_CAPTION}px;"
+            f" font-family: {style.font_mono}; background: transparent;")
+        self._cmd.setStyleSheet(
+            f"background: transparent; padding: {CMD_PAD_V + 4}px {CMD_PAD_H}px;"
+            f" color: {style.cmd_fg}; font-size: {FONT_BODY}px;"
+            f" font-family: {style.font_mono};")
+        self._body.setStyleSheet(
+            f"background: transparent; padding: 0 {CMD_PAD_H}px {CMD_PAD_V + 4}px;"
+            f" color: {style.ok_fg}; font-size: {FONT_SMALL}px;"
+            f" font-family: {style.font_mono};")
+        self._fold_restyle(style, style.panel)
+        self._emerge_fill(style.band or style.panel)
+        self._bump_content()
 
     def _fold_targets(self) -> list:
         """「`$ 命令`」与「输出」同属一个折叠区，顺序即 `_fold_set_parts` 的顺序"""
@@ -2146,14 +2313,14 @@ class RichBlock(_PinMixin, _EmergeMixin, QWidget):
     def __init__(self, style: ChatStyle, font_size: int = FONT_BODY,
                  color: str = None, parent: QWidget = None):
         super().__init__(parent)
+        self._style = style
+        self._font_size = font_size
+        self._color = color
         root = QVBoxLayout(self)
         root.setContentsMargins(0, SPACING_XS, 0, 0)
         root.setSpacing(0)
         self._body = _mk_label(style)
-        self._body.setStyleSheet(
-            f"background: transparent; color: {color or style.text};"
-            f" font-size: {font_size}px; line-height: 1.8;"
-            f" font-family: {style.font_ui};")
+        self._apply_body_qss(style)
         root.addWidget(self._body)
         self._fix_vertical()
         # 透明区块：正文直接坐在面板底色上，浮现层据此遮底。
@@ -2192,6 +2359,20 @@ class RichBlock(_PinMixin, _EmergeMixin, QWidget):
         inner = max(1, int(width) - m.left() - m.right())
         return _label_hfw(self._body, inner, self._content_ver) + m.top() + m.bottom()
 
+    def _apply_body_qss(self, style: ChatStyle):
+        """正文标签 QSS（构造与 restyle 共用，避免两处漂移）"""
+        self._body.setStyleSheet(
+            f"background: transparent; color: {self._color or style.text};"
+            f" font-size: {self._font_size}px; line-height: 1.8;"
+            f" font-family: {style.font_ui};")
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤（透明区块）：只重设字色与浮现遮罩色，不重建控件。"""
+        self._style = style
+        self._apply_body_qss(style)
+        self._emerge_fill(style.band or style.bg)
+        self._bump_content()
+
 
 class StreamBlock(RichBlock):
     """正文回复（demo .stream .txt）：纯文本、永不参与过程区折叠。
@@ -2215,6 +2396,9 @@ class UserBubble(QLabel):
             Qt.TextInteractionFlag.LinksAccessibleByMouse)
         self.setOpenExternalLinks(False)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self._apply_style(style)
+
+    def _apply_style(self, style: ChatStyle):
         self.setStyleSheet(
             f"background: {style.user_bg}; color: {style.user_fg}; border: none;"
             f" border-top-left-radius: {BUBBLE_RADIUS_USER}px;"
@@ -2223,6 +2407,10 @@ class UserBubble(QLabel):
             f" border-bottom-left-radius: {BUBBLE_RADIUS_USER}px;"
             f" padding: {BUBBLE_PAD_V}px {BUBBLE_PAD_H}px;"
             f" font-family: {style.font_ui}; font-size: {FONT_BASE}px;")
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤用户气泡（用户气泡底/字色不随壁纸透明化，但随深浅主题变）"""
+        self._apply_style(style)
 
 
 class CostRibbon(QFrame):
@@ -2234,9 +2422,7 @@ class CostRibbon(QFrame):
     def __init__(self, style: ChatStyle, icon: QIcon, parent: QWidget = None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(
-            f"CostRibbon {{ background: {style.card};"
-            f" border: 1px solid {style.border}; border-radius: {RADIUS_PILL}px; }}")
+        self._style = style
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 4, 12, 4)
         lay.setSpacing(7)
@@ -2245,11 +2431,9 @@ class CostRibbon(QFrame):
         self._icon.setStyleSheet("background: transparent; border: none;")
         lay.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
         self._text = QLabel("")
-        self._text.setStyleSheet(
-            f"background: transparent; border: none; color: {style.accent};"
-            f" font-size: {FONT_SMALL}px; font-weight: 600;"
-            f" font-family: {style.font_ui};")
         lay.addWidget(self._text, 0, Qt.AlignmentFlag.AlignVCenter)
+        # 子控件建好后再统一套样式（`_apply_style` 会写 `_text`，顺序不能反）
+        self._apply_style(style)
         self.setFixedHeight(RIBBON_H)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._t0 = 0.0
@@ -2257,6 +2441,21 @@ class CostRibbon(QFrame):
         self._timer = QTimer(self)
         self._timer.setInterval(RIBBON_TICK_MS)
         self._timer.timeout.connect(self._tick)
+
+    def _apply_style(self, style: ChatStyle):
+        """徽章外壳与文本 QSS（构造与 restyle 共用）"""
+        self.setStyleSheet(
+            f"CostRibbon {{ background: {style.card};"
+            f" border: 1px solid {style.border}; border-radius: {RADIUS_PILL}px; }}")
+        self._text.setStyleSheet(
+            f"background: transparent; border: none; color: {style.accent};"
+            f" font-size: {FONT_SMALL}px; font-weight: 600;"
+            f" font-family: {style.font_ui};")
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤耗时徽章"""
+        self._style = style
+        self._apply_style(style)
 
     def start(self, t0: float = None):
         self._t0 = float(t0 or time.time())
@@ -2305,9 +2504,17 @@ class _BlockRef:
 
     分类必须随每次渲染刷新：多轮任务里「中间轮次的正文」在后续正文出现后才变成
     过程块（要随过程区一起收起），此时内容签名不变，控件被复用但分类必须更新。
+
+    **控件的延迟创建**：历史回合（已结束）的隐藏过程块在 `_insert_blocks` 时不建控件
+    （widget=None，payload 先存下，见 `_ensure_block`），改由空闲切片分批补建 ——
+    长会话的秒级渲染阻塞大头就是这些块的构造/填充成本。`widget=None` 期间：
+    - 参与 `_items` 顺序与过程区计数（展开分页按 ref 走）；
+    - 不参与高度测量（隐藏块本就 h=0）；
+    - 展开/收起路径先补建再做可见性切换（`_apply_proc_visible`）。
     """
 
-    __slots__ = ("kind", "sig", "widget", "spacer", "is_proc", "h")
+    __slots__ = ("kind", "sig", "widget", "spacer", "is_proc", "h", "payload", "dead",
+                 "style_stale", "stale_payload", "stale_sig")
 
     def __init__(self, kind: str, sig, widget: QWidget, spacer: QSpacerItem, is_proc: bool):
         self.kind = kind
@@ -2316,6 +2523,14 @@ class _BlockRef:
         self.spacer = spacer
         self.is_proc = is_proc
         self.h = 0      # 最近一次钉定的块高：增量重排据此用高度差修正回合总额
+        self.payload = None   # 最近一次渲染的区块载荷（延迟建块时由此填充内容）
+        self.dead = False     # 已被 _drop_from 移除（空闲建块任务据此放弃）
+        # 隐藏块的「懒刷新」挂账：换肤/换主题后，隐藏（收起的过程区）块不做即时
+        # 重排版与 QSS 重设 —— 长会话里这类块占绝大多数，是切换耗时的主项。等它
+        # 真正要显示（展开过程区/补建完成）时再一次性补齐（见 _refresh_stale）。
+        self.style_stale = False      # 外壳 QSS 还是旧主题
+        self.stale_payload = None     # 内容载荷还是旧主题（待重灌）
+        self.stale_sig = None
 
     def gap(self) -> int:
         return BLOCK_GAP.get(self.kind, SPACING_XS)
@@ -2395,6 +2610,79 @@ class ChatTurn(QWidget):
             f" font-size: {FONT_CAPTION}px; font-family: {style.font_mono};")
         self._sys.hide()
         self._box_lay.addWidget(self._sys)
+
+    def restyle(self, style: ChatStyle):
+        """原地换肤整条回合：外壳按钮/徽章/时间行 + 逐块 `restyle`，**不重建任何控件**。
+
+        这是「主题切换不再全量重建」的关键：回合内的块控件全部复用，只重设 QSS 与
+        派生色。正文富文本（HTML 内联主题色）由面板侧在清空 `_seg_cache` 后按新主题
+        重新生成，经 `render` 的签名比对自动重灌变化的那部分。
+        """
+        self._style = style
+        self.style_obj = style
+        ribbon = getattr(self, "_ribbon", None)
+        if ribbon is not None:
+            ribbon.restyle(style)
+        self._toggle.restyle(style)
+        self._toggle.setIcon(rotate_icon(
+            self._icon_provider("chev", FONT_SMALL, style.accent), 0, FONT_SMALL))
+        self._more.restyle(style)
+        self._sys.setStyleSheet(
+            f"background: transparent; color: {style.muted};"
+            f" font-size: {FONT_CAPTION}px; font-family: {style.font_mono};")
+        # 逐块换肤：延迟建块（widget=None）的块没有控件可换，跳过即可。
+        # **隐藏块也跳过**（挂账到显示时补，见 _refresh_stale）：收起的过程区在长会话里
+        # 占绝大多数，对不可见控件重设 QSS 是纯浪费 —— 切换耗时会随历史长度线性膨胀。
+        for ref in self._items:
+            wdg = ref.widget
+            if wdg is None:
+                continue
+            try:
+                if ref.is_proc and wdg.isHidden():
+                    ref.style_stale = True
+                    continue
+            except RuntimeError:
+                continue      # 控件已销毁
+            fn = getattr(wdg, "restyle", None)
+            if callable(fn):
+                try:
+                    fn(style)
+                except RuntimeError:
+                    continue      # 控件已销毁
+        # QSS 与派生色都变了：测量缓存整体作废，按当前宽度重算一次
+        self._hfw_cache = None
+        self._layer_dirty = True
+        self._lay_min_dirty = True
+        w = self.width()
+        if w > 0:
+            self.relayout_heights(w)
+        self.updateGeometry()
+
+    def _refresh_stale(self, ref: "_BlockRef"):
+        """把隐藏期间挂账的换肤/换内容补齐（显示前调用；幂等，无挂账时零开销）。
+
+        为什么挂账：主题/壁纸变化时对**不可见**的过程块做 QSS 重设与富文本重灌是纯浪费
+        （长会话里这类块上百个，累计就是秒级阻塞）。挂账后，只有真正要显示的块才付这笔
+        成本 —— 交互延迟与「历史长度」解耦（见 restyle / _rebuild_blocks 的挂账分支）。
+        """
+        wdg = ref.widget
+        if wdg is None or ref.dead:
+            return
+        try:
+            if ref.style_stale:
+                ref.style_stale = False
+                fn = getattr(wdg, "restyle", None)
+                if callable(fn):
+                    fn(self._style)
+            if ref.stale_payload is not None:
+                payload, sig = ref.stale_payload, ref.stale_sig
+                ref.stale_payload = None
+                ref.stale_sig = None
+                ref.sig = sig
+                ref.payload = payload
+                self._update_block(wdg, ref.kind, payload)
+        except RuntimeError:
+            return      # 控件已销毁：挂账随之作废
 
     # ---------- 外部接口 ----------
     def set_link_handler(self, fn: Callable[[str], None]):
@@ -2566,7 +2854,8 @@ class ChatTurn(QWidget):
             # **不可**在这里先切掉 _PROC_PAGE —— 那会把首页整批丢弃（小回合里表现为
             # 「点了查看执行过程但一个块都没出现」）。
             self._reveal_rest = [r for r in self._items
-                                 if r.is_proc and r.widget.isHidden()]
+                                 if r.is_proc
+                                 and (r.widget is None or r.widget.isHidden())]
         return self._reveal_page()
 
     def _reveal_page(self):
@@ -2610,13 +2899,27 @@ class ChatTurn(QWidget):
         try:
             for ref in refs:
                 if visible:
+                    if ref.widget is None:
+                        # 延迟创建的块（历史回合隐藏过程块）：展开必须立刻可见 →
+                        # 先同步补建，再走后面的收尾与显示（创建成本即块成本，有界）
+                        self._ensure_block(ref)
+                    if ref.widget is None:
+                        continue                  # 补建失败（回合已销毁）：跳过
                     # 显示前先补齐该块的可见性收尾（历史回合的隐藏块延迟到建块时只填内容，
                     # 见 ToolCallRow.set_content 的 defer 说明）—— 逐块补齐才能让每次
                     # 主线程占用有界，而不是一次补齐上百块。
+                    self._refresh_stale(ref)      # 换肤/换内容挂账（隐藏期间的）先补齐
                     try:
                         ref.widget.resume_deferred()
                     except RuntimeError:
                         continue                      # 控件已销毁：跳过
+                else:
+                    if ref.widget is None:
+                        # 未建的延迟块：保持隐藏即可；间距初始即 0，变更时归零（幂等）
+                        if ref.spacer.sizeHint().height() != 0:
+                            ref.spacer.changeSize(0, 0, QSizePolicy.Policy.Minimum,
+                                                  QSizePolicy.Policy.Fixed)
+                        continue
                 if ref.widget.isHidden() != (not visible):
                     ref.widget.setVisible(visible)
                     dirty.append(ref)
@@ -2734,8 +3037,7 @@ class ChatTurn(QWidget):
             ref.is_proc = self._block_proc(kind, payload)
             if ref.sig != sig:
                 ref.sig = sig
-                self._update_block(ref.widget, kind, payload)
-                dirty.append(ref)
+                self._write_block(ref, kind, payload, dirty)
             head += 1
 
         tail = 0
@@ -2748,8 +3050,7 @@ class ChatTurn(QWidget):
             ref.is_proc = self._block_proc(kind, payload)
             if ref.sig != sig:
                 ref.sig = sig
-                self._update_block(ref.widget, kind, payload)
-                dirty.append(ref)
+                self._write_block(ref, kind, payload, dirty)
             tail += 1
 
         structural = False
@@ -2767,14 +3068,38 @@ class ChatTurn(QWidget):
             self._hfw_cache = None
         return dirty, structural
 
+    def _write_block(self, ref: "_BlockRef", kind: str, payload: dict, dirty: list):
+        """把新载荷写进区块：可见块立即重灌，**隐藏块挂账**（显示时经 _refresh_stale 补）。
+
+        挂账的意义：主题/壁纸变化会让所有区块的 payload 签名失效，而富文本重灌
+        （setText + 整篇排版）是整个切换里最贵的一步。收起的过程区块用户当下看不到，
+        立即重灌等于把「历史长度」直接乘进交互延迟 —— 改为显示前再补，切换耗时只与
+        **可见内容**相关。
+        """
+        wdg = ref.widget
+        if wdg is None:
+            ref.payload = payload       # 未建块的载荷更新（补建时用最新内容）
+            return
+        try:
+            if ref.is_proc and wdg.isHidden():
+                ref.stale_payload = payload
+                ref.stale_sig = ref.sig
+                return
+        except RuntimeError:
+            return
+        self._update_block(wdg, kind, payload)
+        dirty.append(ref)
+
     def _drop_from(self, start: int, end: int = None):
         if end is None:
             end = len(self._items)
         for ref in self._items[start:end]:
-            self._box_lay.removeWidget(ref.widget)
+            ref.dead = True              # 未建（延迟创建）的块：空闲任务据此放弃
+            if ref.widget is not None:
+                self._box_lay.removeWidget(ref.widget)
+                ref.widget.setParent(None)
+                ref.widget.deleteLater()
             self._box_lay.removeItem(ref.spacer)
-            ref.widget.setParent(None)
-            ref.widget.deleteLater()
         del self._items[start:end]
         self._toggle_idx = -1
 
@@ -2786,38 +3111,93 @@ class ChatTurn(QWidget):
         失效级联，下一个控件在布局未稳定时测量，O(n²) 布局计算（22 块 785ms）。
         批量赋值时控件无父布局，setMinimumHeight 只标记自身，加入布局后一次
         relayout 即可，降为 O(n)。
+
+        **历史回合隐藏过程块「连控件都不建」**（延迟创建）：长会话里这类块占多数，
+        构造 + 填充单块 ~2.4ms、上百块就是秒级渲染阻塞（`scripts/_probe_switch_perf.py`
+        实测 292 块 ≈ 713ms）。它们渲染后处于收起隐藏态、用户当下看不到，因此**只在
+        展开时**才由 `_ensure_block` 补建（`_apply_proc_visible` 内，分页 + 分片）；
+        渲染路径只登记 ref（widget=None）+ 一个 0 间距 spacer。
+
+        **不做后台预热**（曾用 `_IdleSpreader` 的持久队列在空闲时补建全部隐藏块）：
+        实测一个真实长会话会堆出 ~700 个待建任务（≈7s 空闲 CPU），而它们建的控件全部
+        挂在回合树里 —— 此后每次主题切换/壁纸翻转都要对整棵树重设 QSS 与 polish
+        （实测让连续三次切换从 1.0s 退化到 3.4s）。既然这些块只有展开时才可见，把成本
+        推迟到「真的要看」的那一刻才是正确取舍：闲置时零开销，交互延迟与历史长度解耦。
         """
         self.setUpdatesEnabled(False)
         created = []
         for kind, payload, sig in specs:
-            wid = self._make_block(kind, parent=None)
             is_proc = self._block_proc(kind, payload)
-            # 历史回合（已结束）的过程块默认收起隐藏：内层可见性收尾推迟到空闲切片 ——
-            # 隐藏输出的首次显示会为整篇富文本排版，长对话上百块累积成秒级加载阻塞
-            # （见 _IdleSpreader）。进行中的回合（流式）不推迟：内容必须即时可见。
-            # 若用户在补显完成前就展开，_apply_proc_visible 会逐块就地补齐（幂等）。
-            defer = is_proc and self._done
-            self._update_block(wid, kind, payload, defer=defer)
-            if defer:
-                _spreader().push(wid.resume_deferred)
+            defer_create = bool(is_proc and self._done)
+            if defer_create:
+                created.append((kind, sig, None, payload, is_proc))
+                continue
+            wid = self._make_block(kind, parent=None)
+            self._update_block(wid, kind, payload, defer=False)
             # 新块先同步流式状态再交付布局：占位/命令这类「一次成型」的块内容在创建时就
             # 已写入，只有此刻就带上 live，随后的首次布局重排才能把整块记为「刚浮现」。
             wid.set_live(self._live)
             self._wire(wid)
-            spacer = QSpacerItem(0, BLOCK_GAP.get(kind, SPACING_XS),
-                                 QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-            created.append((kind, sig, wid, spacer, is_proc))
-        for i, (kind, sig, wid, spacer, is_proc) in enumerate(created):
-            pos = index * 2 + i * 2
-            self._box_lay.insertWidget(pos, wid)
-            self._box_lay.insertItem(pos + 1, spacer)
-            # 新块必须在紧随其后的重排**之前**就处于「该可见」的状态：Qt 新建的子控件默认
-            # 是隐藏的（`isHidden()` 为真），而 relayout_heights 把隐藏块按 0 高跳过 ——
-            # 刚插入的这一块高度不计入回合总额，内层布局随即被挤、块又被钳回最小高，
-            # 于是后一块骑到前一块上（超长工具输出「遮挡/挤压正文」的成因之一）。
-            wid.setVisible(not (is_proc and self._done))
-            self._items.insert(index + i, _BlockRef(kind, sig, wid, spacer, is_proc))
+            created.append((kind, sig, wid, payload, is_proc))
+        # 插入锚点：插到第 index 个 ref 之前；追加时插到系统行之前（保持
+        # `_items` 顺序 == 布局顺序 == 高度测量顺序）。
+        pos = -1
+        if 0 <= index < len(self._items):
+            ref0 = self._items[index]
+            anchor = ref0.widget if ref0.widget is not None else ref0.spacer
+            pos = self._box_lay.indexOf(anchor)
+        if pos < 0:
+            pos = self._box_lay.indexOf(self._sys)   # 追加：系统行之前
+        if pos < 0:
+            pos = self._box_lay.count()
+        for i, (kind, sig, wid, payload, is_proc) in enumerate(created):
+            hidden = bool(is_proc and self._done)
+            # 延迟块 spacer 直接 0 间距（隐藏态）；普通块按类型间距。
+            gap = 0 if hidden else BLOCK_GAP.get(kind, SPACING_XS)
+            spacer = QSpacerItem(0, gap, QSizePolicy.Policy.Minimum,
+                                 QSizePolicy.Policy.Fixed)
+            if wid is not None:
+                self._box_lay.insertWidget(pos, wid)
+                pos += 1
+            self._box_lay.insertItem(pos, spacer)
+            pos += 1
+            ref = _BlockRef(kind, sig, wid, spacer, is_proc)
+            ref.payload = payload
+            self._items.insert(index + i, ref)
+            if wid is not None:
+                # 新块必须在紧随其后的重排**之前**就处于「该可见」的状态：Qt 新建的子控件
+                # 默认是隐藏的（`isHidden()` 为真），而 relayout_heights 把隐藏块按 0 高
+                # 跳过 —— 刚插入的这一块高度不计入回合总额，内层布局随即被挤、块又被钳回
+                # 最小高，于是后一块骑到前一块上（超长工具输出「遮挡/挤压正文」的成因之一）。
+                wid.setVisible(not hidden)
         self.setUpdatesEnabled(True)
+
+    def _ensure_block(self, ref: "_BlockRef"):
+        """为延迟创建（widget=None）的隐藏过程块补建控件（展开路径同步调用；幂等）。
+
+        - 已建 / 已移除 / 回合已销毁：直接跳过（重复调用安全）；
+        - 创建后保持隐藏——过程块在收起态本就不显示，等展开时再 setVisible(True)；
+        - 内容用 ref.payload 填充（defer=True：首次显示排版推迟到 resume_deferred）；
+        - 收尾（富文本排版）推入空闲切片：展开是用户主动交互，先让首屏可见，整篇排版
+          在后续切片里补齐（`_apply_proc_visible` 会对该块同步补，幂等）。
+        """
+        if ref.widget is not None or ref.dead:
+            return
+        try:
+            pos = self._box_lay.indexOf(ref.spacer)
+            if pos < 0:
+                ref.dead = True          # 已从布局移除（被 drop / 回合重建）
+                return
+            wid = self._make_block(ref.kind, parent=None)
+            wid.setVisible(False)        # 先显式隐藏，再挂载（避免插入布局即显示）
+            self._update_block(wid, ref.kind, ref.payload or {}, defer=True)
+            wid.set_live(self._live)
+            self._wire(wid)
+            self._box_lay.insertWidget(pos, wid)   # 插到对应 spacer 之前
+            ref.widget = wid
+            _spreader().push(wid.resume_deferred)
+        except RuntimeError:
+            ref.dead = True              # 回合已销毁：该块的创建作废
 
     def _make_block(self, kind: str, parent: QWidget = None) -> QWidget:
         p = parent if parent is not None else self._box
@@ -2939,7 +3319,8 @@ class ChatTurn(QWidget):
             total = self._hfw_cache[1]
             for ref in dirty:
                 wdg = ref.widget
-                h = 0 if wdg.isHidden() else self._measure_block(ref, inner, monotonic)
+                # 延迟创建的块（widget=None，见 _BlockRef）：本就按 h=0 计，跳过
+                h = 0 if (wdg is None or wdg.isHidden()) else self._measure_block(ref, inner, monotonic)
                 total += h - ref.h
                 ref.h = h
         else:
@@ -2949,7 +3330,9 @@ class ChatTurn(QWidget):
                 # 收起态下过程块控件保留但隐藏，跳过其高度计算；
                 # 新建控件在父级布局生效前 isHidden() 恒为 True，但新建只发生在展开态
                 # （过程块可见），因此不会被误跳。
-                h = 0 if wdg.isHidden() else self._measure_block(ref, inner, monotonic)
+                # widget is None = 延迟创建的隐藏过程块（见 _BlockRef）：同样按 h=0 跳过，
+                # 绝不可直接 .isHidden()（NoneType 崩溃，布局期间会逐帧刷屏）。
+                h = 0 if (wdg is None or wdg.isHidden()) else self._measure_block(ref, inner, monotonic)
                 ref.h = h
                 total += h + ref.spacer.sizeHint().height()
             if self._settled:   # 开关常驻（按 _settled 判定，与 heightForWidth 同口径）
@@ -2996,6 +3379,9 @@ class ChatTurn(QWidget):
         if _CHAT_DEBUG:
             det = []
             for r in self._items:
+                if r.widget is None:        # 延迟创建的块：调试输出里如实标注，不碰属性
+                    det.append((r.kind, None, None, None, None, None, None))
+                    continue
                 lbl = getattr(r.widget, "_body", None)
                 det.append((r.kind, r.widget.height(), r.widget.minimumHeight(),
                             r.widget.heightForWidth(inner),
@@ -3014,6 +3400,12 @@ class ChatTurn(QWidget):
         流式刷新不再逐块重走一遍测量分派。
         """
         wdg = ref.widget
+        if wdg is None:
+            # 延迟创建的块（widget=None，见 _BlockRef）：无控件可测，按 0 高计。
+            # 正常路径上调用方已判空，这里是兜底 —— 本方法在布局期间被反复调用，
+            # 宁可返回 0 也绝不能让 NoneType 异常冒泡进 Qt 事件循环。
+            ref.h = 0
+            return 0
         pin = getattr(wdg, "_pin_wrapping", None)
         prev_pin_w = getattr(wdg, "_pin_w", -1)   # pin 前先记下上一次的钉定宽度
         if callable(pin):
@@ -3043,6 +3435,18 @@ class ChatTurn(QWidget):
             wdg.setFixedHeight(h)
         return h
 
+    def _update_layout_geometry(self):
+        """触发一次整块布局重算：在批量修改多块高度后调用，避免每改一块就触发一次重排。
+
+        性能：减少布局激活次数，消除「批量钉高 → 逐个触发 heightForWidth 验证 → 多次
+        重排」的放大效应。由 `_render_history_all` 末尾的延迟批处理统一调用（见下）。
+        """
+        try:
+            self.updateGeometry()
+            self.layout().activate()
+        except Exception:
+            pass
+
     def _apply_live(self):
         """把流式开关下发给区块（三点动画 / 落字浮现都只在回合进行中播放）。
 
@@ -3055,7 +3459,7 @@ class ChatTurn(QWidget):
         for ref in self._items:
             # 隐藏的过程块也要同步（否则收起时停在 live=True，展开后又按流式补动画）；
             # DotsLabel/浮现层自身在隐藏时不启动定时器，赋值不会有额外开销。
-            if isinstance(ref.widget, _EmergeMixin):
+            if ref.widget is not None and isinstance(ref.widget, _EmergeMixin):
                 ref.widget.set_live(self._live)
 
     @property
@@ -3122,7 +3526,10 @@ class ChatTurn(QWidget):
         w = self.width()
         if w > 0 and w != getattr(self, "_lay_w", -1):
             self._lay_w = w
-            self.relayout_heights(w, monotonic=self._live)
+            try:
+                self.relayout_heights(w, monotonic=self._live)
+            except RuntimeError:
+                pass        # 回合/子控件已销毁：resize 回调晚到，忽略即可
         self._place_ribbon()
 
     def showEvent(self, e):
@@ -3134,7 +3541,12 @@ class ChatTurn(QWidget):
         w = self.width()
         if w <= 0:
             return super().sizeHint()
-        return QSize(w, self.heightForWidth(w))
+        try:
+            return QSize(w, self.heightForWidth(w))
+        except RuntimeError:
+            # 子控件已销毁（deleteLater 后 Qt 仍可能询问建议尺寸）：退回默认值，
+            # 不让异常冒泡进事件循环逐帧刷屏。
+            return super().sizeHint()
 
     def heightForWidth(self, width: int) -> int:
         """整条回合在给定宽度下的高度（供消息区钉住最小高度）。
@@ -3153,7 +3565,10 @@ class ChatTurn(QWidget):
         inner = max(1, w - self._outer_pad_w() - m.left() - m.right())
         h = self._outer_pad() + m.top() + m.bottom()
         for ref in self._items:
-            if ref.widget.isHidden():
+            # 延迟创建的块（历史回合隐藏过程块，见 _BlockRef）此时还没有控件：
+            # 它们本该按 h=0 计（隐藏过程块不占高度），必须跳过而不是碰 ref.widget，
+            # 否则 .isHidden() 会抛 AttributeError（NoneType），在布局期间逐帧刷屏。
+            if ref.widget is None or ref.widget.isHidden():
                 continue
             h += _widget_hfw(ref.widget, inner) + ref.spacer.sizeHint().height()
         if self._settled:      # 开关一旦出现就常驻（不按 isHidden 判定，理由同上）

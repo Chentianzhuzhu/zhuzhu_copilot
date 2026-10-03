@@ -179,12 +179,40 @@ def _theme_setting() -> str:
 
 _FOCUS_GLOW_BLUR = 16
 _FOCUS_GLOW_ALPHA = 170
-# 自定义背景（壁纸）下界面大面积透明，输入框边缘光会被花哨的背景吃掉 → 加粗加亮一档
-_FOCUS_GLOW_BLUR_ON_WALLPAPER = 30
-_FOCUS_GLOW_ALPHA_ON_WALLPAPER = 240
+# 自定义背景（壁纸）下界面大面积透明，输入框底也整体让给壁纸（见 _input_bg）：
+# 泛光掩膜只剩描边与文字 → 半径再放宽一档、透明度拉满，边缘光才立得住
+_FOCUS_GLOW_BLUR_ON_WALLPAPER = 36
+_FOCUS_GLOW_ALPHA_ON_WALLPAPER = 255
 # 光标闪烁周期（ms）：壁纸下闪得更勤，光标才不会被背景淹没（Qt 默认 1000ms）
 _CURSOR_FLASH_MS = 1000
 _CURSOR_FLASH_MS_ON_WALLPAPER = 620
+# 输入光标宽度（px）：默认 1px 太细，花背景上几乎看不见
+# 使用自定义光标方案，不需要调节此值
+_CURSOR_WIDTH = 1
+_CURSOR_WIDTH_ON_WALLPAPER = 1
+# 自定义光标宽度（px）：始终可见的黑色竖线
+_CUSTOM_CURSOR_WIDTH = 3
+
+# 全局滚动条滑块不透明度：淡灰极简，滑块压到 30% 半透明（悬停提亮到 55% 保持可辨）
+_SCROLLBAR_OPACITY = 0.30
+_SCROLLBAR_HOVER_OPACITY = 0.55
+
+
+def _scrollbar_handle() -> str:
+    """滚动条滑块色：边框色压到 30% 不透明度（全局统一淡灰）。
+
+    取原始色板（_base_color）：壁纸透出模式下 BORDER 被覆写为 transparent，
+    直接取会得到「黑透明」滑块（浅色模式下呈纯黑残留）。"""
+    c = QColor(_base_color("BORDER"))
+    c.setAlphaF(_SCROLLBAR_OPACITY)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
+
+
+def _scrollbar_handle_hover() -> str:
+    """滚动条滑块悬停色：提亮到 55%，保持可辨又不喧宾夺主（原始色板，见上）。"""
+    c = QColor(_base_color("BORDER_SOFT"))
+    c.setAlphaF(_SCROLLBAR_HOVER_OPACITY)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
 
 def _feedback_boosted() -> bool:
@@ -197,6 +225,16 @@ def _focus_glow_params() -> tuple:
     if _feedback_boosted():
         return (_FOCUS_GLOW_BLUR_ON_WALLPAPER, _FOCUS_GLOW_ALPHA_ON_WALLPAPER)
     return (_FOCUS_GLOW_BLUR, _FOCUS_GLOW_ALPHA)
+
+
+def _focus_glow_key() -> tuple:
+    """聚焦泛光效果的**输入指纹**（参数 + 强调色）。
+
+    效果只在输入变化时才需要重建：`setGraphicsEffect` 会让焦点控件重绘并失效几何，
+    实测可占「设/清背景」同步耗时的数百毫秒（面板级 336ms）。指纹必须含 ACCENT ——
+    换主题时壁纸状态可能不变，但泛光颜色要跟着强调色换。
+    """
+    return (*_focus_glow_params(), ACCENT)
 
 
 def _focus_glow_effect(widget):
@@ -214,8 +252,8 @@ def _focus_glow_effect(widget):
 def apply_cursor_flash() -> None:
     """按当前背景状态设定全局光标闪烁周期。
 
-    Qt 只暴露这一个光标可见性开关（无 caret-color / 光标宽度 API），
-    壁纸模式下缩短周期让光标闪得更勤，是唯一真实的调节手段。
+    无 caret-color API：壁纸模式下缩短周期让光标闪得更勤，
+    与加宽光标（见 apply_input_caret）合起来是仅有的两个对比度手段。
     """
     try:
         app = QApplication.instance()
@@ -230,6 +268,22 @@ def apply_cursor_flash() -> None:
         pass
 
 
+def apply_input_caret(widget) -> None:
+    """按当前背景状态设定输入框光标宽度：壁纸下加宽一档。
+
+    透明底上光标直接压在壁纸像素上，加宽（本函数）+ 加快闪烁
+    （apply_cursor_flash）是 Qt 里增强光标对比度的仅有两个真实手段。
+    非壁纸浅色底上 1px 光标也难见，故默认档也已加宽。
+    """
+    if widget is None:
+        return
+    try:
+        widget.setCursorWidth(_CURSOR_WIDTH_ON_WALLPAPER if _feedback_boosted()
+                              else _CURSOR_WIDTH)
+    except Exception:
+        pass
+
+
 def _install_focus_glow(widget) -> None:
     """给文字输入类控件装「聚焦时边缘泛蓝光」（替代原来的蓝色实线边框）。"""
     if widget is None or getattr(widget, "_focus_glow_filter", None) is not None:
@@ -240,8 +294,10 @@ def _install_focus_glow(widget) -> None:
             et = ev.type()
             if et == QEvent.Type.FocusIn:
                 obj.setGraphicsEffect(_focus_glow_effect(obj))
+                obj._focus_glow_key = _focus_glow_key()   # 记指纹：供 _refresh_focus_glow 去重
             elif et == QEvent.Type.FocusOut:
                 obj.setGraphicsEffect(None)      # Qt 自行销毁旧 effect
+                obj._focus_glow_key = None
             return False
 
     filt = _GlowFilter(widget)
@@ -315,9 +371,16 @@ def _mix_hex(top: str, bottom: str, alpha: float) -> str:
 # ══════════════ 壁纸透出模式：容器表面色覆盖 ══════════════
 #
 # 设了可用的自定义背景后，主界面「大面积容器底」整体改 transparent，让模糊壁纸透出来；
-# 文字色 / 描边 / 强调色 / 用户气泡底色一律不动 —— 那是可读性的底线，不能让给壁纸。
+# 同时把 BORDER / BORDER_SOFT 也让位给壁纸，避免停靠面板、列表、树控件在壁纸背景上
+# 留下生硬的深色描边。文字色 / 强调色 / 用户气泡底色一律不动 —— 那是可读性底线。
 # 覆盖发生在派生 QSS（_QCOMBO/_BTN_* 等）生成之前，因此整套派生皮肤会一并跟着透明。
-_SURFACE_KEYS = ("BG", "BG_BOTTOM", "PANEL", "CARD", "AI_BG", "HOVER", "CODE_BG")
+#
+# ⚠ 该覆写只对「能透出壁纸的主界面容器」成立：任何不绘制壁纸的窗口 / 弹层
+#   （对话框、消息框、菜单、Tooltip、停靠子窗口…）都必须经 _base_color 取原始
+#   色板——它们身后没有壁纸可透，QSS 拿到 transparent 后不填底，窗口按「未绘制」
+#   渲染成纯黑（浅色模式下最刺眼：设置页 / 子面板整片发黑）。
+_SURFACE_KEYS = ("BG", "BG_BOTTOM", "PANEL", "CARD", "AI_BG", "HOVER", "CODE_BG",
+                 "BORDER", "BORDER_SOFT")
 _BASE_PALETTE: dict = {}          # 未覆盖的原始色板（壁纸压暗纱必须用真实底色）
 _SURFACE_TRANSPARENT = None       # 上一次应用的透明态（判断是否值得就地重建）
 
@@ -343,8 +406,74 @@ def _apply_surface_mode(t: dict) -> None:
 
 
 def _base_color(key: str, fallback: str = "#101216") -> str:
-    """取未受透明覆盖影响的原始色板值（壁纸压暗纱必须压真实底色，否则等于没压）。"""
+    """取未受透明覆盖影响的原始色板值。
+
+    两类用途：
+    1) 壁纸压暗纱等必须压**真实底色**的场景（透明底上压纱等于没压）；
+    2) **不绘制壁纸的窗口 / 弹层**的表面色（对话框、消息框、菜单、Tooltip、
+       停靠子窗口…）—— 壁纸透出模式的透明覆写（见 _apply_surface_mode）只对
+       「能透出壁纸的主界面容器」成立；独立窗口身后没有壁纸可透，拿到
+       transparent 后不填底，窗口按「未绘制」渲染成纯黑。
+    """
     return str(_BASE_PALETTE.get(key) or fallback)
+
+
+def _panel_surface(key: str = "BG") -> str:
+    """停靠/悬浮面板的表面色：壁纸生效时透明（让自定义背景透出），否则原始色板实色。
+
+    用于「工作树 / Git / 代码预览」三类面板与其 dock 栏容器：壁纸模式下不再
+    画成实色块 —— 融入 dock 时透出主窗口壁纸；悬浮时由 _RoundedFloatWindow
+    .paintEvent 自绘同一张壁纸（见其注释）。任务清单 / 扩展面板不参与。
+    """
+    return "transparent" if _feedback_boosted() else _base_color(key)
+
+
+def _panel_stroke(key: str = "BORDER") -> str:
+    """面板描边色：壁纸生效时透明（不在自定义背景上留实色描边），否则原始色板实色。"""
+    return "transparent" if _feedback_boosted() else _base_color(key)
+
+
+def _input_bg() -> str:
+    """输入框底色：壁纸透出模式下全透明（底完全让给壁纸）。
+
+    不再用半透明 scrim 兜底：对比度改由「聚焦泛光加粗（见 _focus_glow_params）」
+    与「光标加宽提速（见 apply_input_caret / apply_cursor_flash）」承担，
+    输入框本身保持干净通透。
+    """
+    if _feedback_boosted():
+        return "transparent"
+    return PANEL
+
+
+def _input_border() -> str:
+    """输入框描边色：壁纸下改纯黑。
+
+    浅灰描边（#E3E8F0）压在花背景上会糊成「透明」，输入框边界立不住；
+    纯黑描边与蓝色泛光、纯黑光标共同构成完整的可读性组合。
+    非壁纸场景维持主题边框色。
+    """
+    if _feedback_boosted():
+        return "#000000"
+    return BORDER
+
+
+def _input_fg() -> str:
+    """输入框文字色（光标色系随文字，Qt 无独立 caret-color API）：壁纸下纯黑。
+
+    纯黑文字 + 纯黑光标在花背景上对比度最高；非壁纸场景维持主题文字色。
+    """
+    if _feedback_boosted():
+        return "#000000"
+    return TEXT
+
+
+def _input_qss() -> str:
+    """底部输入框完整样式（构建与离屏预览共用同一来源，避免两处漂移）。"""
+    border = _input_border()
+    return (f"QPlainTextEdit {{ background: {_input_bg()}; color: {_input_fg()};"
+            f" border: 1px solid {border};"
+            "border-radius: 10px; padding: 5px 10px; font-size: 14px; }}"
+            f"QPlainTextEdit:focus {{ border: 1px solid {border}; }}")
 
 
 def refresh_surface_mode() -> bool:
@@ -352,10 +481,32 @@ def refresh_surface_mode() -> bool:
 
     变化与否决定要不要就地重建：容器底色是构建时写进各控件 QSS 的，
     改模块级常量不会自动生效，只有重建才能让新值落到已有控件上。
+
+    **必须先作废 `_LAST_PALETTE`**：`_apply_colors` 在「色板字典与上次相同」时会跳过
+    整段赋值（色板没变，省掉重算派生 QSS）。但透明态翻转恰恰是在**同一色板**下改写
+    BG/PANEL/BORDER 的模块级值 —— 不作废就会走那条短路分支：关掉壁纸时 BG 停在
+    "transparent" 回不到实色（清背景后容器底仍透明），开壁纸时派生 QSS 也拿不到新值。
     """
+    global _LAST_PALETTE
     before = _SURFACE_TRANSPARENT
+    _LAST_PALETTE = None
     _apply_colors(_THEMES[_resolve_theme()], force=True)
     return before != _SURFACE_TRANSPARENT
+
+
+def _set_qss_once(w, qss: str) -> None:
+    """内容与当前一致就不重复 setStyleSheet。
+
+    Qt 每次 setStyleSheet 都会对**该控件子树**重新做一遍样式解析与 polish（面板级实测
+    65~135ms，随子树规模增长）。而主题切换路径上同一份根样式表会被设 2~3 次（过渡色 +
+    最终色 + 重建后补设），后两次内容完全相同 —— 全部是白付的全量重算。
+    只在内容确实变化时落地，一次切换就只付一次。
+    """
+    try:
+        if w is not None and w.styleSheet() != qss:
+            w.setStyleSheet(qss)
+    except RuntimeError:
+        pass          # 控件已销毁
 
 
 def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> None:
@@ -375,6 +526,18 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     global _THEME_VERSION, _LAST_PALETTE
     # 幂等：色板与上次一致则跳过，避免 _THEME_VERSION 无谓自增 + QSS 重复生成
     if not force and _LAST_PALETTE and _LAST_PALETTE == t:
+        return
+    # P1 优化：即使 force=True，若关键颜色无变化也跳过重建派生 QSS。
+    # 透明态翻转（on→off 或 off→on）会调用 force=True，此时确实需要重建。
+    # 但主题色切换时 _retheme 里已用真正的旧色板比较，此处只检查「本次和上次
+    # 模块级变量是否已相同」——相同则不需重建派生 QSS（省掉 _QCOMBO 等的重算）。
+    _palette_changed = (not _LAST_PALETTE) or (_LAST_PALETTE != t)
+    if not _palette_changed:
+        # 色板完全相同：只确保 surface 状态已落位，跳过派生 QSS 与 THEME_VERSION 重算。
+        # 注意：必须调用 _apply_surface_mode 以追踪透明态（on/off），但它会直接修改
+        # 模块级 BG/PANEL 等全局变量——这些已在上一次色板赋值中设置过，此处只需更新
+        # 透明态标记（_apply_surface_mode 内部会重新读写 globals()）。
+        _apply_surface_mode(t)
         return
     _LAST_PALETTE = dict(t)
     if bump_version:
@@ -421,14 +584,19 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                 f"font-size: {FONT_BODY}px; font-weight: 700; }}"
                 f"QPushButton:hover {{ background: #64748B; }}"
                 f"QPushButton:disabled {{ background: {CARD}; color: {TEXT_DIM}; }}")
+    # 控件本体（底色/描边）保持跟随主题表面色（壁纸下透明 = 输入框观感）；
+    # **弹出列表是独立不透明层**，底/描边/选中一律取原始色板（_base_color）：
+    # 壁纸模式下 PANEL/BORDER/HOVER 被覆写为 transparent，弹层拿到透明底不填色
+    # → 渲染成深色（用户反馈「浅色 + 自定义背景下拉菜单仍是深色」）。
     _QCOMBO = (f"QComboBox {{ background: {PANEL}; color: {TEXT};"
                f" border: 1px solid {BORDER};"
                f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                f"font-size: {FONT_SMALL}px; }}"
                f"QComboBox::drop-down {{ border: none; width: 22px; }}"
-               f"QComboBox QAbstractItemView {{ background: {PANEL};"
+               f"QComboBox QAbstractItemView {{ background: {_base_color('PANEL')};"
                f" color: {TEXT};"
-               f"border: 1px solid {BORDER}; selection-background-color: {HOVER};"
+               f"border: 1px solid {_base_color('BORDER')};"
+               f" selection-background-color: {_base_color('HOVER')};"
                f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
     _BTN_ICON = (f"QPushButton {{ background: transparent; border: 1px solid {BORDER};"
                  f"border-radius: {RADIUS_SM}px; }}"
@@ -464,22 +632,25 @@ def _global_dialog_qss() -> str:
     不会被覆盖。
     下拉/菜单/提示统一用当前主题的不透明面板色 + 浅色描边，随深浅主题实时换色
     （字体/字号与主风格参数均不变）。"""
-    # 原生对话框不是半透明窗口：用半透明底会与窗口默认底色叠加成「纯黑」，
-    # 故一律用不透明的主题色，随深浅主题实时换色。
-    # 下拉 / 菜单这类弹出层用不透明面板色：它们不是半透明窗口，用半透明底会与
-    # 窗口默认底色叠加成「纯黑」—— 这里正是"所有没自带 QSS 的下拉"
-    # （对话框/插件/MCP…）的**唯一**弹层底来源。
-    _popup_bg = PANEL
-    _popup_bd = BORDER
+    # 原生对话框不是半透明窗口：用半透明底会与窗口默认底色叠加成「纯黑」。
+    # 下拉 / 菜单这类弹出层同理（它们不是半透明窗口），这里正是"所有没自带
+    # QSS 的下拉"（对话框/插件/MCP…）的**唯一**弹层底来源。
+    # 表面色一律取**原始色板**（_base_color）：壁纸透出模式会把 PANEL/BORDER/
+    # HOVER 覆写为 transparent，而这些弹层都是独立窗口 —— 拿到 transparent 后
+    # 不填底、渲染成纯黑（浅色模式下尤其刺眼）。
+    _popup_bg = _base_color("PANEL")
+    _popup_bd = _base_color("BORDER")
     # 悬停 / 选中是叠在面板底上的交互反馈（见 HOVER）。
-    _popup_hover = HOVER
-    _popup_sel = HOVER
-    _dlg_bg = PANEL
-    _in_bg = PANEL
-    _in_hover = HOVER
-    _tip_bg = PANEL      # Tooltip：与弹层同源的面板色
+    _popup_hover = _base_color("HOVER")
+    _popup_sel = _base_color("HOVER")
+    _dlg_bg = _base_color("PANEL")
+    _in_bg = _base_color("PANEL")
+    _in_hover = _base_color("HOVER")
+    _tip_bg = _base_color("PANEL")   # Tooltip：与弹层同源的面板色（原始色板，防黑底）
     _tip_bd = ACCENT
-    _menu_bg, _menu_sel, _menu_hover = PANEL, HOVER, HOVER
+    _menu_bg = _base_color("PANEL")
+    _menu_sel = _base_color("HOVER")
+    _menu_hover = _base_color("HOVER")
     _ctrl_qss = ""
     _base = (
         f"QMessageBox, QInputDialog, QFileDialog, QColorDialog, QProgressDialog {{"
@@ -533,14 +704,14 @@ def _global_dialog_qss() -> str:
         f"QToolTip {{ background: {_tip_bg}; color: {TEXT}; border: 1px solid {_tip_bd};"
         f" border-radius: 8px; padding: 4px 8px; }}"
         f"QScrollBar:vertical {{ background: transparent; width: 10px; }}"
-        f"QScrollBar::handle:vertical {{ background: {_popup_bd}; border-radius: 5px;"
+        f"QScrollBar::handle:vertical {{ background: {_scrollbar_handle()}; border-radius: 5px;"
         f" min-height: 30px; }}"
-        f"QScrollBar::handle:vertical:hover {{ background: {_popup_sel}; }}"
+        f"QScrollBar::handle:vertical:hover {{ background: {_scrollbar_handle_hover()}; }}"
         f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
         f"QScrollBar:horizontal {{ background: transparent; height: 10px; }}"
-        f"QScrollBar::handle:horizontal {{ background: {_popup_bd}; border-radius: 5px;"
+        f"QScrollBar::handle:horizontal {{ background: {_scrollbar_handle()}; border-radius: 5px;"
         f" min-width: 30px; }}"
-        f"QScrollBar::handle:horizontal:hover {{ background: {_popup_sel}; }}"
+        f"QScrollBar::handle:horizontal:hover {{ background: {_scrollbar_handle_hover()}; }}"
     ) + _ctrl_qss
     return _base
 
@@ -584,15 +755,19 @@ def _apply_global_dialog_qss() -> None:
 # 实际主题变化而面板主体未重建（标题栏/对话框边框随 showEvent 即时换色，主体样式只随
 # _retheme 更新）→ 检测到不一致时自动就地重建，无需重启即可整体换色。
 _APPLIED_THEME = ""
+# P1 优化：记录上一次 apply_theme 生效的色板对象引用（非拷贝），用于在 _retheme 中
+# 快速判定主题色是否真正变化：若主题色未变则跳过全量 UI 重建，只更新模块级常量。
+_APPLIED_PALETTE_REF = None
 
 
 def apply_theme() -> str:
     """按当前设置（含时间自动）更新模块级颜色常量与派生样式常量，返回实际主题名。
     由主题切换/启动时调用；后接 AgentPanel 重建以即时生效。"""
-    global _APPLIED_THEME
+    global _APPLIED_THEME, _APPLIED_PALETTE_REF
     cur = _resolve_theme()
     _apply_colors(_THEMES[cur])
     _APPLIED_THEME = cur
+    _APPLIED_PALETTE_REF = _THEMES[cur]  # 记住实际应用的色板引用
     # 同步应用级色板（styles.PALETTE）：两套色板必须同源，否则会出现
     # 「对话框按深色默认值出深底 + 本模块按设置出浅色控件」这类混搭。
     try:
@@ -607,11 +782,11 @@ apply_theme()   # 模块加载即按设置/时间确定初始主题
 
 
 def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
-    """主题自适应滚动条样式：轨道透明、滑块随主题。
+    """主题自适应滚动条样式：轨道透明、滑块随主题（30% 半透明淡灰）。
     both=False 时仅生成垂直滚动条。
     """
-    _handle = BORDER
-    _handle_hover = BORDER_SOFT
+    _handle = _scrollbar_handle()
+    _handle_hover = _scrollbar_handle_hover()
     v = (f"QScrollBar:vertical {{ background: transparent; width: {width + 4}px; }}"
          f"QScrollBar::handle:vertical {{ background: {_handle};"
          f"border-radius: {radius}px; min-height: 30px; margin: 0 2px; }}"
@@ -1259,11 +1434,15 @@ def _warn_box(parent, title: str, text: str):
     mb.setIcon(QMessageBox.Icon.Warning)
     mb.setWindowTitle(title)
     mb.setText(text)
+    # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
+    # 而消息框是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
+    _warn_bg = _base_color("PANEL")
+    _warn_bd = _base_color("BORDER")
     mb.setStyleSheet(
-        f"QMessageBox {{ background: {PANEL}; }}"
+        f"QMessageBox {{ background: {_warn_bg}; }}"
         f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
-        f"QPushButton {{ color: {TEXT}; background: {PANEL};"
-        f"border: 1px solid {BORDER}; border-radius: 6px;"
+        f"QPushButton {{ color: {TEXT}; background: {_warn_bg};"
+        f"border: 1px solid {_warn_bd}; border-radius: 6px;"
         f"padding: 6px 16px; min-width: 64px; }}"
         f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; }}")
     mb.exec()
@@ -1814,6 +1993,7 @@ _OP_STATUS = {
     "edit_pptx": "正在编辑 PPT",
     "edit_xlsx": "正在编辑 Excel 表格",
     "generate_image": "正在生成图片",
+    "view_image": "正在查看图片",
     # ---- 时间 / 系统 ----
     "get_time": "正在读取时间",
     "system_info": "正在读取系统信息",
@@ -1995,10 +2175,13 @@ class _MultiLineInputDialog(QDialog):
         self.setWindowTitle(title)
         self.setMinimumSize(*min_size)
         self.setModal(True)
-        _dlg_bg = PANEL
-        _in_bg = PANEL
-        _bd = BORDER
-        _hover = PANEL
+        # 表面色取原始色板（_base_color）：壁纸透出模式会把容器色覆写为
+        # transparent，而对话框是独立不透明窗口（身后没有壁纸可透）→
+        # 透明底不填色，渲染成纯黑（浅色模式最刺眼）。
+        _dlg_bg = _base_color("PANEL")
+        _in_bg = _base_color("PANEL")
+        _bd = _base_color("BORDER")
+        _hover = _base_color("PANEL")
         self.setStyleSheet(f"QDialog {{ background: {_dlg_bg}; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
@@ -2022,7 +2205,7 @@ class _MultiLineInputDialog(QDialog):
             f"QPlainTextEdit {{ background: {_in_bg}; color: {TEXT};"
             f"border: 1px solid {_bd}; border-radius: 8px; padding: 8px;"
             f"font-size: 13px; font-family: Consolas, 'Microsoft YaHei'; }}"
-            f"QPlainTextEdit:focus {{ border: 1px solid {BORDER};"
+            f"QPlainTextEdit:focus {{ border: 1px solid {_bd};"
             f" background: {_hover}; }}")
         lay.addWidget(self.edit, 1)
         hint = QLabel("回车 = 换行｜Ctrl + 回车 = 确定｜Esc = 取消")
@@ -2085,9 +2268,11 @@ class _ConfirmDialog(QDialog):
         self.stop_requested = False  # "拒绝并停止任务"：终止在途任务
         self._space_pending = 0.0   # 空格按下时间戳：空格+回车=允许并加白名单
 
-        _dlg_bg = PANEL
-        _in_bg = BG
-        _bd = BORDER
+        # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
+        # 而确认弹窗是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
+        _dlg_bg = _base_color("PANEL")
+        _in_bg = _base_color("BG")
+        _bd = _base_color("BORDER")
         self.setStyleSheet(
             f"QDialog {{ background: {_dlg_bg}; }}"
             f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
@@ -2301,17 +2486,22 @@ class _AgentSettingsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 主题自适应：用当前主题全局色覆盖类级深色常量，使设置对话框在浅色模式下随之变浅
-        self._BG = BG
-        self._PANEL = PANEL
-        self._PANEL2 = CARD
+        # 主题自适应：用当前主题全局色覆盖类级深色常量，使设置对话框在浅色模式下随之变浅。
+        # 表面色一律取原始色板（_base_color）：壁纸透出模式会把主界面容器色覆写为
+        # transparent（见 _apply_surface_mode），而设置对话框是**独立不透明窗口**，
+        # 身后没有壁纸可透 —— 拿到 transparent 后 QSS 不填底，窗口按「未绘制」
+        # 渲染成纯黑（浅色模式最刺眼：整页发黑）。与统计浮层 / Tooltip 同源处理。
+        self._BG = _base_color("BG")
+        self._PANEL = _base_color("PANEL")
+        self._PANEL2 = _base_color("CARD")
+        self._HOVER = _base_color("HOVER")
         self._TEXT = TEXT
         self._DIM = TEXT_DIM
         self._ACCENT = ACCENT
         self._ACCENT_HOVER = ACCENT_HOVER
         self._DANGER = ERR
         self._DANGER_HOVER = ERR
-        self._BORDER = BORDER
+        self._BORDER = _base_color("BORDER")
         # 生成进度条（工作流/插件）状态：对话框 + 渐进动画定时器 + 当前百分比
         self._pbar = None
         self._pbar_timer = None
@@ -2418,23 +2608,26 @@ class _AgentSettingsDialog(QDialog):
         self.plugin_progress.connect(self._on_plugin_progress)
 
     def _dialog_qss(self) -> str:
-        """本对话框的根样式：输入类控件（输入框 / 多行文本 / 下拉框）的配色都在这里。"""
+        """本对话框的根样式：输入类控件（输入框 / 多行文本 / 下拉框）的配色都在这里。
+
+        表面色全部来自 self._*（原始色板）：壁纸透出模式下模块级 PANEL/BORDER
+        会被覆写为 transparent，而本对话框是独立不透明窗口 —— 透明底不填色，
+        渲染成纯黑（浅色模式整页发黑），必须回落实色（见 _base_color）。"""
         _dlg_bg = self._BG
-        _popup_bg = PANEL
+        _popup_bg = self._PANEL
         _in_bg = self._PANEL
         _in_focus = self._PANEL2
         return (
-            # QDialog#agentSettingsDlg：透明背景仅作用于设置对话框自身，
-            # 避免级联到子 QMessageBox/QInputDialog 导致其背景透明变纯黑
+            # 对象名限定：仅作用于设置对话框自身，不级联到子 QMessageBox/QInputDialog
             f"QDialog#agentSettingsDlg {{ background: {_dlg_bg}; }}"
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
             f"QLineEdit, QPlainTextEdit, QComboBox {{ background: {_in_bg};"
-            f"color: {self._TEXT}; border: 1px solid {BORDER};"
+            f"color: {self._TEXT}; border: 1px solid {self._BORDER};"
             "border-radius: 12px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
-            f"border: 1px solid {BORDER}; background: {_in_focus}; }}"
+            f"border: 1px solid {self._BORDER}; background: {_in_focus}; }}"
             f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
-            f"color: {TEXT}; border: 1px solid {BORDER};"
+            f"color: {TEXT}; border: 1px solid {self._BORDER};"
             f"border-radius: 12px; padding: 4px; outline: none;"
             f"selection-background-color: {self._PANEL2};"
             f" selection-color: {TEXT}; }}"
@@ -2617,7 +2810,7 @@ class _AgentSettingsDialog(QDialog):
             f"QPlainTextEdit {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
             "padding: 6px 10px; font-size: 13px; }}"
-            f"QPlainTextEdit:focus {{ border: 1px solid {BORDER}; }}")
+            f"QPlainTextEdit:focus {{ border: 1px solid {self._BORDER}; }}")
         lay.addWidget(self.disable_tools_edit)
         # 趣味互动：AI 随机截屏分析屏幕并弹出俏皮锐评气泡（涉及周期性全屏截图，默认开启）
         fun_lbl = QLabel("趣味互动")
@@ -3234,7 +3427,7 @@ class _AgentSettingsDialog(QDialog):
             "border-radius: 6px; padding: 3px 10px; font-size: 12px; }"
             "QPushButton:hover { border-color: %s; color: %s; background: %s; }"
             "QPushButton:checked { background: %s; color: #FFFFFF; border-color: %s; }"
-            % (self._DIM, self._BORDER, self._ACCENT_HOVER, self._TEXT, HOVER,
+            % (self._DIM, self._BORDER, self._ACCENT_HOVER, self._TEXT, self._HOVER,
                self._ACCENT, self._ACCENT))
         self.lyrics_desktop.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lyrics_desktop.setAutoDefault(False)
@@ -3247,7 +3440,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(lyr_head)
         self.lyrics_view = LyricsView()
         self.lyrics_view.set_colors(self._TEXT, self._DIM, self._ACCENT,
-                                    HOVER,
+                                    self._HOVER,
                                     self._PANEL)
         self.lyrics_view.setFixedHeight(LYRICS_VIEW_H)
         lay.addWidget(self.lyrics_view)
@@ -3560,9 +3753,9 @@ class _AgentSettingsDialog(QDialog):
         self.skill_wf_combo.setStyleSheet(
             f"QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
-            f"QComboBox QAbstractItemView {{ background: {PANEL};"
+            f"QComboBox QAbstractItemView {{ background: {self._PANEL};"
             f" color: {TEXT};"
-            f"border: 1px solid {BORDER}; selection-background-color: {HOVER};"
+            f"border: 1px solid {self._BORDER}; selection-background-color: {self._HOVER};"
             f" selection-color: {TEXT}; }}")
         self.skill_wf_combo.currentIndexChanged.connect(self._on_skill_wf_changed)
         scope.addWidget(self.skill_wf_combo)
@@ -4637,8 +4830,9 @@ class _AgentSettingsDialog(QDialog):
                               tip: str, commit):
         """背景页数值行：标签 + 滑杆 + 读数。
 
-        拖动时只更新读数，**松手才提交**：即时提交会让每一格都重算一次高斯模糊
+        拖动时只更新读数、**松手才提交**：即时提交会让每一格都重算一次高斯模糊
         （逐像素重活），拖动过程必然掉帧；松手提交则一次拖动只算一次。
+        非拖动改值（键盘方向键 / 滚轮）不会发 sliderReleased，故走 valueChanged 直提。
         """
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -4665,8 +4859,20 @@ class _AgentSettingsDialog(QDialog):
         val.setFixedWidth(56)
         row.addWidget(sl, 1)
         row.addWidget(val)
-        sl.valueChanged.connect(lambda v: val.setText(f"{v}{unit}"))
-        sl.sliderReleased.connect(lambda: commit(sl.value()))
+
+        def _on_value(v):
+            val.setText(f"{v}{unit}")
+            if not getattr(sl, "_dragging", False):   # 键盘/滚轮改值：直接落地
+                commit(v)
+
+        def _on_release():
+            sl._dragging = False
+            commit(sl.value())
+
+        sl._dragging = False
+        sl.sliderPressed.connect(lambda: setattr(sl, "_dragging", True))
+        sl.valueChanged.connect(_on_value)
+        sl.sliderReleased.connect(_on_release)
         return (row, sl, val)
 
     def _wallpaper_refresh(self, msg: str = ""):
@@ -5330,15 +5536,21 @@ class _McpServerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("编辑 MCP 服务器" if server else "添加 MCP 服务器")
         self.setMinimumWidth(480)
+        # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
+        # 而本对话框是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
+        _mcp_bg = _base_color("BG")
+        _mcp_in = _base_color("PANEL")
+        _mcp_bd = _base_color("BORDER")
+        _mcp_hover = _base_color("HOVER")
         _mcp_qss = (
-            f"QDialog {{ background: {BG}; }}"
+            f"QDialog {{ background: {_mcp_bg}; }}"
             f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
-            f"QLineEdit, QComboBox {{ background: {PANEL}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 6px 10px; }}"
-            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {BORDER}; }}"
-            f"QComboBox QAbstractItemView {{ background: {PANEL};"
+            f"QLineEdit, QComboBox {{ background: {_mcp_in}; color: {TEXT};"
+            f"border: 1px solid {_mcp_bd}; border-radius: 6px; padding: 6px 10px; }}"
+            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_mcp_bd}; }}"
+            f"QComboBox QAbstractItemView {{ background: {_mcp_in};"
             f" color: {TEXT};"
-            f"border: 1px solid {BORDER}; selection-background-color: {HOVER};"
+            f"border: 1px solid {_mcp_bd}; selection-background-color: {_mcp_hover};"
             f" selection-color: {TEXT}; }}")
         self.setStyleSheet(_mcp_qss)
         self._server = server or {}
@@ -5391,8 +5603,8 @@ class _McpServerDialog(QDialog):
         ok.setAutoDefault(False)
         ok.clicked.connect(self._accept_check)
         cancel = QPushButton("取消")
-        cancel.setStyleSheet(f"background: {PANEL}; color: {TEXT};"
-                             f"border: 1px solid {BORDER}; border-radius: 8px;"
+        cancel.setStyleSheet(f"background: {_mcp_in}; color: {TEXT};"
+                             f"border: 1px solid {_mcp_bd}; border-radius: 8px;"
                              "padding: 8px 22px; font-weight: 600;")
         cancel.setAutoDefault(False)
         cancel.clicked.connect(self.reject)
@@ -5515,11 +5727,14 @@ class _ProviderDialog(QDialog):
 
     def __init__(self, provider: dict = None, parent=None):
         super().__init__(parent)
-        # 主题自适应：用当前主题全局色覆盖类级深色常量，使对话框在浅色模式下随之变浅
-        self._BG = BG
-        self._PANEL = PANEL
+        # 主题自适应：用当前主题全局色覆盖类级深色常量，使对话框在浅色模式下随之变浅。
+        # 表面色取原始色板（_base_color）：壁纸透出模式会把容器色覆写为
+        # transparent，而本对话框是独立不透明窗口 → 透明底渲染成纯黑。
+        self._BG = _base_color("BG")
+        self._PANEL = _base_color("PANEL")
+        self._HOVER = _base_color("HOVER")
         self._TEXT = TEXT
-        self._BORDER = BORDER
+        self._BORDER = _base_color("BORDER")
         self._ACCENT = ACCENT
         self._DIM = TEXT_DIM
         self._ERR = ERR
@@ -5530,12 +5745,12 @@ class _ProviderDialog(QDialog):
             f"QDialog {{ background: {self._BG}; }}"
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
             f"QLineEdit, QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 6px 10px; }}"
-            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {BORDER}; }}"
-            f"QComboBox QAbstractItemView {{ background: {PANEL};"
-            f" color: {TEXT};"
-            f"border: 1px solid {BORDER}; selection-background-color: {HOVER};"
-            f" selection-color: {TEXT}; }}")
+            f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
+            f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {self._BORDER}; }}"
+            f"QComboBox QAbstractItemView {{ background: {self._PANEL};"
+            f" color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER}; selection-background-color: {self._HOVER};"
+            f" selection-color: {self._TEXT}; }}")
         self.setStyleSheet(_pvd_qss)
         self._provider = provider or {}
         self._test_ok = False
@@ -6052,9 +6267,11 @@ class _AskUserDialog(QDialog):
         self.setWindowTitle("AI 询问")
         self.setMinimumWidth(460)
         self._answer = ""
-        _dlg_bg = PANEL
-        _line_bg = BG
-        _line_bd = BORDER
+        # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
+        # 而提问弹窗是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
+        _dlg_bg = _base_color("PANEL")
+        _line_bg = _base_color("BG")
+        _line_bd = _base_color("BORDER")
         self.setStyleSheet(
             f"QDialog {{ background: {_dlg_bg}; }}"
             f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
@@ -6123,8 +6340,8 @@ class _AskUserDialog(QDialog):
         ok.setStyleSheet(f"background: {OK}; color: #06281B;")
         ok.clicked.connect(self._accept_clicked)
         cancel = QPushButton("取消")
-        cancel.setStyleSheet(f"background: {PANEL}; color: {TEXT};"
-                             f"border: 1px solid {BORDER};")
+        cancel.setStyleSheet(f"background: {_dlg_bg}; color: {TEXT};"
+                             f"border: 1px solid {_line_bd};")
         cancel.clicked.connect(self.reject)
         for b in (ok, cancel):
             b.setAutoDefault(False)
@@ -6353,26 +6570,45 @@ class _TurnWrap(QWidget):
             except Exception:
                 h = 0
         if h <= 0:
-            # 尚未布局（宽度未知）：退回钉定值/实际值/建议值，宁可偏大也不能偏小
-            h = max(int(turn.minimumHeight()), int(turn.height()),
-                    int(turn.sizeHint().height()))
+            # 尚未布局（宽度未知）：退回钉定值/实际值/建议值，宁可偏大也不能偏小。
+            # 逐项兜底（任一项抛错只跳过该项）：本方法被 sizeHint/heightForWidth 在
+            # 布局期间反复调用，回合内部正处于「延迟建块」等中间态时其中一项可能抛错，
+            # 异常一旦冒泡进 Qt 的事件循环就是每帧一条 traceback（用户反馈的刷屏报错）。
+            h = 0
+            for get in (turn.minimumHeight, turn.height,
+                        lambda: turn.sizeHint().height()):
+                try:
+                    h = max(h, int(get()))
+                except Exception:
+                    continue
         else:
             # 内容高不得低于回合自己的最小高：两者都是按内容测出来的（最小高由
             # relayout_heights 按固定宽度钉定），但「内容刚变、高度缓存还是旧宽度」的瞬间
             # 可能差几个像素 —— 取小值会把回合底部那几像素裁掉（最后一个块 / 系统时间行被
             # 切边）。注意仍**不**采信 turn.height()：那正是本层分配出去的高度，用它当基准
             # 会让任何一次瞬时偏小变成不可自愈的不动点（见类文档）。
-            h = max(h, int(turn.minimumHeight()))
+            try:
+                h = max(h, int(turn.minimumHeight()))
+            except Exception:
+                pass
         v = self.layout()
         if v is not None and v.count() > 1:
-            btm = v.itemAt(1)
-            if btm is not None and not btm.isEmpty():
-                h += v.spacing() + int(btm.sizeHint().height())
+            # 同样逐项兜底：本方法在布局期间被反复调用，任何一项抛错都会在事件循环里
+            # 变成每帧一条 traceback（用户反馈的刷屏报错），且会让整轮布局卡住。
+            try:
+                btm = v.itemAt(1)
+                if btm is not None and not btm.isEmpty():
+                    h += v.spacing() + int(btm.sizeHint().height())
+            except Exception:
+                pass
         return h
 
     def sync_height(self):
         """把自身高度同步为回合的真实高度（回合伸缩 / 重试行增删后都要跟上）"""
-        h = self._real_h()
+        try:
+            h = self._real_h()
+        except RuntimeError:
+            return                      # 回合已被销毁（deleteLater 后残留回调）
         if h > 0 and int(self.maximumHeight()) != h:
             self.setFixedHeight(h)
 
@@ -6380,15 +6616,28 @@ class _TurnWrap(QWidget):
         turn = self._turn
         if turn is None:
             return super().sizeHint()
-        return QSize(max(0, int(turn.width())), self._real_h())
+        try:
+            return QSize(max(0, int(turn.width())), self._real_h())
+        except RuntimeError:
+            # 回合已销毁：退回自身默认建议尺寸。Qt 会在布局期间调用本方法，
+            # 异常冒泡进事件循环就是每帧一条 traceback。
+            return super().sizeHint()
 
     def heightForWidth(self, _width: int) -> int:
-        return self._real_h() or super().heightForWidth(_width)
+        try:
+            return self._real_h() or super().heightForWidth(_width)
+        except RuntimeError:
+            return super().heightForWidth(_width)
 
     def event(self, e):
         # 回合伸缩 / 重试行显隐都会给本层发 LayoutRequest：跟着重钉高度
         if e.type() in (QEvent.Type.LayoutRequest, QEvent.Type.Show):
-            self.sync_height()
+            # 本方法是 Qt 回调入口：内部任何异常都会在事件循环里逐帧刷屏
+            # （用户反馈的 traceback 就是从 sizeHint → _real_h 这条链冒出来的）。
+            try:
+                self.sync_height()
+            except Exception:
+                pass
         return super().event(e)
 
 
@@ -6460,7 +6709,11 @@ class FlowLayout(QLayout):
 
 class _DropTextEdit(QPlainTextEdit):
     """多行输入框：自动换行、高度自适应（42~140px）、Enter 发送（Shift+Enter 换行）、
-    文件拖放（重写 drag/drop，不依赖事件冒泡）。"""
+    文件拖放（重写 drag/drop，不依赖事件冒泡）。
+    
+    自定义光标渲染：Qt 默认光标太细且闪烁，在花色背景上几乎不可见。
+    通过重写 paintEvent 绘制自定义黑色竖线，确保始终可见。
+    """
     submit = pyqtSignal()          # 用户按 Enter（发送）
     fileDropped = pyqtSignal(list)  # 拖入的文件路径列表
 
@@ -6516,6 +6769,33 @@ class _DropTextEdit(QPlainTextEdit):
     def has_pending_composition(self) -> bool:
         """输入法是否处于组合态（拼字未上屏，文档中读不到内容）"""
         return bool((self._ime_preedit or "").strip())
+    
+    def paintEvent(self, event):
+        """重写绘制事件：在默认渲染基础上叠加自定义光标。"""
+        super().paintEvent(event)
+        # 检查是否有焦点且光标不在选择状态
+        if not self.hasFocus() or self.textCursor().hasSelection():
+            return
+        cursor = self.textCursor()
+        if cursor.position() <= 0:
+            return
+        # 获取光标矩形
+        cr = self.cursorRect(cursor)
+        if cr.width() <= 0 or cr.height() <= 0:
+            return
+        # 绘制自定义黑色竖线光标
+        from PyQt6.QtGui import QPainter
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)  # 禁用抗锯齿，让竖线更清晰
+        p.setPen(Qt.PenStyle.SolidLine)
+        p.setBrush(Qt.GlobalColor.black)
+        x = cr.x()
+        y = cr.y()
+        w = _CUSTOM_CURSOR_WIDTH
+        h = cr.height()
+        # 绘制竖线（比默认光标更粗）
+        p.fillRect(x, y, w, h, Qt.GlobalColor.black)
+        p.end()
 
     def _has_files(self, e) -> bool:
         return e.mimeData().hasUrls()
@@ -6688,7 +6968,9 @@ class TodosPanel(QWidget):
         self.setObjectName("todosPanel")
         # QWidget 默认不绘制 stylesheet 背景 → 加 WA_StyledBackground 才能画出底
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#todosPanel {{ background: {BG}; }}")
+        # 表面色见 _panel_surface：壁纸模式下透明（与工作树 / Git / 预览同策略，
+        # 任务清单不再是白底块），非壁纸模式回落原始色板实色。
+        self.setStyleSheet(f"QWidget#todosPanel {{ background: {_panel_surface('BG')}; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*self.MARGINS)
         lay.setSpacing(8)
@@ -7881,12 +8163,12 @@ class _TokenStatsPopover(QFrame):
         card_bg = _base_color("PANEL")
         chip_bg = _base_color("HOVER")
         self.setStyleSheet(
-            f"#tokenStatsPop {{ background: {card_bg}; border: 1px solid {BORDER_SOFT};"
+            f"#tokenStatsPop {{ background: {card_bg}; border: 1px solid {_base_color('BORDER_SOFT')};"
             f" border-radius: {RADIUS_MD}px; }}"
             f"#tokenStatsPop QLabel#tkTitle {{ color: {TEXT}; font-size: {FONT_BODY}px;"
             " font-weight: 700; }"
             f"#tokenStatsPop QLabel#tkChip {{ color: {TEXT_DIM}; background: {chip_bg};"
-            f" border: 1px solid {BORDER_SOFT}; border-radius: {RADIUS_SM}px;"
+            f" border: 1px solid {_base_color('BORDER_SOFT')}; border-radius: {RADIUS_SM}px;"
             f" padding: 1px {SPACING_SM}px; font-size: {FONT_CAPTION}px; }}"
             f"#tokenStatsPop QLabel#tkRatio {{ color: {TEXT}; font-size: {FONT_TITLE}px;"
             " font-weight: 700; }"
@@ -8548,12 +8830,20 @@ def _center_dialog_on_screen(w: QWidget) -> None:
 
 class _RoundedFloatWindow(QWidget):
     """无边框悬浮面板基类：统一切圆角，消除四角方形残留。
-    覆盖 todos/git/worktree/code 四个停靠面板——它们是无边框纯色窗口，
+    覆盖 todos/git/worktree/code 四个停靠面板——它们是无边框窗口，
     仅设背景色会留下方形边角，这里配合 agent_ui_ux.apply_rounded_window
     用 setMask 蒙版剪圆角，并在窗口尺寸变化/显示时重新套用。
-    最大化/全屏时自动清蒙版（铺满屏幕无需圆角）。失败静默，绝不影响功能。"""
+    最大化/全屏时自动清蒙版（铺满屏幕无需圆角）。失败静默，绝不影响功能。
+
+    壁纸透出（_wallpaper_translucent=True 的子类）：壁纸模式下不再画成实色块 ——
+    悬浮（独立窗口）时由 paintEvent 自绘「模糊壁纸 + 压暗纱」；融入 dock 时
+    QSS 底为 transparent，透出主窗口绘制的同一张壁纸。"""
 
     _WINDOW_RADIUS = 12   # 停靠面板统一圆角半径（默认 UI 亦生效；子类可覆盖）
+
+    # 壁纸透出开关：True=工作树 / Git / 代码预览（壁纸模式下透出/自绘壁纸）；
+    # False=任务清单 / 扩展面板（不参与，保持实色卡片）。
+    _wallpaper_translucent = False
 
     # ---- 自由拖动 + 位置持久化 ----
     _drag_handle = None    # 子类构造时调用 _install_drag_handle() 创建把手
@@ -8633,6 +8923,11 @@ class _RoundedFloatWindow(QWidget):
                     s.setVisible(not docked)
         except Exception:
             pass
+        # dock / 浮出切换会改变窗口底绘制方式（自绘壁纸 ↔ 透出主窗口壁纸），立即重绘
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _drag_parent(self):
         """把手拖动目标 = 本窗口自身（子类可覆盖为内层容器）"""
@@ -8652,6 +8947,40 @@ class _RoundedFloatWindow(QWidget):
             agent_ui_ux.apply_rounded_window(self, self._WINDOW_RADIUS)
         except Exception:
             pass
+
+    def paintEvent(self, event):
+        """壁纸透出面板的自绘窗口底（悬浮形态）。
+
+        仅当「透出面板（_wallpaper_translucent）+ 壁纸生效 + 未融入 dock」时接管：
+        把与主面板同源的「模糊壁纸 + 压暗纱」铺进窗口 —— 窗口 QSS 底为
+        transparent，面板即成为「壁纸的一块」而非实色块。其余情况走默认绘制
+        （QSS 实色底）：非透出面板 / 未设壁纸 / dock 融入 —— dock 时本窗口是
+        主窗口子控件，主窗口已绘壁纸，重复自绘会因 cover 裁切基准不同
+        （窗口 rect vs 主窗口 rect）而纹理错位。
+
+        注意：函数内**严禁** import QPainter —— 局部名会遮蔽模块级导入，使
+        `painter = QPainter(self)` 在绑定前执行 → UnboundLocalError → 崩溃
+        （crash_20261001_165356.log 已实证；与主面板 paintEvent 同一陷阱）。
+        """
+        if not (self._wallpaper_translucent and _feedback_boosted()
+                and not self._dock_is_immersed()):
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        try:
+            done = app_wallpaper.paint(painter, self.rect(), _base_color("BG"))
+            if not done:
+                painter.fillRect(self.rect(), QColor(_base_color("BG")))
+        except Exception:
+            try:
+                painter.fillRect(self.rect(), QColor(_base_color("BG")))
+            except Exception:
+                pass
+        finally:
+            try:
+                painter.end()
+            except Exception:
+                pass
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -8697,13 +9026,16 @@ class CodePreviewWindow(_RoundedFloatWindow):
 
     WIDTH = int(280 * 1.5 * 1.5 * 0.7)   # 441
     DEFAULT_SIZE = (WIDTH, 600)          # 默认尺寸（无持久化记录时的兜底）
+    _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         self.setObjectName("codeWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#codeWin {{ background: {BG}; }}")
+        # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
+        # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
+        self.setStyleSheet(f"QWidget#codeWin {{ background: {_panel_surface('BG')}; }}")
         self.resize(self.WIDTH, 600)   # 宽度可调（右缘拖拽），初始 441
         self._web_tabs = None     # QTabWidget：多标签浏览器容器（WebEngine 可用时）
         self._web_err = ""        # Web 引擎创建失败的真实原因（供降级提示展示）
@@ -8808,50 +9140,62 @@ class CodePreviewWindow(_RoundedFloatWindow):
         pass
 
     def _apply_surface_qss(self):
-        """给预览面板内「带底色」控件统一上主题配色（各页构建完成后调用一次）。"""
-        surf = PANEL
+        """给预览面板内「带底色」控件统一上主题配色（各页构建完成后调用一次）。
+
+        内容面（标签页 / 内容视图 / 图片区 / Web 视图 / 地址栏）取 _panel_surface /
+        _panel_stroke：壁纸模式下透明 —— 悬浮时窗口自绘壁纸（见 _RoundedFloatWindow
+        .paintEvent）、融入 dock 时透出主窗口壁纸；非壁纸模式回落原始色板实色。
+        按钮 / 提示芯片 / 媒体控制条保持实色（交互控件与「提示面」，可读性优先）。"""
+        surf = _panel_surface("PANEL")
+        _bd = _panel_stroke("BORDER")
+        _hover = _base_color("HOVER")
         self.web_url.setStyleSheet(
             f"QLineEdit {{ background: {surf}; color: {TEXT};"
-            f" border: 1px solid {BORDER}; border-radius: 6px;"
+            f" border: 1px solid {_bd}; border-radius: 6px;"
             f" padding: 4px 8px; font-size: 12px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {BORDER}; }}"
+            f"QLineEdit:focus {{ border: 1px solid {_bd}; }}"
             f"QLineEdit::placeholder {{ color: {TEXT_DIM}; }}")
         if self._web_tabs is not None:
             self._web_tabs.setStyleSheet(
                 f"QTabWidget {{ background: {surf}; }}"
-                f"QTabWidget::pane {{ background: {surf}; border: 1px solid {BORDER}; }}"
+                f"QTabWidget::pane {{ background: {surf}; border: 1px solid {_bd}; }}"
                 f"QTabBar {{ background: {surf}; }}"
                 f"QTabBar::tab {{ background: transparent; color: {TEXT_DIM};"
                 f" font-size: 11px; padding: 3px 8px; margin: 1px;"
-                f" border: 1px solid {BORDER}; border-radius: 4px; }}"
+                f" border: 1px solid {_bd}; border-radius: 4px; }}"
                 f"QTabBar::tab:selected {{ background: {surf}; color: {TEXT}; }}"
-                f"QTabBar::tab:hover {{ background: {HOVER}; }}")
+                f"QTabBar::tab:hover {{ background: {_hover}; }}")
         self.html_view.setStyleSheet(
             f"QTextBrowser {{ background: {surf}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; }}")
+            f"border: 1px solid {_bd}; border-radius: 6px; }}")
         self.text.setStyleSheet(
             f"QPlainTextEdit {{ background: {surf}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 6px; }}")
+            f"border: 1px solid {_bd}; border-radius: 6px; padding: 6px; }}")
         self.img_scroll.setStyleSheet(
             f"QScrollArea {{ background: {surf}; border: none; }}"
             f"QScrollArea > QWidget > QWidget {{ background: {surf}; }}")
         self.img_label.setStyleSheet(f"background: {surf};")
+        # 提示芯片：「提示面」保持实色底（与 Tooltip 同策略，可读性优先）
         self._office_loading.setStyleSheet(
             f"color: {TEXT}; font-size: 12px; padding: 3px 8px;"
-            f"background: {surf}; border: 1px solid {BORDER}; border-radius: 5px;")
+            f"background: {_base_color('PANEL')};"
+            f" border: 1px solid {_base_color('BORDER')}; border-radius: 5px;")
         web = getattr(self, "office_web", None)          # 懒建：未预览 Office 时为 None
         if web is not None:
             web.setStyleSheet(f"QWebEngineView {{ background: {surf}; border: none; }}")
         bar = getattr(self, "media_ctrl_bar", None)      # 懒建：未播放媒体时为 None
         if bar is not None:
-            bar.setStyleSheet(f"background: {surf}; border-radius: 6px;")
-        # Office 放映控制条那排按钮：统一重设为当前主题配色，避免残留旧主题深色。
+            # 媒体控制条：按钮/滑杆所在交互条，保持实色底
+            bar.setStyleSheet(
+                f"background: {_base_color('PANEL')}; border-radius: 6px;")
+        # Office 放映控制条那排按钮：统一重设为当前主题配色（按钮保持实色底），
+        # 避免残留旧主题深色。
         for b in getattr(self, "_slide_btns", None) or ():
             b.setStyleSheet(
-                f"QPushButton {{ background: {PANEL}; color: {TEXT};"
-                f"border: 1px solid {BORDER}; border-radius: 5px;"
+                f"QPushButton {{ background: {_base_color('PANEL')}; color: {TEXT};"
+                f"border: 1px solid {_base_color('BORDER')}; border-radius: 5px;"
                 f"padding: 2px 9px; font-size: 11px; }}"
-                f"QPushButton:hover {{ background: {HOVER}; }}")
+                f"QPushButton:hover {{ background: {_base_color('HOVER')}; }}")
         fb = getattr(self, "full_btn", None)
         if fb is not None:
             fb.setStyleSheet(
@@ -8859,6 +9203,22 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 f"border-radius: 5px; padding: 2px 11px; font-size: 11px;"
                 f"font-weight: 600; }}"
                 f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
+
+    def apply_surface_theme(self):
+        """按当前表面色就地刷新本窗口（主题/壁纸透明态变化时调用，**不重建窗口**）。
+
+        根 QSS 与各内容面都是构造期用 `_panel_surface / _panel_stroke` 拼出来的
+        常量字符串：壁纸开关会改变这些取值（实色 ↔ transparent），改模块级状态
+        不会自动落到已有控件上 —— 因此主面板快路径必须显式回调本方法刷新。
+        """
+        try:
+            self.setStyleSheet(f"QWidget#codeWin {{ background: {_panel_surface('BG')}; }}")
+        except Exception:
+            pass
+        try:
+            self._apply_surface_qss()
+        except Exception:
+            pass
 
     # ---- 页面构建 ----
     def _btn(self, text, slot, tip=""):
@@ -9119,14 +9479,19 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 except Exception:
                     pass
             self._dl_popup = None
+            # 表面色取原始色板（见 _base_color）：下载弹窗是独立弹层窗口，
+            # 壁纸模式下容器色被覆写为 transparent → 透明底渲染成纯黑。
+            _dl_bg = _base_color("PANEL")
+            _dl_bd = _base_color("BORDER")
+            _dl_hover = _base_color("HOVER")
             dlg = QDialog(self)
             dlg.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
                                | Qt.WindowType.Tool)
             dlg.setObjectName("dlPopup")
             dlg.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             try:
-                dlg.setStyleSheet(f"QDialog#dlPopup {{ background: {PANEL};"
-                                  f"border: 1px solid {BORDER}; border-radius: 8px; }}")
+                dlg.setStyleSheet(f"QDialog#dlPopup {{ background: {_dl_bg};"
+                                  f"border: 1px solid {_dl_bd}; border-radius: 8px; }}")
             except Exception:
                 pass
             lay = QVBoxLayout(dlg)
@@ -9156,10 +9521,10 @@ class CodePreviewWindow(_RoundedFloatWindow):
             for text, fn in (("运行", _run), ("打开位置", _open_dir)):
                 b = QPushButton(text)
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
-                b.setStyleSheet(f"QPushButton {{ background: {PANEL}; color: {TEXT};"
-                                f"border: 1px solid {BORDER}; border-radius: 5px;"
+                b.setStyleSheet(f"QPushButton {{ background: {_dl_bg}; color: {TEXT};"
+                                f"border: 1px solid {_dl_bd}; border-radius: 5px;"
                                 f"padding: 4px 12px; }}"
-                                f"QPushButton:hover {{ background: {HOVER}; }}")
+                                f"QPushButton:hover {{ background: {_dl_hover}; }}")
                 b.clicked.connect(fn)
                 row.addWidget(b)
             lay.addLayout(row)
@@ -9206,11 +9571,12 @@ class CodePreviewWindow(_RoundedFloatWindow):
             b.setFixedHeight(24)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setToolTip(tip)
+            # 取原始色板（见 _base_color）：本窗是独立悬浮窗，transparent 会渲染成纯黑
             b.setStyleSheet(
-                f"QPushButton {{ background: {PANEL}; color: {TEXT};"
-                f"border: 1px solid {BORDER}; border-radius: 5px;"
+                f"QPushButton {{ background: {_base_color('PANEL')}; color: {TEXT};"
+                f"border: 1px solid {_base_color('BORDER')}; border-radius: 5px;"
                 f"padding: 2px 9px; font-size: 11px; }}"
-                f"QPushButton:hover {{ background: {HOVER}; }}")
+                f"QPushButton:hover {{ background: {_base_color('HOVER')}; }}")
             b.clicked.connect(lambda _=False, code=js: self._deck_call(code))
             bar.addWidget(b)
             self._slide_btns.append(b)
@@ -9417,7 +9783,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         # 控制条：播放/暂停 · 进度 · 时间 · 音量 · 全屏
         bar = QWidget()
         self.media_ctrl_bar = bar   # 全屏时底部控制条（鼠标唤出/自动隐藏）
-        bar.setStyleSheet(f"background: {PANEL}; border-radius: 6px;")
+        bar.setStyleSheet(f"background: {_base_color('PANEL')}; border-radius: 6px;")
         h = QHBoxLayout(bar)
         h.setContentsMargins(8, 4, 8, 4)
         h.setSpacing(6)
@@ -9433,7 +9799,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.media_progress = QSlider(Qt.Orientation.Horizontal)
         self.media_progress.setRange(0, 0)
         self.media_progress.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {BORDER};"
+            f"QSlider::groove:horizontal {{ height: 4px; background: {_base_color('BORDER')};"
             "border-radius: 2px; }"
             f"QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}"
             f"QSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -4px 0;"
@@ -10375,6 +10741,8 @@ class TodosWindow(_RoundedFloatWindow):
     clear_requested = pyqtSignal()   # 用户手动清空任务清单
 
     WIDTH = 280   # 固定宽度，高度随内容
+    # 壁纸透出（与其他三个侧栏面板一致）：悬浮时自绘壁纸、融入 dock 时透出主窗口壁纸
+    _wallpaper_translucent = True
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -10383,10 +10751,12 @@ class TodosWindow(_RoundedFloatWindow):
         # 面板在应用激活时通过 _guard_panels 抬升，切换其他应用时随之退后
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.Tool)
-        # 纯黑实心底（不透明）：面板铺满整个窗口，杜绝透出桌面
+        # 表面色见 _panel_surface：壁纸模式下透明（悬浮时由 _RoundedFloatWindow
+        # .paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸，窗口不再画成白底块），
+        # 非壁纸模式回落原始色板实色。
         self.setObjectName("todosWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#todosWin {{ background: {BG}; }}")
+        self.setStyleSheet(f"QWidget#todosWin {{ background: {_panel_surface('BG')}; }}")
         self.resize(self.WIDTH, 100)   # 宽度可调（右缘拖拽，左侧列联动）
         self.panel = TodosPanel(self)
         self.panel.clear_requested.connect(self.clear_requested.emit)
@@ -10411,6 +10781,13 @@ class TodosWindow(_RoundedFloatWindow):
         # 四边/四角拖拽调节大小（独立持久化）+ 持久化尺寸恢复
         self._install_resize_edges(host=self.parent())
         self.apply_saved_panel_size()
+
+    def apply_surface_theme(self):
+        """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
+        try:
+            self.setStyleSheet(f"QWidget#todosWin {{ background: {_panel_surface('BG')}; }}")
+        except Exception:
+            pass
 
     def _on_size_changed(self, w: int, h: int):
         """尺寸变化：按最新宽度重算任务行高度（面板高度随之自适应）"""
@@ -10605,6 +10982,7 @@ class GitLogWindow(_RoundedFloatWindow):
     WIDTH = 280   # 与 todos / worktree 面板同宽
     DEFAULT_SIZE = (WIDTH, 320)
     HEIGHT_MIN = 120   # 融入栏内最小高度（余量吸收者，避免被压成一条缝）
+    _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
     data_ready = pyqtSignal(object)   # 后台线程 → 主线程：装载的 git 视图数据
 
@@ -10616,7 +10994,9 @@ class GitLogWindow(_RoundedFloatWindow):
                             | Qt.WindowType.Tool)
         self.setObjectName("gitLogWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#gitLogWin {{ background: {BG}; }}")
+        # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
+        # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
+        self.setStyleSheet(f"QWidget#gitLogWin {{ background: {_panel_surface('BG')}; }}")
         self._view = "commit"   # commit / branch，默认提交历史（最新在上、最旧在下）
         self.resize(self.WIDTH, 320)   # 宽高均可调（四边/四角拖拽，独立持久化）
         self._busy = False      # 后台加载进行中（防止连续切换重复起线程）
@@ -10645,18 +11025,39 @@ class GitLogWindow(_RoundedFloatWindow):
         lay.addLayout(head)
 
         self.list = QListWidget()
+        # 表面/描边色见 _panel_surface / _panel_stroke：壁纸模式下透明（透出/自绘壁纸）
+        _surf = _panel_surface("PANEL")
+        _bd = _panel_stroke("BORDER")
         self.list.setStyleSheet(
-            f"QListWidget {{ background: {PANEL}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 4px; }}")
+            f"QListWidget {{ background: {_surf}; color: {TEXT};"
+            f"border: 1px solid {_bd}; border-radius: 6px; padding: 4px; }}")
         self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.list.setItemDelegate(_HtmlListDelegate(self.WIDTH - 40, self.list))
         lay.addWidget(self.list, 1)
         self._set_view(self._view, do_refresh=False)
         # 顶部拖拽把手：自由拖动 + 位置持久化 + 融入主面板（置于整个面板最上方）
         self._install_drag_handle()
-        # 四边/四角拖拽调节大小（独立持久化）+ 持久化尺寸恢复
+        # 四边/四角拖拽调节大小（独立持久化）+ 持久化尺寸恢复。
+        # **必须在构造里装**（与 todos/worktree 一致）：漏装则面板整块失去 resize 热区，
+        # 用户无法调整大小（回归：这三行曾被误放进 apply_surface_theme —— 那还导致每次
+        # 主题切换都重跑一次 apply_saved_panel_size，把面板尺寸/内容重排也算进切换耗时）。
         self._install_resize_edges(host=self.parent())
         self.apply_saved_panel_size()
+
+    def apply_surface_theme(self):
+        """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
+        try:
+            self.setStyleSheet(f"QWidget#gitLogWin {{ background: {_panel_surface('BG')}; }}")
+        except Exception:
+            pass
+        try:
+            _surf = _panel_surface("PANEL")
+            _bd = _panel_stroke("BORDER")
+            self.list.setStyleSheet(
+                f"QListWidget {{ background: {_surf}; color: {TEXT};"
+                f"border: 1px solid {_bd}; border-radius: 6px; padding: 4px; }}")
+        except Exception:
+            pass
 
     def _set_dock_ui(self, docked: bool):
         """融入主面板：隐藏把手与 resize 热区，并给列表一个最小高度——
@@ -10689,7 +11090,7 @@ class GitLogWindow(_RoundedFloatWindow):
                   f"font-size:11px;font-weight:700; }}"
                   f"QPushButton:hover {{ background:{ACCENT_HOVER}; }}")
         idle = (f"QPushButton {{ background:transparent;color:{TEXT_DIM};"
-                f"border:1px solid {BORDER};border-radius:5px;padding:0 8px;"
+                f"border:1px solid {_base_color('BORDER')};border-radius:5px;padding:0 8px;"
                 f"font-size:11px; }}"
                 f"QPushButton:hover {{ color:{TEXT};border-color:{ACCENT_HOVER}; }}")
         self.branch_btn.setStyleSheet(active if view == "branch" else idle)
@@ -10934,6 +11335,7 @@ class WorktreeWindow(_RoundedFloatWindow):
     WIDTH = 280      # 与 todos / git 面板同宽
     DEFAULT_SIZE = (WIDTH, 360)
     MARGINS_DOCK = (10, 2, 10, 0)   # 融入：顶部留 2px 防标题裁切，底边贴边（缝隙并入下方 Git）
+    _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
     file_open_requested = pyqtSignal(str)   # 双击文件 → 请求打开代码预览（文件路径）
     thumb_ready = pyqtSignal(str, QIcon)    # 图片缩略图后台解码完成 → 主线程回填（path, icon）
@@ -10947,7 +11349,9 @@ class WorktreeWindow(_RoundedFloatWindow):
                             | Qt.WindowType.Tool)
         self.setObjectName("wtWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#wtWin {{ background: {BG}; border-radius: 12px; }}")
+        # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
+        # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
+        self.setStyleSheet(f"QWidget#wtWin {{ background: {_panel_surface('BG')}; border-radius: 12px; }}")
         self.resize(self.WIDTH, 360)   # 宽高均可调（四边/四角拖拽，独立持久化）
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
@@ -11015,15 +11419,31 @@ class WorktreeWindow(_RoundedFloatWindow):
         树自带样式表时，**未显式提及的子控件会退回系统默认样式** —— 不给出滚动条
         规则时，浅色主题下会残留系统深色滚动条（用户反馈的「残留深色元素」）。
         """
+        # 表面/描边色见 _panel_surface / _panel_stroke：壁纸模式下透明
+        # （透出 / 自绘壁纸），非壁纸模式回落原始色板实色。
+        _surf = _panel_surface("PANEL")
+        _bd = _panel_stroke("BORDER")
         self.tree.setStyleSheet(
-            f"QTreeWidget {{ background: {PANEL}; color: {TEXT};"
-            f"border: 1px solid {BORDER}; border-radius: 6px; padding: 4px 4px 4px 1px;"
+            f"QTreeWidget {{ background: {_surf}; color: {TEXT};"
+            f"border: 1px solid {_bd}; border-radius: 6px; padding: 4px 4px 4px 1px;"
             f"outline: none; }}"
             f"QTreeWidget::item {{ padding: 3px 4px; border-radius: 4px; }}"
             f"QTreeWidget::item:selected {{ background: transparent; }}"
             f"QTreeWidget::item:hover {{ background: transparent; }}"
             f"QTreeWidget::item:focus {{ outline: none; }}"
             + _scrollbar_css(6, 3, both=True))
+
+    def apply_surface_theme(self):
+        """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
+        try:
+            self.setStyleSheet(
+                f"QWidget#wtWin {{ background: {_panel_surface('BG')}; border-radius: 12px; }}")
+        except Exception:
+            pass
+        try:
+            self._apply_surface_qss()
+        except Exception:
+            pass
 
     # ---------- 刷新 / 填充 ----------
     def refresh(self):
@@ -11295,7 +11715,8 @@ class ExtPanelWindow(_RoundedFloatWindow):
                             | Qt.WindowType.Tool)
         self.setObjectName("extWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#extWin {{ background: {BG}; }}")
+        # 取原始色板（见 _base_color）：本窗口不绘制壁纸，transparent 会渲染成纯黑
+        self.setStyleSheet(f"QWidget#extWin {{ background: {_base_color('BG')}; }}")
         self.setFixedWidth(width)
         self.resize(width, max(int(height), 120))
         lay = QVBoxLayout(self)
@@ -11865,8 +12286,11 @@ class AgentPanel(QDialog):
         self.setMinimumSize(1074, 692)
         self.resize(1074, 692)
         self.setFont(QFont("Microsoft YaHei UI", 10))
+        # 取原始色板：本规则会级联到面板的各个子弹窗（祖先样式表优先于应用级），
+        # 壁纸透出模式下 BG/BG_BOTTOM 被覆写为 transparent —— 子弹窗拿到透明底
+        # 会渲染成纯黑；主面板自身的壁纸由 paintEvent 绘制，不受本规则影响。
         _dialog_bg = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-                      f"stop:0 {BG}, stop:1 {BG_BOTTOM})")
+                      f"stop:0 {_base_color('BG')}, stop:1 {_base_color('BG_BOTTOM')})")
         self.setStyleSheet(
             f"QDialog {{ background: {_dialog_bg}; }}"
             + _QCOMBO
@@ -11995,6 +12419,10 @@ class AgentPanel(QDialog):
         self._scroll_pending = False   # 滚动调度去重标志
         self._bubble_widgets: list = []  # 所有气泡 QLabel（窗口缩放时同步宽度）
         self._bubble_segs: dict = {}     # 气泡 id → 其 AI 段列表（思考折叠/展开局部重渲染用）
+        # 主题切换复用的气泡暂存池（见 _detach_live_bubbles / _take_pooled_bubble）：
+        # 重建前把存活气泡从旧树摘出放这里，_add_bubble 优先取回而非新建 —— 省掉
+        # 拆树 + 重建全部气泡（实测约占 _retheme 的一半以上）。{"user": [...], "ai": [...]}
+        self._bubble_reuse_pool: dict = {}
         self._msg_nav: list = []         # 对话定位器：最近 10 条用户消息 [{"btn","bubble","text"}]
         self._html_dirty = False         # 流式刷新节流标志（60ms 批量 setText）
         self._optimizing = False         # 提示词优化进行中（防重复点击）
@@ -12120,12 +12548,15 @@ class AgentPanel(QDialog):
         threading.Thread(target=self._init_mcp, daemon=True).start()
 
     # ---------- UI ----------
-    def _build_ui(self):
+    def _build_ui(self, rescan_ext: bool = True):
         """构建面板 UI。
 
         壁纸在两处影响界面：根背景由 `core/app_wallpaper.paint` 绘制（与控件树无关），
         容器底色则在**构建前**就要确定（见 refresh_surface_mode）—— 控件 QSS 是构建时
         用色板常量拼出来的，构建完再改常量不会落到已有控件上，只能整树重建。
+
+        rescan_ext=False 供主题切换使用：只重建扩展面板控件，不重复扫盘发现（见
+        `_ensure_ext_panels` 的说明）。
         """
         # 重建前先丢弃统计浮层：其尺寸/配色随新主题与新顶栏重算，
         # 避免旧浮层残留（含解绑全局失焦守卫）。
@@ -12134,7 +12565,7 @@ class AgentPanel(QDialog):
         refresh_surface_mode()   # 启动时壁纸已设置 → 本次构建的容器底即为透明
         self.build_default_ui()
         self._ensure_custom_btn_bar()   # 注册的自定义按钮与 UI/UX 解耦，恒渲染
-        self._ensure_ext_panels()       # 扩展面板（插件/工作流/代码注册）恒挂载
+        self._ensure_ext_panels(rescan=rescan_ext)   # 扩展面板（插件/工作流/代码注册）恒挂载
 
     def build_default_ui(self):
         """内置面板构建（顶部栏 / 消息区 / 输入区一次成型）。"""
@@ -12327,14 +12758,12 @@ class AgentPanel(QDialog):
         bottom.setSpacing(6)
         self.input = _DropTextEdit()
         _install_focus_glow(self.input)   # 聚焦边缘泛光（替代蓝色实线边框）
+        apply_input_caret(self.input)     # 壁纸下加宽光标：透明底上的对比度兜底
         self.input.setPlaceholderText("/ for commad @ for agent")
         self.input.setMinimumHeight(32)
         self.input.setMaximumHeight(110)
-        self.input.setStyleSheet(
-            f"QPlainTextEdit {{ background: {PANEL}; color: {TEXT};"
-            f" border: 1px solid {BORDER};"
-            "border-radius: 10px; padding: 5px 10px; font-size: 14px; }}"
-            f"QPlainTextEdit:focus {{ border: 1px solid {BORDER}; }}")
+        # 壁纸 + 浅色下：描边/文字（含光标色系）纯黑；聚焦蓝色泛光见 _install_focus_glow
+        self.input.setStyleSheet(_input_qss())
         self.input.submit.connect(self._send)   # Enter 发送（Shift+Enter 换行）
         self.input.textChanged.connect(self._cmd_debounce.start)   # 防抖：暂停后再刷候选
         self.input.textChanged.connect(self._sync_action_style)
@@ -12542,8 +12971,9 @@ class AgentPanel(QDialog):
                         "QPushButton:hover { background: rgba(203,208,218,140); }")
         btn.setStyleSheet(
             _dot_qss
-            + f"QToolTip {{ background-color: {PANEL}; color: {TEXT};"
-            f" border: 1px solid {BORDER_SOFT}; padding: 4px 8px; }}")
+            # Tooltip 是独立弹层窗口：底/描边取原始色板，透明底会渲染成纯黑
+            + f"QToolTip {{ background-color: {_base_color('PANEL')}; color: {TEXT};"
+            f" border: 1px solid {_base_color('BORDER_SOFT')}; padding: 4px 8px; }}")
         btn.setToolTip(tip[:120] + ("…" if len(tip) > 120 else ""))
         btn.clicked.connect(lambda _, b=bubble: self._msg_nav_go(b))
         self._msg_nav.append({"btn": btn, "bubble": bubble, "text": plain})
@@ -13224,13 +13654,19 @@ class AgentPanel(QDialog):
         """弹窗提示可关闭任务清单窗口，并提供一键跳转设置（深色底 + 白字）"""
         box = QMessageBox(self)
         box.setWindowTitle("提示")
+        # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
+        # 而消息框是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
+        _sk_bg = _base_color("PANEL")
+        _sk_card = _base_color("CARD")
+        _sk_bd = _base_color("BORDER")
+        _sk_hover = _base_color("HOVER")
         box.setStyleSheet(
-            f"QMessageBox {{ background: {PANEL}; }}"
+            f"QMessageBox {{ background: {_sk_bg}; }}"
             f"QMessageBox QLabel {{ color: {TEXT}; font-size: 13px; }}"
-            f"QMessageBox QPushButton {{ color: {TEXT}; background: {CARD};"
-            f"border: 1px solid {BORDER}; border-radius: 8px;"
+            f"QMessageBox QPushButton {{ color: {TEXT}; background: {_sk_card};"
+            f"border: 1px solid {_sk_bd}; border-radius: 8px;"
             f"padding: 6px 14px; font-size: 13px; }}"
-            f"QMessageBox QPushButton:hover {{ background: {HOVER}; }}")
+            f"QMessageBox QPushButton:hover {{ background: {_sk_hover}; }}")
         box.setText("1 秒内连续清空了 3 次任务清单。\n如不需要该窗口，可在设置中关闭任务清单窗口。")
         go = box.addButton("前往设置", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
@@ -13548,10 +13984,38 @@ class AgentPanel(QDialog):
         st = self._sess.get(sid)
         if st is not None and (st["segments"] or st["rows"] or st["queued"]):
             # 内存态有实时内容（新建会话的任务/排队/后台生成中）：直接恢复，不覆盖
+            # P2 优化：若当前视图已匹配目标会话内容（_cached_view_sid + rows 签名一致），
+            # 跳过 _render_history_all 的全量重建（每回合约 ~300ms）—— 只需更新绑定信息。
+            # 条件：上次渲染的来源会话仍是目标，且气泡数与非AI行数匹配（粗略但快速）。
+            _prev_sid = getattr(self, "_last_render_sid", None)
+            _need_render = (st.get("_rows_frozen") is None
+                            or _prev_sid != sid
+                            or len(self._bubble_widgets) != len(st.get("_rows_frozen") or []))
             st["loaded"] = True
             self._bind_sess(sid)
             self._engine_for(sid)   # 同步 self._engine 指向该会话引擎，避免旧引擎串台
-            self._render_history_all()
+            if _need_render:
+                self._render_history_all()
+                self._last_render_sid = sid
+            else:
+                # 复用现有气泡：只恢复 segs 引用与计时起点，跳过整树重建
+                try:
+                    self._segments = list(st.get("segments") or [])
+                    self._user_msgs = list(st.get("user_msgs") or [])
+                    # 更新每条 AI 气泡的 segs 引用
+                    _frozen = st.get("_rows_frozen") or []
+                    idx = 0
+                    for b in self._bubble_widgets:
+                        if getattr(b, "property", lambda _: None)("align") == "ai":
+                            if idx < len(_frozen):
+                                fr = _frozen[idx]
+                                b._seg_cache.clear()
+                                b.set_cost(fr.get("cost"))
+                                b.turn_meta = fr.get("meta", "")
+                            idx += 1
+                except Exception:
+                    pass
+                self._last_render_sid = sid
             self._end_badge_shown = False
             self._refresh_session_combo()
             self._update_welcome()
@@ -14195,6 +14659,9 @@ class AgentPanel(QDialog):
             band=BG,
             out_fg=LINK_COLOR,
             out_line=ACCENT,
+            # 命令块标题栏三点的实色：取**未受壁纸透明覆写**的原始描边色（见 _base_color）。
+            # 壁纸模式下 BORDER 会让位给壁纸（transparent），若圆点也取它就会整个消失。
+            dot=_base_color("BORDER"),
         )
 
     def _topbar_wide(self) -> bool:
@@ -14723,13 +15190,15 @@ class AgentPanel(QDialog):
 
     # ---------- 融入主面板 dock（浮入/浮出/换侧/栏内排序 + 持久化） ----------
     def _make_dock_column(self, side: str) -> QWidget:
-        """创建 dock 侧栏容器：容纳融入主面板的子面板（贴附样式：纯黑底 + 圆角卡片）。
-        背景用不透明 BG（与主面板同色），面板 resize 拖动时缝隙被同色覆盖，不露黑块。"""
+        """创建 dock 侧栏容器：容纳融入主面板的子面板。
+        背景与栏内面板同策略（见 _panel_surface）：壁纸模式下透明（透出主窗口壁纸，
+        面板与栏缝都不再画成实色块），否则取原始主题底色；面板 resize 拖动时
+        缝隙由壁纸/同色覆盖，不露黑块。"""
         col = QWidget()
         col.setObjectName(f"dockCol{side}")
         col.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         col.setStyleSheet(
-            f"QWidget#dockCol{side} {{ background: {BG}; border: none; }}")
+            f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')}; border: none; }}")
         c_lay = QVBoxLayout(col)
         c_lay.setContentsMargins(0, 0, 0, 0)
         # 栏内面板首尾相接（间距 0）：面板间的竖直空隙全部并入余量、由同栏的 Git 面板
@@ -14842,7 +15311,7 @@ class AgentPanel(QDialog):
 
     def _sync_dock_layout(self):
         """按 dock 状态排列侧栏：有面板的侧栏显示，空侧栏隐藏；
-        dock 内面板宽度跟随各自持久化尺寸（贴附样式保留：纯黑圆角卡片）。
+        dock 内面板宽度跟随各自持久化尺寸（贴附样式保留：圆角卡片，壁纸模式下透出壁纸）。
         左侧三面板（工作树/Git/任务清单）垂直占比 5:3:2，其中：
         - 工作树按「名义份额（5 份）」封顶 → 保持其原有高度，不被余量撑高；
         - 任务清单按固定默认尺寸（上限）钉住，面板内滚动查看超出部分（见 TodosWindow
@@ -15151,10 +15620,15 @@ class AgentPanel(QDialog):
             self._place_owned(w, x, y)
             y = w.frameGeometry().y() + w.height() + 10
 
-    def _ensure_ext_panels(self):
+    def _ensure_ext_panels(self, rescan: bool = True):
         """扫描并挂载扩展面板（插件/工作流/代码注册），幂等：
         仅创建新增面板，已存在的保留原窗口引用（含用户拖拽位置）。
-        任意构建（默认/自定义/完全重构）结束都会调用，保证面板恒挂载。"""
+        任意构建（默认/自定义/完全重构）结束都会调用，保证面板恒挂载。
+
+        rescan=False 时跳过扫盘发现（`scan_panels` 要遍历插件/工作流目录 + 逐个
+        `is_file()`，Windows 上实测百毫秒级）：主题切换只需要**重建**这些面板的控件，
+        与「有哪些面板」无关 —— 注册表在启动扫描与热更新定时器里已经建好。
+        """
         if getattr(self, "_ext_panels", None) is None:
             self._ext_panels = {}
         try:
@@ -15162,7 +15636,8 @@ class AgentPanel(QDialog):
         except Exception:
             return
         try:
-            agent_panels.scan_panels()
+            if rescan:
+                agent_panels.scan_panels()
             built = agent_panels.build_panel_widgets(self)
         except Exception:
             return
@@ -15792,6 +16267,10 @@ class AgentPanel(QDialog):
 
         泛光效果是在 FocusIn 那一刻按当时参数建的，壁纸中途开关不会自动变；
         不刷新的话「设了背景后聚焦反馈消失/过弱」会一直留到下次聚焦。
+
+        **幂等去重**：输入指纹（参数 + 强调色）未变就直接返回。`setGraphicsEffect`
+        会让焦点控件重绘并失效几何，实测单次可达数百毫秒（面板 336ms）—— 而本方法在
+        一次「设/清背景」里会被调用多次（快路径 + 慢路径），重复换装是纯浪费。
         """
         try:
             w = QApplication.focusWidget()
@@ -15799,28 +16278,64 @@ class AgentPanel(QDialog):
             return
         if w is None or getattr(w, "_focus_glow_filter", None) is None:
             return
+        key = _focus_glow_key()
+        if getattr(w, "_focus_glow_key", None) == key:
+            return
         try:
             w.setGraphicsEffect(_focus_glow_effect(w))
+            w._focus_glow_key = key
         except Exception:
             pass
 
     def _on_wallpaper_changed(self):
         """壁纸变化（换图 / 清除 / 改适配 / 调模糊 / 调压暗）后的统一落地：
 
-        1. 重算容器表面色 —— 有壁纸时容器底改透明，让模糊壁纸透出来；
-        2. 根背景立即重绘 —— 模糊与压暗只作用在这一层，重绘即可；
-        3. 仅当透明态发生切换时才就地重建 —— 容器底色是构建时写进各控件 QSS 的，
-           改模块级常量不会自动生效；_retheme 保留会话/历史/运行中的任务。
+        - 透明态未变（换图/调模糊/压暗/改适配）：只重绘壁纸层（模糊与摆版均有缓存），
+          不做控件重建或应用级样式重算 —— 旧实现每次都走 refresh_surface_mode()
+          （内部 force 重建派生 QSS 并 app.setStyleSheet 全量重算），是无谓的整树重排。
+        - 透明态翻转（首次设置/清除背景）：重算表面色（挂起应用级全量重算，避免在
+          即将销毁的旧控件树上做一次昂贵的 app.setStyleSheet），再就地重建一次。
+          _retheme 保留会话/历史/运行中的任务，且因为色板对象未变会命中**快路径**
+          （只逐气泡换肤 + 侧栏表面色刷新，不拆树、不重建聊天气泡）。
         """
         try:
-            changed = refresh_surface_mode()
+            on = bool(app_wallpaper.active())
         except Exception:
-            changed = False
-        self.update()
+            on = False
+        if on == _SURFACE_TRANSPARENT:
+            self.update()
+            self._refresh_side_windows()   # 悬浮的透壁纸面板自绘窗口底，需主动重绘
+            return
+        global _APP_QSS_DEFER
+        _APP_QSS_DEFER = True
+        try:
+            refresh_surface_mode()
+        finally:
+            _APP_QSS_DEFER = False
+        # 泛光在 FocusIn 那一刻按当时参数构建：壁纸中途开关不会自动变，刷新当前聚焦控件
+        # （设置弹窗等未随 _retheme 重建的输入框需要靠这一步拿到加粗后的边缘光）。
         self._refresh_focus_glow()
-        if changed:
+        try:
+            self._retheme()
+        except Exception:
+            pass
+
+    def _refresh_side_windows(self):
+        """重绘侧栏面板（工作树 / Git / 代码预览 / 任务清单 / 扩展面板）。
+
+        悬浮形态的「透壁纸」面板由各自 paintEvent 自绘壁纸底；壁纸参数（模糊 /
+        压暗 / 换图）变化时主窗口 update() 不会触及独立窗口 —— 这里统一补一次。
+        """
+        wins = []
+        for name in ("todos_win", "git_win", "wt_win", "code_win"):
+            w = getattr(self, name, None)
+            if w is not None:
+                wins.append(w)
+        wins.extend(w for w in (getattr(self, "_ext_panels", None) or {}).values()
+                    if w is not None)
+        for w in wins:
             try:
-                self._retheme()
+                w.update()
             except Exception:
                 pass
 
@@ -15921,7 +16436,17 @@ class AgentPanel(QDialog):
 
         - user：demo `.msg` 用户气泡（深蓝底 + 非对称圆角 18/18/6/18）
         - ai  ：demo `.ai-turn` 事件流回合（无填充气泡，内容由 _render_ai_frame 填充）
+
+        **主题切换重建时优先从复用池取回原气泡**（见 `_detach_live_bubbles`）：
+        换肤只需重设 QSS，不必重新构造控件、更不必重新排版富文本。这是把
+        「主题切换 1.5~2.5s」压到目标区间的关键一步（拆树 + 重建气泡约占其一半）。
         """
+        reuse = self._take_pooled_bubble(align)
+        if reuse is not None:
+            _readded = self._readd_pooled_bubble(reuse, align, text, rich)
+            if _readded is not None:
+                return _readded
+            # 复用失败（包裹层缺失等异常路径）：退回按新控件新建，绝不返回 None
         if align == "user":
             bubble = chat_bubbles.UserBubble(self._chat_style())
             bubble.setMaximumWidth(self._bubble_max_width())
@@ -15953,7 +16478,7 @@ class AgentPanel(QDialog):
             retry.setStyleSheet(
                 "QPushButton { background: transparent; border: none; border-radius: 8px; }"
                 f"QPushButton:hover {{ background: {HOVER}; }}"
-                f"QToolTip {{ background-color: {PANEL}; color: {TEXT};"
+                f"QToolTip {{ background-color: {_base_color('PANEL')}; color: {TEXT};"
                 f" border: 1px solid {ACCENT}; border-radius: 6px;"
                 f" padding: 4px 8px; font-size: 12px; }}")
             retry.setVisible(False)             # arm 前不占位
@@ -15998,6 +16523,7 @@ class AgentPanel(QDialog):
             # 会随正文增长虚高，在回合上下留出越来越大的空白
             wrap.set_turn(bubble)
             # 包裹层与重试行反向引用：任务结束徽章插入重试行首，与重试按钮同行
+            bubble._wrap = wrap                  # 主题切换复用气泡时需连同包裹层一起摘出
             bubble._wrap_lay = v
             bubble._retry_row = btm
             # 回合高度变化时同步钉住包裹层：等事件循环里的 LayoutRequest 会晚一帧，
@@ -16005,6 +16531,7 @@ class AgentPanel(QDialog):
             bubble._wrap_sync = wrap.sync_height
             row.addWidget(wrap, 1)
         self.msg_lay.insertLayout(self.msg_lay.count() - 1, row)
+        bubble._row_lay = row      # 主题切换复用气泡时据此把整行一起摘出（见 _detach_live_bubbles）
         self._place_spinner_bottom()   # 新气泡加入后动画行移到最底部（AI 气泡下方外侧）
         # 淡入只用于用户气泡（小 QLabel）。AI 回合不做淡入：QGraphicsOpacityEffect 会把
         # 整棵子树重定向到离屏合成，而生成中每帧内容都在变 → 观感就是闪烁还掉帧；
@@ -16911,6 +17438,140 @@ class AgentPanel(QDialog):
         except Exception:
             return False
 
+    def _readd_pooled_bubble(self, bubble, align: str, text: str, rich: bool):
+        """把复用池里的气泡重新装回刚重建的消息流（见 `_detach_live_bubbles`）。
+
+        走的路与原 `_add_bubble` 一致（同一套布局结构、同一批接线），差别只在于
+        控件是复用的而非新建 —— 因此不能重复做「只该做一次」的事：
+        - 信号接线（右键菜单/切换回调/重试按钮）在池化气泡上已经连过，重复连接会让
+          一次右键弹两次菜单、一次点击触发两次回调，故这里一律不再连；
+        - 用户气泡只需重设宽度与文本，AI 回合的正文由调用方随后 render 重灌。
+        """
+        bubble.setProperty("align", align)
+        self._bubble_widgets.append(bubble)
+        # 复用气泡的外壳 QSS 是**构造期**写死的（卡片底/描边/图标壳/胶囊…），
+        # 换肤前必须先重设一遍；正文 HTML 随后由调用方 render 按新主题重灌。
+        try:
+            restyle = getattr(bubble, "restyle", None)
+            if callable(restyle):
+                restyle(self._chat_style())
+        except Exception:
+            pass
+        if align == "user":
+            bubble.setMaximumWidth(self._bubble_max_width())
+            try:
+                bubble.setTextFormat(Qt.TextFormat.RichText if rich
+                                     else Qt.TextFormat.PlainText)
+                bubble.setText(text)
+            except RuntimeError:
+                return bubble
+            # 对话定位圆点：重建时整列已清空，这里按新行重新登记
+            self._msg_nav_push(bubble, text)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addStretch(1)
+            row.addWidget(bubble, 0, Qt.AlignmentFlag.AlignRight)
+            self.msg_lay.insertLayout(self.msg_lay.count() - 1, row)
+            bubble._row_lay = row
+        else:
+            bubble.setMaximumWidth(self._ai_turn_max_width())
+            wrap = getattr(bubble, "_wrap", None)
+            if wrap is None:
+                # 池化时没摘到包裹层（异常路径）：退回按新控件处理，避免行结构残缺
+                self._bubble_widgets.pop()
+                return None
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(wrap, 1)
+            self.msg_lay.insertLayout(self.msg_lay.count() - 1, row)
+            bubble._row_lay = row
+        self._place_spinner_bottom()
+        self._scroll_bottom()
+        return bubble
+
+    def _detach_live_bubbles(self):
+        """把当前存活的气泡从旧控件树「摘下」暂存进复用池（主题切换重建前调用）。
+
+        为什么值得这么做：慢路径原先要把上百个聊天气泡连同其布局整棵拆掉
+        （`_clear_layout` 实测 ~0.49s）、再逐个重建（`_render_history_all` ~0.70s），
+        两者合计占 `_retheme` 总耗时的一半以上，且全是纯主线程重活。气泡本身
+        （ChatTurn/UserBubble）与主题无关的内部状态可以原样保留，只需重新换一套 QSS ——
+        因此把控件摘出来留着复用，是这一路径上性价比最高的一步。
+
+        实现要点：
+        - 先 `hide()` 再 `setParent(None)`：反之会让控件瞬间变成顶层窗口闪一下；
+        - AI 回合连同外层的 `_TurnWrap`（含重试按钮）一起摘 —— 只摘回合本体的话
+          旧包裹层仍归旧树，重建后回合会失去自报高度的包裹层；
+        - 只摘**存活**控件（`_bubble_alive`）：已 deleteLater 的摘下来也没法复用；
+        - 按「类型 + 出现顺序」分桶：重建是按行顺序渲染的，同类型气泡可以顺序复用，
+          顺序对齐即可避免错配（用户气泡与 AI 回合各自成桶，互不串位）。
+        """
+        pool = {"user": [], "ai": []}
+        for b in list(self._bubble_widgets or []):
+            if not self._bubble_alive(b):
+                continue
+            try:
+                is_user = (b.property("align") == "user")
+                # AI 回合优先摘包裹层（它还挂着重试行），没有包裹层时退回摘本体
+                w = b if is_user else (getattr(b, "_wrap", None) or b)
+                # **必须先整行摘掉**：气泡坐在一个 QHBoxLayout 行里、行又是 msg_lay 的
+                # 嵌套布局项。`setParent(None)` 只是改父子关系，布局项仍引用着这个控件 ——
+                # 随后 `_clear_layout` 沿旧布局递归时照样会把它 hide + deleteLater，
+                # 复用池里的控件就被误销毁了（表现为重建后气泡整条消失）。
+                row = getattr(b, "_row_lay", None)
+                if row is not None:
+                    try:
+                        row.removeWidget(w)
+                    except Exception:
+                        pass
+                    try:
+                        self.msg_lay.removeItem(row)
+                    except Exception:
+                        pass
+                    try:
+                        row.deleteLater()
+                    except Exception:
+                        pass
+                    b._row_lay = None
+                w.hide()
+                w.setParent(None)
+                pool["user" if is_user else "ai"].append(b)
+            except Exception:
+                continue
+        self._bubble_reuse_pool = pool
+        return len(pool["user"]) + len(pool["ai"])
+
+    def _take_pooled_bubble(self, align: str):
+        """从复用池取一个同类型气泡；取不到（池空/已销毁）返回 None 由调用方新建。"""
+        try:
+            pool = self._bubble_reuse_pool or {}
+            bucket = pool.get(align) or []
+            while bucket:
+                b = bucket.pop(0)
+                if self._bubble_alive(b):
+                    return b
+        except Exception:
+            pass
+        return None
+
+    def _discard_bubble_pool(self):
+        """丢弃复用池里未被取用的气泡（会话行数变化时的余量），避免悬挂控件堆积。"""
+        try:
+            pool = self._bubble_reuse_pool or {}
+        except Exception:
+            return
+        self._bubble_reuse_pool = []
+        for bucket in (pool or {}).values():
+            for b in bucket or []:
+                for w in (b, getattr(b, "_wrap", None)):
+                    if w is None:
+                        continue
+                    try:
+                        w.setParent(None)
+                        w.deleteLater()
+                    except Exception:
+                        pass
+
     def _font_scale(self) -> float:
         """全屏/非全屏字体始终保持原 5 号大小（14px），不随窗口缩放"""
         return 1.0
@@ -17262,6 +17923,11 @@ class AgentPanel(QDialog):
             if self._segments:
                 self._add_ai_group_bubble(self._segments)
         finally:
+            # 复用池里没被取回的气泡（会话行数比重建前少）：彻底销毁，避免悬挂控件堆积
+            try:
+                self._discard_bubble_pool()
+            except Exception:
+                self._bubble_reuse_pool = []
             viewport.setUpdatesEnabled(True)
             self._relayout_messages()   # 同步完成布局：批次插入期间几何可能停留在陈旧值
             viewport.update()
@@ -17274,6 +17940,11 @@ class AgentPanel(QDialog):
         # 修复"所有聊天被挤压、需点击气泡才恢复"的陈旧几何问题。
         QTimer.singleShot(0, self._relayout_messages)
         QTimer.singleShot(200, self._relayout_messages)
+        # P0 性能优化：批量触发每回合的 updateGeometry，让 Qt 在下一帧统一处理
+        # 布局验证（消除 setFixedHeight 引起的 n 次 heightForWidth 验证）。
+        for b in self._bubble_widgets:
+            if hasattr(b, "_update_layout_geometry"):
+                QTimer.singleShot(300, b._update_layout_geometry)
 
     def _relayout_messages(self):
         """强制消息流完成一次布局激活（自愈）：批次重建/隐藏期间容器高度或
@@ -17302,6 +17973,54 @@ class AgentPanel(QDialog):
             container = self.msg_area.widget()
             if container is not None:
                 container.updateGeometry()
+        except Exception:
+            pass
+
+    def _refresh_panel_local_qss(self):
+        """重设主面板内**构造期写死**的局部 QSS（就地换肤路径，不重建控件）。
+
+        为什么必须有这一步：快路径保留现有控件树（不 `_build_ui`），而 `build_default_ui`
+        里大量控件的样式表是把当时的色板常量直接拼进字符串的（`_QCOMBO`/`_BTN_*`/
+        `_round_icon_btn_qss`/输入框/滚动条/欢迎页…）。模块级常量变了不会自动落到这些
+        已存在的控件上 —— 只重设面板根 QSS 会留下「背景已换、按钮/下拉还是旧色」的
+        半旧界面。这里按 `build_default_ui` 的对应关系逐个补一遍。
+
+        只做「设置样式表」这类幂等操作，控件实例与布局结构一律不动。
+        """
+        def _set(w, qss):
+            try:
+                if w is not None:
+                    w.setStyleSheet(qss)
+            except RuntimeError:
+                pass          # 控件已销毁
+
+        _set(getattr(self, "title", None),
+             f"color: {ACCENT}; font-size: 16px; font-weight: 800;")
+        _set(getattr(self, "session_combo", None), _QCOMBO)
+        _set(getattr(self, "model_combo", None), _QCOMBO)
+        _set(getattr(self, "token_label", None),
+             f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
+        _set(getattr(self, "new_btn", None), _BTN_ICON)
+        _set(getattr(self, "settings_btn", None), _BTN_ICON)
+        _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
+        _set(getattr(self, "token_btn", None), _BTN_GHOST)
+        _set(getattr(self, "input", None), _input_qss())
+        _set(getattr(self, "attach_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
+        _set(getattr(self, "optimize_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
+        _set(getattr(self, "action_btn", None), _BTN_PRIMARY)
+        _set(getattr(self, "cmd_list", None), self._cmd_list_qss())
+        # 聊天滚动区（含主题自适应滚动条）：面板保留时其 QSS 也是旧的
+        _set(getattr(self, "msg_area", None),
+             "QScrollArea { background: transparent; border: none; }"
+             + _scrollbar_css(8, 4, both=True))
+        # 发送/停止按钮的实际态由状态机决定（空闲灰蓝 / 运行中主色），这里统一复位一次
+        try:
+            self._sync_action_style()
+        except Exception:
+            pass
+        # 工作流标签与欢迎页文案色
+        try:
+            self._update_wf_label()
         except Exception:
             pass
 
@@ -17411,6 +18130,13 @@ class AgentPanel(QDialog):
                          sys_meta=frame.turn_meta, done=(not live) and has_body)
         except RuntimeError:
             pass
+        except Exception:
+            # 单条回合渲染失败不得拖垮整轮重建：_render_history_all 是「逐行渲染」的
+            # 循环，异常冒泡会中断后面所有回合（表现为加载会话后对话只剩一半）。
+            # 回合内部正处于中间态（如延迟建块）时可能抛 AttributeError 等，这里兜住
+            # 并留日志——静默吞掉会让真实缺陷无从追查。
+            import logging
+            logging.getLogger(app_identity.APP_SLUG).exception("_render_ai_frame 渲染失败")
 
     def _finalize_turn(self, frame=None):
         """任务收尾：冻结当前回合的耗时徽章并填写系统时间行，随后按已结束态重渲染
@@ -18501,13 +19227,19 @@ class AgentPanel(QDialog):
         self.cmd_list.hide()
 
     def _cmd_list_qss(self, pad: str = "4px") -> str:
-        """命令候选框样式；单行时容器上内边距清零使文字上移"""
+        """命令候选框（弹出列表）样式；单行时容器上内边距清零使文字上移。
+
+        候选列表是独立不透明层：底/描边/悬停取**原始色板**（_base_color）——
+        壁纸模式下 PANEL/BORDER/HOVER 会被覆写为 transparent，弹层不填色
+        即渲染成深色（与下拉框弹出列表同一成因）。"""
+        _popup_surf = _base_color("PANEL")
+        _popup_bd = _base_color("BORDER")
         return (
-            f"QListWidget {{ background: {PANEL}; color: {ACCENT};"
-            f"border: 1px solid {BORDER}; border-radius: 8px;"
+            f"QListWidget {{ background: {_popup_surf}; color: {ACCENT};"
+            f"border: 1px solid {_popup_bd}; border-radius: 8px;"
             f"font-size: 13px; padding: {pad}; }}"
             f"QListWidget::item {{ padding: 6px 12px 6px 12px; border-radius: 6px; }}"
-            f"QListWidget::item:hover {{ background: {HOVER}; }}"
+            f"QListWidget::item:hover {{ background: {_base_color('HOVER')}; }}"
             f"QListWidget::item:selected {{ background: {ACCENT}; color: #FFFFFF; }}")
 
     def _resize_cmd_list(self):
@@ -18797,9 +19529,10 @@ class AgentPanel(QDialog):
         # 视觉能力以用户设置的多模态模型列表为准；agnes 内置视觉模型恒非纯文本
         engine.text_only = (model != agent_llm.DEFAULT_MODEL
                             and not agent_llm.is_vision_model(cfg, model))
-        # 手动指定纯文本模型时剥离图片（混配模型场景逐次判断）
+        # 手动指定纯文本模型时：用 view_image 工具将本地图片转为 data URL 注入上下文，
+        # 让纯文本模型也能"看到"图片（工具输出中的 images 会并入引擎下一轮视觉输入）。
         if engine.text_only and send_images:
-            send_images = []
+            send_images = self._convert_images_for_text_only(send_images, ai_text)
         # 主 Agent 任务启动前：把本会话 @子Agent 未同步对话回合同步进引擎上下文
         # （主 Agent 对子 Agent 讨论内容有延续感知，普通提问不再"失忆"）
         try:
@@ -18816,6 +19549,71 @@ class AgentPanel(QDialog):
             pass
         engine.start(ai_text, "zhuzhu Copilot", send_images, skills=skill_names,
                      plugins=plugin_names or [])
+
+    def _convert_images_for_text_only(self, images: list, user_text: str) -> list:
+        """纯文本模型场景：将本地图片路径转为 data URL 并附加到上下文。
+
+        当用户拖入/粘贴本地图片且当前模型为纯文本时，不调用 view_image 工具
+        （那需要额外一轮 LLM 调用），而是直接在本机读取图片、转 base64、
+        作为 data URL 注入用户消息的视觉输入中。
+
+        返回新的 images 列表（可能被清空或替换）。
+        """
+        import base64
+        from pathlib import Path
+        try:
+            from PyQt6.QtGui import QImage
+            has_qt = True
+        except ImportError:
+            has_qt = False
+
+        supported_exts = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tiff", ".tif"}
+        mime_map = {
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".bmp": "image/bmp", ".gif": "image/gif", ".webp": "image/webp",
+            ".tiff": "image/tiff", ".tif": "image/tiff",
+        }
+
+        new_images = []
+        for img_url in images:
+            # data URL（如剪贴板截图）：保持原样
+            if img_url.startswith("data:"):
+                new_images.append(img_url)
+                continue
+            # 本地文件路径：读取并转为 data URL
+            p = Path(img_url)
+            if not p.exists():
+                # 尝试相对工作目录解析
+                try:
+                    from zhuzhu_Copilot.core.agent_tools import WORKDIR
+                    wd = WORKDIR or ""
+                    if wd:
+                        p = Path(wd) / img_url if not img_url.startswith("\\") \
+                            else Path(wd) / img_url.lstrip("\\")
+                except Exception:
+                    pass
+            if not p.is_file() or p.suffix.lower() not in supported_exts:
+                continue
+            if not has_qt:
+                continue
+            try:
+                img = QImage(p)
+                if img.isNull():
+                    continue
+                # 压缩大图：最大宽度 1200px
+                if img.width() > 1200:
+                    img = img.scaledToWidth(1200, Qt.TransformationMode.SmoothTransformation)
+                import io
+                ba = QByteArray()
+                buf = QBuffer(ba)
+                buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                img.save(buf, "JPEG", 85)
+                b64 = base64.b64encode(bytes(ba)).decode("ascii")
+                new_images.append(f"data:image/jpeg;base64,{b64}")
+            except Exception:
+                pass
+
+        return new_images
 
     # ---------- @子Agent 直接调用（不经主 Agent 转发，独立 LLM 循环） ----------
     def _launch_subagent(self, name: str, task: str, images: list = None):
@@ -19296,19 +20094,22 @@ class AgentPanel(QDialog):
         # 默认焦点给"否"，防误触删除
         no_btn = box.buttons()[1]
         box.setDefaultButton(no_btn)
-        # 弹窗底与按钮：与下拉 / 菜单同取面板色。这几个变量必须**无条件**赋值 ——
+        # 弹窗底与按钮：与下拉 / 菜单同取面板色（原始色板 —— 壁纸透出模式下
+        # 容器色被覆写为 transparent，弹窗是独立窗口，透明底会渲染成纯黑，
+        # 见 _base_color）。这几个变量必须**无条件**赋值 ——
         # 之前只在唯一分支里赋值，另一分支直接 UnboundLocalError
         # （用户反馈：删除对话弹确认框时崩溃）。
-        _box_bg = PANEL
-        _btn_bg = AI_BG
-        _btn_bd = BORDER
+        _box_bg = _base_color("PANEL")
+        _btn_bg = _base_color("AI_BG")
+        _btn_bd = _base_color("BORDER")
+        _btn_hover = _base_color("HOVER")
         box.setStyleSheet(
             f"QMessageBox {{ background: {_box_bg}; }}"
             f"QMessageBox QLabel {{ color: {TEXT}; font-size: 13px; }}"
             f"QMessageBox QPushButton {{ color: {TEXT}; background: {_btn_bg};"
             f"border: 1px solid {_btn_bd}; border-radius: 8px; padding: 6px 20px;"
             "font-size: 13px; font-weight: 600; }}"
-            f"QMessageBox QPushButton:hover {{ background: {HOVER}; border-color: {ACCENT}; }}")
+            f"QMessageBox QPushButton:hover {{ background: {_btn_hover}; border-color: {ACCENT}; }}")
         box.exec()
         return box.clickedButton() is yes
 
@@ -19743,8 +20544,12 @@ class AgentPanel(QDialog):
     def _panel_root_qss() -> str:
         """面板根样式表（背景渐变 + 下拉 + 主题自适应滚动条），__init__ 与 _retheme 共用，
         保证就地重建时根背景/边框随新主题立即刷新。"""
+        # 取原始色板：本规则同时级联到面板的各个子弹窗（祖先样式表优先于
+        # 应用级），transparent 底会让子弹窗渲染成纯黑；主面板壁纸由
+        # paintEvent 绘制，不受本规则影响。
         return (f"QDialog {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-                f"stop:0 {BG}, stop:1 {BG_BOTTOM}); border-radius: 0px; }}"
+                f"stop:0 {_base_color('BG')}, stop:1 {_base_color('BG_BOTTOM')});"
+                " border-radius: 0px; }}"
                 + _QCOMBO
                 + _scrollbar_css(8, 4, both=True))
 
@@ -19755,6 +20560,27 @@ class AgentPanel(QDialog):
         重建前后同步面板几何/窗口状态/输入框/滚动位置，避免切换时面板偏移与内容跳动。
         """
         from PyQt6.QtWidgets import QApplication
+        global _APP_QSS_DEFER, _APPLIED_PALETTE_REF
+        # 0) 主题色板是否真正变化 —— **必须在销毁任何控件之前判定**。
+        #
+        # 这里判定有两层不可省的讲究：
+        # 1) 比较对象必须是「切换前实际生效的色板引用」（此刻的 _APPLIED_PALETTE_REF）。
+        #    一旦走到下面 apply_theme()，_APPLIED_PALETTE_REF 就会被改成新色板，
+        #    再拿它与 _want_palette 比就是「自己比自己」，恒等 → 永远判为"没变"。
+        # 2) 判定必须早于步骤 1~3 的控件销毁。原来这一判定被放在拆树之后，命中
+        #    「色板未变」分支就直接 return —— 此时旧 UI 已 _clear_layout + sip.delete，
+        #    self.action_btn / token_label 等全是悬空引用，随后 _refresh_meta 轮询一碰
+        #    （toolTip() / text()）就抛「wrapped C/C++ object has been deleted」。
+        #    这正是「切换主题报错」的根因：判定用错引用 → 恒走快路径 → 树被拆却不重建。
+        _old_palette_ref = _APPLIED_PALETTE_REF
+        _want_palette = _THEMES.get(_resolve_theme())
+        if _want_palette is None or _old_palette_ref is None:
+            # 取不到色板（异常/首次加载）时按「主题已变」处理：宁可多重建一次，
+            # 也不能走快路径 —— 快路径的前提是「现有控件树仍然完整可用」。
+            _did_theme_change = True
+        else:
+            _did_theme_change = (_want_palette is not _old_palette_ref)
+
         # 0) 备份面板几何/窗口状态与输入框/滚动状态（重建后恢复，避免偏移与丢失）
         geo = self.geometry()
         win_state = self.windowState()
@@ -19781,29 +20607,121 @@ class AgentPanel(QDialog):
         except Exception:
             pass
 
-        # 立即按当前主题设置背景，确保重建过程中面板始终有底色、不出现黑屏闪烁
-        try:
-            self.setStyleSheet(
-                f"QDialog {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-                f"stop:0 {BG}, stop:1 {BG_BOTTOM}); border-radius: 18px; }}")
-        except Exception:
-            pass
-
-        # 更新模块级颜色常量与派生样式常量（_QCOMBO/_BTN_*/_scrollbar_css 等）
-        # 重建期间挂起应用级全局 QSS 的全量重算：旧控件树即将销毁，对其逐个 polish 是
-        # 纯浪费（反复 app.setStyleSheet 会长时间阻塞主线程，导致"切换后主面板无响应"）。
-        # 重建完成后再统一应用一次（见步骤 11）。
+        # 更新模块级颜色常量与派生样式常量（_QCOMBO/_BTN_*/_scrollbar_css 等）。
+        # 挂起应用级全局 QSS 的全量重算：旧控件树即将销毁，对其逐个 polish 是纯浪费
+        # （反复 app.setStyleSheet 会长时间阻塞主线程，导致"切换后主面板无响应"）。
         global _APP_QSS_DEFER
         _APP_QSS_DEFER = True
         try:
-            new_theme = apply_theme()
+            apply_theme()
         finally:
             _APP_QSS_DEFER = False
 
+        # 0.6) 快路径：**色板未变**（同一主题下的透明态翻转 / 壁纸参数微调 / 重复调用）
+        #      时保留现有控件树，只刷新根样式表与派生样式 —— 不拆树、不重建气泡。
+        #
+        # 为什么能省这么多：慢路径要 _clear_layout 拆掉上百个聊天气泡、再 _build_ui +
+        # _render_history_all 全量重建（实测 1.5~2.5s）。而色板未变时气泡颜色本就不需要
+        # 改变，唯一变的是「容器表面是否透明」（_SURFACE_TRANSPARENT），那只是模块级
+        # 颜色常量 → 现有控件需要重新套一遍 QSS 而已。
+        #
+        # 注意顺序：本分支必须**在步骤 1 的控件销毁之前**返回，否则又会留下悬空引用
+        # （见上方 _did_theme_change 的说明，那正是崩溃根因）。
+        if not _did_theme_change:
+            # 1) 先重算表面色并落地模块级常量（透明态翻转时 BG/PANEL/BORDER 等被改写）。
+            #    **必须让派生 QSS 真正重建**：`_apply_colors` 在「色板字典与上次相同」时
+            #    会跳过 `_BTN_*`/`_QCOMBO`/滚动条等派生字符串的重生成，而壁纸透明态翻转
+            #    改变的正是这些派生样式所引用的 BG/PANEL/BORDER —— 不重建就会残留实色底。
+            #    作废 `_LAST_PALETTE` 这一步已收进 refresh_surface_mode 内部（唯一真相，
+            #    避免每个调用点都要记得先作废）。
+            try:
+                refresh_surface_mode()
+            except Exception:
+                pass
+            # 2) 清空段渲染缓存：气泡 HTML **内联主题色**（背景/字色/描边都写进了富文本），
+            #    表面色一变，旧 HTML 就是旧色 —— 必须让缓存整体失效后按新色重生成。
+            #    注意 `_apply_colors` 在「色板字典相同」时不会自增 _THEME_VERSION（透明态
+            #    翻转正属此类），因此这里不能只靠版本号，必须显式清缓存。
+            try:
+                self._seg_cache.clear()
+                for _st in self._sess.values():
+                    _segs = (list(_st.get("segments") or [])
+                             + list(_st.get("history_segments") or []))
+                    for _r in (_st.get("rows") or []):
+                        _segs += list(_r.get("segs") or [])
+                    for _ss in (_st.get("sub_segs") or {}).values():
+                        if isinstance(_ss, dict):
+                            _segs.append(_ss)
+                    for _seg in _segs:
+                        if isinstance(_seg, dict):
+                            _seg.pop("_rd_cache", None)
+            except Exception:
+                pass
+            # 3) 逐气泡原地换肤 + 按新色重灌 HTML（**不重建控件、不重排整树**）
+            style = None
+            try:
+                style = self._chat_style()
+            except Exception:
+                style = None
+            for b in list(self._bubble_widgets):
+                if not self._bubble_alive(b):
+                    continue
+                try:
+                    fn = getattr(b, "restyle", None)
+                    if style is not None and callable(fn):
+                        fn(style)
+                except RuntimeError:
+                    continue
+                # 回合内的富文本按新色重渲染（签名含版本/内容，未变则不重排）
+                try:
+                    segs = self._bubble_segs.get(id(b))
+                    if isinstance(b, chat_bubbles.ChatTurn) and segs is not None:
+                        self._render_ai_frame(b, segs)
+                except RuntimeError:
+                    continue
+            # 4) 面板自身的结构性样式（背景渐变 / 下拉 / 滚动条 / 输入框局部 QSS）
+            try:
+                _set_qss_once(self, self._panel_root_qss())
+            except Exception:
+                pass
+            self._refresh_panel_local_qss()
+            self._apply_side_scrollbars()
+            try:
+                self._sync_model_combo()
+                self._update_wf_label()
+                self._apply_reserve()
+                self._refresh_focus_glow()
+                self._sync_task_ui()
+            except Exception:
+                pass
+            # 5) 壁纸层与侧栏自绘窗口重绘（表面色/描边色都变了）
+            try:
+                for _nm in ("todos_win", "git_win", "wt_win", "code_win"):
+                    _w = getattr(self, _nm, None)
+                    _fn = getattr(_w, "apply_surface_theme", None)
+                    if callable(_fn):
+                        _fn()
+            except Exception:
+                pass
+            try:
+                self.update()
+                self._refresh_side_windows()
+                self._relayout_messages()
+            except Exception:
+                pass
+            self._agent_theme_pending = False
+            return
+
+        # 慢路径开始拆树前，先把**最终**根样式表落地：拆树/重建期间面板始终有底色，
+        # 不出现黑屏闪烁。这里不再先套一份过渡色再覆盖 —— Qt 每 setStyleSheet 一次都会对
+        # 该控件子树整树 repolish（面板级实测 65~135ms），被随后覆盖的过渡色等于白付一次；
+        # 配合 _set_qss_once，整条切换路径上只付一次。快路径不需要（不拆树，无闪烁风险）。
+        _set_qss_once(self, self._panel_root_qss())
+
         # 1) 记录旧停靠子窗口位置（重建后原位恢复，避免侧栏偏移/重叠），随后关闭销毁。
-        #    注意：_build_ui 每次都会重建 4 个侧栏窗口并重绑属性，旧窗口
-        #    必须 deleteLater 销毁，否则会随每次切换累积泄漏（控件树越滚越大，应用级
-        #    样式重算随之越来越慢）；并立即 flush，避免旧窗口在重建期间被全树重算波及。
+        #    注意：_build_ui 每次都会重建 4 个侧栏窗口并重绑属性，旧窗口必须 deleteLater
+        #    销毁，否则会随每次切换累积泄漏（控件树越滚越大，应用级样式重算随之越来越慢）；
+        #    并立即 flush，避免旧窗口在重建期间被全树重算波及。
         side_pos = {}
         for name in ("todos_win", "git_win", "wt_win", "code_win"):
             w = getattr(self, name, None)
@@ -19816,8 +20734,9 @@ class AgentPanel(QDialog):
                 except Exception:
                     pass
         # 扩展面板随主题重建一并销毁（工厂可能依赖主题色常量），
-        # _build_ui → _ensure_ext_panels 随后按注册表重建
-        for w in (getattr(self, "_ext_panels", None) or {}).values():
+        # _build_ui → _ensure_ext_panels(rescan=False) 随后按**已有注册表**重建控件
+        # （注册表由启动扫描与热更新定时器维护，与主题无关，无需再扫盘发现）。
+        for _name, w in list((getattr(self, "_ext_panels", None) or {}).items()):
             if w is None:
                 continue
             try:
@@ -19836,6 +20755,12 @@ class AgentPanel(QDialog):
         sid = self._session_id
         pending_files = list(getattr(self, "_pending_files", []) or [])
         pending_images = list(getattr(self, "_pending_images", []) or [])
+        # 2.1) 把存活的气泡摘进复用池（连同 AI 回合的包裹层）：稍后 _render_history_all
+        #      会优先取回它们而不是重建 —— 省掉「拆掉上百个气泡 + 逐个重建」这一大头。
+        try:
+            self._detach_live_bubbles()
+        except Exception:
+            self._bubble_reuse_pool = {}
 
         # 3) 移除旧布局：自定义 UI/UX 包可能在 self 上额外套了一层外层布局（如
         # titlebar+root 结构），仅删 _root_lay 会导致重建时 QVBoxLayout(self) 抛
@@ -19890,7 +20815,6 @@ class AgentPanel(QDialog):
         except Exception:
             pass
         _apply_global_dialog_qss()
-        # _build_ui → apply_package_theme 内部会再触发 apply_theme/apply_theme_custom
         # （应用级全局 QSS）：重建中途对半成品控件树重算样式同样昂贵 → 一并挂起，
         # 其过渡色板变化与 4.0 已应用内容一致时将被自动去重。_APP_QSS_DEFER 已声明 global。
         _APP_QSS_DEFER = True
@@ -19917,7 +20841,7 @@ class AgentPanel(QDialog):
                             pass
             except Exception:
                 pass
-            self._build_ui()
+            self._build_ui(rescan_ext=False)   # 主题切换：只重建控件，不重复扫盘发现扩展面板
         finally:
             _APP_QSS_DEFER = False
         # 重建后清理过渡型临时控件引用：旧转圈动画行/压缩提示行布局已随旧消息流
@@ -19928,7 +20852,8 @@ class AgentPanel(QDialog):
         self._spinner_lbl = None
         self._spinner_row = None
         self._compact_row = None
-        self.setStyleSheet(self._panel_root_qss())
+        # 根样式表已在入口（apply_theme 之后）按最终色落地；此处仅在内容确实变化时补设
+        _set_qss_once(self, self._panel_root_qss())
         # 4.1) 应用级 QSS 已在 4.0 落地最终内容（重建期挂起的只是过渡色板，
         #     其终态与 4.0 一致）→ 清除挂起标记，避免后续调用误判重复重算。
         _APP_QSS_CACHE["pending"] = False

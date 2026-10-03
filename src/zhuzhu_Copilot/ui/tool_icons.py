@@ -386,6 +386,7 @@ TOOL_ICON_SPEC = {
     "search_large": ("drive", "search"),
     "explore_project": ("folder", "eye"),
     "read_file": ("file", "eye"),
+    "view_image": ("image", "eye"),
     "write_file": ("file", "out"),
     "edit_file": ("file", "pencil"),
     "search_replace": ("file", "swap"),

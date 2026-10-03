@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PyQt6.QtCore import QRect, QRectF, QSize, Qt
-from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPixmap
 
 from zhuzhu_Copilot import app_identity
 
@@ -250,7 +250,16 @@ def backgrounds_dir() -> Path:
 
 
 def _source_pixmap(path: str) -> Optional[QPixmap]:
-    """按 (路径, mtime) 缓存解码结果，避免每次缩放窗口都重新解码大图。"""
+    """按 (路径, mtime) 缓存解码结果，避免每次缩放窗口都重新解码大图。
+
+    QPixmap 只能在存在 QGuiApplication 的前提下创建：模块导入期（agent_panel
+    顶层 apply_theme → _apply_surface_mode → active() 探测壁纸可用性）尚无应用
+    实例，直接创建会触发 Qt 致命错误（进程级崩溃 0xC0000409；本机实测：
+    pytest 收集阶段导入 agent_panel 时整进程猝死）。无实例时返回 None（视为
+    「暂不可用」），控件构建时的 refresh_surface_mode 会在有实例后重算。
+    """
+    if QGuiApplication.instance() is None:
+        return None
     try:
         mtime = Path(path).stat().st_mtime_ns
     except OSError:
@@ -277,6 +286,9 @@ def active() -> bool:
 
     文件存在 ≠ 能显示：Qt 不认的格式/损坏文件若只判存在，会让窗口根底
     转透明却没有壁纸可画 → 界面变成黑块。必须以能加载出位图为准。
+
+    无 QGuiApplication（模块导入早期 / 纯脚本环境）时恒为 False：此时根本
+    无法创建 QPixmap（Qt 致命报错会整进程崩溃），也不可能有窗口可绘制。
     """
     path = load().bg_image or ""
     if not path:
@@ -289,6 +301,11 @@ def import_background(source, apply: bool = True) -> tuple:
 
     为什么必须复制而不是直接引用原路径：用户随手选的图可能在临时目录、
     下载目录或被清理的相册里，直接引用会导致「重启后背景丢失」。
+
+    性能要点：4K 图单次解码实测 ~95ms（`_source_pixmap`），而设置背景这条链路上
+    「校验源图 → 收编后 active()/绘制」本来会各解一次（共 2~3 次）。这里复用
+    `_source_pixmap` 的解码结果：先解一次做校验，收编后**把这张已解码的位图挂到新
+    路径的缓存键上**，后续 `active()` 与首帧绘制直接命中缓存 —— 一次设置只解一次。
     """
     src = Path(str(source or "")).expanduser()
     if not src.is_file():
@@ -297,7 +314,8 @@ def import_background(source, apply: bool = True) -> tuple:
     if ext not in _BACKGROUND_EXTS:
         return (False, f"不支持的图片格式 {ext or '(无扩展名)'}，"
                        f"可用：{'、'.join(_BACKGROUND_EXTS)}", "")
-    if QPixmap(str(src)).isNull():
+    decoded = _source_pixmap(str(src))
+    if decoded is None:
         return (False, f"无法识别的图片：{src.name}（Qt 不支持该格式或文件已损坏）", "")
     try:
         dest_dir = backgrounds_dir()
@@ -312,7 +330,12 @@ def import_background(source, apply: bool = True) -> tuple:
                     old.unlink()
                 except OSError:
                     pass
-        _clear_caches()
+        _clear_caches()          # 换图必须丢弃旧图的模糊/适配缓存
+        # 预热解码缓存：把上面那次解码结果挂到收编后的路径键上（键格式见 _source_pixmap）
+        try:
+            _source_cache[(str(dest), Path(dest).stat().st_mtime_ns)] = decoded
+        except OSError:
+            pass
         if apply:
             set_fields(bg_image=str(dest))
         return (True, f"背景图已设置：{dest.name}", str(dest))
@@ -465,6 +488,12 @@ def _gaussian_blur(src: QPixmap, radius: float) -> QPixmap:
     这圈边不能留透明：模糊核会取到画布外的像素，留透明就会把透明混进可见区 ——
     实测半径 16 时可见区中心 alpha 被压到 243、四角只剩 68，壁纸整体发暗并与下层混色。
     任何异常都返回原图：背景糊不出来只是不好看，绝不能让窗口画不出来。
+
+    **必须在原尺寸上按原半径模糊**：曾在模糊前把画布降采样到短边 512、模糊后再用
+    Fast 放大回原尺寸（想省「像素数 × 半径」的成本）。降采样把半径也等比缩小了，
+    等效模糊半径被压掉一大截 —— 实测同一半径下画面明显更「糊而脏」（边缘发虚、
+    细节被抹成块状），用户反馈质感太差。降采样省下的耗时换来的是可见的画质损失，
+    不值得，故回退为原尺寸直糊：半径语义与观感跟滑块刻度严格一致。
     """
     from PyQt6.QtWidgets import QGraphicsBlurEffect, QGraphicsScene
     margin = _blur_margin(radius)

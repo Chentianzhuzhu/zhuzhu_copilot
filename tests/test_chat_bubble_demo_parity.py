@@ -748,7 +748,11 @@ def test_turn_height_covers_inner_layout_minimum():
 
 
 def test_blocks_use_fixed_height_not_only_minimum():
-    """块高必须同时钉住上下界（固定高度），否则布局会弹性分配、槽位与块高对不上。"""
+    """块高必须同时钉住上下界（固定高度），否则布局会弹性分配、槽位与块高对不上。
+
+    隐藏过程块走懒建（done 回合的隐藏块由空闲切片补建）：未建/未显示时无几何可验，
+    跳过即可 —— 本用例只对**可见块**钉几何契约。
+    """
     host = Host(760, 4000)
     turn = _plain_turn(host)
     host.show()
@@ -756,7 +760,7 @@ def test_blocks_use_fixed_height_not_only_minimum():
     app.processEvents()
     for ref in turn._items:
         w = ref.widget
-        if w.isHidden():
+        if w is None or w.isHidden():
             continue
         assert w.minimumHeight() == w.maximumHeight(), (
             f"{ref.kind} 未钉成固定高度：min={w.minimumHeight()} max={w.maximumHeight()}")
