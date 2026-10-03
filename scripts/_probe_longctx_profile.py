@@ -1,16 +1,15 @@
 """长会话渲染路径 cProfile：定位 _render_history_all 的数秒耗时构成。"""
+import sys
+import os
+import pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from zhuzhu_Copilot import app_identity
 import cProfile
 import io
 import json
-import os
-import pathlib
 import pstats
-import sys
 import time
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, "src")
 
 from PyQt6.QtWidgets import QApplication
 

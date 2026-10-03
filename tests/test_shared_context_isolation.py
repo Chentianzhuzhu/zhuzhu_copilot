@@ -24,6 +24,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from zhuzhu_Copilot.core import (agent_context, agent_subagent, agent_team_run)
 
+# QApplication 必须保留模块级引用：「用完即弃」会让 C++ 应用对象在无引用时
+# 立即销毁，随后任何 QWidget 创建都会触发 Qt 致命错误（0xC0000409 进程崩溃）。
+_APP = None
+
 
 def _reset():
     agent_context.reset_all()
@@ -161,7 +165,8 @@ def test_bind_shared_context_sets_conversation():
 # ---------- 3. 引擎任务线程 ----------
 def _make_engine(monkeypatch, conversation="", text_only=True):
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
+    global _APP
+    _APP = QApplication.instance() or QApplication([])   # 保留引用（见文件头注释）
     from zhuzhu_Copilot.core import agent_engine
 
     class _EngineLLM:

@@ -19,6 +19,10 @@ from zhuzhu_Copilot.core import agent_tools, agent_workflow
 # 棋类措辞（"棋盘" 不列入：PPT 动画名 checkerboard 的中文名合法使用该词）
 BANNED_CHESS_WORDS = ("围棋", "五子棋", "棋牌", "对弈", "落子", "棋面")
 
+# QApplication 必须保留模块级引用：「用完即弃」会让 C++ 应用对象在无引用时
+# 立即销毁，随后任何 QWidget 创建都会触发 Qt 致命错误（0xC0000409 进程崩溃）。
+_APP = None
+
 
 def _tmp_root(tmp_path, monkeypatch):
     root = tmp_path / "workflows"
@@ -74,7 +78,8 @@ def test_engine_drops_stale_workflow_binding(tmp_path, monkeypatch):
 
     # 行为验证：真实构造引擎（无 PyQt QApplication 依赖）后调用 _system_prompt
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
+    global _APP
+    _APP = QApplication.instance() or QApplication([])   # 保留引用（见文件头注释）
 
     class _LLM:
         model = "test-model"

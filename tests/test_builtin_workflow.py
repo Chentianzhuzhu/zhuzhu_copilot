@@ -27,6 +27,10 @@ EXPECTED_AGENTS = {
     "menxia", "shangshu", "ministry_personnel", "ministry_revenue",
     "ministry_rites", "ministry_war", "ministry_justice", "ministry_works",
 }
+# QApplication 必须保留模块级引用：`QApplication.instance() or QApplication([])`
+# 这种「用完即弃」写法在无引用时会让 C++ 应用对象立即销毁，随后创建 QComboBox
+# 等 QWidget 触发 Qt 致命错误（进程级崩溃 0xC0000409；单跑本文件必现）。
+_APP = None
 
 
 def _tmp_root(tmp_path, monkeypatch):
@@ -217,7 +221,8 @@ def test_ui_preset_combo_lists_builtin(tmp_path, monkeypatch):
     _tmp_root(tmp_path, monkeypatch)
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication, QComboBox
-    QApplication.instance() or QApplication([])
+    global _APP
+    _APP = QApplication.instance() or QApplication([])   # 保留引用（见文件头注释）
     from zhuzhu_Copilot.ui import agent_panel
 
     dlg = agent_panel._AgentSettingsDialog.__new__(agent_panel._AgentSettingsDialog)

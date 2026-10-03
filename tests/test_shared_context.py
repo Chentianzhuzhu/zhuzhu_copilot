@@ -18,6 +18,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from zhuzhu_Copilot.core import (agent_context, agent_subagent, agent_tools,
                                   agent_team_run)
 
+# QApplication 必须保留模块级引用：「用完即弃」（不赋值）会让 C++ 应用对象
+# 在无引用时立即销毁，随后任何 QWidget 创建都会触发 Qt 致命错误
+# （进程级崩溃 0xC0000409）。见 tests/test_builtin_workflow.py 同注。
+_APP = None
+
 
 def _clean():
     agent_context.reset_all()
@@ -239,7 +244,8 @@ def test_run_agent_llm_shared_guard_for_unknown_workflow(monkeypatch):
 # ---------- 6. 引擎层透传 ----------
 def _make_engine(monkeypatch):
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
+    global _APP
+    _APP = QApplication.instance() or QApplication([])   # 保留引用（见文件头注释）
     from zhuzhu_Copilot.core import agent_engine
 
     class _EngineLLM:

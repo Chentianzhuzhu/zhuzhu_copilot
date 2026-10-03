@@ -63,6 +63,24 @@ LIGHT_PALETTE = {
 # 当前激活色板（set_palette() 就地更新内容，引用方读取即时生效）
 PALETTE = dict(DARK_PALETTE)
 
+# 全局滚动条滑块不透明度：淡灰极简，滑块压到 30% 半透明（悬停提亮到 55% 保持可辨）
+_SCROLLBAR_OPACITY = 0.30
+_SCROLLBAR_HOVER_OPACITY = 0.55
+
+
+def _scrollbar_handle() -> str:
+    """滚动条滑块色：边框色压到 30% 不透明度（全局统一淡灰）。"""
+    c = QColor(PALETTE["border"])
+    c.setAlphaF(_SCROLLBAR_OPACITY)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
+
+
+def _scrollbar_handle_hover() -> str:
+    """滚动条滑块悬停色：提亮到 55%，保持可辨又不喧宾夺主。"""
+    c = QColor(PALETTE["text_secondary"])
+    c.setAlphaF(_SCROLLBAR_HOVER_OPACITY)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
+
 
 def _build_global_qss() -> str:
     """按当前 PALETTE 生成全局 QSS（主窗口基础样式，浅色/深色随主题重建）"""
@@ -227,14 +245,14 @@ QScrollBar:vertical {{
 }}
 
 QScrollBar::handle:vertical {{
-    background: {PALETTE['border']};
+    background: {_scrollbar_handle()};
     border-radius: 4px;
     min-height: 40px;
     margin: 0 2px;
 }}
 
 QScrollBar::handle:vertical:hover {{
-    background: {PALETTE['text_secondary']};
+    background: {_scrollbar_handle_hover()};
 }}
 
 QScrollBar::sub-page:vertical, QScrollBar::add-page:vertical {{
@@ -254,14 +272,14 @@ QScrollBar:horizontal {{
 }}
 
 QScrollBar::handle:horizontal {{
-    background: {PALETTE['border']};
+    background: {_scrollbar_handle()};
     border-radius: 4px;
     min-width: 40px;
     margin: 2px 0;
 }}
 
 QScrollBar::handle:horizontal:hover {{
-    background: {PALETTE['text_secondary']};
+    background: {_scrollbar_handle_hover()};
 }}
 
 QScrollBar::sub-page:horizontal, QScrollBar::add-page:horizontal {{

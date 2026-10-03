@@ -186,7 +186,9 @@ def _build_card(parent: QWidget, title: str, lines, *, accent: bool = False) -> 
     """
     _m = _ap()
     TEXT = _m.TEXT
-    CARD = _m.PANEL if not accent else _m.CARD
+    # 取原始色板（_m._base_color）：壁纸透出模式会把容器色覆写为 transparent，
+    # 而本向导是独立不透明窗口 → 透明底渲染成纯黑（见 agent_panel._base_color）。
+    CARD = _m._base_color("PANEL") if not accent else _m._base_color("CARD")
     card = QWidget(parent)
     card.setStyleSheet(f"background: {CARD}; border-radius: 12px;")
     lay = QVBoxLayout(card)
@@ -223,8 +225,9 @@ class OnboardingWizard(QDialog):
         _m = _ap()
         self._TEXT = _m.TEXT
         self._DIM = _m.TEXT_DIM
-        self._PANEL = _m.PANEL
-        self._BORDER = _m.BORDER
+        # 表面色取原始色板：本向导是独立不透明窗口（见 agent_panel._base_color）
+        self._PANEL = _m._base_color("PANEL")
+        self._BORDER = _m._base_color("BORDER")
         self._ACCENT = _m.ACCENT
         self._ACCENT_HOVER = _m.ACCENT_HOVER
 
