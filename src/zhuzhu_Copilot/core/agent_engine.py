@@ -1290,10 +1290,14 @@ class AgentEngine:
                     if srv not in allowed:
                         return {"text": f"[工作流隔离] MCP 服务器「{srv}」未绑定当前工作流，已拒绝调用。"
                                         "可在设置-MCP服务器 中为该服务器指定工作流。", "images": []}
-                text = _call_with_stop(self._with_edit_bucket(
+                text, imgs = _call_with_stop(self._with_edit_bucket(
                     lambda: self.mcp.call_tool(name, args)),
                     self._stop, timeout=30.0)
-                return {"text": text, "images": []}
+                if imgs and self.text_only:
+                    # 纯文本模型：图片内容项会被接口拒绝，丢弃图片并提示改用文本感知
+                    imgs = []
+                    text += "\n（当前模型不支持图片输入，截图已省略）"
+                return {"text": text, "images": imgs}
             except TimeoutError:
                 return {"text": f"[MCP 超时] 工具 {name} 无响应，已放弃（30 秒）", "images": []}
             except Exception as e:

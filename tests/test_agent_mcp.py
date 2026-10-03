@@ -86,9 +86,9 @@ def test_mcp_manager_aggregates_and_dedup(fake_transports):
     assert mgr.server_for_tool("read") == "srv_a"
     assert mgr.server_for_tool("srv_b_read") == "srv_b"
     assert mgr.server_for_tool("write") == "srv_b"
-    # 调用按原始名路由到对应服务器
-    assert mgr.call_tool("read", {}) == "ok:read"
-    assert mgr.call_tool("srv_b_read", {}) == "ok:read"
+    # 调用按原始名路由到对应服务器（返回 (文本, 图片dataURL列表)）
+    assert mgr.call_tool("read", {}) == ("ok:read", [])
+    assert mgr.call_tool("srv_b_read", {}) == ("ok:read", [])
     mgr.close_all()
 
 
@@ -121,8 +121,47 @@ def test_mcp_tool_error_marked(fake_transports):
     }
     mgr = McpManager()
     mgr.connect_all([{"name": "srv", "type": "sse", "url": "http://x/sse"}])
-    text = mgr.call_tool("boom", {})
+    text, images = mgr.call_tool("boom", {})
     assert text.startswith("[MCP 工具错误]")
+    assert images == []
+    mgr.close_all()
+
+
+def test_mcp_tool_image_content_becomes_data_url(fake_transports):
+    """MCP image 内容项 → data URL（供视觉模型查看，如电脑操控插件的屏幕截图）"""
+    fake_transports.tool_sets = [
+        [{"name": "shot", "description": "s", "inputSchema": {"type": "object",
+                                                               "properties": {}}}],
+    ]
+    fake_transports.results = {
+        "shot": {"content": [
+            {"type": "text", "text": "已截屏"},
+            {"type": "image", "data": "QUJD", "mimeType": "image/png"},
+        ]},
+    }
+    mgr = McpManager()
+    mgr.connect_all([{"name": "srv", "type": "sse", "url": "http://x/sse"}])
+    text, images = mgr.call_tool("shot", {})
+    assert text == "已截屏"
+    assert images == ["data:image/png;base64,QUJD"]
+    mgr.close_all()
+
+
+def test_mcp_tool_image_only_result(fake_transports):
+    """只有图片无文本时给出占位文本，避免空文本进上下文"""
+    fake_transports.tool_sets = [
+        [{"name": "shot", "description": "s", "inputSchema": {"type": "object",
+                                                               "properties": {}}}],
+    ]
+    fake_transports.results = {
+        "shot": {"content": [{"type": "image", "data": "QUJD",
+                              "mimeType": "image/jpeg"}]},
+    }
+    mgr = McpManager()
+    mgr.connect_all([{"name": "srv", "type": "sse", "url": "http://x/sse"}])
+    text, images = mgr.call_tool("shot", {})
+    assert text == "(图片结果)"
+    assert images == ["data:image/jpeg;base64,QUJD"]
     mgr.close_all()
 
 

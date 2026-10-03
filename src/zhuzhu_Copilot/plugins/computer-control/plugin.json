@@ -1,0 +1,9 @@
+{
+  "name": "computer-control",
+  "kind": "combined",
+  "enabled": true,
+  "description": "电脑操控插件：AI 直接操控 Windows 桌面（触控优先的点击/长按/滑动/拖拽/选择、键盘输入、复制粘贴、虚拟桌面容器），本地 Web UI 实时可视化操控过程，支持真人鼠标打断与一键接管",
+  "created_at": "2026-10-04 00:00:00",
+  "mcp_name": "computer-control-mcp",
+  "skill_name": "computer-control"
+}

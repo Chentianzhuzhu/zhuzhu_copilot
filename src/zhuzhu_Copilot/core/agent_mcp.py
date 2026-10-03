@@ -231,17 +231,26 @@ class McpClient:
             })
         return out
 
-    def call_tool(self, name: str, arguments: dict) -> str:
+    def call_tool(self, name: str, arguments: dict) -> tuple:
+        """调用工具，返回 (文本结果, 图片 data URL 列表)。
+
+        MCP 结果的 content 支持 text 与 image 两类内容项（image 为 base64 + mimeType）。
+        图片项转成 data URL 交给引擎喂视觉模型（如电脑操控插件的屏幕截图）——
+        丢弃图片会让「需要看屏幕」的 MCP 工具退化成盲操作。
+        """
         raw = self._call_map.get(name, name)
         result = self._transport.request("tools/call", {"name": raw, "arguments": arguments})
-        texts = []
+        texts, images = [], []
         for item in result.get("content", []):
             if item.get("type") == "text":
                 texts.append(item.get("text", ""))
-        text = "\n".join(texts) or "(空结果)"
+            elif item.get("type") == "image" and item.get("data"):
+                mime = str(item.get("mimeType") or "image/png")
+                images.append(f"data:{mime};base64,{item['data']}")
+        text = "\n".join(texts) or ("(图片结果)" if images else "(空结果)")
         if result.get("isError"):
             text = f"[MCP 工具错误] {text}"
-        return text
+        return text, images
 
     def close(self):
         if self._transport:
@@ -374,7 +383,8 @@ class McpManager:
         """工具所属服务器名（空 = 未知/非 MCP 工具）"""
         return self._name_to_server.get(name, "")
 
-    def call_tool(self, name: str, arguments: dict) -> str:
+    def call_tool(self, name: str, arguments: dict) -> tuple:
+        """调用工具，返回 (文本结果, 图片 data URL 列表)（与 McpClient.call_tool 一致）"""
         server = self._name_to_server.get(name)
         if not server:
             raise McpError(f"未知 MCP 工具: {name}")
