@@ -254,7 +254,7 @@ def main() -> int:
         print("[5/5] 健康检查")
         checks = [
             ("/", 200), ("/gallery", 200), ("/download", 200), ("/faq", 200), ("/about", 200),
-            ("/robots.txt", 200), ("/sitemap.xml", 200), ("/site.webmanifest", 200),
+            ("/sitemap", 200), ("/robots.txt", 200), ("/sitemap.xml", 200), ("/site.webmanifest", 200),
             ("/favicon.svg", 200), ("/css/site.css", 200), ("/js/site.js", 200),
             ("/api/site", 200), ("/api/version/latest", 200), ("/uploads/", 404),
             # 后台：/admin 是内部转发，/admin/ 也要能进，资源必须可取
