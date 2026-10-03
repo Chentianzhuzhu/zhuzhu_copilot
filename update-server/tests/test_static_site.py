@@ -357,6 +357,73 @@ class TestSeoAssets(unittest.TestCase):
         self.assertIn("WinAppMigrator", aliases.group(1))
 
 
+class TestSiteTimestamps(unittest.TestCase):
+    """站点公开时间戳：内容 / 版本 / 媒体库三个口径必须同时出现在页脚与 /api/site。
+
+    三个口径分散在三张表 / 目录里，最容易被「只改一处」破坏 ——
+    例如页面加了一项而 API 没加，或媒体库把安装包也算成媒体。这里逐条钉住。
+    """
+
+    ATTRS = ("stampContentUpdated", "stampLatestRelease", "stampMediaUpdated")
+
+    def test_site_api_exposes_timestamps(self) -> None:
+        controller = read(JAVA / "web/SiteController.java")
+        self.assertIn('out.put("timestamps"', controller, "/api/site 未暴露站点时间戳")
+        self.assertIn("SiteTimestampService", controller, "接口未接入统一时间戳服务")
+
+    def test_timestamps_come_from_single_source(self) -> None:
+        service = read(JAVA / "service/SiteTimestampService.java")
+        for key in ("siteContentUpdatedAt", "latestReleaseDate", "mediaLibraryUpdatedAt"):
+            self.assertIn(f'"{key}"', service, f"时间戳快照缺少对外字段 {key}")
+        # 三个口径都必须来自既有服务，而不是在时间戳服务里各自重算一遍
+        for dep in ("contentService.updatedAt()", "updateService.latest()",
+                    "storageService.latestMediaUpdate()"):
+            self.assertIn(dep, service, f"时间戳服务未接入 {dep}")
+
+    def test_footer_shows_three_stamps(self) -> None:
+        blocks = read(TEMPLATES / "fragments/blocks.html")
+        # 标签刻意不含「最新版本」——下载页区块标题同名，重复会被渲染用例判为标题重复
+        for label in ("站点内容更新", "版本发布日期", "媒体库更新"):
+            self.assertIn(label, blocks, f"页脚缺少时间戳「{label}」")
+        for attr in self.ATTRS:
+            self.assertIn(attr, blocks, f"页脚未引用 {attr}")
+
+    def test_page_controller_supplies_stamps(self) -> None:
+        controller = read(JAVA / "web/SitePageController.java")
+        for attr in self.ATTRS:
+            self.assertIn(f'model.addAttribute("{attr}"', controller,
+                          f"页面模型未下发 {attr}，页脚会整条消失")
+
+    def test_media_library_excludes_packages(self) -> None:
+        """媒体库更新时间只统计对外展示的图片与视频；安装包不是媒体。"""
+        storage = read(JAVA / "service/StorageService.java")
+        self.assertRegex(storage, r"MEDIA_KINDS\s*=\s*List\.of\(Kind\.IMAGE,\s*Kind\.VIDEO\)",
+                         "媒体分类必须显式限定为图片 + 视频")
+
+    def test_stamps_reuse_footer_palette(self) -> None:
+        """时间戳样式必须复用页脚既有排版语言，不引入新的色值。"""
+        css = read(STATIC / "css/site.css")
+        self.assertIn(".footer-stamps", css, "site.css 未定义 .footer-stamps")
+
+    def test_stamp_labels_avoid_section_title_conflict(self) -> None:
+        """页脚标签不得包含任何区块标题。
+
+        渲染用例要求「同一标题在正文中只出现一次」；页脚标签一旦包含区块标题
+        （例如「最新版本」+「发布」），计数就会 +1 而被判为重复。
+        """
+        content = read(JAVA / "service/ContentService.java")
+        titles = set(re.findall(r'section\("[^"]*",\s*"([^"]+)"', content))
+        self.assertTrue(titles, "未解析到区块标题（正则可能已失效）")
+
+        blocks = read(TEMPLATES / "fragments/blocks.html")
+        labels = re.findall(r'class="stamp-label">([^<]+)<', blocks)
+        self.assertEqual(len(labels), 3, f"应恰好有三个时间戳标签，实际：{labels}")
+        for label in labels:
+            for title in titles:
+                self.assertNotIn(title, label,
+                                 f"时间戳标签「{label}」包含区块标题「{title}」，会导致标题重复计数")
+
+
 class TestSecurityGuards(unittest.TestCase):
     def test_media_path_traversal_blocked(self) -> None:
         storage = read(JAVA / "service/StorageService.java")

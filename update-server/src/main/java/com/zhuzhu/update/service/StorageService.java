@@ -125,6 +125,41 @@ public class StorageService {
         return "/uploads/" + kind.dir() + "/" + name;
     }
 
+    /** 官网媒体库（图片 + 视频）的最后更新时间，epoch 毫秒；无媒体时返回 0 */
+    public long latestMediaUpdate() {
+        return latestUpdateIn(Paths.get(baseDir), MEDIA_KINDS);
+    }
+
+    /** 官网媒体库包含的分类：只算对外展示的图片与视频，安装包不算「媒体」 */
+    public static final List<Kind> MEDIA_KINDS = List.of(Kind.IMAGE, Kind.VIDEO);
+
+    /**
+     * 纯函数：给定上传根目录，取指定分类下最新一个文件的修改时间（epoch 毫秒）。
+     *
+     * <p>单分类目录不存在或不可读时跳过该分类，不影响另一分类的结果；
+     * 全部为空时返回 0 —— 调用方据此判断「媒体库尚未有内容」。
+     */
+    public static long latestUpdateIn(Path uploadRoot, List<Kind> kinds) {
+        long latest = 0L;
+        if (uploadRoot == null || kinds == null) {
+            return latest;
+        }
+        for (Kind kind : kinds) {
+            Path dir = uploadRoot.resolve(kind.dir()).toAbsolutePath().normalize();
+            if (!Files.isDirectory(dir)) {
+                continue;
+            }
+            try (var stream = Files.list(dir)) {
+                for (Path p : stream.filter(Files::isRegularFile).toList()) {
+                    latest = Math.max(latest, Files.getLastModifiedTime(p).toMillis());
+                }
+            } catch (IOException ignored) {
+                // 目录不可读（权限 / 并发删除）时跳过，不因单个分类失败而丢掉整体结果
+            }
+        }
+        return latest;
+    }
+
     /* ---------------- 纯函数（便于单元测试） ---------------- */
 
     /** 取小写扩展名，无扩展名时返回空串 */

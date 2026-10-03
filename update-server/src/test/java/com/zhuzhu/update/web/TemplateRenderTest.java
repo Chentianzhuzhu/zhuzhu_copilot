@@ -196,9 +196,18 @@ class TemplateRenderTest {
         ctx.setVariable("faqPreview", site.get("faq"));
         ctx.setVariable("downloads", totalDownloads);
         ctx.setVariable("downloadsText", String.format(java.util.Locale.US, "%,d", totalDownloads));
+        // 页脚三个时间戳：必须给值，否则新增的 .footer-stamps 分支在渲染测试里被整条跳过
+        ctx.setVariable("stampContentUpdated", STAMP_CONTENT);
+        ctx.setVariable("stampLatestRelease", STAMP_RELEASE);
+        ctx.setVariable("stampMediaUpdated", STAMP_MEDIA);
         ctx.setVariable("jsonLd", "[]");
         return ctx;
     }
+
+    /** 页脚时间戳示例值（与 SiteTimestampService.dateText 的输出口径一致：yyyy-MM-dd） */
+    static final String STAMP_CONTENT = "2026-10-03";
+    static final String STAMP_RELEASE = "2026-10-02";
+    static final String STAMP_MEDIA = "2026-10-01";
 
     /** 列表为空时返回示例条目，保证模板分支被渲染到 */
     private static List<?> orSample(Object value, List<?> sample) {
@@ -306,6 +315,34 @@ class TemplateRenderTest {
         assertTrue(html.contains("/js/site.js?v=testjs01"), "脚本未带版本号");
         String downloads = String.format(java.util.Locale.US, "%,d", buildModel().totalDownloads());
         assertTrue(html.contains(downloads), "下载量未注入，期望：" + downloads);
+    }
+
+    @Test
+    @DisplayName("页脚暴露站点内容 / 版本 / 媒体库三个时间戳")
+    void footerShowsSiteTimestamps() {
+        String html = render("index", context("/", "WinAppMigrator — 标语"));
+
+        assertTrue(html.contains("class=\"footer-stamps\""), "页脚缺少时间戳区块");
+        for (String label : new String[]{"站点内容更新", "版本发布日期", "媒体库更新"}) {
+            assertTrue(html.contains(label), "页脚缺少时间戳标签：" + label);
+        }
+        assertTrue(html.contains("datetime=\"" + STAMP_CONTENT + "\""), "内容更新时间未带 datetime");
+        assertTrue(html.contains("datetime=\"" + STAMP_RELEASE + "\""), "版本发布日期未带 datetime");
+        assertTrue(html.contains("datetime=\"" + STAMP_MEDIA + "\""), "媒体库更新时间未带 datetime");
+    }
+
+    @Test
+    @DisplayName("时间戳缺失时整条隐藏，不留空占位")
+    void footerHidesMissingStamps() {
+        Context ctx = context("/", "WinAppMigrator");
+        ctx.setVariable("stampContentUpdated", "");
+        ctx.setVariable("stampLatestRelease", "");
+        ctx.setVariable("stampMediaUpdated", "");
+
+        String html = render("index", ctx);
+
+        assertCleanOutput(html, "index-stampless");
+        assertFalse(html.contains("站点内容更新"), "三个时间戳全缺失时不应输出空占位");
     }
 
     @Test
@@ -465,6 +502,12 @@ class TemplateRenderTest {
         payload.put("content", model.site());
         payload.put("totalDownloads", model.totalDownloads());
         payload.put("latest", model.latest());
+        // 与线上 /api/site 的 timestamps 同形：内容与媒体库带时刻，版本日期只到天
+        Map<String, Object> stamps = new LinkedHashMap<>();
+        stamps.put("siteContentUpdatedAt", "2026-10-03T08:15");
+        stamps.put("latestReleaseDate", STAMP_RELEASE);
+        stamps.put("mediaLibraryUpdatedAt", "2026-10-01T18:05");
+        payload.put("timestamps", stamps);
         Files.writeString(out.resolve("preview-site.json"), MAPPER.writerWithDefaultPrettyPrinter()
                 .writeValueAsString(payload), java.nio.charset.StandardCharsets.UTF_8);
 

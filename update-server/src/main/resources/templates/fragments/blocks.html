@@ -27,6 +27,29 @@
       <a href="/sitemap">站点地图</a>
       <a href="#top" id="backTopLink">返回顶部</a>
     </div>
+
+    <!--
+      站点时间戳：内容 / 版本 / 媒体库三处最后更新时间。
+      取值与 /api/site 的 timestamps 完全同源（均由 SiteTimestampService 提供），
+      不在模板里各自推算；任一来源缺失时该条整条隐藏，不留空占位。
+      标签措辞刻意避开「最新版本」（下载页区块标题同名）：
+      正文里同一串文案出现两次，会被「标题只出现一次」的渲染用例判为重复。
+    -->
+    <div class="footer-stamps"
+         th:if="${!#strings.isEmpty(stampContentUpdated) or !#strings.isEmpty(stampLatestRelease) or !#strings.isEmpty(stampMediaUpdated)}">
+      <span class="stamp" th:if="${!#strings.isEmpty(stampContentUpdated)}">
+        <span class="stamp-label">站点内容更新</span>
+        <time class="stamp-value" th:attr="datetime=${stampContentUpdated}" th:text="${stampContentUpdated}">2026-10-03</time>
+      </span>
+      <span class="stamp" th:if="${!#strings.isEmpty(stampLatestRelease)}">
+        <span class="stamp-label">版本发布日期</span>
+        <time class="stamp-value" th:attr="datetime=${stampLatestRelease}" th:text="${stampLatestRelease}">2026-10-03</time>
+      </span>
+      <span class="stamp" th:if="${!#strings.isEmpty(stampMediaUpdated)}">
+        <span class="stamp-label">媒体库更新</span>
+        <time class="stamp-value" th:attr="datetime=${stampMediaUpdated}" th:text="${stampMediaUpdated}">2026-10-03</time>
+      </span>
+    </div>
   </div>
 </footer>
 

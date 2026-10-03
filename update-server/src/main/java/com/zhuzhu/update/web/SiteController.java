@@ -2,6 +2,7 @@ package com.zhuzhu.update.web;
 
 import com.zhuzhu.update.entity.AppVersion;
 import com.zhuzhu.update.service.ContentService;
+import com.zhuzhu.update.service.SiteTimestampService;
 import com.zhuzhu.update.service.StatsService;
 import com.zhuzhu.update.service.UpdateService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,15 +20,17 @@ public class SiteController {
     private final ContentService contentService;
     private final StatsService statsService;
     private final UpdateService updateService;
+    private final SiteTimestampService timestamps;
 
     public SiteController(ContentService contentService, StatsService statsService,
-                          UpdateService updateService) {
+                          UpdateService updateService, SiteTimestampService timestamps) {
         this.contentService = contentService;
         this.statsService = statsService;
         this.updateService = updateService;
+        this.timestamps = timestamps;
     }
 
-    /** 官网首页数据：内容 + 最新版本 + 总下载量 */
+    /** 官网首页数据：内容 + 最新版本 + 总下载量 + 站点时间戳 */
     @GetMapping("/site")
     public Map<String, Object> site() {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -35,6 +38,8 @@ public class SiteController {
         out.put("totalDownloads", statsService.totalDownloads());
         AppVersion latest = updateService.latest();
         out.put("latest", latest == null ? null : versionView(latest));
+        // 站点内容更新时间 / 最新版本发布日期 / 媒体库更新时间，统一由时间戳服务给出
+        out.put("timestamps", timestamps.current().toMap());
         return out;
     }
 

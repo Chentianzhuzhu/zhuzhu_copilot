@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhuzhu.update.entity.AppVersion;
 import com.zhuzhu.update.service.AssetVersionService;
 import com.zhuzhu.update.service.ContentService;
+import com.zhuzhu.update.service.SiteTimestampService;
 import com.zhuzhu.update.service.StatsService;
 import com.zhuzhu.update.service.UpdateService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -58,15 +59,17 @@ public class SitePageController {
     private final StatsService statsService;
     private final UpdateService updateService;
     private final AssetVersionService assets;
+    private final SiteTimestampService timestamps;
     private final ObjectMapper mapper;
 
     public SitePageController(ContentService contentService, StatsService statsService,
                               UpdateService updateService, AssetVersionService assets,
-                              ObjectMapper mapper) {
+                              SiteTimestampService timestamps, ObjectMapper mapper) {
         this.contentService = contentService;
         this.statsService = statsService;
         this.updateService = updateService;
         this.assets = assets;
+        this.timestamps = timestamps;
         this.mapper = mapper;
     }
 
@@ -233,6 +236,11 @@ public class SitePageController {
         model.addAttribute("faqPreview", preview(site.get("faq"), 5));
         model.addAttribute("downloads", downloads);
         model.addAttribute("downloadsText", String.format(java.util.Locale.US, "%,d", downloads));
+        // 站点三个时间戳（内容 / 版本 / 媒体库）：页脚统一展示，取值口径与 /api/site 完全一致
+        SiteTimestampService.Timestamps stamps = timestamps.current();
+        model.addAttribute("stampContentUpdated", SiteTimestampService.dateText(stamps.siteContentUpdatedAt()));
+        model.addAttribute("stampLatestRelease", SiteTimestampService.dateText(stamps.latestReleaseDate()));
+        model.addAttribute("stampMediaUpdated", SiteTimestampService.dateText(stamps.mediaLibraryUpdatedAt()));
         model.addAttribute("jsonLd", jsonLd(mapper, base, path, site, pageTitle, pageDesc, latest));
         return view;
     }

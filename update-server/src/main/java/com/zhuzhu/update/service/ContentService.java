@@ -51,6 +51,16 @@ public class ContentService {
         persist(merge(defaults(), content));
     }
 
+    /**
+     * 官网内容最后更新时间。
+     *
+     * <p>取自单行内容的 {@code updated_at}（每次保存都会刷新），代表「站点内容多久前被改过」
+     * 这一对外可见的事实；库中尚无记录时返回 {@code null}（调用方据此决定是否展示）。
+     */
+    public LocalDateTime updatedAt() {
+        return repo.findByCkey(KEY).map(SiteContent::getUpdatedAt).orElse(null);
+    }
+
     /** 默认内容：真实产品信息，仅作为结构骨架与首次初始化数据 */
     public static Map<String, Object> defaults() {
         Map<String, Object> c = new LinkedHashMap<>();
