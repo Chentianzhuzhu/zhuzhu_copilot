@@ -256,35 +256,109 @@ class McpManager:
 
     def __init__(self):
         self._clients: dict = {}
+        self._configs: dict = {}      # 服务器名 -> 建连时所用配置（增量热加载据此判断「新增/变更」）
+        self._schemas: dict = {}      # 服务器名 -> 建连时抓到的工具 schema
         self._name_to_server: dict = {}
         self._tool_raw: dict = {}      # 聚合工具名 -> 服务器原始工具名
         self._tools: list = []
         self.errors: list = []   # 各服务器连接失败信息
+        # 最近一次 reload 的动作摘要（热加载后回填进工具结果文案，让模型知道新增了什么）
+        self.last_reload: dict = {"added": [], "updated": [], "removed": []}
+
+    def _connect(self, cfg: dict) -> bool:
+        """建单个服务器连接并抓一次工具清单；失败只记 errors，不影响其他服务器。"""
+        name = str(cfg.get("name") or "mcp")
+        client = None
+        try:
+            client = McpClient(name, cfg)
+            schemas = client.list_tools()
+        except Exception as e:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            self.errors.append(f"[{name}] {e}")
+            return False
+        self._clients[name] = client
+        self._configs[name] = dict(cfg)
+        # 工具清单必须在这里抓一次并缓存：McpClient.list_tools 每次调用都会往内部去重表
+        # 写名字，再调一次会把同一工具返回成「带前缀」的另一种形态（名字漂移 + 重复）。
+        self._schemas[name] = schemas
+        return True
+
+    def _drop(self, name: str) -> None:
+        """断开并移除单个服务器的连接与缓存"""
+        client = self._clients.pop(name, None)
+        self._configs.pop(name, None)
+        self._schemas.pop(name, None)
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _rebuild_aggregate(self) -> list:
+        """按当前连接重建聚合工具表（规则与旧实现一致：先到者用原名，跨服务器重名者加服务器名前缀）。"""
+        self._tools = []
+        self._name_to_server = {}
+        self._tool_raw = {}
+        used: set = set()
+        for name, _client in self._clients.items():
+            for schema in self._schemas.get(name) or []:
+                cname = schema["function"]["name"]     # 客户端层名字
+                if cname in used:
+                    agg = f"{name}_{cname}"
+                    schema = json.loads(json.dumps(schema))
+                    schema["function"]["name"] = agg
+                else:
+                    agg = cname
+                used.add(agg)
+                self._name_to_server[agg] = name
+                self._tool_raw[agg] = cname
+                self._tools.append(schema)
+        return self._tools
 
     def connect_all(self, servers: list) -> list:
-        """servers: [{"name","type","command","args"|"url"}]，返回聚合后的工具 schema"""
-        self._tools = []
+        """servers: [{"name","type","command","args"|"url"}]，返回聚合后的工具 schema（全量重建）"""
+        self.close_all()
         self.errors = []
-        used: set = set()   # 已占用的聚合工具名（跨服务器去重）
+        self.last_reload = {"added": [str(c.get("name") or "mcp") for c in servers],
+                            "updated": [], "removed": []}
         for cfg in servers:
-            name = cfg.get("name", "mcp")
-            try:
-                client = McpClient(name, cfg)
-                self._clients[name] = client
-                for schema in client.list_tools():
-                    fname = schema["function"]["name"]
-                    raw = fname
-                    if fname in used:
-                        fname = f"{name}_{fname}"
-                        schema = json.loads(json.dumps(schema))
-                        schema["function"]["name"] = fname
-                    used.add(fname)
-                    self._name_to_server[fname] = name
-                    self._tool_raw[fname] = raw
-                    self._tools.append(schema)
-            except McpError as e:
-                self.errors.append(f"[{name}] {e}")
-        return self._tools
+            self._connect(cfg)
+        return self._rebuild_aggregate()
+
+    def reload(self, servers: list) -> list:
+        """**增量**热加载：只重建「新增或配置变更」的服务器，断开已移除的，未变的连接原样保留。
+
+        为什么不一律 close_all + connect_all：每个服务器都是一次真实建连（stdio 要起子进程、
+        sse 要握手），全量重连会把与本次变更无关的服务器一起打断 —— 正在用的服务器会莫名断线
+        （丢掉进程内状态），耗时也随服务器数量线性增长。增量只付「真正变了的那几个」的成本。
+        """
+        want: dict = {}
+        for cfg in servers:
+            want[str(cfg.get("name") or "mcp")] = cfg
+        added: list = []
+        updated: list = []
+        removed: list = []
+        for name in list(self._clients):
+            if name not in want:
+                self._drop(name)
+                removed.append(name)
+            elif self._configs.get(name) != want[name]:
+                self._drop(name)
+                updated.append(name)
+        self.errors = []
+        for cfg in servers:
+            name = str(cfg.get("name") or "mcp")
+            if name in self._clients:
+                continue                      # 未变：连接与工具清单都原样保留
+            # 建连失败只进 errors（会重试），不得混进 added 让摘要谎报「新增成功」
+            if self._connect(cfg) and name not in updated:
+                added.append(name)
+        self.last_reload = {"added": added, "updated": updated, "removed": removed}
+        return self._rebuild_aggregate()
 
     def tool_schemas(self) -> list:
         return self._tools
@@ -314,6 +388,8 @@ class McpManager:
             except Exception:
                 pass
         self._clients.clear()
+        self._configs.clear()
+        self._schemas.clear()
         self._name_to_server.clear()
         self._tool_raw.clear()
         self._tools = []

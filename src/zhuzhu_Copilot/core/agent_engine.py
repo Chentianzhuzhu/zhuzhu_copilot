@@ -507,6 +507,11 @@ class AgentEngine:
         self._skill_consulted = set()   # 已注入规范流程的技能名（每技能最多注入一次，减少拦截频率）
         self._auto_skills = []          # 按用户提示词自动匹配并注入的技能名
         self._task_skills = set()       # 当前任务相关的技能名（自动匹配 + 手动指定，技能规范拦截仅限这些）
+        # 任务开始时的技能集快照：热加载时据此找出「刚生成/刚导入」的技能（见 reload_extensions）
+        self._skills_at_start: set = set()
+        # 扩展热加载串行化：同一批并发工具里可能同时有 create_skill 与 create_plugin 都请求
+        # 热加载，而 MCP 重连会重建聚合工具表 —— 并发执行会互相踩（表被半边写入）。
+        self._ext_reload_lock = threading.Lock()
         self._consec_fail = 0           # 连续失败护栏计数器（达 _MAX_CONSEC_FAIL 即强制停止）
         self._empty_retries = 0         # 上游空响应连续纠正重试计数（每任务归零，达上限仍空才报错）
         self._ask_answered = {}         # ask_user 问答去重缓存（会话级）：question -> 已回答文本
@@ -1042,6 +1047,67 @@ class AgentEngine:
             return fn()
         return _wrapped
 
+    def reload_extensions(self) -> str:
+        """热加载刚生成/导入的扩展（技能 / MCP / 插件），返回可读摘要（回填进工具结果文案）。
+
+        为什么必须显式刷新：create_skill / create_plugin / create_mcp 只把文件与配置落到磁盘，
+        而**运行中的引擎**持有三份快照 —— agent_skills 的技能缓存、agent_plugins 的插件索引、
+        `self.mcp` 的已连接服务器与工具表。不刷新的话，模型在同一次任务里刚生成的工具要等
+        下一个任务（甚至重启）才可调用，表现为「创建成功却调不动，只能干等」。
+
+        刷新范围与顺序：
+          1) 技能缓存 + 插件索引失效 → 后续读取即包含新建的技能/插件；
+          2) 按本任务输入**重新匹配技能**并并入本任务技能集 → 新技能在本轮就能被注入并照做；
+          3) MCP **增量**重连（只处理新增/变更/移除的服务器）→ 新工具出现在下一轮工具列表。
+        系统提示与工具列表都是每轮重新生成的（见 _system_prompt / _all_tools），故下一轮即生效。
+        """
+        notes: list = []
+        # 1) 缓存失效：技能库与插件索引
+        try:
+            agent_skills.invalidate_skills_cache()
+        except Exception:
+            pass
+        try:
+            from zhuzhu_Copilot.core import agent_plugins
+            agent_plugins.invalidate_index()
+        except Exception:
+            pass
+        # 2) 新技能并入本任务：与任务开始时的快照做差集，把「刚生成/刚导入」的技能直接纳入
+        #    —— 不走关键词匹配：_SKILL_KEYWORDS 是人工维护的静态表，新建技能的触发词不在其中，
+        #    靠匹配会永远命中不了（表现就是「技能建好了却在本任务里用不上」）。
+        #    `_sync_skill_msg` 每轮重建（见轮循环），故加入后下一轮即注入其 instruction。
+        try:
+            now = {s.get("name") for s in (agent_skills.load_skills(self.workflow) or [])
+                   if s.get("name")}
+            fresh = sorted(n for n in now if n not in self._skills_at_start)
+            if fresh:
+                self._skills_at_start = now
+                for n in fresh:
+                    self._task_skills.add(n)
+                    if n not in (self._auto_skills or []):
+                        self._auto_skills = list(self._auto_skills or []) + [n]
+                notes.append(f"技能 {'、'.join(fresh)}")
+        except Exception:
+            pass
+        # 3) MCP 增量重连：只重建新增/变更的服务器，未变的连接保持不动
+        if self.mcp:
+            try:
+                tools = self.mcp.reload(agent_skills.load_mcp_servers())
+                act = getattr(self.mcp, "last_reload", {}) or {}
+                parts = []
+                for key, label in (("added", "新增"), ("updated", "更新"), ("removed", "移除")):
+                    names = act.get(key) or []
+                    if names:
+                        parts.append(f"{label} {len(names)} 个（{', '.join(names)}）")
+                if parts:
+                    notes.append("MCP 服务器 " + "；".join(parts))
+                errs = getattr(self.mcp, "errors", None) or []
+                notes.append(f"MCP 工具共 {len(tools)} 个"
+                             + (f"，失败: {'；'.join(errs)}" if errs else ""))
+            except Exception as e:
+                notes.append(f"MCP 重连失败: {e}")
+        return "；".join(notes)
+
     def _exec_tool(self, name: str, args: dict, allow_dangerous: bool) -> dict:
         """在工具执行 worker 线程内落地本会话作用域后再执行内置工具。
 
@@ -1189,6 +1255,17 @@ class AgentEngine:
                         self.workflow = wf_name or None
                         if self.on_engine_rebuild:
                             self.on_engine_rebuild(self.workflow or "")
+                # 扩展热加载：create_skill / create_plugin / create_mcp 等只把文件与配置写盘，
+                # 运行中的引擎还持有技能缓存与 MCP 连接两处快照 —— 不刷新的话模型在同一次任务里
+                # 刚生成的工具调不动（要等下一个任务甚至重启）。刷新后摘要回填进工具结果，
+                # 让模型知道「现在就能用」以及新增了哪些工具。
+                if isinstance(res, dict) and res.get("reload_extensions"):
+                    res = {k: v for k, v in res.items() if k != "reload_extensions"}
+                    with self._ext_reload_lock:
+                        summary = self.reload_extensions()
+                    if summary:
+                        res["text"] = (res.get("text") or "") + \
+                            f"\n✅ 已热加载扩展（本次任务后续轮次可直接调用）：{summary}"
                 return res
             except TimeoutError:
                 return {"text": f"[工具超时] {name} 无响应，已放弃（{timeout:.0f} 秒）", "images": []}
@@ -1876,6 +1953,13 @@ class AgentEngine:
         self.end_state = ""
         self._rules_confirmed = False   # 每个新任务重新强制规则确认
         self._empty_retries = 0         # 每任务重置上游空响应纠正重试计数
+        # 任务开始时的技能集快照：中途生成/导入的技能由 reload_extensions 与它做差集找出
+        try:
+            self._skills_at_start = {s.get("name") for s in
+                                     (agent_skills.load_skills(self.workflow) or [])
+                                     if s.get("name")}
+        except Exception:
+            self._skills_at_start = set()
         # 按用户提示词自动匹配技能并注入：简单提示词（如"生成一个毕业感言PPT"）也先走 skill 流程。
         # 命中技能再按当前工作流过滤（被禁用的技能不注入，遵循工作流技能隔离）；
         # 最后按子 Agent 准入过滤：能力禁用时剔除 sub-agent 技能（否则它通篇教派发，

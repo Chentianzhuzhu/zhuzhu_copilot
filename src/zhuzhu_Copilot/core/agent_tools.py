@@ -4980,7 +4980,9 @@ def _create_skill(name: str, description: str, instruction: str) -> dict:
     # 仅绑定到非默认工作流：默认工作流为全局，无需绑定
     bind_wf = wf if wf and wf != agent_workflow.DEFAULT_WORKFLOW else ""
     ok, msg = agent_skills.create_md_skill(name, description, instruction, workflow=bind_wf)
-    return ({"text": msg, "images": []} if ok else _blocked(msg))
+    # 热加载：技能缓存已失效，但引擎还要按本任务输入重新匹配技能才能在本轮注入 —— 见
+    # agent_engine.reload_extensions（否则「创建成功却要等下一个任务才生效」）。
+    return ({"text": msg, "images": [], "reload_extensions": True} if ok else _blocked(msg))
 
 
 def _generation_status_adapter(status_cb):
@@ -5016,11 +5018,18 @@ def _set_generation_progress(args: dict, status_cb=None) -> dict:
 
 def _create_plugin(description: str, kind: str, status_cb=None) -> dict:
     """用自然语言描述创建插件（AI 生成可运行 MCP server + SKILL.md + 脚本/资源/示例），
-    统一存入插件目录并登记技能/MCP 配置，创建后即时生效。生成期间上报进度。"""
+    统一存入插件目录并登记技能/MCP 配置，创建后即时生效。生成期间上报进度。
+
+    成功时带 `reload_extensions` 标记：插件刚登记的技能与 MCP 服务器必须让**运行中的引擎**
+    热加载（技能缓存失效 + MCP 增量重连），否则同一次任务里刚生成的工具调不动
+    （见 agent_engine.reload_extensions）。
+    """
     from zhuzhu_Copilot.core import agent_plugins
     ok, msg = agent_plugins.create_plugin_from_nl(
         description, kind, on_status=_generation_status_adapter(status_cb))
-    return ({"text": msg, "images": []} if ok else _blocked(msg))
+    if ok:
+        return {"text": msg, "images": [], "reload_extensions": True}
+    return _blocked(msg)
 
 
 # ── 全局背景图 ───────────────────────────────────────────────────
@@ -6022,8 +6031,8 @@ def _create_mcp(args: dict) -> dict:
         if not save(servers):
             return _blocked("[create_mcp] 写入 mcp_servers.json 失败")
         return {"text": f"MCP 服务器「{name}」已{'更新' if base else '新增'}到全局注册表"
-                        f"（type={entry['type']}，enabled={entry.get('enabled', True)}）。"
-                        "发起下一轮任务后连接生效。", "images": [], "reconnect_mcp": True}
+                        f"（type={entry['type']}，enabled={entry.get('enabled', True)}）。",
+                "images": [], "reload_extensions": True}
     except Exception as e:
         return _blocked(f"[create_mcp] {e}")
 
@@ -6065,8 +6074,8 @@ def _set_mcp(args: dict) -> dict:
             servers.pop(idx)
             if not save(servers):
                 return _blocked("[set_mcp] 写入 mcp_servers.json 失败")
-            return {"text": f"MCP 服务器「{name}」已删除。发起下一轮任务后断开生效。",
-                    "images": [], "reconnect_mcp": True}
+            return {"text": f"MCP 服务器「{name}」已删除。",
+                    "images": [], "reload_extensions": True}
         if idx < 0:
             return _blocked(f"[set_mcp] 服务器「{name}」不存在，用 create_mcp 新建")
         base = servers[idx]
@@ -6076,8 +6085,8 @@ def _set_mcp(args: dict) -> dict:
         if not save([entry if i == idx else s for i, s in enumerate(servers)]):
             return _blocked("[set_mcp] 写入 mcp_servers.json 失败")
         return {"text": f"MCP 服务器「{name}」已更新（type={entry['type']}，"
-                        f"enabled={entry.get('enabled', True)}）。发起下一轮任务后生效。",
-                "images": [], "reconnect_mcp": True}
+                        f"enabled={entry.get('enabled', True)}）。",
+                "images": [], "reload_extensions": True}
     except Exception as e:
         return _blocked(f"[set_mcp] {e}")
 
