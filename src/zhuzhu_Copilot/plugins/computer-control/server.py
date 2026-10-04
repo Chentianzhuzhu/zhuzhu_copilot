@@ -21,6 +21,7 @@ import base64
 import ctypes
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -30,8 +31,25 @@ import zlib
 from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 同目录模块（uia.py / aura.py）：server.py 可能被以任意 cwd 拉起，先把自身目录加进 path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import aura
+    import uia
+except Exception:      # 缺模块不应让整个插件不可用：降级为纯坐标操控
+    aura = None
+    uia = None
+
 APP_NAME = "computer-control"
 MCP_VERSION = "2024-11-05"
+
+# 会真正改变桌面状态、需要在屏幕上点亮彩色光环的工具（查询类不亮）
+_CONTROL_TOOLS = frozenset({
+    "click", "long_press", "drag", "swipe", "select", "scroll", "type_text",
+    "key_press", "copy", "paste", "open_virtual_desktop",
+    "click_element", "scroll_element", "drag_element", "type_element",
+    "manage_window",
+})
 
 # ---- 可调参数（集中在此，便于扩展/调优） ----
 MODEL_MAX_W = 1280          # 返回给视觉模型的截图最大宽度（与主程序视觉基准一致）
@@ -45,6 +63,10 @@ LOG_MAX = 200               # 操作日志上限（环形）
 DEFAULT_LONG_PRESS_S = 0.8
 MOVE_STEP_S = 0.012         # 真人式移动的单步间隔
 ZOOM_MAX_PX = 2400          # 放大图最大边长（防超大图撑爆视觉输入）
+DRAG_SETTLE_S = 0.12        # 拖拽落点后等待时间：让目标控件完成响应再截图验证
+DRAG_MIN_STEPS = 12         # 拖拽最少分步数：步数太少会被系统判定为瞬移（非拖拽）
+LONG_PRESS_MAX_S = 5.0      # 长按时长上限（秒），防止模型传入过大值卡住流程
+SETTLE_AFTER_CLICK_S = 0.06  # 点击后最小稳定时间：先等界面响应再返回，减少无效重试
 
 # ---- Win32 绑定 ----
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -178,6 +200,17 @@ def _bind_win32():
     u.PostThreadMessageW.argtypes = (wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
     u.IsWindowVisible.argtypes = (wintypes.HWND,)
     u.IsWindow.argtypes = (wintypes.HWND,)
+    u.IsIconic.argtypes = (wintypes.HWND,)
+    u.IsZoomed.argtypes = (wintypes.HWND,)
+    u.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+    u.BringWindowToTop.argtypes = (wintypes.HWND,)
+    u.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    u.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
+    u.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                               ctypes.c_int, ctypes.c_int, wintypes.UINT)
+    # GetWindowThreadProcessId 的 argtypes 已在上方声明，这里只补 restype
+    u.GetWindowThreadProcessId.restype = wintypes.DWORD
+    k.GetCurrentThreadId.restype = wintypes.DWORD
     u.EnumWindows.argtypes = (ctypes.c_void_p, wintypes.LPARAM)
     u.OpenClipboard.restype = wintypes.BOOL
     u.OpenClipboard.argtypes = (wintypes.HWND,)
@@ -684,55 +717,115 @@ def _mouse_button(button: str) -> tuple:
 
 
 def do_click(x: int, y: int, button: str = "left", clicks: int = 1):
-    """点击：左键优先真实触控 tap；触控不可用或注入失败时自动回退鼠标。"""
+    """点击：左键优先真实触控 tap；触控不可用或注入失败时自动回退鼠标。
+
+    精度要点：按下与抬起必须在**同一像素**，且移动到目标后才按下 —— 移动途中
+    误按会把点击落到沿途的窗口上。落点用整数像素，避免子像素取整漂移。
+    """
     if button == "left" and _touch_tap(x, y, clicks):
+        time.sleep(SETTLE_AFTER_CLICK_S)
         return
     down, up = _mouse_button(button)
     _move_human(x, y)
     with _Injecting():
-        for _ in range(max(1, clicks)):
+        for i in range(max(1, clicks)):
+            # 每一次点击前都精确归位（多次点击时防止首击位移带来的漂移）
+            _move_absolute(x, y)
             _send_mouse(down)
             time.sleep(0.04)
+            _move_absolute(x, y)      # 按住期间不移动，保证 down/up 同点
             _send_mouse(up)
-            time.sleep(0.05)
+            time.sleep(0.05 if i + 1 < max(1, clicks) else SETTLE_AFTER_CLICK_S)
 
 
 def do_long_press(x: int, y: int, duration: float):
-    """长按：触控可用时走触控长按（可呼出上下文菜单）；否则按住鼠标不动。"""
+    """长按：触控可用时走触控长按（可呼出上下文菜单）；否则按住鼠标不动。
+
+    精度要点：整个按住期间**完全不动**指针（只发一次 down），避免被目标控件
+    识别为「拖动」而丢失长按语义；时长做上下限保护。
+    """
+    duration = max(0.2, min(float(duration), LONG_PRESS_MAX_S))
     if _touch_long_press(x, y, duration):
         return
     _move_human(x, y)
     with _Injecting():
+        _move_absolute(x, y)
         _send_mouse(MOUSEEVENTF_LEFTDOWN)
-        time.sleep(max(0.2, duration))
+        # 分段等待而不是一次 sleep：长按时长可变，且能保证指针零漂移
+        left = duration
+        while left > 0:
+            step = min(0.1, left)
+            time.sleep(step)
+            left -= step
+        _move_absolute(x, y)
         _send_mouse(MOUSEEVENTF_LEFTUP)
 
 
 def do_drag(x1: int, y1: int, x2: int, y2: int, duration: float, hold: float = 0.15):
-    """拖拽：触控可用时触控拖拽，否则鼠标拖拽。"""
+    """拖拽：触控可用时触控拖拽，否则鼠标拖拽。
+
+    精度要点（三处最容易导致「拖不动」）：
+    1. **按下后先停顿**（hold）：很多控件要等按下被识别后才进入拖拽语义；
+       停顿太短会被当成普通点击，文件/滑块根本不跟手。
+    2. **分步数下限**：步数太少 = 瞬移，系统会判定为点击而非拖拽；用缓动曲线
+       起步（慢→快→慢）更像真人，也让控件有足够采样点。
+    3. **落点精确归位**：最后一步显式移动到 (x2,y2)，并停顿让目标完成响应。
+    """
     if _touch_drag(x1, y1, x2, y2, duration, hold):
+        time.sleep(DRAG_SETTLE_S)
         return
-    steps = max(int(duration / 0.02), 8)
+    steps = max(int(duration / 0.02), DRAG_MIN_STEPS)
     _move_human(x1, y1)
     with _Injecting():
+        _move_absolute(x1, y1)
         _send_mouse(MOUSEEVENTF_LEFTDOWN)
-        time.sleep(hold)
+        time.sleep(hold)                      # 关键：给目标识别「开始拖拽」的时间
         for i in range(1, steps + 1):
-            _move_absolute(int(x1 + (x2 - x1) * i / steps), int(y1 + (y2 - y1) * i / steps))
+            t = i / steps
+            ease = t * t * (3 - 2 * t)       # smoothstep：两端慢、中间快
+            _move_absolute(int(x1 + (x2 - x1) * ease), int(y1 + (y2 - y1) * ease))
             time.sleep(duration / steps)
+        _move_absolute(x2, y2)                # 关键：精确落在目标点
+        time.sleep(DRAG_SETTLE_S)
         _send_mouse(MOUSEEVENTF_LEFTUP)
 
 
 def do_swipe(x1: int, y1: int, x2: int, y2: int, duration: float):
-    """滑动：触控快速滑动（带速度→系统惯性滚动），无触控/注入失败时退化为鼠标拖动。"""
+    """滑动：触控快速滑动（带速度→系统惯性滚动），无触控/注入失败时退化为鼠标拖动。
+
+    精度要点：滑动末段**逐渐减速**才不会被系统当成「拖到某处再停住」；
+    同时给一段收尾停顿，让惯性滚动/翻页真正发生。
+    """
     if _touch_swipe(x1, y1, x2, y2, duration):
+        time.sleep(DRAG_SETTLE_S)
         return
-    do_drag(x1, y1, x2, y2, duration, hold=0.02)
+    steps = max(int(duration / 0.012), 10)
+    _move_human(x1, y1)
+    with _Injecting():
+        _move_absolute(x1, y1)
+        _send_mouse(MOUSEEVENTF_LEFTDOWN)
+        time.sleep(0.02)
+        for i in range(1, steps + 1):
+            t = i / steps
+            decay = 1.0 - (1.0 - t) ** 2      # 起步快、末段减速
+            _move_absolute(int(x1 + (x2 - x1) * decay), int(y1 + (y2 - y1) * decay))
+            time.sleep(duration / steps)
+        _move_absolute(x2, y2)
+        time.sleep(DRAG_SETTLE_S)
+        _send_mouse(MOUSEEVENTF_LEFTUP)
 
 
 def do_scroll(delta: int):
     with _Injecting():
         _send_mouse(MOUSEEVENTF_WHEEL, 0, 0, int(delta) & 0xFFFFFFFF)
+
+
+def do_scroll_at(x: int, y: int, delta: int):
+    """先移动到指定位置再滚动：滚轮事件投递给指针下的容器，
+    比停在默认位置滚动命中率高得多（长页面/多滚动区界面尤其明显）。"""
+    _move_human(x, y)
+    time.sleep(0.05)
+    do_scroll(delta)
 
 
 def do_type_text(text: str, interval: float = 0.012):
@@ -905,6 +998,118 @@ def find_window(title: str = "", hwnd: int = 0) -> int:
     return 0
 
 
+# ---- 窗口/应用管理（应对复杂桌面：弹窗抢焦点、窗口遮挡、位置乱飞） ----
+SW_RESTORE = 9
+SW_MAXIMIZE = 3
+SW_MINIMIZE = 6
+SW_SHOW = 5
+HWND_TOP = 0
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_SHOWWINDOW = 0x0040
+SWP_NOACTIVATE = 0x0010
+
+
+def window_state(hwnd: int) -> dict:
+    """窗口当前状态（是否最小化/最大化/前台）。"""
+    hwnd = int(hwnd or 0)
+    if not hwnd or not user32.IsWindow(hwnd):
+        return {"valid": False}
+    return {"valid": True, "hwnd": hwnd, "title": window_title(hwnd),
+            "minimized": bool(user32.IsIconic(hwnd)),
+            "maximized": bool(user32.IsZoomed(hwnd)),
+            "visible": bool(user32.IsWindowVisible(hwnd)),
+            "foreground": foreground_window() == hwnd}
+
+
+def activate_window(hwnd: int) -> bool:
+    """把窗口提到前台（先恢复最小化，再置顶）。
+
+    复杂桌面的关键：子窗口/对话框常在启动时抢焦点，直接点击会落到错误的窗口上。
+    先显式激活目标窗口，再做坐标操作，可避免绝大多数「点错窗口」。
+    """
+    hwnd = int(hwnd or 0)
+    if not hwnd or not user32.IsWindow(hwnd):
+        return False
+    try:
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            time.sleep(0.15)
+        # AttachThreadInput 能让置顶更可靠（跨输入队列的前台切换）
+        fg = foreground_window()
+        cur = kernel32.GetCurrentThreadId()
+        target = user32.GetWindowThreadProcessId(hwnd, None)
+        attached = False
+        if fg and target and target != cur:
+            attached = bool(user32.AttachThreadInput(target, cur, True))
+        user32.SetForegroundWindow(hwnd)
+        user32.BringWindowToTop(hwnd)
+        user32.SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+        if attached:
+            user32.AttachThreadInput(target, cur, False)
+        time.sleep(0.12)
+        return True
+    except Exception:
+        return False
+
+
+def set_window_state(hwnd: int, action: str) -> str:
+    """窗口状态操作：maximize / minimize / restore / move / resize / close。"""
+    hwnd = int(hwnd or 0)
+    if not hwnd or not user32.IsWindow(hwnd):
+        raise ValueError(f"窗口不存在（hwnd={hwnd}）")
+    action = str(action or "").strip().lower()
+    with _Injecting():
+        if action == "maximize":
+            user32.ShowWindow(hwnd, SW_MAXIMIZE)
+        elif action == "minimize":
+            user32.ShowWindow(hwnd, SW_MINIMIZE)
+        elif action == "restore":
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        elif action == "show":
+            user32.ShowWindow(hwnd, SW_SHOW)
+        elif action == "close":
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)      # WM_CLOSE
+        else:
+            raise ValueError(f"未知窗口操作: {action}")
+    time.sleep(0.18)
+    return f"已对窗口「{window_title(hwnd) or hwnd}」执行 {action}"
+
+
+def move_window(hwnd: int, x: int, y: int, w: int = 0, h: int = 0) -> str:
+    """移动/调整窗口大小（坐标为屏幕物理像素；w/h 为 0 表示只移动不改大小）。"""
+    hwnd = int(hwnd or 0)
+    if not hwnd or not user32.IsWindow(hwnd):
+        raise ValueError(f"窗口不存在（hwnd={hwnd}）")
+    r = window_rect(hwnd)
+    width = int(w) if w else (r.right - r.left)
+    height = int(h) if h else (r.bottom - r.top)
+    flags = SWP_NOZORDER | SWP_NOACTIVATE
+    if not w and not h:
+        flags |= SWP_NOSIZE
+    with _Injecting():
+        user32.SetWindowPos(hwnd, 0, int(x), int(y), max(1, width), max(1, height), flags)
+    time.sleep(0.12)
+    return (f"窗口「{window_title(hwnd) or hwnd}」已移动到 ({x},{y})，"
+            f"尺寸 {max(1, width)}×{max(1, height)}")
+
+
+def wait_for_window(title: str = "", hwnd: int = 0, timeout: float = 10.0,
+                     poll: float = 0.25) -> int:
+    """等待窗口出现（复杂桌面里安装向导/弹窗常延迟弹出，固定 sleep 不可靠）。"""
+    deadline = time.time() + max(0.5, float(timeout))
+    while time.time() < deadline:
+        h = find_window(title=title, hwnd=hwnd)
+        if h:
+            st = window_state(h)
+            if st.get("visible") and not st.get("minimized"):
+                return h
+        time.sleep(max(0.05, float(poll)))
+    return 0
+
+
 # ---- 虚拟桌面容器 ----
 def switch_virtual_desktop(action: str) -> str:
     """Windows 虚拟桌面：new=新建并切入；back/prev=回到上一个；next=下一个。"""
@@ -1012,6 +1217,7 @@ _STATE = {
     "cursor": [0, 0],
     "foreground": {"hwnd": 0, "title": ""},
     "web_port": 0,
+    "aura": False,             # 屏幕边缘彩色光环是否点亮
 }
 _LOG: list = []
 _LOG_LOCK = threading.Lock()
@@ -1041,6 +1247,29 @@ def mark_interrupted(reason: str):
         _log("user", f"接管操控（{reason}）")
     else:
         _STATE["interrupted"] = True
+    _aura_off("用户接管")
+
+
+def _aura_on():
+    """操控开始：点亮屏幕边缘彩色光环（用户可见的「AI 正在操作」提示）。"""
+    if aura is None:
+        return
+    try:
+        aura.set_aura_active(True)
+        _STATE["aura"] = True
+    except Exception:
+        pass
+
+
+def _aura_off(reason: str = ""):
+    """操控结束/被接管：淡出光环。"""
+    if aura is None:
+        return
+    try:
+        aura.set_aura_active(False)
+        _STATE["aura"] = False
+    except Exception:
+        pass
 
 
 def _guard(action: str) -> str:
@@ -1127,13 +1356,16 @@ def tool_screen_info(args: dict) -> str:
     lines = [
         f"屏幕物理分辨率: {sw}×{sh}（进程已做 DPI 感知，坐标即物理像素）",
         f"输入方式: {touch_capability()}",
+        f"元素识别: {uia.capability() if uia else '未加载（仅坐标操控）'}",
+        f"操控提示: {aura.aura_capability() if aura else '不可用'}",
         f"操控容器: {'独立虚拟桌面' if _STATE['container'] == 'virtual_desktop' else '用户前台桌面'}",
         f"鼠标位置: {_STATE['cursor'][0]}, {_STATE['cursor'][1]}",
         f"前台窗口: {_STATE['foreground']['title'] or '(无)'}",
         f"接管状态: {'已被用户接管/暂停（操控被拒绝）' if _interrupted() else '正常'}"
         + f"；操控会话剩余 {remain}s（每次工具调用自动延长）",
         f"可视化界面: http://127.0.0.1:{_STATE['web_port']}/",
-        "下一步建议: 先 screen_shot 截屏看界面 → 读出目标坐标 → 点击/输入 → 再截屏验证。",
+        "下一步建议: 优先 list_elements 读元素（比看图猜坐标准）→ click_element/type_element 精准操作；"
+        "元素识别不可用时才用 screen_shot 看图 + click 传坐标。",
     ]
     _log("ai", "查看环境信息")
     return "\n".join(lines)
@@ -1387,6 +1619,271 @@ def tool_web_url(args: dict) -> str:
             "并可一键「接管 / 暂停 / 恢复」。")
 
 
+# ============================================================================
+# 元素级工具（UI Automation）：精准识别可点击/可输入/可滚动/可拖拽的控件
+# ============================================================================
+
+def _uia_ready() -> bool:
+    return uia is not None and uia.available()
+
+
+def _uia_error() -> str:
+    if uia is None:
+        return "元素识别模块未加载"
+    return uia.capability()
+
+
+def _target_hwnd(args: dict, required: bool = True) -> int:
+    """解析目标窗口：显式 hwnd > title > 当前前台窗口。"""
+    h = find_window(hwnd=_num(args.get("hwnd"), 0))
+    if h:
+        return h
+    title = str(args.get("title") or "").strip()
+    if title:
+        h = find_window(title=title)
+        if h:
+            return h
+    if not required:
+        return foreground_window()
+    fg = foreground_window()
+    if fg:
+        return fg
+    raise ValueError("未找到目标窗口：请用 list_windows 查看并传 title/hwnd")
+
+
+def tool_list_elements(args: dict) -> str:
+    """列出窗口内的界面元素（控件类型/名称/坐标/能力标记）。"""
+    if not _uia_ready():
+        raise RuntimeError(f"元素识别不可用（{_uia_error()}），请改用 screen_shot + 坐标点击")
+    hwnd = _target_hwnd(args)
+    only = str(args.get("only") or "").strip().lower()
+    name = str(args.get("name") or "").strip()
+    type_name = str(args.get("type") or "").strip()
+    els = uia.find_elements(hwnd, name=name, type_name=type_name, only=only,
+                            include_offscreen=_bool(args.get("include_offscreen"), False),
+                            max_count=max(1, min(_num(args.get("limit"), 60), 200)))
+    title = window_title(hwnd)
+    if not els:
+        return (f"窗口「{title or hwnd}」未识别到匹配元素。"
+                f"可尝试放宽条件：去掉 name/type/only，或设 include_offscreen=true。")
+    head = (f"窗口「{title or hwnd}」(hwnd={hwnd}) 共识别到 {len(els)} 个元素"
+            f"（{uia.capability()}）：")
+    _log("ai", f"识别元素（{title or hwnd}）：{len(els)} 个")
+    return head + "\n" + uia.summarize(els, max(1, min(_num(args.get("limit"), 60), 200)))
+
+
+def _pick_element(args: dict, only: str = "") -> "uia.Element":
+    """按 name/type（可选 index）选出唯一目标元素。
+
+    only（clickable/editable/scrollable/draggable）是**能力偏好而非硬过滤**：
+    真实界面的控件类型千变万化（文本区常是 Edit/Document/Pane/List），
+    严格过滤会把明明能滚/能点的目标判成「找不到」。故先按偏好筛，
+    筛不到再退回全部候选 —— 宁可让模型确认一下，也不要让工具直接罢工。
+    """
+    name = str(args.get("name") or "").strip()
+    type_name = str(args.get("type") or "").strip()
+    if not name and not type_name:
+        raise ValueError("必须提供 name（控件名称）或 type（控件类型，如 Button/Edit）")
+    hwnd = _target_hwnd(args)
+    pref = str(args.get("only") or only).strip().lower()
+    cands = uia.find_elements(hwnd, name=name, type_name=type_name, only=pref,
+                              max_count=60)
+    relaxed = False
+    if not cands and pref:
+        cands = uia.find_elements(hwnd, name=name, type_name=type_name, max_count=60)
+        relaxed = bool(cands)
+    if not cands:
+        raise RuntimeError(f"窗口「{window_title(hwnd) or hwnd}」内未找到匹配元素"
+                           f"（name={name!r} type={type_name!r}）。"
+                           f"先用 list_elements 看看有哪些元素。")
+    idx = _num(args.get("index"), 0)
+    if idx:
+        if idx < 1 or idx > len(cands):
+            raise ValueError(f"index={idx} 超出范围（共 {len(cands)} 个匹配）")
+        return cands[idx - 1]
+    if len(cands) > 1:
+        listing = "\n".join(f"  {i}. {e.describe()}" for i, e in enumerate(cands[:12], 1))
+        raise ValueError(f"匹配到 {len(cands)} 个元素，请用 index 指定，或把 name 取得更精确：\n"
+                         f"{listing}")
+    if relaxed:
+        _log("sys", f"元素「{name or type_name}」不符合 {pref} 能力标记，已放宽为按名称匹配")
+    return cands[0]
+    return cands[0]
+
+
+def _focus_warning(hwnd: int) -> str:
+    """目标窗口未真正成为前台时给出风险提示（避免点进错误窗口而不自知）。"""
+    hwnd = int(hwnd or 0)
+    if not hwnd:
+        return ""
+    fg = foreground_window()
+    if fg and fg != hwnd:
+        name = window_title(fg) or fg
+        return (f"注意：目标窗口未成为前台（当前前台是「{name}」），"
+                f"点击可能未落在目标窗口上，请重新 screen_shot 确认。")
+    return ""
+
+
+def tool_click_element(args: dict) -> str:
+    """按控件名/类型点击（自动聚焦窗口 + 精确落在控件中心）。"""
+    reason = _guard("click_element")
+    if reason:
+        return reason
+    if not _uia_ready():
+        raise RuntimeError(f"元素识别不可用（{_uia_error()}），请改用 click 传坐标")
+    el = _pick_element(args, only=str(args.get("only") or "clickable").strip().lower())
+    hwnd = el.hwnd
+    activate_window(hwnd or _target_hwnd(args, required=False))
+    warn = _focus_warning(hwnd or el.hwnd)
+    x, y = el.center
+    button = str(args.get("button") or "left").strip().lower()
+    clicks = max(1, min(_num(args.get("clicks"), 1), 3))
+    do_click(x, y, button, clicks)
+    _log("ai", f"点击元素 {el.type_name}「{el.label}」于 ({x},{y})")
+    _refresh_env()
+    return (f"已点击 {el.type_name}「{el.label}」，落点 ({x},{y})（屏幕物理坐标）。"
+            f"该元素来自窗口「{window_title(el.hwnd) or el.hwnd}」。{warn}"
+            f"请重新 screen_shot 验证结果。")
+
+
+def tool_scroll_element(args: dict) -> str:
+    """滚动可滚动容器（把指针移到容器内再滚，命中该容器而非整屏）。"""
+    reason = _guard("scroll_element")
+    if reason:
+        return reason
+    if not _uia_ready():
+        raise RuntimeError(f"元素识别不可用（{_uia_error()}），请改用 scroll 传坐标")
+    el = _pick_element(args, only=str(args.get("only") or "scrollable").strip().lower())
+    delta = _num(args.get("delta"), 0)
+    if not delta:
+        raise ValueError("delta 不能为 0（正值向上、负值向下，120 为一格）")
+    delta = max(-1200, min(1200, delta))
+    activate_window(el.hwnd or 0)
+    x, y = el.center
+    do_scroll_at(x, y, delta)
+    _log("ai", f"滚动 {el.type_name}「{el.label}」{delta:+d}")
+    return (f"已在 {el.type_name}「{el.label}」内滚动 {delta:+d}"
+            f"（{'上' if delta > 0 else '下'} {max(1, abs(delta) // 120)} 格）。"
+            f"请重新 screen_shot 看滚动结果。")
+
+
+def tool_drag_element(args: dict) -> str:
+    """拖拽可拖拽元素：把源元素拖到目标元素中心（滑块、列表项、文件图标等）。"""
+    reason = _guard("drag_element")
+    if reason:
+        return reason
+    if not _uia_ready():
+        raise RuntimeError(f"元素识别不可用（{_uia_error()}），请改用 drag 传坐标")
+    src = _pick_element({"name": args.get("from_name"), "type": args.get("from_type"),
+                         "index": args.get("from_index"), "title": args.get("title"),
+                         "hwnd": args.get("hwnd")}, only="draggable")
+    tx, ty, tlabel = None, None, ""
+    if args.get("to_name") or args.get("to_type"):
+        dst = _pick_element({"name": args.get("to_name"), "type": args.get("to_type"),
+                             "index": args.get("to_index"), "title": args.get("title"),
+                             "hwnd": args.get("hwnd")})
+        tx, ty = dst.center
+        tlabel = dst.label
+    else:
+        tx, ty = to_physical(args.get("to_x"), args.get("to_y"))
+        tlabel = f"坐标({tx},{ty})"
+    sx, sy = src.center
+    dur = max(0.1, _num(args.get("duration"), 600) / 1000.0)
+    activate_window(src.hwnd or 0)
+    do_drag(sx, sy, tx, ty, dur, hold=max(0.15, _num(args.get("hold"), 200) / 1000.0))
+    _log("ai", f"拖拽 {src.label} ({sx},{sy}) → {tlabel} ({tx},{ty})")
+    return (f"已把 {src.type_name}「{src.label}」从 ({sx},{sy}) 拖到 {tlabel} ({tx},{ty})。"
+            f"请重新 screen_shot 验证是否到位。")
+
+
+def tool_type_element(args: dict) -> str:
+    """定位输入框并输入文本（等价于「点输入框 + type_text」，但更抗布局变化）。"""
+    reason = _guard("type_element")
+    if reason:
+        return reason
+    if not _uia_ready():
+        raise RuntimeError(f"元素识别不可用（{_uia_error()}），请改用 type_text")
+    el = _pick_element(args, only="editable")
+    text = str(args.get("text") if args.get("text") is not None else "")
+    if not text:
+        raise ValueError("text 为空，无可输入内容")
+    if len(text) > 2000:
+        text = text[:2000]
+    activate_window(el.hwnd or 0)
+    x, y = el.center
+    do_click(x, y)
+    time.sleep(0.08)
+    do_type_text(text)
+    _log("ai", f"向 {el.type_name}「{el.label}」输入 {len(text)} 字符")
+    return (f"已点击 {el.type_name}「{el.label}」({x},{y}) 并输入 {len(text)} 个字符。"
+            f"请重新 screen_shot 确认输入是否正确。")
+
+
+# ============================================================================
+# 窗口 / 应用管理工具
+# ============================================================================
+def tool_manage_window(args: dict) -> str:
+    """窗口管理：activate/maximize/minimize/restore/move/close/state。"""
+    action = str(args.get("action") or "state").strip().lower()
+    if action in ("take_over", "resume"):
+        return tool_control(args)          # 语义互通，避免模型记错工具
+    reason = _guard("manage_window")
+    if reason:
+        return reason
+    if action in ("state", "list"):
+        wins = list_windows()
+        lines = [f"{i + 1}. [{w['hwnd']}] {w['title']} — 位置 {w['x']},{w['y']} "
+                 f"尺寸 {w['w']}×{w['h']}"
+                 + ("（最小化）" if window_state(w['hwnd']).get("minimized") else "")
+                 for i, w in enumerate(wins[:30])]
+        return "当前窗口列表:\n" + "\n".join(lines)
+    hwnd = _target_hwnd(args, required=(action != "wait"))
+    if action == "wait":
+        h = wait_for_window(title=str(args.get("title") or ""), timeout=_num(args.get("timeout"), 10000) / 1000.0)
+        if not h:
+            raise RuntimeError(f"等待超时：未出现标题含「{args.get('title')}」的窗口")
+        return f"窗口已出现：[{h}] {window_title(h)}"
+    if action == "activate":
+        ok = activate_window(hwnd)
+        fg = foreground_window()
+        focus_name = window_title(fg) if fg else ""
+        _log("ai", f"激活窗口 [{hwnd}] {window_title(hwnd)}")
+        if not ok:
+            raise RuntimeError(f"激活窗口失败（hwnd={hwnd}）")
+        if fg != hwnd:
+            # 诚实汇报：置顶被系统拒绝时通常有前置窗口（如锁屏/UAC/安全桌面）
+            # 抢占焦点，此时后续坐标点击可能落到别的窗口上，必须让模型知道。
+            return (f"已请求把窗口「{window_title(hwnd) or hwnd}」切到前台，"
+                    f"但当前前台仍是「{focus_name or fg}」——系统拒绝了置顶"
+                    f"（常见原因：锁屏/安全桌面/UAC 弹窗或其他程序抢焦点）。"
+                    f"继续点击有落到错误窗口的风险，建议先处理前置窗口"
+                    f"（如用 manage_window 列出窗口确认），或请用户手动切到目标窗口。")
+        return f"已把窗口「{window_title(hwnd) or hwnd}」切到前台。"
+    if action == "move":
+        return move_window(hwnd, to_physical(args.get("x"), args.get("y"))[0],
+                           to_physical(args.get("x"), args.get("y"))[1],
+                           _num(args.get("w"), 0), _num(args.get("h"), 0))
+    if action in ("maximize", "minimize", "restore", "show", "close"):
+        return set_window_state(hwnd, action)
+    raise ValueError(f"未知动作: {action}（可用 state/list/activate/maximize/minimize/"
+                     f"restore/move/close/wait）")
+
+
+def tool_aura(args: dict) -> str:
+    """屏幕边缘彩色光环控制（默认由操控自动点亮，此工具用于手动开关）。"""
+    if aura is None:
+        raise RuntimeError("光环模块未加载")
+    action = str(args.get("action") or "state").strip().lower()
+    if action == "on":
+        aura.set_aura_active(True)
+        _STATE["aura"] = True
+    elif action == "off":
+        aura.set_aura_active(False)
+        _STATE["aura"] = False
+    st = aura.aura_state()
+    return f"屏幕光环: {'显示中' if st['active'] else '已隐藏'}；{st['capability']}"
+
+
 TOOLS = [
     {"name": "screen_info", "description":
         "查看电脑操控环境：屏幕物理分辨率、输入方式（触控/鼠标）、操控容器（前台/虚拟桌面）、"
@@ -1492,6 +1989,88 @@ TOOLS = [
         "resume=清除接管/暂停标记恢复操控（仅当用户明确说「继续」后才可调用）。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "description": "status/take_over/resume"}}}},
+    {"name": "list_elements", "description":
+        "【推荐】列出窗口内的界面元素：控件类型（Button/Edit/List/ScrollBar…）、名称、"
+        "中心坐标、区域大小，并标注可点击/可输入/可滚动/可拖拽。比看截图猜坐标精准得多，"
+        "界面元素多或布局复杂时优先用它。可用 only 过滤："
+        "clickable/editable/scrollable/draggable。",
+     "inputSchema": {"type": "object", "properties": {
+         "title": {"type": "string", "description": "窗口标题片段（不传=当前前台窗口）"},
+         "hwnd": {"type": "integer", "description": "窗口句柄（来自 list_windows）"},
+         "name": {"type": "string", "description": "按控件名过滤（子串匹配，忽略大小写）"},
+         "type": {"type": "string", "description": "按控件类型过滤，如 Button/Edit/List"},
+         "only": {"type": "string", "description": "clickable/editable/scrollable/draggable"},
+         "include_offscreen": {"type": "boolean", "description": "是否包含屏外元素，默认 false"},
+         "limit": {"type": "integer", "description": "最多返回多少个，默认 60"}}}},
+    {"name": "click_element", "description":
+        "按控件名/类型点击（自动激活目标窗口 + 精确落在控件中心）。"
+        "优先传 name（如 \"安装\"）或 type（如 Button）；多个匹配时用 index 指定。",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "控件名称（子串匹配）"},
+         "type": {"type": "string", "description": "控件类型，如 Button/MenuItem/Checkbox"},
+         "index": {"type": "integer", "description": "多个匹配时选第几个（从 1 开始）"},
+         "title": {"type": "string", "description": "目标窗口标题片段"},
+         "hwnd": {"type": "integer", "description": "目标窗口句柄"},
+         "button": {"type": "string", "description": "left（默认）/right/middle"},
+         "clicks": {"type": "integer", "description": "点击次数，默认 1"},
+         "only": {"type": "string", "description": "是否只允许点可点击元素，默认 clickable"}}}},
+    {"name": "scroll_element", "description":
+        "在指定可滚动容器内滚动：自动把指针移到容器中心再滚，命中该容器而非整屏。"
+        "长页面、多滚动区界面用这个比 scroll 更准。",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "容器名称（子串匹配）"},
+         "type": {"type": "string", "description": "容器类型，如 List/Document/Pane"},
+         "index": {"type": "integer", "description": "多个匹配时选第几个"},
+         "title": {"type": "string", "description": "目标窗口标题片段"},
+         "hwnd": {"type": "integer", "description": "目标窗口句柄"},
+         "delta": {"type": "integer", "description": "滚动量（正上负下，120=一格）"}},
+         "required": ["delta"]}},
+    {"name": "drag_element", "description":
+        "把可拖拽元素拖到另一个元素中心（滑块、列表项、文件图标等）。"
+        "传 to_name/to_type 拖到目标元素，或传 to_x/to_y 拖到指定坐标。",
+     "inputSchema": {"type": "object", "properties": {
+         "from_name": {"type": "string", "description": "源元素名称（子串匹配）"},
+         "from_type": {"type": "string", "description": "源元素类型，如 Slider/Thumb"},
+         "from_index": {"type": "integer", "description": "源元素多个匹配时选第几个"},
+         "to_name": {"type": "string", "description": "目标元素名称"},
+         "to_type": {"type": "string", "description": "目标元素类型"},
+         "to_index": {"type": "integer", "description": "目标元素多个匹配时选第几个"},
+         "to_x": {"type": "integer", "description": "目标 x（截图基准，不传 to_name 时用）"},
+         "to_y": {"type": "integer", "description": "目标 y（截图基准，不传 to_name 时用）"},
+         "title": {"type": "string", "description": "目标窗口标题片段"},
+         "hwnd": {"type": "integer", "description": "目标窗口句柄"},
+         "duration": {"type": "integer", "description": "拖拽时长毫秒，默认 600"},
+         "hold": {"type": "integer", "description": "按下后停顿毫秒，默认 200"}}}},
+    {"name": "type_element", "description":
+        "定位输入框并输入文本（自动点击输入框聚焦后输入）。"
+        "比「先 click 再 type_text」更抗布局变化，适合表单/搜索框批量填写。",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "输入框名称/占位文字"},
+         "type": {"type": "string", "description": "控件类型，如 Edit/ComboBox"},
+         "index": {"type": "integer", "description": "多个匹配时选第几个"},
+         "title": {"type": "string", "description": "目标窗口标题片段"},
+         "hwnd": {"type": "integer", "description": "目标窗口句柄"},
+         "text": {"type": "string", "description": "要输入的文本"}},
+         "required": ["text"]}},
+    {"name": "manage_window", "description":
+        "窗口/应用管理：state 列出窗口；activate 切到前台（点击前用它避免点错窗口）；"
+        "maximize/minimize/restore 调整显示状态；move 移动或改尺寸；close 关闭；"
+        "wait 等待某标题窗口出现（弹窗延迟弹出时用，比固定 sleep 可靠）。",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "description":
+                    "state/list/activate/maximize/minimize/restore/move/close/wait"},
+         "title": {"type": "string", "description": "窗口标题片段"},
+         "hwnd": {"type": "integer", "description": "窗口句柄"},
+         "x": {"type": "integer", "description": "move 时的目标 x（截图基准）"},
+         "y": {"type": "integer", "description": "move 时的目标 y（截图基准）"},
+         "w": {"type": "integer", "description": "move 时的目标宽度（0=不改）"},
+         "h": {"type": "integer", "description": "move 时的目标高度（0=不改）"},
+         "timeout": {"type": "integer", "description": "wait 时的超时毫秒，默认 10000"}}}},
+    {"name": "aura", "description":
+        "屏幕边缘彩色光环开关（AI 实际操控桌面时自动点亮，鼠标穿透不挡视线）。"
+        "一般无需手动调用；用户抱怨「屏幕边缘闪得慌」时用 action=off 关掉。",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "description": "on/off/state（默认 state）"}}}},
     {"name": "web_url", "description":
         "返回本地可视化界面的访问地址（用 browser_open 打开给用户实时观看操控过程与日志）。",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -1514,6 +2093,13 @@ _HANDLERS = {
     "paste": tool_paste,
     "open_virtual_desktop": tool_open_virtual_desktop,
     "control": tool_control,
+    "list_elements": tool_list_elements,
+    "click_element": tool_click_element,
+    "scroll_element": tool_scroll_element,
+    "drag_element": tool_drag_element,
+    "type_element": tool_type_element,
+    "manage_window": tool_manage_window,
+    "aura": tool_aura,
     "web_url": tool_web_url,
 }
 
@@ -1551,6 +2137,8 @@ def _state_payload() -> dict:
             "screen": _STATE["screen"],
             "cursor": _STATE["cursor"],
             "foreground": _STATE["foreground"],
+            "aura": bool(_STATE["aura"]),
+            "elements": (uia.capability() if uia else "未加载"),
             "active": time.time() < _STATE["active_until"],
             "session_remain": max(0, int(_STATE["active_until"] - time.time())),
             "log": log}
@@ -1643,6 +2231,8 @@ label.sw{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none
     电脑操控 · 可视化预览
   </div>
   <div class="chips">
+    <span class="chip" id="chipAura">光环：待命</span>
+    <span class="chip" id="chipElements">元素识别：—</span>
     <span class="chip" id="chipContainer">容器：前台桌面</span>
     <span class="chip" id="chipInput">输入：—</span>
     <span class="chip" id="chipState">状态：待命</span>
@@ -1704,6 +2294,13 @@ label.sw{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none
       .catch(function(){show("操作失败：本地服务无响应",true)});
   }
   function paint(s){
+    var au=el("chipAura");
+    au.textContent="光环："+(s.aura?"显示中":"待命");
+    au.className="chip"+(s.aura?" on":"");
+    var el2=el("chipElements");
+    el2.textContent="元素识别："+(/不可用/.test(s.elements||"")?"不可用":"可用");
+    el2.className="chip"+(/不可用/.test(s.elements||"")?" warn":" on");
+    el2.title=s.elements||"";
     el("chipContainer").textContent="容器："+(s.container==="virtual_desktop"?"独立虚拟桌面":"前台桌面");
     el("chipContainer").className="chip"+(s.container==="virtual_desktop"?" on":"");
     el("chipInput").textContent="输入："+(s.input==="touch"?"触控":"鼠标");
@@ -1850,6 +2447,10 @@ def _handle(msg: dict):
                     "error": {"code": -32601, "message": f"未知工具: {name}"}}
         if name != "web_url":
             _touch_session()     # 任何操控相关调用都续期操控会话（真人输入据此判接管）
+        # 屏幕光环：只在**真正会改变桌面状态**的操控工具调用时点亮，
+        # 纯查询（截屏/列窗口/看环境）不点亮，避免用户被无意义闪烁打扰。
+        if name in _CONTROL_TOOLS:
+            _aura_on()
         try:
             out = fn(params.get("arguments", {}) or {})
             content = out if isinstance(out, list) else [{"type": "text", "text": str(out)}]
@@ -1947,10 +2548,53 @@ def _selftest() -> int:
             out["capture"] = f"ok {iw}x{ih} {len(png)}B"
         except Exception as e:
             out["capture"] = f"不可用: {e}"
+        # 元素识别（只读：只列元素、读属性，绝不点击/输入）
+        try:
+            if uia is None:
+                out["endpoints"]["uia"] = "未加载"
+            else:
+                hwnd = foreground_window() or (list_windows()[0]["hwnd"] if list_windows() else 0)
+                if not hwnd:
+                    out["endpoints"]["uia"] = "无窗口可测"
+                else:
+                    els = uia.list_elements(hwnd)
+                    names = [e.label for e in els if e.name]
+                    out["endpoints"]["uia"] = "ok" if els else "无元素"
+                    out["elements"] = {"window": window_title(hwnd), "count": len(els),
+                                       "named": names[:8]}
+                    # 校验：元素描述与能力标记可序列化（供上层/测试断言）
+                    for e in els[:20]:
+                        e.describe()
+                        e.to_dict()
+        except Exception as e:
+            out["endpoints"]["uia"] = f"异常: {e}"
+        # 光环：只查状态与能力，不真的长时间显示（避免自检时闪屏）
+        try:
+            if aura is None:
+                out["endpoints"]["aura"] = "未加载"
+            else:
+                st = aura.aura_state()
+                out["endpoints"]["aura"] = "ok" if "光环" in st["capability"] else st["capability"]
+        except Exception as e:
+            out["endpoints"]["aura"] = f"异常: {e}"
+        # 工具注册完整性：TOOLS 与 _HANDLERS 必须一一对应（漏注册会静默不可用）
+        try:
+            declared = {t["name"] for t in TOOLS}
+            handled = set(_HANDLERS)
+            missing = declared - handled
+            extra = handled - declared
+            out["endpoints"]["tools"] = "ok" if not (missing or extra) else \
+                f"未注册={sorted(missing)} 多余={sorted(extra)}"
+        except Exception as e:
+            out["endpoints"]["tools"] = f"异常: {e}"
 
     _STATE["interrupted"] = False
     _STATE["paused"] = False
-    out["ok"] = out["ok"] and all(v == "ok" for v in out["endpoints"].values())
+    # 关键端点必须全部 ok 才算自检通过。
+    # uia / aura 属「能力增强」：不可用时插件会降级为纯坐标操控，功能不受影响，
+    # 因此它们只记录状态，不参与总判据（否则老旧/受限环境会被误判为插件损坏）。
+    _CORE = ("state", "control", "screen_info", "tools")
+    out["ok"] = out["ok"] and all(out["endpoints"].get(k) == "ok" for k in _CORE)
     sys.stdout.buffer.write(json.dumps(out, ensure_ascii=False).encode("utf-8") + b"\n")
     sys.stdout.buffer.flush()
     return 0 if out["ok"] else 1

@@ -23,6 +23,10 @@ REQUIRED_TOOLS = {"click", "drag", "long_press", "type_text", "select",
                   "screen_shot", "zoom_in", "screen_info", "list_windows",
                   "scroll", "key_press", "control", "web_url"}
 
+# 元素级识别与窗口/应用管理工具（UIA 增强后新增，属必备能力）
+ELEMENT_TOOLS = {"list_elements", "click_element", "type_element",
+                 "scroll_element", "drag_element", "manage_window", "aura"}
+
 
 def _rpc(requests: list, timeout: int = 60) -> list:
     """以 stdio 拉起插件 server，发一批请求，收齐响应后关闭 stdin（进程自然退出）。"""
@@ -183,7 +187,11 @@ def test_selftest_passes():
     assert data["ok"] is True, data
     assert data["page_bytes"] >= 200
     assert all(v == "ok" for v in data["endpoints"].values()), data["endpoints"]
-    assert len(data["tools"]) == len(REQUIRED_TOOLS)
+    # REQUIRED_TOOLS 是「必须具备」的集合；增强会新增工具，故断言为超集而非等集
+    assert REQUIRED_TOOLS <= set(data["tools"]), \
+        f"缺少必需工具: {sorted(REQUIRED_TOOLS - set(data['tools']))}"
+    assert ELEMENT_TOOLS <= set(data["tools"]), \
+        f"缺少元素级/窗口管理工具: {sorted(ELEMENT_TOOLS - set(data['tools']))}"
     assert proc.returncode == 0
 
 
@@ -361,3 +369,291 @@ def test_shipped_plugin_registers_mcp_and_skill(iso):
     skill = iso / "agent" / "skills" / "computer-control" / "SKILL.md"
     assert skill.is_file()
     assert "电脑操控" in skill.read_text(encoding="utf-8")
+
+# ============================================================================
+# 元素级识别（uia.py）与屏幕光环（aura.py）
+# ============================================================================
+
+UIA = PLUGIN_DIR / "uia.py"
+AURA = PLUGIN_DIR / "aura.py"
+
+
+def _load_sibling(name: str, filename: str):
+    """加载插件目录下的兄弟模块（uia.py / aura.py）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, PLUGIN_DIR / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_uia_and_aura_modules_exist_and_compile():
+    """新增的两个零依赖模块必须随包存在且语法正确"""
+    for path in (UIA, AURA):
+        assert path.is_file(), f"缺少 {path.name}"
+    for path in (SERVER, UIA, AURA):
+        proc = subprocess.run([sys.executable, "-m", "py_compile", str(path)],
+                              capture_output=True, check=False, timeout=60)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+
+def test_uia_degrades_gracefully_without_com():
+    """UIA 不可用时必须降级而不是抛异常（元素工具据此回退到坐标操控）"""
+    uia = _load_sibling("cc_uia", "uia.py")
+    # 强制当前线程走「已尝试且失败」分支
+    uia._tls.tried = True
+    uia._tls.auto = None
+    assert uia.available() is False
+    assert "不可用" in uia.capability()
+    # 降级后仍要能给出元素对象（只是没有 UIA 数据），且可安全序列化
+    el = uia.describe_hwnd(0)
+    assert el.hwnd == 0 and el.via_uia is False
+    assert el.to_dict()["type"]
+    assert isinstance(el.describe(), str)
+    # 无效句柄不得抛异常
+    assert uia.describe_hwnd(0xDEADBEEF).hwnd in (0, 0xDEADBEEF)
+    assert uia.list_elements(0) == []
+
+
+def test_uia_automation_is_thread_local():
+    """COM 对象是套间绑定的：跨线程复用 IUIAutomation 会段错误。
+
+    因此每个线程必须各持一份实例（/api/state 在 HTTP 工作线程里也会用到它）。
+    """
+    import threading
+    uia = _load_sibling("cc_uia", "uia.py")
+    main_ptr = uia.automation()
+    seen = {}
+
+    def _worker():
+        # 新线程应拿到**自己**的实例，而不是主线程那个
+        seen["ptr"] = uia.automation()
+        seen["thread"] = threading.current_thread().ident
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    if main_ptr is None:
+        pytest.skip("UIA 在当前环境不可用")
+    assert seen["ptr"] is not None, "工作线程应能独立创建自己的 UIA 实例"
+    assert seen["ptr"] != main_ptr, "不得跨线程复用同一 COM 接口指针"
+    # 主线程实例不受影响
+    assert uia.automation() == main_ptr
+
+
+def test_uia_element_capability_flags():
+    """元素能力标记：可点击/可输入/可滚动/可拖拽的分类必须正确"""
+    uia = _load_sibling("cc_uia", "uia.py")
+    mk = uia.Element
+    button = mk(1, "确定", 50000, (0, 0, 100, 40), True, False, False)
+    edit = mk(2, "输入框", 50004, (0, 0, 200, 30), True, False, False)
+    slider = mk(3, "音量", 50015, (0, 0, 100, 20), True, False, False)
+    listing = mk(4, "文件列表", 50008, (0, 0, 300, 400), True, False, False)
+    disabled = mk(5, "灰按钮", 50000, (0, 0, 80, 30), False, False, False)
+    offscreen = mk(6, "屏外按钮", 50000, (0, 0, 80, 30), True, False, True)
+
+    assert button.clickable and not button.editable
+    assert edit.editable
+    assert slider.scrollable and slider.draggable
+    assert listing.scrollable
+    # 禁用 / 屏外的元素不算可点击（避免点到无效目标）
+    assert not disabled.clickable
+    assert not offscreen.clickable
+    # 几何派生属性
+    assert button.center == (50, 20)
+    assert (button.width, button.height) == (100, 40)
+    assert "可点击" in button.describe()
+    assert "禁用" in disabled.describe()
+
+
+def test_uia_find_elements_filters():
+    """find_elements 的 name/type/only 过滤必须生效"""
+    uia = _load_sibling("cc_uia", "uia.py")
+    items = [uia.Element(1, "安装", 50000, (0, 0, 50, 20)),
+             uia.Element(2, "关闭", 50000, (0, 0, 50, 20)),
+             uia.Element(3, "文本编辑器", 50004, (0, 0, 200, 30)),
+             uia.Element(4, "音量", 50015, (0, 0, 100, 20))]
+    uia.list_elements = lambda hwnd, include_offscreen=False, max_count=300: list(items)
+    assert [e.label for e in uia.find_elements(0, name="安装")] == ["安装"]
+    assert [e.label for e in uia.find_elements(0, type_name="Edit")] == ["文本编辑器"]
+    assert {e.label for e in uia.find_elements(0, only="clickable")} == {"安装", "关闭"}
+    assert [e.label for e in uia.find_elements(0, only="editable")] == ["文本编辑器"]
+    assert [e.label for e in uia.find_elements(0, only="draggable")] == ["音量"]
+    # name 大小写不敏感 + 子串匹配
+    assert uia.find_elements(0, name="编辑")
+    # 无匹配返回空列表（不抛异常）
+    assert uia.find_elements(0, name="绝无此项") == []
+
+
+def test_aura_module_importable_and_reports_capability():
+    """光环模块可加载，并如实汇报能力（是否可用）"""
+    aura = _load_sibling("cc_aura", "aura.py")
+    st = aura.aura_state()
+    assert set(st) == {"active", "failed", "capability"}
+    assert "光环" in st["capability"]
+    # 颜色工具函数：HSL→RGB 必须落在 0..255 且亮度符合预期
+    for hue in (0.0, 0.25, 0.5, 0.75, 0.99):
+        r, g, b = aura._hsl_to_rgb(hue, 0.85, 0.7)
+        assert all(0 <= v <= 255 for v in (r, g, b))
+    # 深色端应比浅色端暗（保证在浅色壁纸上也能看见）
+    dark = sum(aura._hsl_to_rgb(0.3, 0.85, 0.25))
+    light = sum(aura._hsl_to_rgb(0.3, 0.85, 0.9))
+    assert dark < light
+
+
+def test_aura_pixels_cover_all_four_edges():
+    """光环像素必须覆盖完整四边（早先实现漏掉左右竖边，导致屏幕两侧无光环）"""
+    aura = _load_sibling("cc_aura", "aura.py")
+    a = aura.Aura()
+    a._width, a._height = 1920, 1080
+    pixels = a._build_pixels()
+    offs = {off for off, _, _ in pixels}
+    w, h, t = 1920, 1080, a.thickness
+    # 四条边的中点都必须有像素
+    assert (0 * w + 0) in offs                      # 左上角
+    assert (540 * w + 0) in offs                    # 左边中点
+    assert (540 * w + (w - 1)) in offs              # 右边中点
+    assert ((h - 1) * w + 960) in offs               # 下边中点
+    assert (0 * w + 960) in offs                     # 上边中点
+    # 屏幕中心（内部）绝不能被点亮，否则会遮挡用户视线
+    assert (540 * w + 960) not in offs
+    # 粗细范围内全覆盖、无缺口
+    for y in range(0, h, 137):
+        for x in range(0, t):
+            assert (y * w + x) in offs, f"左边 ({x},{y}) 缺像素"
+
+
+def test_new_control_tools_registered():
+    """新增的元素级/窗口管理/光环工具必须同时出现在 TOOLS 与 _HANDLERS"""
+    mod = _load_module()
+    declared = {t["name"] for t in mod.TOOLS}
+    handled = set(mod._HANDLERS)
+    assert declared == handled, f"未注册={declared - handled} 多余={handled - declared}"
+    for name in ("list_elements", "click_element", "type_element",
+                 "scroll_element", "drag_element", "manage_window", "aura"):
+        assert name in declared, f"缺少工具 {name}"
+        assert callable(mod._HANDLERS[name])
+
+
+def test_control_tools_drive_aura_but_queries_do_not():
+    """只有真正改变桌面的工具才点亮光环，查询类不应打扰用户"""
+    mod = _load_module()
+    assert "click" in mod._CONTROL_TOOLS
+    assert "click_element" in mod._CONTROL_TOOLS
+    assert "manage_window" in mod._CONTROL_TOOLS
+    for query in ("screen_shot", "screen_info", "list_windows", "list_elements",
+                  "zoom_in", "web_url", "aura"):
+        assert query not in mod._CONTROL_TOOLS, f"{query} 不该点亮光环"
+
+
+def test_manage_window_state_and_errors():
+    """manage_window 的状态查询与参数校验（不真的改动窗口）"""
+    mod = _load_module()
+    text = mod._HANDLERS["manage_window"]({"action": "state"})
+    assert "当前窗口列表" in text
+    with pytest.raises(ValueError):
+        mod._HANDLERS["manage_window"]({"action": "no_such_action"})
+
+
+def test_element_tools_require_name_or_type(monkeypatch):
+    """元素工具缺少定位参数时必须给出可读错误（而不是静默点错地方）
+
+    这里把「元素识别可用」显式打开，使断言不依赖运行环境的 UIA 状态 ——
+    参数校验逻辑与 UIA 是否可用无关，不该因为环境差异被跳过。
+    """
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_uia_ready", lambda: True)
+    with pytest.raises(ValueError) as ei:
+        mod._HANDLERS["click_element"]({})
+    assert "name" in str(ei.value) and "type" in str(ei.value)
+    # _pick_element 本身也应在缺参时报错（不需要 UIA）
+    with pytest.raises(ValueError):
+        mod._pick_element({})
+
+
+def test_pick_element_relaxes_capability_filter():
+    """能力标记只是偏好：筛不到时应退回按名称匹配，而不是直接罢工"""
+    mod = _load_module()
+    if mod.uia is None:
+        pytest.skip("uia 未加载")
+    calls = {"only": []}
+
+    def _fake_find(hwnd, name="", type_name="", only="", include_offscreen=False,
+                   max_count=300):
+        calls["only"].append(only)
+        if only:                      # 带能力过滤时返回空（模拟类型不在白名单）
+            return []
+        return [mod.uia.Element(1, "文本编辑器", 50004, (0, 0, 200, 30))]
+
+    mod.uia.find_elements = _fake_find
+    mod._target_hwnd = lambda args, required=True: 123
+    el = mod._pick_element({"name": "文本编辑器"}, only="scrollable")
+    assert el.label == "文本编辑器"
+    assert calls["only"] == ["scrollable", ""], "应先按偏好筛，再放宽重试"
+
+
+def test_drag_precision_settles_and_exact_lands(monkeypatch):
+    """拖拽精度：两条注入路径都必须精确落在目标点
+
+    - 触控路径：最后一帧触点必须在目标坐标
+    - 鼠标回退路径：分步数不低于下限（步数太少会被系统当成瞬移而非拖拽）、
+      末步精确落点、且顺序为「按下 → 移动 → 抬起」
+    """
+    mod, calls = _cc_fixture(_load_module(), monkeypatch, touch_ok=True)
+    mod.do_drag(100, 100, 400, 300, duration=0.3, hold=0.15)
+    assert calls["touch"][-1][:2] == (400, 300), "触控末帧必须落在目标点"
+
+    mod, calls = _cc_fixture(_load_module(), monkeypatch, touch_ok=False)
+    mod.do_drag(100, 100, 400, 300, duration=0.3, hold=0.15)
+    assert (400, 300) in calls["move"], "末步必须精确落在目标点"
+    assert len(calls["move"]) >= mod.DRAG_MIN_STEPS
+    assert calls["mouse"].index(mod.MOUSEEVENTF_LEFTDOWN) < \
+        calls["mouse"].index(mod.MOUSEEVENTF_LEFTUP)
+
+
+def test_click_keeps_down_up_at_same_pixel(monkeypatch):
+    """点击精度：鼠标路径下按下与抬起之间不得移动指针（否则会变成拖拽）"""
+    mod, calls = _cc_fixture(_load_module(), monkeypatch, touch_ok=False)
+    calls["move"].clear()
+    mod.do_click(640, 480)
+    assert calls["mouse"].count(mod.MOUSEEVENTF_LEFTDOWN) == 1
+    assert calls["mouse"].count(mod.MOUSEEVENTF_LEFTUP) == 1
+    # 全部移动都应落在点击点（按下期间零漂移）
+    assert set(calls["move"]) == {(640, 480)}
+
+
+def test_long_press_does_not_drift(monkeypatch):
+    """长按精度：鼠标路径按住期间指针必须零漂移（漂移会被识别为拖动）"""
+    mod, calls = _cc_fixture(_load_module(), monkeypatch, touch_ok=False)
+    mod.do_long_press(300, 300, duration=999.0)     # 超长时长须被上限保护
+    assert mod.MOUSEEVENTF_LEFTDOWN in calls["mouse"]
+    assert mod.MOUSEEVENTF_LEFTUP in calls["mouse"]
+    assert set(calls["move"]) == {(300, 300)}
+
+
+def test_scroll_element_moves_pointer_into_container(monkeypatch):
+    """容器内滚动：先把指针移到容器中心再滚，命中该容器而非整屏"""
+    mod, calls = _cc_fixture(_load_module(), monkeypatch, touch_ok=False)
+    mod.do_scroll_at(300, 400, -240)
+    assert (300, 400) in calls["move"], "滚动前应先把指针移进目标容器"
+    assert mod.MOUSEEVENTF_WHEEL in calls["mouse"]
+
+
+def _cc_fixture(mod, monkeypatch, touch_ok=True):
+    """构造一个注入桩的插件模块：记录鼠标/触点事件，绝不触碰真实桌面。
+
+    touch_ok=True 走触控路径，False 强制走鼠标回退路径（两条路径都要验证）。
+    必须走 monkeypatch.setattr —— 用例结束后自动还原，否则桩会污染同模块的后续用例。
+    """
+    calls = {"touch": [], "mouse": [], "move": []}
+    monkeypatch.setattr(mod, "_touch", {"state": "ok" if touch_ok else "broken"})
+    monkeypatch.setattr(mod, "_last_touch_err", 0)
+    inject = (lambda x, y, flags: calls["touch"].append((x, y, flags)) or True) \
+        if touch_ok else (lambda x, y, flags: False)
+    monkeypatch.setattr(mod, "_inject_touch", inject)
+    monkeypatch.setattr(mod, "_send_mouse",
+                        lambda flags, dx=0, dy=0, data=0: calls["mouse"].append(flags))
+    monkeypatch.setattr(mod, "_move_absolute", lambda x, y: calls["move"].append((x, y)))
+    monkeypatch.setattr(mod, "_move_human",
+                        lambda x, y, duration=0: calls["move"].append((x, y)))
+    return mod, calls
