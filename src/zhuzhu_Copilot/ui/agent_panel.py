@@ -1395,7 +1395,10 @@ _CODE_EXTS = frozenset({"py", "js", "ts", "jsx", "tsx", "java", "c", "cpp",
 def _file_thumb(path, ext: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     """工作树文件图标：图片用真实文件内容缩略图；视频/音频用类型专属现成矢量图标；
     源码/其它类型用文档轮廓 + 类型角标。图片加载失败回退为类型图标。
-    结果按 (path, size, color) 缓存：主题切换/工作树刷新时避免重复解码磁盘图片。"""
+    结果按 (path, size, color) 缓存：主题切换/工作树刷新时避免重复解码磁盘图片。
+
+    **仅限 GUI 线程调用**（内部会构造 QPixmap/QIcon，Qt 要求这些只能在 GUI 线程创建）。
+    子线程要解码缩略图请用 _decode_thumb_qimage（只产出 QImage，线程安全）。"""
     if ext in _IMG_EXTS:
         pm = QPixmap(str(path))
         if not pm.isNull():
@@ -1406,6 +1409,40 @@ def _file_thumb(path, ext: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     if ext in _AUDIO_EXTS:
         return _line_icon("audio", size, color)
     return _file_icon(ext, size, color)
+
+
+def _decode_thumb_qimage(path, size: int = 18):
+    """后台线程安全的缩略图解码：只使用 QImage / QImageReader。
+
+    为什么必须这样拆：QPixmap / QPainter / QIcon **只能在 GUI 线程使用**（Qt 明确约束），
+    在子线程创建它们会与主线程争用 GDI 资源；主线程恰好停在原生模态对话框
+    （如「浏览」目录选择框）里时，两者互等即表现为整个界面卡死。
+    因此子线程只产出 QImage（线程安全），QPixmap/QIcon 一律回到主线程再构造。
+
+    另：用 QImageReader 直接按目标尺寸解码（setScaledSize），
+    避免为了 18px 图标把整张巨图读进内存 —— 大目录下这是数量级的差别。
+    """
+    try:
+        reader = QImageReader(str(path))
+        try:
+            reader.setAutoTransform(True)
+        except Exception:
+            pass
+        src = reader.size()
+        if src.isValid() and src.width() > 0 and src.height() > 0:
+            longest = max(src.width(), src.height())
+            target = max(size * 3, 1)          # 留 3 倍余量保证缩放质量
+            if longest > target:
+                scale = longest / float(target)
+                reader.setScaledSize(QSize(max(1, int(src.width() / scale)),
+                                           max(1, int(src.height() / scale))))
+        img = reader.read()
+        if img.isNull():
+            return None
+        return img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                          Qt.TransformationMode.SmoothTransformation)
+    except Exception:
+        return None
 
 
 def _esc(s: str) -> str:
@@ -2991,11 +3028,31 @@ class _AgentSettingsDialog(QDialog):
             pass
 
     def _browse_session_workdir(self, edit):
-        """为某对话选择工作目录（写入对应输入框，保存时持久化）"""
-        start = edit.text().strip() or str(Path.home())
-        d = QFileDialog.getExistingDirectory(self, "选择该对话的工作目录", start)
-        if d:
-            edit.setText(d)
+        """为某对话选择工作目录（写入对应输入框，保存时持久化）。
+
+        两点稳健性处理（都与「点了浏览像卡死」有关）：
+        1. 防重入：原生目录对话框是模态的，按钮连点/回车重复触发会让它嵌套打开，
+           表现为界面失去响应；用标志位挡住第二次。
+        2. 起始目录必须是真实存在的**本地**目录：输入框里可能残留已删除/失效的路径，
+           交给原生对话框会被解析到网络位置或云同步占位目录，出现长时间无响应。
+           依次回退到「输入框内容 → 当前工作目录 → 用户主目录」。
+        """
+        if getattr(self, "_browsing_workdir", False):
+            return
+        self._browsing_workdir = True
+        try:
+            cands = [edit.text().strip(), str(Path.home())]
+            try:
+                from zhuzhu_Copilot.core import agent_tools
+                cands.insert(1, agent_tools.get_workdir() or "")
+            except Exception:
+                pass
+            start = next((p for p in cands if p and os.path.isdir(p)), "")
+            d = QFileDialog.getExistingDirectory(self, "选择该对话的工作目录", start)
+            if d:
+                edit.setText(d)
+        finally:
+            self._browsing_workdir = False
 
     def _on_theme_changed(self, *_):
         """主题下拉切换：立即写入 QSettings；关闭设置对话框后重建 AI 面板（即时生效，
@@ -11256,11 +11313,16 @@ class WorktreeWindow(_RoundedFloatWindow):
     _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
     file_open_requested = pyqtSignal(str)   # 双击文件 → 请求打开代码预览（文件路径）
-    thumb_ready = pyqtSignal(str, QIcon)    # 图片缩略图后台解码完成 → 主线程回填（path, icon）
+    # 图片缩略图后台解码完成 → 主线程回填（path, QImage）
+    # 传 QImage（线程安全）而非 QIcon：QPixmap/QIcon 只能在 GUI 线程构造，
+    # 子线程构造会与主线程争用 GDI，导致原生模态对话框（如「浏览」目录框）卡死。
+    thumb_ready = pyqtSignal(str, QImage)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._root = None
+        # 缩略图解码代次：每次刷新 +1，让在跑的旧解码线程提前退出（避免线程堆积）
+        self._thumbs_gen = 0
         # 不加 WindowStaysOnTopHint（避免全局置顶遮挡其他应用）；
         # 应用激活时由 _guard_panels 抬升，不随点击消失
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
@@ -11378,6 +11440,7 @@ class WorktreeWindow(_RoundedFloatWindow):
             root = agent_git.repo_dir()
         self._root = root or None
         self.tree.clear()
+        self._thumbs_gen += 1      # 作废上一轮仍在跑的缩略图解码（见 _load_thumbs）
         if not root or not os.path.isdir(root):
             self.tree.addTopLevelItem(
                 QTreeWidgetItem(["（未找到工作目录 / git 仓库）"]))
@@ -11502,21 +11565,39 @@ class WorktreeWindow(_RoundedFloatWindow):
             item.setToolTip(0, str(p))
             parent_item.addChild(item)
         if pending_thumbs:
-            threading.Thread(target=self._load_thumbs, args=(pending_thumbs,),
+            # 代次号：新一次刷新会让在跑的旧解码线程自然退出，避免连续刷新堆积线程
+            gen = self._thumbs_gen
+            threading.Thread(target=self._load_thumbs, args=(pending_thumbs, gen),
                              daemon=True).start()
 
-    def _load_thumbs(self, paths: list):
-        """后台线程解码图片缩略图（QPixmap 解码可能慢，尤其大图）；
-        每张解码后经 thumb_ready 信号回主线程 setIcon，不阻塞工作树扫描。"""
-        for p in paths:
-            try:
-                icon = _file_thumb(p, p.rsplit(".", 1)[-1].lower(), 18, TEXT_DIM)
-                self.thumb_ready.emit(p, icon)
-            except Exception:
-                pass
+    def _load_thumbs(self, paths: list, gen: int = 0):
+        """后台线程解码图片缩略图：**只产出 QImage**（线程安全）。
 
-    def _on_thumb_ready(self, path: str, icon: QIcon):
-        """主线程回填缩略图：按路径定位树节点并 setIcon（节点已刷新/删除则静默跳过）"""
+        QPixmap / QPainter / QIcon 只能在 GUI 线程使用（Qt 硬性约束）：早期版本在
+        本线程直接调 _file_thumb（内部构造 QPixmap/QIcon），会与主线程争用 GDI ——
+        主线程当时若停在原生模态对话框（选择工作目录的「浏览」框）里就会互相等待，
+        表现为整个界面卡死。改为只解码 QImage，QPixmap/QIcon 回到主线程构造。"""
+        for p in paths:
+            if self._thumbs_gen != gen:
+                return          # 期间又刷新过 → 本批已过期，直接丢弃
+            img = _decode_thumb_qimage(p, 18)
+            if img is not None and not img.isNull():
+                try:
+                    self.thumb_ready.emit(p, img)
+                except RuntimeError:
+                    return      # 控件已销毁
+                except Exception:
+                    pass
+
+    def _on_thumb_ready(self, path: str, image):
+        """主线程回填缩略图：QPixmap/QIcon 在这里（GUI 线程）才构造。
+        节点已刷新/删除则静默跳过。"""
+        if image is None or (hasattr(image, "isNull") and image.isNull()):
+            return
+        try:
+            icon = QIcon(QPixmap.fromImage(image))
+        except Exception:
+            return
         it = self.tree.findItems(os.path.basename(path), Qt.MatchFlag.MatchExactly
                                  | Qt.MatchFlag.MatchRecursive)
         for x in it:
@@ -15766,8 +15847,22 @@ class AgentPanel(QDialog):
         """面板守卫：应用激活时把面板抬升到本应用之上（避免点击对话区后消失），
         但不用全局置顶，切到其他应用时面板随本应用退后、不遮挡其他内容。
         仅对隐藏面板调用 sync 重新显示；可见面板在应用激活时 raise_。
-        AI 接管（_ai_managed）的窗口由 AI 全权控制显隐/层级，守卫跳过。"""
+        AI 接管（_ai_managed）的窗口由 AI 全权控制显隐/层级，守卫跳过。
+
+        **有模态对话框时不抬升**（关键修复）：todos/git/工作树/代码预览都是独立
+        Tool 顶层窗口，而「浏览」选目录用的是原生模态对话框。对话框打开期间本应用
+        仍是激活窗口，本守卫每 800ms 就会 raise_() 一次，把这些面板插到对话框之上
+        抢走 z 序与交互焦点 —— 用户看到的现象就是「点了浏览之后界面直接卡死」
+        （对话框还在，但点什么都没反应）。因此只要存在活动模态窗口就整轮跳过。
+
+        注：这正是浮层「点击外部」处理里早已特判过的那类对话框（见 eventFilter 中
+        activeModalWidget 的用法：文件浏览/确认框的层级与浮层无父子关系）。
+        那处只解决了「误收起浮层」，本守卫漏了同一前提，故表现为卡死。
+        """
         if not self.isVisible() or self._panel_minimized:
+            return
+        app = QApplication.instance()
+        if app is not None and app.activeModalWidget() is not None:
             return
         active = self.isActiveWindow() or (self.window() is not None
                                            and self.window().isActiveWindow())
