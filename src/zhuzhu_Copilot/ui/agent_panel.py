@@ -188,18 +188,43 @@ def _theme_setting() -> str:
 
 _FOCUS_GLOW_BLUR = 16
 _FOCUS_GLOW_ALPHA = 170
-# 自定义背景（壁纸）下界面大面积透明，输入框底也整体让给壁纸（见 _input_bg）：
-# 泛光掩膜只剩描边与文字 → 半径再放宽一档、透明度拉满，边缘光才立得住
+# 自定义背景（壁纸）下界面大面积透明：泛光掩膜只剩描边与文字 → 半径再放宽一档、
+# 透明度拉满，边缘光才立得住
 _FOCUS_GLOW_BLUR_ON_WALLPAPER = 36
 _FOCUS_GLOW_ALPHA_ON_WALLPAPER = 255
-# 光标闪烁周期（ms）：壁纸下闪得更勤，光标才不会被背景淹没（Qt 默认 1000ms）
+# 光标闪烁周期（ms）：用Qt 默认的 1000ms，**自定义背景下也不缩短**。
+# 缩短周期是「光标在花背景上不显眼」的旧对策（靠加快闪烁补偿对比度），实测反而
+# 更难看清：620ms ≈ 每秒 1.6 次，视觉上是急促抖动而非提示，用户反馈「闪烁频率过快」。
+# 可见性应靠「适度宽度 + 纯黑 + 固定浅底」（见 _input_bg）保证，不是靠加快闪烁。
 _CURSOR_FLASH_MS = 1000
-_CURSOR_FLASH_MS_ON_WALLPAPER = 620
-# 输入光标宽度（px）：Qt 默认 1px 太细，花背景上几乎看不见。
-# 注意**不能**靠自绘静态竖线来「始终可见」——静态自绘会盖住原生光标、
-# 表现为「光标一直在但不闪烁」。加宽原生光标既是 Qt 支持的做法，也保留原生闪烁。
+# 输入光标宽度（px）：Qt 默认 1px 在自定义背景上太细，几乎看不见，故取 2px。
+# **自定义背景下不要再加粗**：曾放大到 4px（约 14px 字号行高的 1/4），实测是一根
+# 实心黑柱、压在文字上像删除线，还把光标前后的字符挤开 —— 用户反馈「光标太大」。
+# 注意**不能**靠自绘静态竖线来「始终可见」——那会盖住原生光标、表现为
+# 「光标一直在但不闪烁」。加宽原生光标是 Qt 支持的做法，也保留原生闪烁。
 _CURSOR_WIDTH = 2
-_CURSOR_WIDTH_ON_WALLPAPER = 4
+_CURSOR_WIDTH_ON_WALLPAPER = 2
+
+# 输入光标颜色：自定义背景下固定纯黑（不走 _wallpaper_foreground 的黑白二选一）。
+# 旧实现让光标色跟随 QSS `color`，而后者在壁纸模式下按壁纸亮度取黑/白：
+# 壁纸偏亮时返回纯黑（正常），**偏暗时返回纯白** —— 亮壁纸→黑、暗壁纸→白
+# 这套「对比度最优」的推导对**文字**成立，但对光标不成立：输入框已经有一层
+# 固定底托（见 _input_bg），光标下方永远是被托起的均匀浅底，纯黑永远清晰；
+# 而白色光标压在浅底上几乎不可见，用户反馈「光标颜色不是纯黑色」。
+# Qt 无独立 caret-color API，光标色只能跟随 QSS `color`，故在壁纸模式下把
+# 光标所在控件的 `color` 钉成纯黑。
+_CURSOR_COLOR_ON_WALLPAPER = "#000000"
+# 上述光标底色的**反色**（即底托色）：光标钉纯黑 → 底托恒为白。
+# 单独取常量而非在 _input_bg 里写死，是为了让「光标色 ↔ 底托色」的配对关系
+# 在代码里显式可见：两者必须恒为反色，改一个必须改另一个。
+_CURSOR_COLOR_ON_WALLPAPER_INVERTED = "#FFFFFF"
+# 上述光标底托色的不透明度：实测 70% 时纯黑光标在**任意**壁纸上对比度 ≥9.9:1
+# （纯黑壁纸 9.9:1、深灰 12.0:1、纯白 21:1），既保证可读又保留 30% 壁纸透出。
+# 详见 _input_bg 的实测表。
+_INPUT_CARET_BASE_ALPHA = 0.70
+# 输入框描边（自定义背景下）：淡灰。用它而不是主题描边色，是为了在花背景上立住
+# 输入框边界；不用纯黑是为了不和纯黑文字/光标粘连（详见 _input_border）。
+_INPUT_CARET_BORDER = "#E3E8F0"
 
 # 全局滚动条滑块不透明度：淡灰极简，滑块压到 30% 半透明（悬停提亮到 55% 保持可辨）
 _SCROLLBAR_OPACITY = 0.30
@@ -258,10 +283,12 @@ def _focus_glow_effect(widget):
 
 
 def apply_cursor_flash() -> None:
-    """按当前背景状态设定全局光标闪烁周期。
+    """设定全局光标闪烁周期。
 
-    无 caret-color API：壁纸模式下缩短周期让光标闪得更勤，
-    与加宽光标（见 apply_input_caret）合起来是仅有的两个对比度手段。
+    **壁纸下沿用 Qt 默认周期，不再缩短**。缩短闪烁周期是「光标在花背景上不显眼」
+    的旧对策，实测反而更难看清：闪烁频率过快（620ms ≈ 每秒 1.6 次）视觉上是明显
+    的急促抖动，用户反馈「闪烁频率过快」。可见性应由**纯黑光标 + 适度宽度 +
+    固定底托**保证（见 `_CURSOR_COLOR_ON_WALLPAPER` / `_input_bg`），不是靠加快闪烁。
     """
     try:
         app = QApplication.instance()
@@ -270,18 +297,18 @@ def apply_cursor_flash() -> None:
     if app is None:
         return
     try:
-        app.setCursorFlashTime(_CURSOR_FLASH_MS_ON_WALLPAPER if _feedback_boosted()
-                               else _CURSOR_FLASH_MS)
+        app.setCursorFlashTime(_CURSOR_FLASH_MS)
     except Exception:
         pass
 
 
 def apply_input_caret(widget) -> None:
-    """按当前背景状态设定输入框光标宽度：壁纸下加宽一档。
+    """设定输入框光标宽度：壁纸下**保持常规宽度**（2px）。
 
-    透明底 + 花背景会吃掉细光标，加宽（本函数）+ 加快闪烁（apply_cursor_flash）
-    是 Qt 里增强光标对比度的仅有两个真实手段。**必须保留原生光标**：Qt 没有
-    caret-color API，光标色随 QSS `color`（壁纸下已改纯黑，见 _input_fg），
+    曾按背景状态放大到 4px，实测是一根实心黑柱、压在文字上像删除线，还会把光标
+    前后的字符挤开 —— 用户反馈「光标太大」。2px 在自定义背景上已足够辨认。
+
+    **必须保留原生光标**：Qt 没有 caret-color API，光标色只能跟随 QSS `color`，
     而闪烁由 Qt 的闪烁计时器驱动 —— 自绘静态竖线既不闪、又会盖住原生光标。
     """
     if widget is None:
@@ -452,60 +479,79 @@ def _panel_stroke(key: str = "BORDER") -> str:
 
 
 def _input_bg() -> str:
-    """输入框底色：壁纸透出模式下用极淡半透明底托住光标。
+    """输入框底色：壁纸透出模式下用一层**不透明度足够的浅底**托住纯黑光标。
 
-    完全透明时光标色跟随壁纸**全局**平均亮度选黑/白，但输入框位置的**局部**
-    背景可能与全局相反（亮壁纸上的深色区域）→ 光标与底色重合、看起来像
-    「点进去没有闪烁光标」。加一层与光标反色的极淡底（~10% 不透明度），
-    视觉上几乎仍通透，但光标脚下始终有均匀底色，对比度兜底。
+    这层底的存在意义是给光标一个**确定的对比底** —— 自定义背景的局部明暗不可控
+    （同一张壁纸里输入框位置可能是深色区），光标若直接落在壁上，任一配色都只在
+    「另一半壁纸」上成立。实测（黑字压在合成底上的对比度）：
+
+        白底不透明度   纯白壁纸   深灰壁纸   纯黑壁纸
+             10%       21:1       2.6:11.2:1   ← 光标基本看不见
+             45%21:1       6.8:1      4.4:1
+             70%       21:1      12.0:1      9.9:1   ← 全壁纸 ≥9.9:1
+
+    故取 70%：既保证纯黑光标/文字在**任意**壁纸上都清晰（最差 9.9:1，远高于
+    4.5:1 正文可读阈值），又保留 30% 壁纸透出、不把输入框做成一块死白。
+
+    旧实现是「10% 白底 + 光标色按壁纸亮度在黑/白间切换」：暗壁纸上得到白底+ 白光标，
+    光标几乎不可见，且光标色不是用户要求的纯黑。固定浅底 + 纯黑光标这一组合
+    与壁纸明暗**无关**，才是「底托」该有的稳定性。
     """
     if _feedback_boosted():
-        fg = _wallpaper_foreground()
-        # 光标黑→白底，光标白→黑底；10% 不透明度几乎看不见但能托住光标
-        bg = "#FFFFFF" if fg == "#000000" else "#000000"
-        c = QColor(bg)
-        c.setAlphaF(0.10)
+        c = QColor(_CURSOR_COLOR_ON_WALLPAPER_INVERTED)
+        c.setAlphaF(_INPUT_CARET_BASE_ALPHA)
         return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
     return PANEL
 
 
-def _wallpaper_foreground() -> str:
-    """壁纸之上叠加的输入框前景色（文字 / 光标 / 描边同源）。
-
-    **为什么不能固定纯黑**：壁纸会压一层可调深度的纱（bg_dim），深色壁纸 + 深色纱叠出来
-    的底可以很暗（实测 #14161B 壁纸下光标处合成底只有 1.20:1 对比度）—— 黑光标压在
-    那上面等于看不见，用户感受就是「点进输入框没有闪烁光标」。按壁纸**实际绘制结果**的
-    相对亮度在黑白之间取对比度更高的一侧，即可在任意自定义背景上保持可见，
-    同时仍然是 Qt 原生光标（Qt 无独立 caret-color，光标色跟随 QSS `color`）与原生闪烁。
-    """
-    try:
-        lum = app_wallpaper.rendered_luminance(_base_color("BG"))
-    except Exception:
-        lum = None
-    if lum is None:
-        return "#000000"           # 取不到亮度（无实例/解码失败）：退回原行为
-    return "#FFFFFF" if lum < app_wallpaper.FOREGROUND_SWITCH_LUM else "#000000"
+# ---------------------------------------------------------------------------
+# 输入框在自定义背景（壁纸）下的配色，三者必须**成组**看，改一个要同时看另外两个：
+#
+#   底色 _input_bg()      70% 白 —— 给光标一个确定的浅底（实测任意壁纸合成底 ≥9.9:1）
+#   前景 _input_fg()       纯黑 —— 文字 + 光标同源（Qt 无独立 caret-color API）
+#   描边 _input_border()   淡灰 —— 在花背景上立住边界，又不与纯黑前景粘连
+#
+# 设计要点：光标在 Qt 里没有独立颜色/样式接口，只能跟随 QSS `color`、宽度只能
+# `setCursorWidth`、闪烁只能靠全局 `setCursorFlashTime`。因此可见性只能从
+# 「颜色 × 宽度 × 闪烁」三个维度做文章 —— 早期版本为了在花背景上更显眼，把这三项
+# 一起往极端调（光标 4px、闪烁 620ms、暗壁纸下光标转白），结果三项都是「更糟」：
+# 4px 黑柱压在文字上像删除线、620ms 闪烁是明显急促抖动、白光标压在浅底托上几乎消失。
+#
+# 现方案改为「适度宽度 + 纯黑 + 正常闪烁」，并把对比度责任**全部交给底色**：
+# 底色一旦确定为浅底，纯黑前景在任何壁纸上都清晰，于是不再需要动光标本身。
+# ---------------------------------------------------------------------------
 
 
 def _input_border() -> str:
-    """输入框描边色：壁纸下取与前景同源的可见色（详见 _wallpaper_foreground）。
+    """输入框描边色：自定义背景下取淡灰（与纯黑文字/光标形成边界）。
 
-    浅灰描边（#E3E8F0）压在花背景上会糊成「透明」，输入框边界立不住；
-    因此壁纸下描边与文字/光标用同一个高对比色，共同构成完整的可读性组合。
+    浅灰描边（#E3E8F0）压在花背景上会糊成「透明」，输入框边界立不住 —— 这是取淡灰
+    而不是主题描边色的原因。但**不能**再取 `_wallpaper_foreground()`：那是按壁纸
+    亮度在黑/白间切换的「对比度最优色」，暗壁纸下返回纯黑，会与同为纯黑的文字/光标
+    粘在一起、输入框边界消失（且与「前景纯黑」的设计自相矛盾）。
     非壁纸场景维持主题边框色。
     """
     if _feedback_boosted():
-        return _wallpaper_foreground()
+        return _INPUT_CARET_BORDER
     return BORDER
 
 
 def _input_fg() -> str:
-    """输入框文字色（光标色系随文字，Qt 无独立 caret-color API）：壁纸下取高对比色。
+    """输入框前景色（文字 + **光标**）：自定义背景下钉成纯黑。
 
-    见 _wallpaper_foreground：亮壁纸取纯黑、暗壁纸取纯白，二者都与脚下底色对比度最高。
+    Qt 没有独立的 caret-color API —— 光标色与文字色共用 QSS 的 `color`，二者
+    无法分开设置。因此要让光标纯黑，`color` 就必须是纯黑。
+
+    这样做为什么不会让文字在暗壁纸上消失：输入框已经有 70% 不透明度的浅色底托
+    （见 `_input_bg`，实测任意壁纸上合成底 ≥9.9:1 对比度），输入框内部是一个
+    **确定的浅底**，与壁纸明暗无关 —— 纯黑文字压在上面始终清晰。
+
+    旧实现让 `color` 跟随 `_wallpaper_foreground()`（亮壁纸黑、暗壁纸白），
+    本意是「文字取对比度最优色」，但实测暗壁纸下光标变白、压在浅底托上几乎不可见，
+    且与用户要求的纯黑不符。
     """
     if _feedback_boosted():
-        return _wallpaper_foreground()
+        return _CURSOR_COLOR_ON_WALLPAPER
     return TEXT
 
 
@@ -7239,9 +7285,11 @@ class _DropTextEdit(QPlainTextEdit):
     文件拖放（重写 drag/drop，不依赖事件冒泡）。
 
     光标不用自绘：曾重写 paintEvent 画一条静态黑色竖线「保证始终可见」，结果是
-    原生光标被盖住 → 光标一直显示却**不闪烁**（用户反馈）。现改为原生光标加宽
-    （见 apply_input_caret）+ 缩短闪烁周期（见 apply_cursor_flash），
-    颜色随 QSS `color`（壁纸下纯黑，见 _input_fg），闪烁交给 Qt。
+    原生光标被盖住 → 光标一直显示却**不闪烁**（用户反馈）。现完全用原生光标：
+    宽度由 `apply_input_caret` 设定、闪烁周期由 `apply_cursor_flash` 设定，
+    颜色随 QSS `color`（自定义背景下纯黑，见 `_input_fg`）。
+    对比度不靠动光标（加宽/加快闪烁/换色都试过，三项都更糟），而是靠
+    `_input_bg` 那层固定浅底 —— 详见文件头「输入框在自定义背景下的配色」注释。
     """
     submit = pyqtSignal()          # 用户按 Enter（发送）
     fileDropped = pyqtSignal(list)  # 拖入的文件路径列表
@@ -13829,7 +13877,7 @@ class AgentPanel(QDialog):
         bottom.setSpacing(6)
         self.input = _DropTextEdit()
         _install_focus_glow(self.input)   # 聚焦边缘泛光（替代蓝色实线边框）
-        apply_input_caret(self.input)     # 壁纸下加宽光标：透明底上的对比度兜底
+        apply_input_caret(self.input)     # 原生光标宽度（自定义背景下同样 2px，见常量注释）
         self.input.setPlaceholderText("/ for commad @ for agent")
         self.input.setMinimumHeight(32)
         self.input.setMaximumHeight(110)
