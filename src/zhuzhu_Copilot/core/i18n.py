@@ -262,17 +262,16 @@ def set_lang(lang: str, persist: bool = True, prompt_lang: str = "") -> str:
 
     persist=True 时写入 QSettings（下次启动沿用）；UI 侧切换语言后应重建界面，
     故本函数**不负责**刷新界面，只负责状态与广播通知。
+
+    提示词语言缺省时**始终跟随界面语言**：这才是「切到English 就该得到英文提示词」
+    的语义。此前有一版对已缓存的 prompt 语言做「persist=False 就不动」的特殊处理，
+    会让调用方不传 prompt_lang 时界面语言变了而提示词语言不变 —— 用户切了语言却仍
+    收到中文提示词，正是该bug 的成因之一，故去掉。
     """
     norm = _normalize(lang) or DEFAULT_LANG
-    pnorm = _normalize(prompt_lang) if prompt_lang else ""
+    pnorm = _normalize(prompt_lang) if prompt_lang else norm
     with _lock:
-        if pnorm:
-            _state["prompt"] = pnorm
-        elif _state["prompt"] and not persist:
-            pass
-        else:
-            # 未显式给提示词语言：跟随界面语言（未显式设过 prompt_lang 时）
-            _state["prompt"] = pnorm or norm
+        _state["prompt"] = pnorm
         _state["ui"] = norm
         listeners = list(_state["listeners"])
     if persist:

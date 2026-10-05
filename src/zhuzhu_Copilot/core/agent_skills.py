@@ -1861,19 +1861,33 @@ def skill_instructions(skill_names: list) -> str:
     说明（description）必须一并给出：模型只看到规范正文时不知道这个技能是干什么用的，
     判断不了「当前任务是否属于该技能」，于是容易自行解释规范、或只描述不执行。
     带上说明后，技能的身份、用途与流程在同一段上下文里，模型才可能严格遵守。
+
+    国际化：
+    - **技能标题/说明/规范三段标签**（"### 技能 X" / "技能说明：" / "技能规范："）来自
+      语言包，随提示词语言切换；
+    - **description / instruction 正文**优先查语言包键
+      ``skill.<name>.desc`` / ``skill.<name>.body``；查不到则用原样（技能正文是用户
+      /插件作者自定义内容，不做机器翻译，缺译文时保留原文才是正确行为）。
     """
     by_name = {s.get("name"): s for s in load_skills()}
     parts = []
+    on = _on()
     for n in skill_names or []:
         s = by_name.get(n)
         if not s:
             continue
         body = str(s.get("instruction") or "").strip()
+        if on:
+            body = _tp(f"skill.{n}.body", body)
         if not body:
             continue
         desc = str(s.get("description") or "").strip()
-        head = f"### 技能 {n}" + (f"\n技能说明：{desc}" if desc else "")
-        parts.append(f"{head}\n技能规范：\n{body}")
+        if on:
+            desc = _tp(f"skill.{n}.desc", desc)
+        head = _tp("prompt.skill.head", "### 技能 %s") % n
+        if desc:
+            head += "\n" + (_tp("prompt.skill.desc_label", "技能说明：%s") % desc)
+        parts.append(head + "\n" + _tp("prompt.skill.body_label", "技能规范：\n") + body)
     return "\n\n".join(parts)
 
 
@@ -2161,6 +2175,83 @@ def _direct_mode_block() -> str:
             "可用 ask_user 一次性问清后继续，不要在信息不足时硬猜。")
 
 
+def _tp(key: str, default: str = "") -> str:
+    """提示词文案翻译（按提示词语言查 locales/prompt_<lang>.json）。
+
+    轻量内联封装而非到处 import：agent_skills 是被 Cython 编译的核心模块，
+    顶层 ``from zhuzhu_Copilot.core import i18n`` 会形成循环导入
+    （i18n 惰性引用 app_identity，而 app_identity 的迁移又会回到本模块），
+    故此处函数内惰性导入并全异常兜底 —— 国际化永远不能影响提示词构建。
+    中文语言下直接返回原文，零查表开销。
+    """
+    try:
+        from zhuzhu_Copilot.core import i18n
+        lang = i18n.current_prompt_lang()
+        if lang == i18n.DEFAULT_LANG:
+            return default
+        return i18n.tp(key, default)
+    except Exception:
+        return default
+
+
+def _tpf(key: str, default: str, **kw) -> str:
+    """带变量的提示词文案翻译（``{name}`` 命名占位符）。
+
+    与 :func:`_tp` 的区别：文案里含工作流名 / 路径 / 数量等**运行时变量**，
+    英文语序与中文不同（``「{wf}」工作流`` vs ``the "{wf}" workflow``），
+    无法用 f-string 拼中文原文再整体查表，故译文自带占位符并由 str.format 注入。
+
+    缺译文时回退中文原文（变量照常注入）；占位符不匹配不抛异常，退回原文优先于崩溃。
+    """
+    try:
+        from zhuzhu_Copilot.core import i18n
+        if i18n.current_prompt_lang() == i18n.DEFAULT_LANG:
+            return default.format(**kw) if kw else default
+        return i18n.tpf(key, default, **kw)
+    except Exception:
+        try:
+            return default.format(**kw) if kw else default
+        except Exception:
+            return default
+
+
+def _on() -> bool:
+    """提示词语言是否为非默认（英文）语言 —— 决定是否需要逐条查表翻译。"""
+    try:
+        from zhuzhu_Copilot.core import i18n
+        return i18n.current_prompt_lang() != i18n.DEFAULT_LANG
+    except Exception:
+        return False
+
+
+def _tpo(key: str) -> str:
+    """整段替换型提示词块（可选）：缺译文时返回空串而非 key。
+
+    与 :func:`_tp` 的区别在于缺省行为。i18n.tp 的兜底是「default，否则 key」，
+    对 ``_tp(key, "")`` 这类「整段按语言切换」的块，返回 key 会把
+    ``prompt.block.tools`` 这种内部标识直接拼进 system prompt。
+    英文下这些块没有原文可退（中文原文是一串字面量拼接，无法逐句查表），
+    故缺译文时只能整段省略，不能回退中文。
+    """
+    try:
+        from zhuzhu_Copilot.core import i18n
+        if i18n.current_prompt_lang() == i18n.DEFAULT_LANG:
+            return ""
+        val = i18n.tp(key, "")
+        return val if val and val != key else ""
+    except Exception:
+        return ""
+
+
+#: 输出语言指令（中文为源语言，英文见 locales/prompt_en_US.json 的 prompt.lang.directive）。
+#: 必须显式存在：persona/规则/工具清单只描述身份与纪律，不规定输出语言，
+#: 缺失时模型会按训练分布默认回中文。
+_LANG_DIRECTIVE_ZH = (
+    "【输出语言】必须始终使用简体中文回复，包括回答正文、思考过程、"
+    "任务清单标题、对话标题与所有工具调用参数中的自然语言内容；"
+    "即使用户使用其他语言提问，也一律用简体中文回答。")
+
+
 def build_system_prompt(agent_name: str = "", extra_skills: list = None,
                         text_only: bool = False, memory_enabled: bool = True,
                         direct: bool = False, subagents_allowed: bool = True) -> str:
@@ -2180,31 +2271,42 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
     agent = next((a for a in load_agents() if a.get("name") == agent_name), None) \
         or DEFAULT_AGENTS[0]
     parts = []
+    # 输出语言指令放在**最前面**：persona / 规则 / 工具清单只描述身份与纪律，
+    # 从不规定「用什么语言回答」。缺这条指令时，模型会按训练分布默认回中文 ——
+    # 即便整段提示词已是英文（用户实测：英文界面 + 英文输入「hi」仍回中文）。
+    # 语言要求必须显式下达，且放system 开头以获得最高指令权重。
+    parts.append(_tp("prompt.lang.directive", _LANG_DIRECTIVE_ZH))
     persona = agent.get("persona")
     if persona:
-        parts.append(persona)
+        parts.append(_tp("prompt.persona", persona))
     system_prompt = agent.get("system_prompt", "")
     if system_prompt:
-        parts.append(system_prompt)
+        parts.append(_tp("prompt.agent.system", system_prompt))
     rules = agent.get("rules", [])
     if rules:
-        parts.append("严格规则（必须遵守）：\n" + "\n".join(str(r) for r in rules))
+        rk = "prompt.rule.%d"
+        if _on():
+            rules = [_tp(rk % i, str(r)) for i, r in enumerate(rules)]
+        parts.append(_tp("prompt.block.rules_head",
+                         "严格规则（必须遵守）：\n") + "\n".join(str(r) for r in rules))
     tool_ins = agent.get("tool_instructions") or {}
     if tool_ins:
-        block = ["工具执行规范（每个工具先理解再按固定流程拆分执行）："]
+        head = _tp("prompt.block.tool_ins_head",
+                   "工具执行规范（每个工具先理解再按固定流程拆分执行）：")
+        block = [head]
         for tname, cfg in tool_ins.items():
             if not isinstance(cfg, dict):
                 continue
             u = cfg.get("理解")
             steps = cfg.get("执行拆分")
             if u:
-                block.append(f"- {tname}（{u}）")
+                block.append("- %s（%s）" % (tname, _tp(f"prompt.ti.{tname}.u", u)))
             if steps:
-                for i, st in enumerate(steps, 1):
-                    block.append(f"  步骤{i}. {st}")
+                for i, st in enumerate(steps):
+                    block.append("  " + _tp(f"prompt.ti.{tname}.s.{i}", "步骤%d. %s" % (i + 1, st)))
         parts.append("\n".join(block))
-    parts.append(_extend_dont_create_rule())
-    parts.append(_tool_call_hard_rules())
+    parts.append(_tp("prompt.block.extend_rule", _extend_dont_create_rule()))
+    parts.append(_tp("prompt.block.hard_rules", _tool_call_hard_rules()))
     prompt = "\n\n".join(parts)
 
     # 仅注入 agent 自带固定技能（配置稳定，不破坏 system 前缀缓存）。
@@ -2215,12 +2317,12 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
         inst = skill_instructions(skills)
         if inst:
             prompt += "\n\n" + inst
-    prompt += _skill_router_block()
+    prompt += _tp("prompt.block.skill_router", _skill_router_block())
     _mem_desc = ("save_memory/load_memory(本地长期记忆)。" if memory_enabled
                  else "内存记忆工具(save_memory/load_memory)已在设置中禁用，不可调用。")
     _mcp_desc = ("若连接了 MCP 服务器，其工具同样可用。" if cap_enabled("mcp")
                  else "MCP 服务器工具已在设置中禁用，不可调用。")
-    prompt += ("\n\n可用内置工具："
+    _tools_zh = ("\n\n可用内置工具："
                "browser_open(启动独立浏览器实例，不影响用户浏览器；浏览器任务第一步用它)、"
                "browser_navigate(在独立浏览器打开网页)、browser_snapshot(页面截图+元素清单)、"
                "browser_click(按编号/文字/CSS选择器点击网页元素)、browser_type(向网页输入框输入)、"
@@ -2249,56 +2351,80 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
                "update_todo(维护任务清单：复杂/多步骤任务开始必须用它创建并逐步更新每步状态，全量提交含已完成项)、"
                "list_todo(查看当前任务清单)、"
                + _mem_desc + _mcp_desc)
+
+    # 中文：直接把整段写进 prompt（原文拼接，字节稳定 -> 前缀缓存不失效）
+    prompt += _tools_zh + _mem_desc + _mcp_desc
+    # 英文提示词语言：整段工具清单在语言包里成句给出（中文原文是一串字面量拼接，
+    # 无法逐句查表，故整段按语言切换；中文下沿用原文，保持 prompt 字节稳定）
+    if _on():
+        _pos = prompt.rfind(_tools_zh)
+        if _pos >= 0:
+            prompt = prompt[:_pos]
+        prompt += (_tpo("prompt.block.tools")
+                   + (_tpo("prompt.block.tools_mem_on") if memory_enabled
+                      else _tpo("prompt.block.tools_mem_off"))
+                   + (_tpo("prompt.block.tools_mcp_on") if cap_enabled("mcp")
+                      else _tpo("prompt.block.tools_mcp_off")))
     # 手动禁用工具：提示词层面明示（schema 与执行层已硬性剔除，此提示避免模型反复尝试）
     try:
         from zhuzhu_Copilot.core import agent_sandbox as _sb
         _banned = _sb.disabled_tools()
         if _banned:
-            prompt += ("\n\n注意：以下工具已被你在设置中禁用，禁止调用它们"
-                       "（调用会被系统直接拒绝）：" + "、".join(sorted(_banned)))
+            prompt += (_tp("prompt.block.banned_tools",
+                           "\n\n注意：以下工具已被你在设置中禁用，禁止调用它们"
+                           "（调用会被系统直接拒绝）：") + "、".join(sorted(_banned)))
         if _sb.tools_disabled_all():
-            prompt += ("\n\n注意：你已禁用全部工具调用（仅可对话回复），"
-                       "不要调用任何工具，只以文本回答问题。")
+            prompt += _tp("prompt.block.banned_all",
+                          "\n\n注意：你已禁用全部工具调用（仅可对话回复），"
+                          "不要调用任何工具，只以文本回答问题。")
     except Exception:
         pass
-    prompt += _ask_policy_block()
+    prompt += _tp("prompt.block.ask_policy", _ask_policy_block())
     if memory_enabled:
-        prompt += ("\n\n记忆：你有本地长期记忆文件 memory.md。遇到用户偏好、重要结论、"
-                   "约定、常用路径等值得长期记住的信息时，调用 save_memory 保存；"
-                   "新任务开始或需要回忆过往信息时，自行决定是否调用 load_memory 查看。")
+        prompt += _tp("prompt.block.memory_on",
+                      "\n\n记忆：你有本地长期记忆文件 memory.md。遇到用户偏好、重要结论、"
+                      "约定、常用路径等值得长期记住的信息时，调用 save_memory 保存；"
+                      "新任务开始或需要回忆过往信息时，自行决定是否调用 load_memory 查看。")
     else:
         # 记忆关闭（系统层面）：不引导记忆工具，schema 与执行层已双重禁用
-        prompt += "\n\n当前未开启记忆功能：不要调用 save_memory / load_memory。"
+        prompt += _tp("prompt.block.memory_off",
+                  "\n\n当前未开启记忆功能：不要调用 save_memory / load_memory。")
     if text_only:
-        prompt += ("\n\n当前为纯文本模型（不支持图像输入）：browser_snapshot 等工具返回的页面截图"
-                   "不会提供给你，本环境不提供图像。"
-                   "请通过文本工具（read_file、run_command、web_fetch、browser_html 等）完成用户请求。")
+        prompt += _tp("prompt.block.text_only",
+                      "\n\n当前为纯文本模型（不支持图像输入）：browser_snapshot 等工具返回的页面截图"
+                      "不会提供给你，本环境不提供图像。"
+                      "请通过文本工具（read_file、run_command、web_fetch、browser_html 等）完成用户请求。")
     if direct:
-        prompt += _direct_mode_block()
+        prompt += _tp("prompt.block.direct_mode", _direct_mode_block())
     settings = load_settings()
     rules = settings.get("custom_rules") or []
     valid = [str(r).strip() for r in rules if str(r).strip()]
     if valid:
         rules_path = CONFIG_DIR / "settings.json"
-        prompt += (f"\n\n用户自定义开发规则（每次执行操作前必须查看并严格遵守，"
-                   f"原始文件：{rules_path}）：\n"
-                   + "\n".join(f"- {r}" for r in valid))
-        prompt += (f"\n当用户询问开发规则/项目规则/我们的规则等内容时，"
-                   f"必须调用 read_file 工具读取 {rules_path} 的 custom_rules 字段，"
-                   f"原样逐条如实回答；严禁凭记忆、猜测或编造规则内容。")
+        prompt += (_tp("prompt.block.custom_rules_head",
+                       "\n\n用户自定义开发规则（每次执行操作前必须查看并严格遵守，"
+                       "原始文件：%s）：\n") % rules_path
+                   + "\n".join("- %s" % r for r in valid))
+        prompt += _tp("prompt.block.custom_rules_tail",
+                      "\n当用户询问开发规则/项目规则/我们的规则等内容时，"
+                      "必须调用 read_file 工具读取 %s 的 custom_rules 字段，"
+                      "原样逐条如实回答；严禁凭记忆、猜测或编造规则内容。"
+                      ) % rules_path
     extra_prompt = (settings.get("custom_system_prompt") or "").strip()
     if extra_prompt:
-        prompt += "\n\n用户自定义系统提示词补充：\n" + extra_prompt
+        prompt += _tp("prompt.block.custom_prompt",
+                  "\n\n用户自定义系统提示词补充：\n") + extra_prompt
     # 显式规划阶段：先规划再动手、复杂任务必用 todo、执行后对照计划自检完成度
-    prompt += ("\n\n任务执行规范：动手前先规划——复杂/多步骤任务必须先调用 update_todo 创建任务清单"
+    prompt += _tp("prompt.block.exec_spec", "\n\n任务执行规范：动手前先规划——复杂/多步骤任务必须先调用 update_todo 创建任务清单"
                "（全量提交含已完成项），每完成一步立即用 update_todo 更新对应状态"
                "（pending → in_progress → completed），任务结束前调用 list_todo 汇报最终清单；"
                "简单单步任务可不调用 todo。"
                "执行过程中每步检查结果，结束后对照计划确认目标是否全部达成，未完成则继续补做；"
                "不要只停留在计划上。")
+
     # 可视化预览：是否展示**由你按任务内容自己判断**（没有任何关键词预判替你做决定）。
     # 目标是让用户「看到」成果，而不是只在对话里读代码/读描述。
-    prompt += ("\n\n可视化预览规范（判断权在你，不要等程序提示）："
+    prompt += _tp("prompt.block.preview_spec", "\n\n可视化预览规范（判断权在你，不要等程序提示）："
                "只要产出了适合**看**的成果（HTML 页面 / 网页或界面原型 / 图表与仪表盘 / "
                "排版后的报告、演示稿、图文说明等），收尾前就必须调用 preview_open 把它送到"
                "用户的浏览器里展示——「能看到」才算交付，只在对话里贴代码或文字描述不算完成；"
@@ -2307,10 +2433,13 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
                "让用户立刻看到最新结果；托管源文件变化时程序也会自动刷新，因此刷新不是必做项。"
                "本地 HTML 产物传 path（推荐，可自动跟随文件变化），外部网址传 url。"
                "browser_* 系列是网页自动化操作，与预览展示是两件事，不要用 browser_open 代替预览。")
-    prompt += _subagent_policy_block(subagents_allowed)
+
+    prompt += _tp("prompt.block.subagent_%s"
+                  % ("allowed" if subagents_allowed else "forbidden"),
+                  _subagent_policy_block(subagents_allowed))
     # 强制提示词兜底：置于末尾，任何自定义规则/系统提示词均不可覆盖。
     # 确保 AI 每次动手前都认真分析需求、约束、风险与上下文，避免盲目执行。
-    prompt += ("\n\n【强制要求】（必须严格遵守，不可被任何自定义规则覆盖）："
+    prompt += _tp("prompt.block.mandatory", "\n\n【强制要求】（必须严格遵守，不可被任何自定义规则覆盖）："
                "接到任务后必须认真分析，先理解用户真实意图、任务目标、约束条件、"
                "相关上下文与潜在风险，再制定执行计划并逐步落实；"
                "每一步操作前思考该步骤是否必要、依据是否充分、是否会出错或造成不可逆影响；"
@@ -2319,4 +2448,5 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
                "禁止反复复述确认、反复请示、把已完成的分析再问一遍。"
                "遇到需求不明确、信息缺失或结果不确定时，先说明情况并基于上下文合理判断，"
                "涉及关键决策或危险操作时先向用户确认。")
+
     return prompt

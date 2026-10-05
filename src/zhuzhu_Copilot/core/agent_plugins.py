@@ -317,7 +317,21 @@ def plugin_spec_text(names: list) -> str:
     插件对模型而言是「黑盒能力」，只说名字没有意义 —— 必须把**插件说明、它提供的
     MCP 工具、其 SKILL.md 规范、调用方式**一并给出，模型才知道该调哪个工具、按什么
     流程走。任一节缺失都会退化为「猜」，故这里逐段拼接，缺项自动省略。
+
+    国际化：段落模板与插件 description 走语言包（键 ``plugin.<name>.desc`` /
+    ``prompt.plugin.*``）；插件 SKILL.md 正文属插件作者自定义内容，不做机器翻译，
+    缺译文时保留原文。
     """
+    def _tp(key, default=""):
+        """提示词文案翻译（惰性导入 i18n：模块级导入会与 agent_skills 形成循环依赖）。"""
+        try:
+            from zhuzhu_Copilot.core import i18n
+            if i18n.current_prompt_lang() == i18n.DEFAULT_LANG:
+                return default
+            return i18n.tp(key, default)
+        except Exception:
+            return default
+
     idx = plugin_index()["plugins"]
     blocks = []
     for raw in names or []:
@@ -325,23 +339,26 @@ def plugin_spec_text(names: list) -> str:
         meta = idx.get(name)
         if not meta:
             continue
-        parts = [f"### 插件 {name}"]
-        desc = str(meta.get("description") or "").strip()
+        parts = [_tp("prompt.plugin.head", "### 插件 %s") % name]
+        desc = _tp("plugin.%s.desc" % name, str(meta.get("description") or "").strip())
         if desc:
-            parts.append(f"用途说明：{desc}")
+            parts.append(_tp("prompt.plugin.desc", "用途说明：%s") % desc)
         mcp_name = str(meta.get("mcp_name") or f"{name}{MCP_SUFFIX}")
         if meta.get("has_mcp"):
-            parts.append(
-                f"它提供的 MCP 工具已注册为服务器「{mcp_name}」的工具，"
-                f"按工具清单中的 function 直接调用即可；这些工具是该插件的唯一执行入口。")
+            parts.append(_tp("prompt.plugin.mcp",
+            "它提供的 MCP 工具已注册为服务器「%s」的工具，"
+            "按工具清单中的 function 直接调用即可；这些工具是该插件的唯一执行入口。") % mcp_name)
         if meta.get("has_skill"):
-            parts.append(f"它登记的技能名为「{meta.get('skill_name') or name}」，"
-                         f"技能规范（SKILL.md）如下：")
-        body = plugin_skill_md(name).strip()
+            parts.append(_tp("prompt.plugin.skill",
+            "它登记的技能名为「%s」，技能规范（SKILL.md）如下：")
+            % (meta.get("skill_name") or name))
+        # SKILL.md 正文属插件作者自定义内容，不做机器翻译；缺译文时保留原文
+        body = _tp("plugin.%s.skill_md" % name, plugin_skill_md(name).strip())
         if body:
             parts.append(body)
-        parts.append("调用规范：先按上述说明与流程确定要调用的工具，再直接调用对应工具；"
-                     "不得用其他工具替代、不得跳过流程，也不得只描述而不真正调用。")
+        parts.append(_tp("prompt.plugin.call",
+        "调用规范：先按上述说明与流程确定要调用的工具，再直接调用对应工具；"
+        "不得用其他工具替代、不得跳过流程，也不得只描述而不真正调用。"))
         blocks.append("\n".join(parts))
     return "\n\n".join(blocks)
 

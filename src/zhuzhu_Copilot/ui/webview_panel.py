@@ -9,6 +9,7 @@
 - 支持快捷键（Ctrl+L 聚焦地址栏、Ctrl+R 刷新）
 """
 
+from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 import os
 from pathlib import Path
 
@@ -144,7 +145,7 @@ class WebViewPanel(QWidget):
 
         # URL 输入框
         self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText("输入网址或本地文件路径 (如 file:///C:/path/to/file.html)")
+        self.url_edit.setPlaceholderText(_ui("输入网址或本地文件路径 (如 file:///C:/path/to/file.html)"))
         self.url_edit.returnPressed.connect(self._navigate_to_url)
         self.url_edit.setStyleSheet(f"""
             QLineEdit {{
@@ -214,7 +215,7 @@ class WebViewPanel(QWidget):
         layout.addWidget(self.progress, stretch=1)
 
         # 状态文本
-        self.status_label = QLabel("就绪")
+        self.status_label = QLabel(_ui("就绪"))
         self.status_label.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 10px;")
         layout.addWidget(self.status_label)
 
@@ -316,7 +317,7 @@ class WebViewPanel(QWidget):
     def _on_load_started(self):
         """开始加载"""
         self.progress.show()
-        self.status_label.setText("加载中...")
+        self.status_label.setText(_ui("加载中..."))
 
     def _on_load_progress(self, prog: int):
         """加载进度回调"""
@@ -328,9 +329,9 @@ class WebViewPanel(QWidget):
         self.progress.setValue(0)
         self.load_finished.emit(ok)
         if ok:
-            self.status_label.setText("加载完成")
+            self.status_label.setText(_ui("加载完成"))
         else:
-            self.status_label.setText("加载失败")
+            self.status_label.setText(_ui("加载失败"))
         
         # 更新导航按钮状态
         self.back_btn.setEnabled(self.web_view.canGoBack())
@@ -400,13 +401,13 @@ class WebViewPanel(QWidget):
         suggested = item.downloadFileName() or item.suggestedFileName() or ""
         default_path = str(Path.cwd() / suggested) if suggested else str(Path.home() / "Downloads")
         save_path, _ = QFileDialog.getSaveFileName(
-            self, "保存下载文件", default_path)
+            self, _ui("保存下载文件"), default_path)
         if not save_path:
             item.cancel()
-            self.status_label.setText("已取消下载")
+            self.status_label.setText(_ui("已取消下载"))
             return
         target = Path(save_path)
         item.setDownloadDirectory(str(target.parent))
         item.setDownloadFileName(target.name)
         item.resume()
-        self.status_label.setText(f"开始下载: {target.name}")
+        self.status_label.setText(_uif("开始下载: {a0}", a0=target.name))

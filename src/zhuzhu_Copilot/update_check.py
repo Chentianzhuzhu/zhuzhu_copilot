@@ -13,7 +13,7 @@ import urllib.request
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-APP_VERSION = "5.1.7"          # 当前客户端版本（发新版时同步修改）
+APP_VERSION = "6.0.0"          # 当前客户端版本（发新版时同步修改）
 POLL_INTERVAL_MS = 30_000      # 30s 轮询
 DEFAULT_SERVER = "https://chentian.dpdns.org"   # 默认更新服务器（可被 QSettings/环境变量覆盖）
 

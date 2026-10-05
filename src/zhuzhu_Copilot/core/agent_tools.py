@@ -45,8 +45,8 @@ _CUSTOM_REGISTRY: dict = {}  # 来源工作流名 -> (tools, handler)；按工�
 _CUSTOM_SOURCE = "_default"  # 最近注册的来源工作流名（无工作流上下文时的回退）
 _CUSTOM_LOCK = threading.Lock()  # 保护注册表的写（热插拔切换时）与 _CUSTOM_SOURCE 原子更新
 
-# 内置 TOOLS 的深拷贝缓存（进程内只拷一次，供 tool_schemas 高频组装的快路径复用）
-_BUILTIN_SCHEMAS: list = None
+# 内置 TOOLS 的深拷贝缓存 {提示词语言: 已翻译的 schema 列表}（见 _builtin_schemas）
+_BUILTIN_SCHEMAS: dict = {}
 
 # 覆盖后仍须受内置沙盒约束的高危内置工具（同名自定义实现不得把"本应 dangerous"的操作
 # 变成免确认直行）：覆盖这些名字时，execute_tool 先用内置规则评估，dangerous 不允许被
@@ -2352,6 +2352,39 @@ TOOLS = [
                            "required": ["name"]},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_file_to_wechat",
+            "description": "发送单个文件到已绑定的手机微信（ClawBot）。用户在手机微信上扫码绑定后，"
+                           "agent 可通过此工具把产物/文件推送到手机，手机端收到下载链接可直接保存。"
+                           "有多个文件要发时请改用 send_files_to_wechat 一次批量发送。"
+                           "仅在微信绑定已启用时有效；未启用时返回提示。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "path": {"type": "string",
+                                        "description": "要发送的文件本地路径（绝对路径）"},
+                               "message": {"type": "string",
+                                           "description": "可选：附带的文字说明"}},
+                           "required": ["path"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_files_to_wechat",
+            "description": "批量发送多个文件到已绑定的手机微信（ClawBot），逐个推送并返回成功/失败清单。"
+                           "适合把一组产物（多份文档/图片/打包文件等）一次性发到手机，"
+                           "避免逐个调用 send_file_to_wechat。仅在微信绑定已启用时有效；未启用时返回提示。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "paths": {"type": "array", "items": {"type": "string"},
+                                         "description": "要发送的文件本地路径列表（绝对路径，单次上限 50 个）"},
+                               "message": {"type": "string",
+                                           "description": "可选：发送前附带的文字说明"}},
+                           "required": ["paths"]},
+        },
+    },
 ]
 
 # 子 Agent 工具名（由 agent_engine 拦截调度，携带 LLM 客户端执行；不在此直接实现）
@@ -2849,6 +2882,10 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
             return _delete_workflow(str(args.get("name", "")))
         if name == "set_app_background":
             return _set_app_background(args)
+        if name == "send_file_to_wechat":
+            return _send_file_to_wechat(args)
+        if name == "send_files_to_wechat":
+            return _send_files_to_wechat(args)
         if name == "set_generation_progress":
             return _set_generation_progress(args, status_cb)
         if name == "register_panel_btn":
@@ -5147,6 +5184,120 @@ def _set_app_background(args: dict) -> dict:
     return _blocked(f"[set_app_background] 未知 op={op}，可选 set/clear/get")
 
 
+def _wechat_target(bridge) -> tuple:
+    """解析微信推送目标 (to_user_id, context_token)，优先最近活跃会话。"""
+    try:
+        uid, ctx = bridge.latest_session()
+    except Exception:
+        uid, ctx = "", ""
+    if ctx and uid:
+        return uid, ctx
+    # 兼容无 latest_session 的旧桥接对象：退回字段扫描
+    to_user = uid or getattr(bridge, "_ilink_user_id", "") or ""
+    context_token = ctx or ""
+    if not context_token:
+        for u, c in getattr(bridge, "_context_tokens", {}).items():
+            if c:
+                to_user, context_token = to_user or u, c
+                break
+    return to_user, context_token
+
+
+def _fmt_size(sz: int) -> str:
+    if sz >= 1024 * 1024:
+        return "%.1f MB" % (sz / 1024 / 1024)
+    if sz >= 1024:
+        return "%.0f KB" % (sz / 1024)
+    return "%d B" % sz
+
+
+_UNBOUND_HINT = "微信未绑定，请先在设置 → 微信 ClawBot 中扫码绑定"
+_NO_SESSION_HINT = "暂无活跃会话，请先在微信中给 agent 发一条消息"
+_MAX_BATCH_FILES = 50   # 单次批量上限（防超长任务，超出部分提示重试）
+
+
+def _send_file_to_wechat(args: dict) -> dict:
+    """send_file_to_wechat 工具：发送单个文件到已绑定的微信（官方 iLink 协议）。
+
+    文件经 AES-128-ECB 加密后上传微信 CDN，再通过 sendmessage 推送到微信对话；
+    多个文件请用 send_files_to_wechat（批量）。仅在微信已绑定时有效。
+    """
+    from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+    bridge = get_bridge()
+    if not bridge.bound:
+        return _blocked(f"[send_file_to_wechat] {_UNBOUND_HINT}")
+    path = str(args.get("path") or "").strip().strip('"').strip("'")
+    if not path:
+        return _blocked("[send_file_to_wechat] 缺少 path 参数（文件本地路径）")
+    import os
+    if not os.path.isfile(path):
+        return _blocked(f"[send_file_to_wechat] 文件不存在: {path}")
+    to_user, context_token = _wechat_target(bridge)
+    if not context_token:
+        return _blocked(f"[send_file_to_wechat] {_NO_SESSION_HINT}")
+    message = str(args.get("message") or "").strip()
+    if message:
+        bridge.send_text(message, context_token, to_user)
+    ok, err = bridge.send_file_detail(path, context_token, to_user)
+    if not ok:
+        return _blocked(f"[send_file_to_wechat] 发送失败: {os.path.basename(path)}（{err}）")
+    fname = os.path.basename(path)
+    fsize = os.path.getsize(path)
+    return {"text": f"已发送到微信：{fname}（{_fmt_size(fsize)}）", "images": []}
+
+
+def _send_files_to_wechat(args: dict) -> dict:
+    """send_files_to_wechat 工具：批量发送多个文件到已绑定的微信（逐个推送）。
+
+    paths：文件路径列表（兼容分号/换行/逗号分隔的字符串）；逐个经 CDN 推送，
+    汇总成功与失败清单返回。单个文件失败不中断其余文件；单次上限 50 个。
+    """
+    from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+    bridge = get_bridge()
+    if not bridge.bound:
+        return _blocked(f"[send_files_to_wechat] {_UNBOUND_HINT}")
+    raw = args.get("paths")
+    if isinstance(raw, str):
+        raw = [p for p in re.split(r"[;\n,]+", raw)]
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return _blocked("[send_files_to_wechat] 缺少 paths 参数（文件路径列表）")
+    import os
+    paths, missing = [], []
+    for p in raw:
+        p = str(p or "").strip().strip('"').strip("'")
+        if not p:
+            continue
+        if os.path.isfile(p):
+            paths.append(p)
+        else:
+            missing.append(p)
+    if not paths:
+        return _blocked("[send_files_to_wechat] 所有文件路径均不存在: " + "；".join(missing[:5]))
+    overflow = []
+    if len(paths) > _MAX_BATCH_FILES:
+        overflow = paths[_MAX_BATCH_FILES:]
+        paths = paths[:_MAX_BATCH_FILES]
+    to_user, context_token = _wechat_target(bridge)
+    if not context_token:
+        return _blocked(f"[send_files_to_wechat] {_NO_SESSION_HINT}")
+    message = str(args.get("message") or "").strip()
+    if message:
+        bridge.send_text(message, context_token, to_user)
+    sent, failed = bridge.send_files(paths, context_token, to_user)
+    lines = [f"批量发送到微信完成：成功 {len(sent)} 个，失败 {len(failed)} 个"]
+    if sent:
+        names = [os.path.basename(p) for p in sent]
+        lines.append("✅ 已发送：" + "、".join(names[:10]) + ("…" if len(names) > 10 else ""))
+    if failed:
+        det = "；".join(f"{os.path.basename(p)}（{e}）" for p, e in failed[:5])
+        lines.append("❌ 失败：" + det + ("…" if len(failed) > 5 else ""))
+    if missing:
+        lines.append("⚠️ 路径不存在已跳过：" + "、".join(missing[:5]) + ("…" if len(missing) > 5 else ""))
+    if overflow:
+        lines.append(f"⚠️ 超出单次上限 {_MAX_BATCH_FILES} 个，{len(overflow)} 个未发送（可再次调用发送）")
+    return {"text": "\n".join(lines), "images": []}
+
+
 def _new_project(path: str, kind: str = "generic", name: str = "") -> dict:
     """创建项目脚手架：README.md / .gitignore / src/，kind 附带对应模板文件"""
     p = _resolve(path)
@@ -5194,43 +5345,118 @@ def _new_project(path: str, kind: str = "generic", name: str = "") -> dict:
         return _blocked(f"[new_project] 生成失败: {e}")
 
 
+def _translate_schemas(schemas: list) -> list:
+    """按当前提示词语言翻译工具 schema 的 description（i18n 运行时翻译）。
+
+    只在英文提示词语言下生效：中文包即源码原文，无需任何处理。翻译按
+    ``tool.<name>`` / ``tool.<name>.param.<param>`` 查语言包，缺项回退中文原文，
+    故新增工具未配译文也不会丢失描述。
+    """
+    try:
+        from zhuzhu_Copilot.core import i18n
+        lang = i18n.current_prompt_lang()
+        if lang == i18n.DEFAULT_LANG:
+            return schemas            # 中文：原文即译文，零开销
+        i18n._pack(lang, i18n._state["prompt_packs"])   # 预热（首次调用读盘）
+    except Exception:
+        return schemas
+    out = []
+    for t in schemas:
+        f = t.get("function") or {}
+        name = f.get("name") or ""
+        desc = f.get("description") or ""
+        nt = t
+        if desc:
+            new_desc = i18n.tool_desc(name, desc)
+            if new_desc != desc:
+                nt = dict(t)
+                nf = dict(f)
+                nf["description"] = new_desc
+                nt["function"] = nf
+        params = (f.get("parameters") or {}).get("properties") or {}
+        if params:
+            newp = {}
+            changed = False
+            for pn, pv in params.items():
+                pd = str(pv.get("description", "") or "")
+                npd = i18n.param_desc(name, pn, pd)
+                if npd != pd:
+                    changed = True
+                    pv2 = dict(pv)
+                    pv2["description"] = npd
+                    newp[pn] = pv2
+                else:
+                    newp[pn] = pv
+            if changed:
+                if nt is t:
+                    nt = dict(t)
+                nf = dict(nt.get("function") or {})
+                nprm = dict(nf.get("parameters") or {})
+                nprm["properties"] = newp
+                nf["parameters"] = nprm
+                nt["function"] = nf
+        out.append(nt)
+    return out
+
+
 def _builtin_schemas() -> list:
-    """内置工具 schema 的深拷贝（进程内只做一次）。
+    """内置工具 schema 的深拷贝（进程内只做一次，按提示词语言分桶缓存）。
 
     原实现每次调用都 json.loads(json.dumps(TOOLS)) —— 长任务每轮都要组装工具列表，
     纯拷贝即成为固定开销；TOOLS 为模块常量，拷贝一次即可，返回浅拷贝列表由调用方
-    自由增删（schema dict 只读，不做就地修改）。"""
+    自由增删（schema dict 只读，不做就地修改）。
+
+    国际化：译文依赖**提示词语言**（可能与界面语言不同），故缓存按语言分桶，
+    首次用到某语言时才翻译并缓存；语言切换后下一次调用自然命中新桶，无需清缓存。
+    """
     global _BUILTIN_SCHEMAS
-    if _BUILTIN_SCHEMAS is None:
-        _BUILTIN_SCHEMAS = json.loads(json.dumps(TOOLS))
-    return list(_BUILTIN_SCHEMAS)
+    try:
+        from zhuzhu_Copilot.core import i18n
+        lang = i18n.current_prompt_lang()
+    except Exception:
+        lang = "zh_CN"
+    bucket = _BUILTIN_SCHEMAS.get(lang)
+    if bucket is None:
+        bucket = _translate_schemas(json.loads(json.dumps(TOOLS)))
+        _BUILTIN_SCHEMAS[lang] = bucket
+    return list(bucket)
 
 
 def tool_schemas(workflow=None) -> list:
     """供 LLM tools 参数的完整 schema 列表（内置 + 指定/当前工作流自定义，同名覆盖）。
-    workflow：目标工作流；缺省取引擎任务线程当前工作流，无工作流上下文则回退最近注册。"""
+    workflow：目标工作流；缺省取引擎任务线程当前工作流，无工作流上下文则回退最近注册。
+
+    国际化：内置工具按提示词语言在 _builtin_schemas 内分桶翻译；工作流自定义工具与
+    sub_<name> 动态子 Agent 工具不在语言包内（用户自定义内容），故在此统一走一次
+    查表翻译 —— 缺译文时原样返回（回退用户原文，绝不丢失描述）。
+    """
     builtin = _builtin_schemas()
     custom_tools, _ = _custom_entry(workflow)
-    if not custom_tools:
-        out = builtin
-    else:
+    # 动态追加项（工作流自定义工具 / sub_<name> 子 Agent 工具），需单独走翻译
+    extra = []
+    if custom_tools:
         custom_names = {t.get("function", {}).get("name") for t in custom_tools}
         out = [t for t in builtin
                if t.get("function", {}).get("name") not in custom_names]
-        out.extend(json.loads(json.dumps(custom_tools)))
+        extra.extend(json.loads(json.dumps(custom_tools)))
+    else:
+        out = builtin
     # 工作流自定义子 Agent：动态并入 sub_<name> 工具 schema，同名跳过（内置优先）
     try:
         sub_schemas = _sub("agent_subagent").subagent_schemas(
             workflow if workflow is not None else _wf_current())
         seen = {t.get("function", {}).get("name") for t in out}
+        seen.update(t.get("function", {}).get("name") for t in extra)
         for t in sub_schemas:
             nm = t.get("function", {}).get("name")
             if nm and nm not in seen:
-                out.append(t)
                 seen.add(nm)
+                extra.append(t)
     except Exception:
         pass
-    return out
+    # 内置工具已在 _builtin_schemas 内按语言分桶翻译过；这里只翻译动态追加的部分，
+    # 避免每轮重复翻译 101 个内置项。
+    return out + _translate_schemas(extra) if extra else out
 
 
 # ------------------------------------------------------------

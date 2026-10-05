@@ -307,6 +307,7 @@ def list_workflows() -> list:
         out.append({
             "name": n,
             "description": meta.get("description", ""),
+            "preset": meta.get("preset", ""),   # 由内置预设创建的工作流：界面据此取预设译文
             "is_default": is_default(n),
             "active": n == active,
             "enabled": meta.get("enabled", True),

@@ -1,3 +1,4 @@
+from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 import os
 import sys
 import logging
@@ -120,7 +121,7 @@ def _show_crash_dialog(msg: str, path: Path | None):
         if app is None:
             return
         dlg = QDialog()
-        dlg.setWindowTitle("程序崩溃")
+        dlg.setWindowTitle(_ui("程序崩溃"))
         dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         dlg.setStyleSheet(
             "QDialog { background-color: #16181d; }"
@@ -138,14 +139,14 @@ def _show_crash_dialog(msg: str, path: Path | None):
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(12)
-        title = QLabel("程序发生异常已崩溃")
+        title = QLabel(_ui("程序发生异常已崩溃"))
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #3f6fdc;")
         lay.addWidget(title)
-        time_lbl = QLabel(f"崩溃时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        time_lbl = QLabel(_uif("崩溃时间: {a0}", a0=datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         time_lbl.setObjectName("crash_time")
         lay.addWidget(time_lbl)
         # 复用全局对象名 crash_path，展示本地保存路径（无则提示）
-        page_lbl = QLabel("崩溃日志详情（下方为完整堆栈）：")
+        page_lbl = QLabel(_ui("崩溃日志详情（下方为完整堆栈）："))
         page_lbl.setStyleSheet("color: #9aa0aa; font-size: 12px; font-weight: 600;")
         lay.addWidget(page_lbl)
         detail = QPlainTextEdit()
@@ -154,18 +155,18 @@ def _show_crash_dialog(msg: str, path: Path | None):
         detail.setMinimumSize(560, 300)
         lay.addWidget(detail)
         if path is not None:
-            path_lbl = QLabel(f"已保存至本地: {path}")
+            path_lbl = QLabel(_uif("已保存至本地: {a0}", a0=path))
             path_lbl.setObjectName("crash_path")
             path_lbl.setWordWrap(True)
             lay.addWidget(path_lbl)
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        copy_btn = QPushButton("一键复制崩溃日志")
+        copy_btn = QPushButton(_ui("一键复制崩溃日志"))
         copy_btn.setObjectName("primary")
         copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         copy_btn.clicked.connect(lambda: _copy_and_feedback(copy_btn, detail.toPlainText()))
         btn_row.addWidget(copy_btn)
-        close_btn = QPushButton("关闭")
+        close_btn = QPushButton(_ui("关闭"))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.clicked.connect(dlg.accept)
         btn_row.addWidget(close_btn)
@@ -184,9 +185,9 @@ def _copy_and_feedback(btn, text: str):
     try:
         from PyQt6.QtWidgets import QApplication
         QApplication.clipboard().setText(text)
-        btn.setText("已复制 ✓")
+        btn.setText(_ui("已复制 ✓"))
     except Exception:
-        btn.setText("复制失败")
+        btn.setText(_ui("复制失败"))
 
 
 def install_excepthook():

@@ -8,7 +8,7 @@
 ; ╚══════════════════════════════════════════════════════════╝
 
 #define MyAppName "zhuzhu Copilot"
-#define MyAppVersion "5.1.7"
+#define MyAppVersion "6.0.0"
 #define MyAppPublisher "zhutianliang"
 #define MyAppExeName "zhuzhu Copilot.exe"
 ; 旧版标识（WinAppMigrator）：仅用于卸载时清理遗留的注册表分支与用户数据目录
@@ -58,6 +58,18 @@ SignTool={#SIGNTOOL}
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
+; 英文安装向导：新增第二种语言。用户在向导里选 English 后，
+; 安装结束会写 {app}\app_lang.ini，主程序据此默认英文界面。
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[CustomMessages]
+; 语言选择页（安装前挑界面语言，决定主程序默认语言）
+; 注意：自定义消息的语言前缀必须与 [Languages] 里的 Name 完全一致，
+; 否则编译报 "Unknown language name"。
+chinesesimplified.TWizardLanguagePrompt=选择 %(app)s 的界面语言：
+chinesesimplified.TWizardLanguageSubPrompt=所选语言将作为 %(app)s 的界面语言，之后可在「设置」中随时更改。
+english.TWizardLanguagePrompt=Select the interface language for %(app)s:
+english.TWizardLanguageSubPrompt=The chosen language is used for the %(app)s interface. You can change it later in Settings.
 
 [Tasks]
 Name: "desktopicon"; Description: "在桌面创建快捷方式"; GroupDescription: "附加图标："
@@ -116,6 +128,101 @@ Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM ""{#MyLegacyExeName}"""; Fla
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+{ ---- 语言选择（安装前确定界面语言） -------------------------------- }
+{ 安装结束时把用户所选语言写入程序目录下的 app_lang.ini。主程序启动按
+  「--lang 参数 > 环境变量 ZHUZHU_LANG > 注册表设置 > app_lang.ini > 系统区域」
+  解析语言（见 core/i18n.py::_installed_lang），故装完即生效，
+  用户之后仍可在「设置 → 通用与记忆 → 界面语言」里改。 }
+var
+  LangPage: TWizardPage;
+  LangZhRadio, LangEnRadio: TNewRadioButton;
+
+{ 安装向导语言（english / chinesesimplified）-> 界面语言码 }
+function LangCodeOf(ALang: String): String;
+begin
+  if ALang = 'english' then
+    Result := 'en_US'
+  else
+    Result := 'zh_CN';
+end;
+
+procedure LangPageChanged(Sender: TObject);
+begin
+  { 标题随选择切换，用户在英文安装向导里也能一眼看懂当前选项含义 }
+  if LangEnRadio.Checked then
+    LangPage.Caption := 'Interface Language'
+  else
+    LangPage.Caption := '界面语言';
+end;
+
+function InitializeSetup(): Boolean;
+var
+  DefaultEn: Boolean;
+begin
+  Result := True;
+  DefaultEn := ActiveLanguage = 'english';
+
+  { 安装前挑界面语言：置于「选择安装位置」之后、「选择组件」之前，
+    即"装什么"之前先定"用什么语言装"，与主流安装包一致。 }
+  LangPage := CreateCustomPage(
+    wpSelectDir,
+    '界面语言',
+    '所选语言将作为 zhuzhu Copilot 的默认界面语言，安装后可在「设置」中随时更改。');
+
+  { 控件用 TNewXxx.Create + .Parent（Inno 7 官方示例 CodeClasses.iss 的写法），
+    不能用 CreateRadioButton —— 那是 TNewWizardPage 的方法，不适用于
+    CreateCustomPage 返回的 TWizardPage。 }
+  LangZhRadio := TNewRadioButton.Create(LangPage.Surface);
+  LangZhRadio.Caption := '简体中文';
+  LangZhRadio.Checked := not DefaultEn;
+  LangZhRadio.Parent := LangPage.Surface;
+
+  LangEnRadio := TNewRadioButton.Create(LangPage.Surface);
+  LangEnRadio.Caption := 'English';
+  LangEnRadio.Checked := DefaultEn;
+  LangEnRadio.Parent := LangPage.Surface;
+  LangEnRadio.OnClick := @LangPageChanged;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { 进入「选择组件」页时同步语言页标题，避免用户回看时仍是旧语言。
+    注：Inno 7 没有 wpPreparingToInstall 之类的 pageId（可用的是
+    wpSelectDir / wpSelectTasks / wpFinished 等），故只能用存在的常量。 }
+  if CurPageID = wpSelectTasks then
+  begin
+    if LangEnRadio.Checked then
+      LangPage.Caption := 'Interface Language'
+    else
+      LangPage.Caption := '界面语言';
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  LangFile, LangCode: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if LangEnRadio.Checked then
+      LangCode := 'en_US'
+    else
+      LangCode := 'zh_CN';
+    LangFile := ExpandConstant('{app}\app_lang.ini');
+    { 覆盖写：语言选择页每次安装都会带默认勾选，重装即恢复向导默认语言。
+      写失败不阻断安装 —— 主程序在读不到该文件时会退回按系统区域判定。 }
+    try
+      if SaveStringToFile(LangFile,
+          '# 由安装向导写入：zhuzhu Copilot 首次启动的默认界面语言' + #13#10 +
+          '# 可在「设置 → 通用与记忆 → 界面语言」中随时更改（改后以设置为准）' + #13#10 +
+          'Lang=' + LangCode + #13#10, False) then
+        Log('界面语言已写入: ' + LangFile + ' (Lang=' + LangCode + ')');
+    except
+      Log('写入 app_lang.ini 失败（已忽略，主程序将按系统区域判定）: ' + LangFile);
+    end;
+  end;
+end;
+
 { 系统是否已安装 VC++ 2015-2022 运行库：以对应位宽 vcruntime140.dll 是否存在为判据 }
 { x64：64 位 System32 下；x86：SysWOW64（32 位视角的 System32）下 }
 function VCInstalled64(): Boolean;

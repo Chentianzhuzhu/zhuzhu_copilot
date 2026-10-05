@@ -40,6 +40,9 @@ DEFAULT_PROVIDER_NAME = "默认服务商"   # 内置默认服务商（agnes）�
 _UA = "zhuzhu_Copilot/1.0 AgentClient"
 _MAX_RETRIES = 3    # 请求失败（429/5xx/网络）自动重试次数
 _RETRY_DELAY = 2.0  # 重试基础延迟（秒），指数退避
+# 请求体里的「思考相关」顶层键：400 降级时整体去掉（思考参数不被接受时的安全网）
+_EFFORT_PAYLOAD_KEYS = frozenset({"thinking", "reasoning_effort", "reasoning",
+                                 "enable_thinking", "thinking_budget"})
 DEFAULT_TIMEOUT = 60.0  # 连接/首包超时（秒）；流式空闲看门狗默认取其 3 倍
 # 400 调试日志：上游错误响应体的最大记录字符数（防止超长响应刷爆日志文件）
 _LOG_REJECT_BODY = 2000
@@ -125,6 +128,13 @@ PRESET_PROVIDERS = [
      "multimodal_models": ["gpt-5.4", "gpt-5.4-mini"],
      "protocol": "chat",
      "desc": "OpenAI 官方 API（GPT-5 系列；gpt-4o / gpt-4.1 已退役）"},
+    {"name": "Anthropic (Claude)",
+     "base_url": "https://api.anthropic.com",
+     "models": ["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"],
+     "multimodal_models": ["claude-sonnet-4-5", "claude-opus-4-5"],
+     "protocol": "anthropic",
+     "desc": "Anthropic 官方 API（Claude 系列；Messages API /v1/messages，x-api-key 认证；"
+             "支持工具调用与视觉输入）"},
     {"name": "Kimi（月之暗面）",
      "base_url": "https://api.moonshot.cn/v1",
      "models": ["kimi-k3", "kimi-k2.6"],
@@ -193,6 +203,19 @@ def effort_label(effort: str) -> str:
     return EFFORT_LABELS.get(effort if effort in EFFORTS else "medium", str(effort))
 
 
+# ---------- 通用思考参数兜底（未命中厂商内置表的模型） ----------
+# 内置表（deepseek/glm/kimi/o 系列/doubao/minimax/agnes）是按厂商文档逐个核对过的精确
+# 映射；但 OpenRouter/硅基流动等聚合平台上的新模型（如 stealth/space-bunny-alpha）
+# 往往不在表内，旧实现直接 return {}，导致「思考模式」开关与「思考强度」滑块
+# 对这些模型完全失效（请求体不带任何思考参数）。
+# 下面给出 OpenAI 兼容层的事实标准兜底：顶层 reasoning_effort（low/medium/high），
+# 关闭思考用 "none"（与已实测的 agnes 行为一致，可被主流推理模型识别为关闭）。
+_GENERIC_EFFORT = {"off": "none", "low": "low", "medium": "medium", "high": "high",
+                   "very_high": "high", "max": "high", "ultra": "high", "extreme": "high"}
+# 兜底强度可调时，思考「开启」的最小档：none 不算思考，on 模式下最低给 low
+_GENERIC_EFFORT_ON = {"off": "low", "low": "low", "medium": "low", "high": "medium",
+                      "very_high": "medium", "max": "high", "ultra": "high", "extreme": "high"}
+
 # 发送给 API 的 reasoning_effort 取值（OpenAI 兼容仅支持 low/medium/high，
 # 更高档位折算为 high；off 折算为最低档 low）
 _REASONING_EFFORT = {"off": "low", "low": "low", "medium": "medium", "high": "high",
@@ -221,7 +244,8 @@ _AGNES_EFFORT_ON = {"off": "low", "low": "low", "medium": "medium", "high": "med
 
 
 def build_effort_params(model: str, effort: str = "medium",
-                        think_mode: str = "auto") -> dict:
+                        think_mode: str = "auto",
+                        declared_levels=None) -> dict:
     """把工作力度正确映射为当前模型的 API 参数（自动调节 + 手动思考模式覆盖）。
 
     依据各厂商官方文档（DeepSeek/智谱/Kimi/OpenAI/MiniMax/火山方舟，2026）：
@@ -242,7 +266,14 @@ def build_effort_params(model: str, effort: str = "medium",
       不支持 reasoning_effort）
     - MiniMax-M3：thinking.type（adaptive 显式开启思考 / disabled 关闭；
       各网关默认值不一，显式传参保证力度可靠生效）
-    - 其他模型（agnes/ark-code-latest 等）：不支持，返回空 dict（不发送任何参数）
+    - Agnes：顶层 reasoning_effort（none=关闭思考，其余递进思考强度）
+    - 其他未命中内置表的模型（OpenRouter/硅基流动等聚合平台新模型，如
+      stealth/space-bunny-alpha）：旧实现直接返回空 dict，导致「思考模式」开关与
+      「思考强度」滑块对这些模型完全失效。现改为通用兜底：
+      ① declared_levels 给出上游声明的可调级别时，按声明取值就近折算（最贴合该模型）；
+      ② 否则用 OpenAI 兼容层事实标准（顶层 reasoning_effort：none/low/medium/high）。
+      兜底可能与个别模型的实际参数不符，故请求层另有「400 去掉思考参数重试」的
+      安全降级兜底（见 LLMClient._chat_stream_once）。
 
     think_mode（模型接入页手动选择，默认 "auto" 维持原自动行为）：
     - "auto"：跟随工作力度自动开关思考（引擎默认，无需手动）；力度低于「高」
@@ -318,7 +349,10 @@ def build_effort_params(model: str, effort: str = "medium",
         if on:
             return {"reasoning_effort": _AGNES_EFFORT_ON.get(eff, "low")}
         return {"reasoning_effort": _AGNES_EFFORT.get(eff, "low")}
-    return {}
+    # ── 通用兜底：未命中内置表的模型（聚合平台新模型等）──────────────────
+    # 旧实现此处 return {}，使思考模式/思考强度对这些模型完全失效。
+    # 优先按上游声明的可调级别折算；无声明时用 OpenAI 兼容层事实标准。
+    return _generic_effort_params(eff, think_mode, declared_levels)
 
 
 # 多模态模型名关键词：既用于「从服务商上游拉取模型列表后自动检测并填写多模态列表」，
@@ -469,6 +503,67 @@ _UPSTREAM_EFFORT_ALIAS = {
 }
 
 
+def _effort_to_upstream_value(level: str, levels: list) -> str:
+    """内部档位 → 上游声明里的原始力度取值（级别列表已归一化为内部档位，故按名反查）。
+
+    声明级别可能来自任意别名写法（minimal/xhigh/extreme…），归一化后已丢失原始拼写；
+    这里用常见拼写重建，命中不了时退回标准 low/medium/high，绝不臆造参数。
+    """
+    canonical = {"off": "none", "low": "low", "medium": "medium", "high": "high",
+                 "very_high": "xhigh", "max": "max", "ultra": "ultra",
+                 "extreme": "extreme"}
+    return canonical.get(level, "medium")
+
+
+def _declared_level_for(levels: list, eff: str) -> str:
+    """把内部档位 eff 就近折算到上游声明的级别子集内（按档位序号取最近者）。"""
+    target = effort_index(eff)
+    return min(levels, key=lambda x: abs(effort_index(x) - target))
+
+
+def _generic_effort_params(effort: str, think_mode: str, declared_levels=None) -> dict:
+    """未命中厂商内置表的模型的通用思考参数（OpenAI 兼容层事实标准）。
+
+    背景：OpenRouter/硅基流动等聚合平台上的新模型（如 stealth/space-bunny-alpha）
+    不在任何厂商内置映射表内，旧实现对这类模型返回空 dict —— 「思考模式」开关与
+    「思考强度」滑块因此完全失效（请求体不带任何思考参数）。
+
+    两级策略：
+    ① declared_levels 非空（上游 /models 声明了可调级别）→ 按声明取值就近折算，
+       最贴合该模型真实支持的档位；
+    ② 无声明 → 顶层 reasoning_effort：关闭用 "none"，其余按力度取
+       low/medium/high（与已实测的 agnes 及 OpenAI 兼容推理模型一致）。
+
+    think_mode 语义与内置表保持一致：auto 低于「高」不思考；on 始终思考（最低 low）；
+    off 关闭（none）。兜底值可能被个别模型拒绝，请求层有 400 去参重试兜底。
+    """
+    eff = effort if effort in EFFORTS else "medium"
+    on = think_mode == "on"
+    off = think_mode == "off"
+    think_off = eff in _THINK_OFF_LEVELS
+    levels = normalize_declared_efforts(declared_levels)
+    if levels:
+        # 有上游声明：完全按声明取值折算，思考开关沿用「声明里有没有关闭档」的判断
+        has_off = "off" in levels
+        if off:
+            # 显式强制关闭：声明含关闭档就用它，否则只能取声明内最低思考档
+            return {"reasoning_effort": _effort_to_upstream_value("off", levels) if has_off
+                    else _effort_to_upstream_value(levels[0], levels)}
+        if think_off and not on:
+            # auto 低档：声明含关闭档才关闭，否则取声明内最低思考档（无关闭能力）
+            return {"reasoning_effort": _effort_to_upstream_value("off", levels) if has_off
+                    else _effort_to_upstream_value(levels[0], levels)}
+        # on 模式 / auto 高档：按强度折算到声明内最近档
+        return {"reasoning_effort":
+                _effort_to_upstream_value(_declared_level_for(levels, eff), levels)}
+    # 无声明：OpenAI 兼容层事实标准
+    if off or think_off and not on:
+        return {"reasoning_effort": "none"}
+    if on:
+        return {"reasoning_effort": _GENERIC_EFFORT_ON.get(eff, "low")}
+    return {"reasoning_effort": _GENERIC_EFFORT.get(eff, "medium")}
+
+
 def normalize_declared_efforts(values) -> list:
     """把上游声明的「可调思考力度级别」映射为 EFFORTS 子集（按档位升序去重）。
 
@@ -602,7 +697,7 @@ def load_model_config() -> dict:
                 "base_url": m.get("base_url") or DEFAULT_BASE_URL,
                 "api_key": m.get("api_key") or DEFAULT_API_KEY,
                 "models": [str(x).strip() for x in (m.get("models") or []) if str(x).strip()],
-                "protocol": m.get("protocol") if m.get("protocol") in ("chat", "responses") else "chat",
+                "protocol": m.get("protocol") if m.get("protocol") in ("chat", "responses", "anthropic") else "chat",
             }
             single_model = str(m.get("model") or "").strip()
             if single_model and single_model not in single["models"]:
@@ -616,7 +711,7 @@ def load_model_config() -> dict:
             p["name"] = str(p.get("name") or "服务商").strip() or "服务商"
             p["base_url"] = str(p.get("base_url") or DEFAULT_BASE_URL)
             p["api_key"] = str(p.get("api_key") or "")
-            p["protocol"] = (p.get("protocol") if p.get("protocol") in ("chat", "responses")
+            p["protocol"] = (p.get("protocol") if p.get("protocol") in ("chat", "responses", "anthropic")
                              else "chat")
             p["models"] = [str(x).strip() for x in (p.get("models") or []) if str(x).strip()]
             p["multimodal_models"] = [str(x).strip() for x in (p.get("multimodal_models") or [])
@@ -936,11 +1031,32 @@ def fetch_provider_models(base_url: str, api_key: str = "", timeout: float = 15.
     return False, (last_err or "获取失败：无法从上游取得模型列表"), "", [], {}
 
 
-# AI 起名不做长度上限：好名字必须完整保留（用户明确要求停止自动截断），
-# 因此提示词也不再给 2-16 字之类的字数限制，只要求"简洁、写完整"。
-_TITLE_SYS = ("你是会话命名助手。用一句简洁的话概括用户意图，作为该对话的标题；"
-              "长度不限但要写完整，不要中途截断成半句话。"
-              "只输出标题本身：不要解释、不要标点、不要引号、不要 markdown 标记、不要代码块。")
+def _title_sys() -> str:
+    """AI 起名的 system 提示词：按**提示词语言**取，并显式指定输出语言。
+
+    为什么不只做「把中文原文换成英文译文」：模型默认会**跟随用户消息的语言**输出，
+    用户用中文提问时即使拿到英文指令，仍大概率回中文标题。故英文语言下必须
+    额外写明 "The title must be in English, even if the conversation is in Chinese."
+
+    不做长度上限：好名字必须完整保留（用户明确要求停止自动截断），
+    因此提示词也不再给 2-16 字之类的字数限制，只要求"简洁、写完整"。
+    """
+    try:
+        from zhuzhu_Copilot.core import i18n
+        en = i18n.current_prompt_lang() == i18n.EN_US
+    except Exception:
+        en = False
+    if not en:
+        return ("你是会话命名助手。用一句简洁的话概括用户意图，作为该对话的标题；"
+                "长度不限但要写完整，不要中途截断成半句话。"
+                "只输出标题本身：不要解释、不要标点、不要引号、不要 markdown 标记、不要代码块。")
+    return ("You are a conversation titling assistant. Summarize the user's intent in one "
+            "concise phrase to serve as the title of this conversation. No length limit, "
+            "but write it out completely - never cut off mid-sentence.\n"
+            "The title must be written in English, even if the conversation is in Chinese "
+            "or any other language. Keep it short and specific (2-8 words).\n"
+            "Output only the title itself: no explanation, no punctuation at the end, no "
+            "quotes, no markdown, no code block.")
 
 
 # 软截断可用的自然边界字符：句子级标点优先（。！？；），逗号/顿号/冒号与
@@ -1000,8 +1116,13 @@ def generate_session_title(user_text: str, ai_reply: str = "",
         ctx = text[:500]
         reply = (ai_reply or "").strip()
         if reply:
-            ctx += "\n\n（助手首轮回复摘要）" + reply[:300]
-        resp = client.chat([{"role": "system", "content": _TITLE_SYS},
+            try:
+                from zhuzhu_Copilot.core import i18n
+                label = i18n.tp("prompt.title.reply_hint", "（助手首轮回复摘要）")
+            except Exception:
+                label = "（助手首轮回复摘要）"
+            ctx += "\n\n" + label + reply[:300]
+        resp = client.chat([{"role": "system", "content": _title_sys()},
                             {"role": "user", "content": ctx}],
                            max_tokens=128, timeout=timeout)
         # limit=0：AI 起的名字完整保留，不做任何长度截断（用户明确要求）
@@ -1036,8 +1157,9 @@ def validate_header_fields(base_url: str, api_key: str) -> str:
 
 def test_provider_connection(base_url: str, api_key: str, model: str,
                              protocol: str = "chat", timeout: float = 15.0) -> tuple:
-    """真实连通性测试：用最小 chat/completions 请求验证 base_url + api_key + 模型可用。
-    全程真实 API 调用，不 mock；返回 (ok, message)，失败附具体 HTTP/网络错误便于排障。"""
+    """真实连通性测试：用最小请求验证 base_url + api_key + 模型可用。
+    全程真实 API 调用，不 mock；返回 (ok, message)，失败附具体 HTTP/网络错误便于排障。
+    支持 chat（/v1/chat/completions）、responses（/v1/responses）、anthropic（/v1/messages）三种协议。"""
     base_url = (base_url or "").strip().rstrip("/")
     api_key = (api_key or "").strip()
     model = (model or "").strip()
@@ -1048,17 +1170,29 @@ def test_provider_connection(base_url: str, api_key: str, model: str,
     hint = validate_header_fields(base_url, api_key)
     if hint:
         return False, f"测试失败：{hint}"
-    url = f"{base_url}/chat/completions"
-    payload = {"model": model,
-               "messages": [{"role": "user", "content": "ping"}],
-               "max_tokens": 1, "stream": False}
+    protocol = (protocol or "chat").lower()
     urllib_request = _request_module()
+    if protocol == "anthropic":
+        # Anthropic Messages API：端点 /v1/messages，请求头 x-api-key + anthropic-version
+        url = f"{base_url}/v1/messages"
+        payload = {"model": model,
+                   "max_tokens": 1,
+                   "messages": [{"role": "user", "content": "ping"}]}
+        headers = {"Content-Type": "application/json",
+                   "User-Agent": _UA,
+                   "x-api-key": api_key,
+                   "anthropic-version": "2023-06-01"}
+    else:
+        url = f"{base_url}/chat/completions"
+        payload = {"model": model,
+                   "messages": [{"role": "user", "content": "ping"}],
+                   "max_tokens": 1, "stream": False}
+        headers = {"Content-Type": "application/json",
+                   "User-Agent": _UA,
+                   "Authorization": f"Bearer {api_key}"}
     req = urllib_request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json",
-                 "User-Agent": _UA,
-                 "Authorization": f"Bearer {api_key}"},
-        method="POST")
+        headers=headers, method="POST")
     try:
         with urllib_request.urlopen(req, timeout=timeout) as resp:
             resp.read()
@@ -1740,7 +1874,8 @@ class LLMClient:
         # （默认按连接超时的 3 倍缩放，避免固定写死；可经模型配置 idle_timeout 覆盖）
         self.idle_timeout = (idle_timeout if idle_timeout and idle_timeout > 0
                              else (timeout or DEFAULT_TIMEOUT) * 3)
-        # 接口协议：chat = /v1/chat/completions（默认）；responses = /v1/responses
+        # 接口协议：chat = /v1/chat/completions（默认）；responses = /v1/responses；
+        # anthropic = Anthropic Messages API（/v1/messages，x-api-key 认证）
         self.protocol = (protocol or "chat").lower() or "chat"
         # 由上层按工作力度设置；None 表示不发送（兼容不支持该参数的 API）
         self.reasoning_effort = None
@@ -1801,6 +1936,10 @@ class LLMClient:
         try:
             if self.protocol == "responses":
                 return self._responses_stream(messages, tools, _wrapped_delta,
+                                              _wrapped_reasoning, stop,
+                                              max_tokens=max_tokens)
+            if self.protocol == "anthropic":
+                return self._anthropic_stream(messages, tools, _wrapped_delta,
                                               _wrapped_reasoning, stop,
                                               max_tokens=max_tokens)
             return self._chat_stream_once(messages, tools, tool_choice,
@@ -1898,6 +2037,8 @@ class LLMClient:
         text_parts: List[str] = []
         tool_calls: dict = {}   # index -> {id, name, args}
         usage = None
+        # 400 去掉思考参数降级是否已用过（单次请求内只降级一次，避免无限重试）
+        _strip_effort_retry_done = False
         for attempt in range(_MAX_RETRIES):
             if stop and stop():
                 raise AgentLLMError("已停止")
@@ -1992,6 +2133,31 @@ class LLMClient:
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", "replace")
                 if e.code == 400:
+                    # 400 安全降级：若本次带了思考参数且上游拒绝，去掉思考参数重试一次。
+                    # 未命中厂商内置表的模型走通用兜底（见 build_effort_params），其参数
+                    # 可能与该模型真实支持的字段不符（如只认 thinking.type 不认
+                    # reasoning_effort）。降级保证「思考参数不被接受」最多损失思考能力，
+                    # 不会让整个请求失败；仅降级一次，避免无限重试。
+                    if _strip_effort_retry_done and _EFFORT_PAYLOAD_KEYS & set(payload):
+                        for k in _EFFORT_PAYLOAD_KEYS:
+                            payload.pop(k, None)
+                        _strip_effort_retry_done = True
+                        _log.warning(
+                            "思考参数被上游拒绝(HTTP 400)，已去掉思考参数重试 | model=%s",
+                            self.model)
+                        # 必须重建请求对象：req 的 body 在构造时已固化，只改 payload
+                        # 不会影响实际发出的内容（否则重发的仍是带思考参数的旧请求）
+                        req = urllib_request.Request(
+                            f"{self.base_url}/chat/completions",
+                            data=json.dumps(payload).encode("utf-8"),
+                            headers={"Content-Type": "application/json",
+                                     "User-Agent": _UA,
+                                     "Authorization": f"Bearer {self.api_key}"},
+                            method="POST")
+                        text_parts = []
+                        tool_calls = {}
+                        usage = None
+                        continue
                     raise AgentLLMError(
                         _log_rejected("chat_stream", req.full_url, payload, e.code, body))
                 last_err = _humanize_http_error(e.code, body)
@@ -2064,24 +2230,56 @@ class LLMClient:
     def _chat_once(self, messages: list, max_tokens: int = 1024,
                    timeout: float = 60.0,
                    stop: Optional[Callable[[], bool]] = None) -> dict:
-        """单次非流式请求（含重试），连接参数读取 self.*。"""
+        """单次非流式请求（含重试），连接参数读取 self.*。
+        支持 chat（/v1/chat/completions）与 anthropic（/v1/messages）协议；
+        responses 协议不支持内部摘要请求。"""
         if self.protocol == "responses":
             raise AgentLLMError("responses 协议不支持内部摘要请求")
         self._raise_if_bad_headers()
-        payload = {
-            "model": self.model,
-            "messages": _sanitize_messages(messages),
-            "stream": False,
-            "max_tokens": max_tokens,
-        }
         urllib_request = _request_module()
-        req = urllib_request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "User-Agent": _UA,
-                     "Authorization": f"Bearer {self.api_key}"},
-            method="POST")
+        if self.protocol == "anthropic":
+            # Anthropic Messages API 非流式请求
+            system_text = ""
+            anthropic_msgs = []
+            for m in _sanitize_messages(messages):
+                role = m.get("role")
+                content = m.get("content")
+                if role == "system":
+                    if isinstance(content, str):
+                        system_text += (content + "\n") if content else ""
+                    continue
+                anthropic_msgs.append({"role": role,
+                                       "content": str(content) if content is not None else ""})
+            payload = {
+                "model": self.model,
+                "messages": anthropic_msgs,
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+            if system_text.strip():
+                payload["system"] = system_text.strip()
+            req = urllib_request.Request(
+                f"{self.base_url}/v1/messages",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json",
+                         "User-Agent": _UA,
+                         "x-api-key": self.api_key,
+                         "anthropic-version": "2023-06-01"},
+                method="POST")
+        else:
+            payload = {
+                "model": self.model,
+                "messages": _sanitize_messages(messages),
+                "stream": False,
+                "max_tokens": max_tokens,
+            }
+            req = urllib_request.Request(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json",
+                         "User-Agent": _UA,
+                         "Authorization": f"Bearer {self.api_key}"},
+                method="POST")
         resp = None
         last_err = None
         data = None
@@ -2117,6 +2315,17 @@ class LLMClient:
                 raise AgentLLMError(last_err)
         else:
             raise AgentLLMError(last_err or "请求失败")
+        if self.protocol == "anthropic":
+            # Anthropic 响应：content 数组中的 text 块
+            text = ""
+            for blk in (data or {}).get("content") or []:
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    text += str(blk.get("text") or "")
+            u = (data or {}).get("usage") or {}
+            usage = {"prompt_tokens": u.get("input_tokens", 0),
+                     "completion_tokens": u.get("output_tokens", 0),
+                     "total_tokens": u.get("input_tokens", 0) + u.get("output_tokens", 0)}
+            return {"text": text, "usage": usage}
         msg = ((data or {}).get("choices") or [{}])[0].get("message") or {}
         c = msg.get("content")
         if isinstance(c, list):   # 部分 API 返回分段数组
@@ -2172,6 +2381,8 @@ class LLMClient:
             method="POST")
         resp = None
         last_err = None
+        # 400 去掉思考参数降级是否已用过（单次请求内只降级一次）
+        _strip_effort_retry_done = False
         for attempt in range(_MAX_RETRIES):
             if stop and stop():
                 raise AgentLLMError("已停止")
@@ -2181,6 +2392,22 @@ class LLMClient:
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", "replace")
                 if e.code == 400:
+                    # 与 chat 协议一致：思考参数被拒时去掉重试一次（见 _chat_stream_once）
+                    if _strip_effort_retry_done and _EFFORT_PAYLOAD_KEYS & set(payload):
+                        for k in _EFFORT_PAYLOAD_KEYS:
+                            payload.pop(k, None)
+                        _strip_effort_retry_done = True
+                        _log.warning(
+                            "思考参数被上游拒绝(HTTP 400)，已去掉思考参数重试 | model=%s",
+                            self.model)
+                        req = urllib_request.Request(
+                            f"{self.base_url}/responses",
+                            data=json.dumps(payload).encode("utf-8"),
+                            headers={"Content-Type": "application/json",
+                                     "User-Agent": _UA,
+                                     "Authorization": f"Bearer {self.api_key}"},
+                            method="POST")
+                        continue
                     raise AgentLLMError(
                         _log_rejected("responses", req.full_url, payload, e.code, body))
                 last_err = _humanize_http_error(e.code, body)
@@ -2199,6 +2426,250 @@ class LLMClient:
         return _parse_responses_stream(resp, on_delta, on_reasoning, stop,
                                        timeout=self.timeout,
                                        idle_timeout=self.idle_timeout)
+
+    def _anthropic_stream(self, messages: list, tools=None,
+                          on_delta=None, on_reasoning=None, stop=None,
+                          max_tokens: Optional[int] = None) -> dict:
+        """Anthropic Messages API（/v1/messages）流式对话。返回结构与 chat_stream 一致。
+
+        与 OpenAI 协议的关键差异：
+        - 认证头：x-api-key（非 Authorization: Bearer）+ anthropic-version
+        - system 是独立顶层字段（非 messages 中的 role=system）
+        - 工具调用用 content 块数组（tool_use / tool_result），非 tool_calls 字段
+        - 工具定义用 input_schema（非 function.parameters）
+        - max_tokens 必填
+        - 流式 SSE 事件：message_start / content_block_start / content_block_delta /
+          content_block_stop / message_delta / message_stop
+        """
+        self._raise_if_bad_headers()
+        # ---- 消息格式转换：OpenAI → Anthropic ----
+        system_text = ""
+        anthropic_msgs = []
+        for m in _sanitize_messages(messages):
+            role = m.get("role")
+            content = m.get("content")
+            if role == "system":
+                # system 消息提取文本拼入顶层 system 字段
+                if isinstance(content, str):
+                    system_text += (content + "\n") if content else ""
+                elif isinstance(content, list):
+                    for blk in content:
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            system_text += str(blk.get("text") or "") + "\n"
+                continue
+            if role == "tool":
+                # OpenAI tool 回复 → Anthropic user 消息中的 tool_result 块
+                tool_call_id = m.get("tool_call_id", "")
+                anthropic_msgs.append({
+                    "role": "user",
+                    "content": [{"type": "tool_result",
+                                 "tool_use_id": tool_call_id,
+                                 "content": str(content) if content is not None else ""}]
+                })
+                continue
+            if role == "assistant" and m.get("tool_calls"):
+                # OpenAI assistant tool_calls → Anthropic assistant content 块数组
+                blocks = []
+                if isinstance(content, str) and content.strip():
+                    blocks.append({"type": "text", "text": content})
+                for tc in m["tool_calls"]:
+                    fn = tc.get("function") or {}
+                    try:
+                        inp = json.loads(fn.get("arguments") or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        inp = {}
+                    blocks.append({"type": "tool_use",
+                                   "id": tc.get("id", ""),
+                                   "name": fn.get("name", ""),
+                                   "input": inp})
+                anthropic_msgs.append({"role": "assistant", "content": blocks})
+                continue
+            # 普通 user/assistant 消息：content 为字符串或 OpenAI 内容块数组
+            if isinstance(content, list):
+                # OpenAI 内容块（text / image_url）→ Anthropic 块
+                blocks = []
+                for blk in content:
+                    if not isinstance(blk, dict):
+                        continue
+                    if blk.get("type") == "text":
+                        blocks.append({"type": "text", "text": str(blk.get("text") or "")})
+                    elif blk.get("type") == "image_url":
+                        url = (blk.get("image_url") or {}).get("url", "")
+                        if url.startswith("data:"):
+                            # data URI → base64 source
+                            try:
+                                mime, b64 = url.split(",", 1)
+                                media_type = mime.split(";")[0].replace("data:", "")
+                                blocks.append({"type": "image",
+                                               "source": {"type": "base64",
+                                                          "media_type": media_type,
+                                                          "data": b64}})
+                            except ValueError:
+                                pass
+                        # 纯 URL 图片 Anthropic 不直接支持，跳过（降级为文本）
+                anthropic_msgs.append({"role": role, "content": blocks if blocks else ""})
+            else:
+                anthropic_msgs.append({"role": role,
+                                       "content": str(content) if content is not None else ""})
+        # ---- 构建请求 ----
+        payload = {
+            "model": self.model,
+            "messages": anthropic_msgs,
+            "max_tokens": int(max_tokens) if max_tokens and int(max_tokens) > 0 else 4096,
+            "stream": True,
+        }
+        if system_text.strip():
+            payload["system"] = system_text.strip()
+        # 工具格式转换：OpenAI function → Anthropic name/description/input_schema
+        if tools:
+            payload["tools"] = [
+                {"name": t["function"]["name"],
+                 "description": t["function"].get("description", ""),
+                 "input_schema": t["function"].get("parameters", {"type": "object", "properties": {}})}
+                for t in tools if isinstance(t, dict) and t.get("function")
+            ]
+        urllib_request = _request_module()
+        req = urllib_request.Request(
+            f"{self.base_url}/v1/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json",
+                     "User-Agent": _UA,
+                     "x-api-key": self.api_key,
+                     "anthropic-version": "2023-06-01"},
+            method="POST")
+        # ---- 重试循环（与 chat/responses 一致：429/5xx/网络抖动指数退避）----
+        resp = None
+        last_err = None
+        for attempt in range(_MAX_RETRIES):
+            if stop and stop():
+                raise AgentLLMError("已停止")
+            try:
+                resp = _stream_open(req, self.timeout)
+                break
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", "replace")
+                last_err = _humanize_http_error(e.code, body)
+                if e.code in (429, 500, 502, 503, 504) and attempt < _MAX_RETRIES - 1:
+                    time.sleep(_RETRY_DELAY * (attempt + 1))
+                    continue
+                if e.code == 400:
+                    raise AgentLLMError(
+                        _log_rejected("anthropic", req.full_url, payload, e.code, body))
+                raise AgentLLMError(last_err)
+            except urllib.error.URLError as e:
+                last_err = f"网络错误: {e.reason}"
+                if attempt < _MAX_RETRIES - 1:
+                    time.sleep(_RETRY_DELAY * (attempt + 1))
+                    continue
+                raise AgentLLMError(last_err)
+        if resp is None:
+            raise AgentLLMError(last_err or "请求失败")
+        # ---- 流式解析 ----
+        _relax_socket_timeout(resp, self.idle_timeout)
+        last_data = time.time()
+        text_parts: List[str] = []
+        tool_calls: dict = {}   # index → {id, name, args}
+        usage = None
+        cur_block_idx = -1
+        cur_block_type = None   # "text" | "tool_use"
+        while True:
+            if stop and stop():
+                resp.close()
+                raise AgentLLMError("已停止")
+            raw = resp.readline()
+            if not raw:
+                break
+            if time.time() - last_data > self.idle_timeout:
+                resp.close()
+                raise AgentLLMError(f"流式响应超过 {self.idle_timeout:.0f}s 无数据，已中断")
+            last_data = time.time()
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            evt = obj.get("type", "")
+            if evt == "message_start":
+                msg = obj.get("message") or {}
+                u = msg.get("usage") or {}
+                if u:
+                    usage = {"prompt_tokens": u.get("input_tokens", 0),
+                             "completion_tokens": 0,
+                             "total_tokens": u.get("input_tokens", 0)}
+            elif evt == "content_block_start":
+                cur_block_idx = obj.get("index", cur_block_idx + 1)
+                blk = obj.get("content_block") or {}
+                cur_block_type = blk.get("type")
+                if cur_block_type == "tool_use":
+                    tc = tool_calls.setdefault(cur_block_idx,
+                                               {"id": blk.get("id", ""),
+                                                "name": blk.get("name", ""),
+                                                "args": ""})
+                    if blk.get("id"):
+                        tc["id"] = blk["id"]
+                    if blk.get("name"):
+                        tc["name"] = blk["name"]
+            elif evt == "content_block_delta":
+                delta = obj.get("delta") or {}
+                dtype = delta.get("type")
+                if dtype == "text_delta":
+                    txt = delta.get("text", "")
+                    if txt:
+                        self._streamed = True
+                        text_parts.append(txt)
+                        if on_delta:
+                            on_delta(txt)
+                elif dtype == "thinking_delta":
+                    # Claude 扩展思考块（部分模型返回）
+                    txt = delta.get("thinking", "")
+                    if txt and on_reasoning:
+                        on_reasoning(txt)
+                elif dtype == "input_json_delta":
+                    # 工具参数 JSON 增量
+                    partial = delta.get("partial_json", "")
+                    if partial and cur_block_idx >= 0:
+                        tc = tool_calls.setdefault(cur_block_idx,
+                                                   {"id": "", "name": "", "args": ""})
+                        tc["args"] += partial
+            elif evt == "content_block_stop":
+                cur_block_type = None
+            elif evt == "message_delta":
+                d = obj.get("delta") or {}
+                u = obj.get("usage") or {}
+                if u and usage:
+                    usage["completion_tokens"] = u.get("output_tokens", 0)
+                    usage["total_tokens"] = usage["prompt_tokens"] + u.get("output_tokens", 0)
+                elif u:
+                    usage = {"prompt_tokens": 0,
+                             "completion_tokens": u.get("output_tokens", 0),
+                             "total_tokens": u.get("output_tokens", 0)}
+            elif evt == "message_stop":
+                break
+            elif evt == "error":
+                err = obj.get("error") or {}
+                raise AgentLLMError(f"Anthropic API 错误：{err.get('message', str(obj))}")
+        resp.close()
+        # 工具调用参数 JSON 增量拼凑后解析为 dict（与 chat 协议输出格式一致）
+        out_tc = []
+        for idx in sorted(tool_calls.keys()):
+            tc = tool_calls[idx]
+            args_str = tc.get("args", "") or "{}"
+            try:
+                json.loads(args_str)   # 验证 JSON 合法性
+            except json.JSONDecodeError:
+                args_str = "{}"
+            out_tc.append({"id": tc.get("id", ""),
+                           "type": "function",
+                           "function": {"name": tc.get("name", ""),
+                                        "arguments": args_str}})
+        return {"text": "".join(text_parts),
+                "tool_calls": out_tc,
+                "usage": usage}
 
 
 # ============================================================

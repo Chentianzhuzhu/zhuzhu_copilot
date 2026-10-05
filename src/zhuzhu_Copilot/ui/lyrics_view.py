@@ -10,6 +10,8 @@ from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QAbstractScrollArea
 
+from zhuzhu_Copilot.core.i18n import ui as _ui
+
 ROW_H = 30          # 每行高度（px）
 FONT_PX = 15        # 歌词字号（px）
 PAD_X = 10          # 横向留白
@@ -121,7 +123,7 @@ class LyricsView(QAbstractScrollArea):
         if not self._lines:
             p.setPen(QColor(self._dim))
             p.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter,
-                       "未找到歌词，可点击「导入歌词」")
+                       _ui("未找到歌词，可点击「导入歌词」"))
             return
         value = self.verticalScrollBar().value()
         first = max(0, (value - PAD_Y) // ROW_H)

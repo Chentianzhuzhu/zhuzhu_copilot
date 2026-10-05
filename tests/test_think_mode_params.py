@@ -83,10 +83,41 @@ def test_off_graceful_for_permanent_think_models():
     assert agent_llm.build_effort_params("gpt-5.4", "high", "off") == {"reasoning_effort": "low"}
 
 
-def test_unknown_model_returns_empty():
-    """不支持思考参数的模型：任何 think_mode 都返回空 dict（不发送参数）"""
-    for tm in ("auto", "on", "off"):
-        assert agent_llm.build_effort_params("ark-code-latest", "medium", tm) == {}
+def test_unknown_model_uses_generic_fallback():
+    """未命中厂商内置表的模型（如聚合平台新模型 stealth/space-bunny-alpha）：
+    不再返回空 dict（那正是「思考开关与强度滑块完全失效」的 bug），
+    而是走通用兜底 —— OpenAI 兼容层标准 reasoning_effort 参数。
+
+    · auto：低档（关闭/低/中）关闭思考（none），高档开启并按强度折算
+    · on ：始终思考，强度取滑块档位（最低 low，绝不 none）
+    · off：统一关闭（none）
+    """
+    m = "stealth/space-bunny-alpha"
+    # auto：低档（关闭/低/中）不思考，高档思考强度随档位递增
+    for e in ("off", "low", "medium"):
+        assert agent_llm.build_effort_params(m, e, "auto") == {"reasoning_effort": "none"}
+    assert _reasoning(agent_llm.build_effort_params(m, "high", "auto")) == "high"
+    # on：低档也开启思考，且随强度递增
+    low_on = _reasoning(agent_llm.build_effort_params(m, "off", "on"))
+    top_on = _reasoning(agent_llm.build_effort_params(m, "extreme", "on"))
+    assert low_on not in (None, "none") and top_on == "high"
+    # off：统一 none（关闭）
+    for e in agent_llm.EFFORTS:
+        assert _reasoning(agent_llm.build_effort_params(m, e, "off")) == "none"
+
+
+def test_generic_fallback_prefers_upstream_declared_levels():
+    """上游 /models 声明了可调级别时，通用兜底按声明取值折算（最贴合该模型）"""
+    m = "stealth/space-bunny-alpha"
+    # 声明含关闭档 → auto 低档关闭
+    assert _reasoning(agent_llm.build_effort_params(
+        m, "low", "auto", ["none", "low", "medium", "high"])) == "none"
+    # 声明内按就近折算：max → high（声明里没有更高档）
+    assert _reasoning(agent_llm.build_effort_params(
+        m, "max", "auto", ["low", "medium", "high"])) == "high"
+    # 声明里没有关闭档：不能表达关闭，取声明内最低思考档（不臆造 none）
+    assert _reasoning(agent_llm.build_effort_params(
+        m, "off", "auto", ["low", "medium", "high"])) == "low"
 
 
 def test_invalid_think_mode_falls_back_to_auto():

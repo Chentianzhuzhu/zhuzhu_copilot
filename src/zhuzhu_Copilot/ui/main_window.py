@@ -7,6 +7,8 @@ import webbrowser
 from pathlib import Path
 from typing import List
 
+from zhuzhu_Copilot.core.i18n import ui as _ui, uim as _uim, uif as _uif
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QProgressBar,
@@ -991,13 +993,13 @@ class CopilotPanel(QFrame):
         self._admin_dot = QLabel()
         self._admin_dot.setFixedSize(8, 8)
         admin_lay.addWidget(self._admin_dot)
-        self.admin_label = QLabel("未提权")
+        self.admin_label = QLabel(_ui("未提权"))
         self.admin_label.setStyleSheet(f"font-size: 12px; color: {PALETTE['text_secondary']};")
         admin_lay.addWidget(self.admin_label)
         layout.addWidget(admin_box)
 
         close_btn = _IconTitleButton(_ICON_CLOSE, _ICON_CLOSE_HOVER)
-        close_btn.setToolTip("收起面板")
+        close_btn.setToolTip(_ui("收起面板"))
         # 包一层 lambda：clicked 会带 bool 参数，而 close_requested 无参
         close_btn.clicked.connect(lambda *_: self.close_requested.emit())
         layout.addWidget(close_btn)
@@ -1017,7 +1019,9 @@ class CopilotPanel(QFrame):
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
         for idx, name in enumerate(("应用", "防护", "通用", "工具")):
-            b = QPushButton(name)
+            # 标签文案在**此处**过 _ui：元组是中文原文（i18n 的 key），
+            # 不能在模块导入期求值，否则切换语言后不再刷新。
+            b = QPushButton(_ui(name))
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setMinimumHeight(26)
@@ -1165,7 +1169,7 @@ class CopilotPanel(QFrame):
 
         head = QHBoxLayout()
         head.setSpacing(8)
-        t = QLabel("应用")
+        t = QLabel(_ui("应用"))
         t._section = True
         t.setStyleSheet(_SECTION_TITLE)
         head.addWidget(t)
@@ -1176,7 +1180,7 @@ class CopilotPanel(QFrame):
         layout.addLayout(head)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("搜索应用...")
+        self.search_edit.setPlaceholderText(_ui("搜索应用..."))
         self.search_edit.setStyleSheet(_SEARCH_QSS)
         self.search_edit.addAction(
             svg_icon(_ICON_SEARCH.format(C=PALETTE["text_secondary"])),
@@ -1193,16 +1197,16 @@ class CopilotPanel(QFrame):
 
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
-        self.status_label = QLabel("就绪")
+        self.status_label = QLabel(_ui("就绪"))
         self.status_label.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 12px;")
         bottom.addWidget(self.status_label)
         bottom.addStretch(1)
 
-        self.refresh_btn = _icon_button("重新扫描", _ICON_REFRESH, kind="tool", height=32)
+        self.refresh_btn = _icon_button(_ui("重新扫描"), _ICON_REFRESH, kind="tool", height=32)
         self.refresh_btn.clicked.connect(self._start_scan)
         bottom.addWidget(self.refresh_btn)
 
-        self.update_btn = _icon_button("检查更新", _ICON_UPDATE, kind="tool", height=32)
+        self.update_btn = _icon_button(_ui("检查更新"), _ICON_UPDATE, kind="tool", height=32)
         self.update_btn.clicked.connect(self._on_check_update_clicked)
         bottom.addWidget(self.update_btn)
         layout.addLayout(bottom)
@@ -1223,7 +1227,7 @@ class CopilotPanel(QFrame):
         self._right_card = card
         layout = card.layout
 
-        layout.addWidget(self._section_label("应用详情"))
+        layout.addWidget(self._section_label(_ui("应用详情")))
         self._info_box = QWidget()
         self._info_lay = QVBoxLayout(self._info_box)
         self._info_lay.setContentsMargins(0, 0, 0, 0)
@@ -1232,11 +1236,11 @@ class CopilotPanel(QFrame):
         self._show_empty_info()
 
         layout.addWidget(self._divider())
-        layout.addWidget(self._section_label("迁移设置"))
+        layout.addWidget(self._section_label(_ui("迁移设置")))
 
         drive_row = QHBoxLayout()
         drive_row.setSpacing(10)
-        dl = QLabel("目标盘符")
+        dl = QLabel(_ui("目标盘符"))
         dl._hint = True
         dl.setStyleSheet(_FIELD_LABEL)
         drive_row.addWidget(dl)
@@ -1245,23 +1249,24 @@ class CopilotPanel(QFrame):
         drive_row.addWidget(self.drive_combo, 1)
         layout.addLayout(drive_row)
 
-        tl = QLabel("目标路径")
+        tl = QLabel(_ui("目标路径"))
         tl._hint = True
         tl.setStyleSheet(_FIELD_LABEL)
         layout.addWidget(tl)
         target_row = QHBoxLayout()
         target_row.setSpacing(10)
         self.target_path_edit = QLineEdit()
-        self.target_path_edit.setPlaceholderText("自动生成，可修改（如 D:\\Apps\\微信）")
+        self.target_path_edit.setPlaceholderText(
+            _ui("自动生成，可修改（如 D:\\Apps\\微信）"))
         self.drive_combo.currentIndexChanged.connect(self._refresh_target_path)
         target_row.addWidget(self.target_path_edit, 1)
-        browse_btn = _icon_button("浏览", _ICON_FOLDER, kind="ghost", height=40)
+        browse_btn = _icon_button(_ui("浏览"), _ICON_FOLDER, kind="ghost", height=40)
         browse_btn.clicked.connect(self._browse_target)
         target_row.addWidget(browse_btn)
         layout.addLayout(target_row)
 
         layout.addWidget(self._divider())
-        layout.addWidget(self._section_label("迁移进度"))
+        layout.addWidget(self._section_label(_ui("迁移进度")))
 
         self.progress = QProgressBar()
         self.progress.setValue(0)
@@ -1270,17 +1275,17 @@ class CopilotPanel(QFrame):
 
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
-        self.log_edit.setPlaceholderText("迁移日志...")
+        self.log_edit.setPlaceholderText(_ui("迁移日志..."))
         self.log_edit.setMaximumHeight(120)
         layout.addWidget(self.log_edit)
 
         layout.addWidget(self._divider())
-        layout.addWidget(self._section_label("操作"))
+        layout.addWidget(self._section_label(_ui("操作")))
 
-        self.migrate_btn = _icon_button("开始迁移", _ICON_MIGRATE, kind="primary", height=44)
+        self.migrate_btn = _icon_button(_ui("开始迁移"), _ICON_MIGRATE, kind="primary", height=44)
         self.migrate_btn.setEnabled(False)
         self.migrate_btn.clicked.connect(self._start_migration)
-        self.uninstall_btn = _icon_button("强力卸载", _ICON_TRASH, kind="danger", height=44)
+        self.uninstall_btn = _icon_button(_ui("强力卸载"), _ICON_TRASH, kind="danger", height=44)
         self.uninstall_btn.setEnabled(False)
         self.uninstall_btn.clicked.connect(self._start_uninstall)
         row1 = QHBoxLayout()
@@ -1289,7 +1294,7 @@ class CopilotPanel(QFrame):
         row1.addWidget(self.uninstall_btn, 1)
         layout.addLayout(row1)
 
-        self.open_dir_btn = _icon_button("打开安装目录", _ICON_FOLDER, height=40)
+        self.open_dir_btn = _icon_button(_ui("打开安装目录"), _ICON_FOLDER, height=40)
         self.open_dir_btn.setEnabled(False)
         self.open_dir_btn.clicked.connect(self._open_app_dir)
         row2 = QHBoxLayout()
@@ -1308,16 +1313,16 @@ class CopilotPanel(QFrame):
 
         card = Card()
         cl = card.layout
-        cl.addWidget(self._section_label("静默安全防护"))
-        hint = QLabel("后台巡检弹窗拦截、启动项、DNS 与勒索行为；开启后随程序常驻。")
+        cl.addWidget(self._section_label(_ui("静默安全防护")))
+        hint = QLabel(_ui("后台巡检弹窗拦截、启动项、DNS 与勒索行为；开启后随程序常驻。"))
         hint.setWordWrap(True)
         hint._hint = True
         hint.setStyleSheet(f"font-size: 12px; color: {PALETTE['text_secondary']};")
         cl.addWidget(hint)
 
-        self.security_btn = _icon_button("开启静默防护", _ICON_SHIELD, height=40)
+        self.security_btn = _icon_button(_ui("开启静默防护"), _ICON_SHIELD, height=40)
         self.security_btn.clicked.connect(self._toggle_security)
-        self.security_settings_btn = _icon_button("防护设置", _ICON_SETTINGS, height=40)
+        self.security_settings_btn = _icon_button(_ui("防护设置"), _ICON_SETTINGS, height=40)
         self.security_settings_btn.clicked.connect(self._show_security_settings)
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -1331,7 +1336,7 @@ class CopilotPanel(QFrame):
         self.toast_switch = SwitchButton(self._toast_enabled)
         self.toast_switch.toggled.connect(self._on_toast_toggle)
         foot.addWidget(self.toast_switch)
-        sw = QLabel("安全提醒弹窗")
+        sw = QLabel(_ui("安全提醒弹窗"))
         sw._hint = True
         sw.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 12px;")
         foot.addWidget(sw)
@@ -1351,18 +1356,18 @@ class CopilotPanel(QFrame):
 
         card = Card()
         cl = card.layout
-        cl.addWidget(self._section_label("界面外观"))
+        cl.addWidget(self._section_label(_ui("界面外观")))
         theme_row = QHBoxLayout()
         theme_row.setSpacing(10)
-        lbl = QLabel("界面主题")
+        lbl = QLabel(_ui("界面主题"))
         lbl._hint = True
         lbl.setStyleSheet(_FIELD_LABEL)
         lbl.setFixedWidth(70)
         theme_row.addWidget(lbl)
         self.theme_combo = ArrowComboBox()
-        self.theme_combo.addItem("深色", "dark")
-        self.theme_combo.addItem("浅色", "light")
-        self.theme_combo.addItem("按时间自动（8-20 浅色）", "auto")
+        self.theme_combo.addItem(_ui("深色"), "dark")
+        self.theme_combo.addItem(_ui("浅色"), "light")
+        self.theme_combo.addItem(_ui("按时间自动（8-20 浅色）"), "auto")
         saved = str(app_identity.qsettings().value("agent_theme", "light"))
         ti = self.theme_combo.findData(saved)
         self.theme_combo.setCurrentIndex(ti if ti >= 0 else 1)
@@ -1371,8 +1376,8 @@ class CopilotPanel(QFrame):
         cl.addLayout(theme_row)
 
         cl.addWidget(self._divider())
-        cl.addWidget(self._section_label("软件更新"))
-        self.update_btn = _icon_button("检查更新", _ICON_UPDATE, kind="tool", height=32)
+        cl.addWidget(self._section_label(_ui("软件更新")))
+        self.update_btn = _icon_button(_ui("检查更新"), _ICON_UPDATE, kind="tool", height=32)
         self.update_btn.clicked.connect(self._on_check_update_clicked)
         upd = QHBoxLayout()
         upd.addWidget(self.update_btn)
@@ -1380,10 +1385,10 @@ class CopilotPanel(QFrame):
         cl.addLayout(upd)
 
         cl.addWidget(self._divider())
-        cl.addWidget(self._section_label("关于"))
-        about_btn = _icon_button("关于我们", _ICON_ABOUT, kind="tool", height=32)
+        cl.addWidget(self._section_label(_ui("关于")))
+        about_btn = _icon_button(_ui("关于我们"), _ICON_ABOUT, kind="tool", height=32)
         about_btn.clicked.connect(self._show_about)
-        website_btn = _icon_button("访问官网", _ICON_LINK, kind="tool", height=32)
+        website_btn = _icon_button(_ui("访问官网"), _ICON_LINK, kind="tool", height=32)
         website_btn.clicked.connect(self._open_website)
         ab = QHBoxLayout()
         ab.addWidget(about_btn)
@@ -1413,13 +1418,13 @@ class CopilotPanel(QFrame):
 
         card = Card()
         cl = card.layout
-        cl.addWidget(self._section_label("工具"))
+        cl.addWidget(self._section_label(_ui("工具")))
 
-        self.download_btn = _icon_button("高速下载", _ICON_UPDATE, height=40)
+        self.download_btn = _icon_button(_ui("高速下载"), _ICON_UPDATE, height=40)
         self.download_btn.clicked.connect(self._open_download_dialog)
-        self.memory_btn = _icon_button("一键优化内存", _ICON_MEMORY, height=40)
+        self.memory_btn = _icon_button(_ui("一键优化内存"), _ICON_MEMORY, height=40)
         self.memory_btn.clicked.connect(self._start_memory_optimize)
-        custom_btn = _icon_button("迁移自定义文件夹", _ICON_FOLDER, height=40)
+        custom_btn = _icon_button(_ui("迁移自定义文件夹"), _ICON_FOLDER, height=40)
         custom_btn.clicked.connect(self._migrate_custom_folder)
 
         for b in (self.download_btn, self.memory_btn, custom_btn):
@@ -1459,7 +1464,7 @@ class CopilotPanel(QFrame):
 
     def _show_empty_info(self):
         self._clear_info()
-        tip = QLabel("从左侧选择一个应用以查看详情")
+        tip = QLabel(_ui("从左侧选择一个应用以查看详情"))
         tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tip.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 13px; padding: 22px 0;")
         self._info_lay.addWidget(tip)
@@ -1477,7 +1482,7 @@ class CopilotPanel(QFrame):
         names.setSpacing(4)
         name_row = QHBoxLayout()
         name_row.setSpacing(8)
-        name = QLabel(app.name or "未知")
+        name = QLabel(app.name or _ui("未知"))
         name.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {PALETTE['text']};")
         name_row.addWidget(name)
         tag = QLabel(app.app_type)
@@ -1486,7 +1491,9 @@ class CopilotPanel(QFrame):
         name_row.addStretch(1)
         names.addLayout(name_row)
 
-        meta = QLabel(f"{app.version or '未知版本'}  ·  {format_size(app.size_bytes)}")
+        meta = QLabel(_uif("{a0}  ·  {a1}",
+                       a0=app.version or _ui("未知版本"),
+                       a1=format_size(app.size_bytes)))
         meta.setStyleSheet(f"font-size: 12px; color: {PALETTE['text_secondary']};")
         names.addWidget(meta)
         head.addLayout(names, 1)
@@ -1548,11 +1555,11 @@ class CopilotPanel(QFrame):
     def _setup_tray(self):
         """系统托盘：防护开启时显示图标，右键菜单可打开 AI 面板 / 退出，清理结果右下角弹窗"""
         self.tray = QSystemTrayIcon(QIcon(_app_icon_path()), self)
-        self.tray.setToolTip("zhuzhu Copilot · 静默安全防护")
+        self.tray.setToolTip(_ui("zhuzhu Copilot · 静默安全防护"))
         menu = QMenu(self)
-        act_show = menu.addAction("打开 AI 面板")
+        act_show = menu.addAction(_ui("打开 AI 面板"))
         act_show.triggered.connect(self._open_agent_panel)
-        act_quit = menu.addAction("退出程序")
+        act_quit = menu.addAction(_ui("退出程序"))
         act_quit.triggered.connect(self._quit_app)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
@@ -1582,19 +1589,20 @@ class CopilotPanel(QFrame):
         if self._security_on:
             return
         if not is_admin():
-            QMessageBox.warning(self, "权限不足", "静默防护需要管理员权限。")
+            QMessageBox.warning(self, _ui("权限不足"), _ui("静默防护需要管理员权限。"))
             return
         self._settings.setValue("security_auto", True)
         self.security_worker = SecurityMonitorWorker(self)
         self.security_worker.result.connect(self._on_security_result)
         self.security_worker.start()
         self._security_on = True
-        self.security_btn.setText("静默防护运行中")
-        self.status_label.setText("静默防护运行中，正在后台监控…")
+        self.security_btn.setText(_ui("静默防护运行中"))
+        self.status_label.setText(_ui("静默防护运行中，正在后台监控…"))
         self.tray.show()
         if self._toast_enabled:
             self.toast.show_toast(
-                "静默防护", "已开启\n后台监控恶意进程、启动项与网络风险，拦截结果将在此提示。",
+                "静默防护",
+                _uim("已开启\n后台监控恶意进程、启动项与网络风险，拦截结果将在此提示。"),
                 False, 4000,
             )
 
@@ -1605,9 +1613,9 @@ class CopilotPanel(QFrame):
             self.security_worker.wait(3000)
         self._settings.setValue("security_auto", False)
         self._security_on = False
-        self.security_btn.setText("开启静默防护")
+        self.security_btn.setText(_ui("开启静默防护"))
         self.tray.hide()
-        self.status_label.setText("静默防护已关闭")
+        self.status_label.setText(_ui("静默防护已关闭"))
 
     def _show_security_settings(self):
         """防护参数设置面板：模块开关 + 隔离区管理"""
@@ -1615,12 +1623,12 @@ class CopilotPanel(QFrame):
         from zhuzhu_Copilot.core.security_engine.quarantine import quarantine
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("防护设置")
+        dlg.setWindowTitle(_ui("防护设置"))
         dlg.setMinimumWidth(480)
         lay = QVBoxLayout(dlg)
         lay.setSpacing(12)
 
-        sec = QLabel("防护模块")
+        sec = QLabel(_ui("防护模块"))
         sec.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 12px;")
         lay.addWidget(sec)
 
@@ -1646,23 +1654,25 @@ class CopilotPanel(QFrame):
 
         lay.addWidget(self._divider())
 
-        qsec = QLabel("隔离区")
+        qsec = QLabel(_ui("隔离区"))
         qsec.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 12px;")
         lay.addWidget(qsec)
 
         lst = QListWidget()
         lst.setMinimumHeight(120)
         for item in quarantine.list_items():
-            it = QListWidgetItem(f"{item['name']}  ·  {item.get('reason') or '手动隔离'}")
+            it = QListWidgetItem(_uif("{a0}  ·  {a1}",
+                                a0=item["name"],
+                                a1=item.get("reason") or _ui("手动隔离")))
             it.setData(Qt.ItemDataRole.UserRole, item.get("id", ""))
             lst.addItem(it)
         if lst.count() == 0:
-            lst.addItem("隔离区为空")
+            lst.addItem(_ui("隔离区为空"))
         lay.addWidget(lst)
 
         rowq = QHBoxLayout()
-        restore_btn = _icon_button("恢复选中", _ICON_REFRESH, height=36)
-        open_btn = _icon_button("打开隔离区", _ICON_FOLDER, height=36)
+        restore_btn = _icon_button(_ui("恢复选中"), _ICON_REFRESH, height=36)
+        open_btn = _icon_button(_ui("打开隔离区"), _ICON_FOLDER, height=36)
 
         def _restore():
             cur = lst.currentItem()
@@ -1670,10 +1680,10 @@ class CopilotPanel(QFrame):
             if not ident:
                 return
             if quarantine.restore(ident):
-                QMessageBox.information(dlg, "恢复成功", "文件已恢复到原位置。")
+                QMessageBox.information(dlg, _ui("恢复成功"), _ui("文件已恢复到原位置。"))
                 dlg.accept()
             else:
-                QMessageBox.warning(dlg, "恢复失败", "文件不存在或原位置被占用。")
+                QMessageBox.warning(dlg, _ui("恢复失败"), _ui("文件不存在或原位置被占用。"))
 
         def _open_dir():
             d = quarantine.root
@@ -1687,7 +1697,7 @@ class CopilotPanel(QFrame):
         rowq.addStretch(1)
         lay.addLayout(rowq)
 
-        close_btn = _icon_button("关闭", _ICON_CLOSE, kind="primary", height=36)
+        close_btn = _icon_button(_ui("关闭"), _ICON_CLOSE, kind="primary", height=36)
         close_btn.clicked.connect(dlg.accept)
         lay.addWidget(close_btn)
 
@@ -1796,21 +1806,22 @@ class CopilotPanel(QFrame):
     def _check_admin(self):
         if is_admin():
             self._admin_dot.setStyleSheet(f"background: {PALETTE['success']}; border-radius: 4px;")
-            self.admin_label.setText("管理员权限")
+            self.admin_label.setText(_ui("管理员权限"))
             self.admin_label.setStyleSheet(f"font-size: 12px; color: {PALETTE['success']};")
         else:
             self._admin_dot.setStyleSheet(f"background: {PALETTE['danger']}; border-radius: 4px;")
-            self.admin_label.setText("未提权")
+            self.admin_label.setText(_ui("未提权"))
             self.admin_label.setStyleSheet(f"font-size: 12px; color: {PALETTE['danger']};")
             QMessageBox.warning(
                 self,
-                "需要管理员权限",
-                "本工具需要管理员权限才能创建目录联接和修改系统目录。\n请右键以管理员身份运行。",
+                _ui("需要管理员权限"),
+                _uim("本工具需要管理员权限才能创建目录联接和修改系统目录。\n"
+                     "请右键以管理员身份运行。"),
             )
 
     def _start_scan(self, *_):
         self.app_list.clear()
-        self.status_label.setText("正在扫描已安装应用...")
+        self.status_label.setText(_ui("正在扫描已安装应用..."))
         self.scan_progress.show()
         self.refresh_btn.setEnabled(False)
         self.scan_worker = ScanWorker()
@@ -1821,7 +1832,7 @@ class CopilotPanel(QFrame):
     def _on_scan_finished(self, apps: List[AppInfo]):
         self.apps = apps
         self._filter_apps()
-        self.status_label.setText(f"共扫描到 {len(apps)} 个应用")
+        self.status_label.setText(_uif("共扫描到 {n} 个应用", n=len(apps)))
         self.scan_progress.hide()
         self.refresh_btn.setEnabled(True)
         # 列表先秒出，大小由后台线程补齐
@@ -1851,7 +1862,7 @@ class CopilotPanel(QFrame):
         self.app_list.viewport().update()
 
     def _on_scan_error(self, msg: str):
-        self.status_label.setText(f"扫描失败: {msg}")
+        self.status_label.setText(_uif("扫描失败: {a0}", a0=msg))
         self.scan_progress.hide()
         self.refresh_btn.setEnabled(True)
 
@@ -1889,9 +1900,9 @@ class CopilotPanel(QFrame):
                 os.startfile(str(loc))
             except Exception as e:
                 logger.warning("打开目录失败 %s: %s", loc, e)
-                QMessageBox.warning(self, "无法打开", f"无法打开目录：{loc}\n{e}")
+                QMessageBox.warning(self, _ui("无法打开"), _uif('无法打开目录：{a0}\n{a1}', a0=loc, a1=e))
         else:
-            QMessageBox.warning(self, "无法打开", f"目录不存在：{loc}")
+            QMessageBox.warning(self, _ui("无法打开"), _uif("目录不存在：{a0}", a0=loc))
 
     def _refresh_target_path(self, *_):
         """按选中 app 与目标盘生成默认目标路径（用户手动编辑过则不覆盖）"""
@@ -1912,7 +1923,7 @@ class CopilotPanel(QFrame):
         start = str(Path(current).parent) if current and Path(current).parent.is_dir() \
             else str(Path(self.drive_combo.currentData() or "C:\\"))
         folder = QFileDialog.getExistingDirectory(
-            self, "选择目标位置（可在对话框内新建文件夹）", start,
+            self, _ui("选择目标位置（可在对话框内新建文件夹）"), start,
             QFileDialog.Option.ShowDirsOnly)
         if not folder:
             return
@@ -1927,14 +1938,14 @@ class CopilotPanel(QFrame):
             text = self.target_path_edit.text().strip()
         path = Path(text)
         if not path.is_absolute():
-            QMessageBox.warning(self, "路径无效", "目标路径必须是绝对路径，例如 D:\\Apps\\微信")
+            QMessageBox.warning(self, _ui("路径无效"), _ui("目标路径必须是绝对路径，例如 D:\\Apps\\微信"))
             return None
         # 盘符根目录（如 C:\）作为目标时，自动在其下创建 app 同名目录
         if path.anchor and str(path).rstrip("\\").lower() == path.anchor.rstrip("\\").lower():
             path = path / self.selected_app.name
         # 目标已存在不在此拒绝，交由 _start_migration 提供 覆盖/自动改名 处理
         if path == self.selected_app.install_location:
-            QMessageBox.warning(self, "路径无效", "目标路径不能与源路径相同")
+            QMessageBox.warning(self, _ui("路径无效"), _ui("目标路径不能与源路径相同"))
             return None
         return path
 
@@ -1947,7 +1958,7 @@ class CopilotPanel(QFrame):
         if not self.selected_app:
             return
         if not is_admin():
-            QMessageBox.warning(self, "权限不足", "请以管理员身份运行本工具。")
+            QMessageBox.warning(self, _ui("权限不足"), _ui("请以管理员身份运行本工具。"))
             return
 
         drive = Path(self.drive_combo.currentData())
@@ -1958,16 +1969,17 @@ class CopilotPanel(QFrame):
         if target.exists():
             reply = QMessageBox.question(
                 self,
-                "目标目录已存在",
-                f"目标位置已存在：<b>{target}</b>\n\n"
-                "选择「覆盖」将删除该目录后迁移（原内容不可恢复）；\n"
-                "选择「改名」将自动在名称后加序号迁移到新位置。",
+                _ui("目标目录已存在"),
+                _uim("目标位置已存在：<b>{target}</b>\n\n"
+                     "选择「覆盖」将删除该目录后迁移（原内容不可恢复）；\n"
+                     "选择「改名」将自动在名称后加序号迁移到新位置。")
+                .format(target=target),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 | QMessageBox.StandardButton.Cancel,
             )
             if reply == QMessageBox.StandardButton.Yes:
                 if not safe_remove(target):
-                    QMessageBox.warning(self, "无法覆盖", f"无法删除已存在的目标目录：{target}")
+                    QMessageBox.warning(self, _ui("无法覆盖"), _uif("无法删除已存在的目标目录：{a0}", a0=target))
                     return
             elif reply == QMessageBox.StandardButton.No:
                 n = 1
@@ -1982,9 +1994,10 @@ class CopilotPanel(QFrame):
                 return
         reply = QMessageBox.question(
             self,
-            "确认迁移",
-            f"确定将 <b>{self.selected_app.name}</b> 迁移到 <b>{target}</b> 吗？\n"
-            f"迁移后旧安装目录将被删除，注册表与快捷方式将更新到新路径。",
+            _ui("确认迁移"),
+            _uim("确定将 <b>{app}</b> 迁移到 <b>{target}</b> 吗？\n"
+                 "迁移后旧安装目录将被删除，注册表与快捷方式将更新到新路径。")
+            .format(app=self.selected_app.name, target=target),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -2007,10 +2020,11 @@ class CopilotPanel(QFrame):
         """迁移目标已存在：询问用户是否删除并替换"""
         ret = QMessageBox.question(
             self,
-            "目标目录已存在",
-            f"目标位置已存在同名目录：\n<b>{target}</b>\n\n"
-            f"是否删除该目录并替换？\n（源目录：{source}）\n\n"
-            f"选择「否」将跳过该目录的迁移。",
+            _ui("目标目录已存在"),
+            _uim("目标位置已存在同名目录：\n<b>{target}</b>\n\n"
+                 "是否删除该目录并替换？\n（源目录：{source}）\n\n"
+                 "选择「否」将跳过该目录的迁移。")
+            .format(target=target, source=source),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2042,13 +2056,13 @@ class CopilotPanel(QFrame):
         names = "、".join(blocked) if blocked else "360安全卫士相关进程"
         QMessageBox.warning(
             self,
-            "360 自我保护",
-            "检测到 360 安全卫士的进程无法被强制结束。\n"
-            "360 的自我保护会在系统内核层拦截强制终止，属于其正常安全机制。\n\n"
-            "请任选其一操作后再重试：\n"
-            "1. 右键 360 托盘图标 → 退出 360\n"
-            "2. 打开 360 设置 → 防护中心 → 关闭「自我保护」\n\n"
-            f"未能结束的进程：{names}",
+            _ui("360 自我保护"),
+            _uim("检测到 360 安全卫士的进程无法被强制结束。\n"
+                 "360 的自我保护会在系统内核层拦截强制终止，属于其正常安全机制。\n\n"
+                 "请任选其一操作后再重试：\n"
+                 "1. 右键 360 托盘图标 → 退出 360\n"
+                 "2. 打开 360 设置 → 防护中心 → 关闭「自我保护」\n\n"
+                 "未能结束的进程：{names}").format(names=names),
         )
 
     def _on_migrate_finished(self, result: dict):
@@ -2065,22 +2079,22 @@ class CopilotPanel(QFrame):
             warns = [d for d in (result.get("details") or []) if "警告" in str(d) or "未能删除" in str(d)]
             if warns:
                 msg += "\n\n" + "\n".join(warns)
-            QMessageBox.information(self, "迁移成功", msg)
+            QMessageBox.information(self, _ui("迁移成功"), msg)
         else:
             self.progress.setValue(0)
-            QMessageBox.critical(self, "迁移失败", result.get("message", "未知错误"))
+            QMessageBox.critical(self, _ui("迁移失败"), result.get("message", "未知错误"))
 
     def _start_uninstall(self, *_):
         if not self.selected_app:
             return
         if not is_admin():
-            QMessageBox.warning(self, "权限不足", "请以管理员身份运行本工具。")
+            QMessageBox.warning(self, _ui("权限不足"), _ui("请以管理员身份运行本工具。"))
             return
         # 后台构建卸载清单（注册表/快捷方式预扫描），期间 UI 保持响应
         self.migrate_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
         self.uninstall_btn.setEnabled(False)
-        self.status_label.setText("正在分析应用...")
+        self.status_label.setText(_ui("正在分析应用..."))
         self.build_worker = BuildPlanWorker(self.selected_app, self.uninstaller)
         self.build_worker.plan_ready.connect(self._on_plan_ready)
         self.build_worker.error.connect(self._on_plan_error)
@@ -2091,7 +2105,8 @@ class CopilotPanel(QFrame):
         self.refresh_btn.setEnabled(True)
         self.uninstall_btn.setEnabled(True)
         if hasattr(self, "status_label"):
-            self.status_label.setText(f"共扫描到 {len(self.apps)} 个应用" if self.apps else "就绪")
+            self.status_label.setText(
+                _uif("共扫描到 {n} 个应用", n=len(self.apps)) if self.apps else _ui("就绪"))
 
     def _on_plan_ready(self, plan):
         self._restore_buttons()
@@ -2110,7 +2125,7 @@ class CopilotPanel(QFrame):
 
     def _on_plan_error(self, msg: str):
         self._restore_buttons()
-        QMessageBox.critical(self, "分析失败", f"无法分析该应用: {msg}")
+        QMessageBox.critical(self, _ui("分析失败"), _uif("无法分析该应用: {a0}", a0=msg))
 
     def _on_uninstall_finished(self, result: dict):
         self.migrate_btn.setEnabled(True)
@@ -2130,17 +2145,17 @@ class CopilotPanel(QFrame):
             )
             if failed:
                 msg += "\n\n以下删除失败:\n" + "\n".join(failed)
-            QMessageBox.information(self, "卸载完成", msg)
+            QMessageBox.information(self, _ui("卸载完成"), msg)
             self._start_scan()  # 刷新应用列表
         else:
             self.progress.setValue(0)
-            QMessageBox.critical(self, "卸载失败", result.get("message", "未知错误"))
+            QMessageBox.critical(self, _ui("卸载失败"), result.get("message", "未知错误"))
 
     def _migrate_custom_folder(self, *_):
         if not is_admin():
-            QMessageBox.warning(self, "权限不足", "请以管理员身份运行本工具。")
+            QMessageBox.warning(self, _ui("权限不足"), _ui("请以管理员身份运行本工具。"))
             return
-        folder = QFileDialog.getExistingDirectory(self, "选择要迁移的文件夹")
+        folder = QFileDialog.getExistingDirectory(self, _ui("选择要迁移的文件夹"))
         if not folder:
             return
         drive = Path(self.drive_combo.currentData())
@@ -2173,8 +2188,8 @@ class CopilotPanel(QFrame):
     def _show_about(self, *_):
         """关于我们弹窗"""
         QMessageBox.information(
-            self, "关于我们",
-            "开发者是一名14岁的初中生，通过vibe coding开发而来")
+            self, _ui("关于我们"),
+            _ui("开发者是一名14岁的初中生，通过vibe coding开发而来"))
 
     def _open_website(self, *_):
         """打开默认浏览器访问官网关于我们页"""
@@ -2189,26 +2204,26 @@ class CopilotPanel(QFrame):
 
     def _on_check_update_clicked(self, *_):
         """手动检查更新：调用服务器 API 并反馈结果"""
-        self.update_btn.setText("检查中…")
+        self.update_btn.setText(_ui("检查中…"))
         self.update_btn.setEnabled(False)
         self._update_checker.check(manual=True)
 
     def _on_manual_check_result(self, result: dict):
         """手动检查结果反馈：有更新/已最新/失败等"""
-        self.update_btn.setText("检查更新")
+        self.update_btn.setText(_ui("检查更新"))
         self.update_btn.setEnabled(True)
         status = result.get("status")
         if status == "ok":
             self._on_update_found(result.get("info") or {})
         elif status == "none":
-            QMessageBox.information(self, "检查更新", f"已是最新版本（v{APP_VERSION}）")
+            QMessageBox.information(self, _ui("检查更新"), _uif("已是最新版本（v{a0}）", a0=APP_VERSION))
         elif status == "noserver":
-            QMessageBox.warning(self, "检查更新", "未配置更新服务器地址")
+            QMessageBox.warning(self, _ui("检查更新"), _ui("未配置更新服务器地址"))
         elif status == "busy":
-            QMessageBox.information(self, "检查更新", "正在检查更新，请稍候…")
+            QMessageBox.information(self, _ui("检查更新"), _ui("正在检查更新，请稍候…"))
         else:
             err = result.get("error") or "网络异常"
-            QMessageBox.warning(self, "检查更新", f"检查更新失败：{err}")
+            QMessageBox.warning(self, _ui("检查更新"), _uif("检查更新失败：{a0}", a0=err))
 
     def _on_update_found(self, info: dict):
         """发现新版本：普通更新弹确认框；强制更新无忽略选项"""
@@ -2221,13 +2236,14 @@ class CopilotPanel(QFrame):
             text += f"\n\n更新说明：\n{notes}"
         if info.get("force"):
             QMessageBox.warning(
-                self, "发现强制更新",
-                text + "\n\n当前版本已停止服务，必须更新后才能继续使用。\n\n更新页已打开，本窗口关闭后应用将退出。")
+                self, _ui("发现强制更新"),
+                text + _uim("\n\n当前版本已停止服务，必须更新后才能继续使用。\n\n"
+                           "更新页已打开，本窗口关闭后应用将退出。"))
             webbrowser.open(info["url"])
             self._exit_forced()
             return
         ret = QMessageBox.question(
-            self, "发现新版本", text + "\n\n是否前往下载更新？",
+            self, _ui("发现新版本"), text + "\n\n是否前往下载更新？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if ret == QMessageBox.StandardButton.Yes:
@@ -2247,17 +2263,17 @@ class CopilotPanel(QFrame):
         """一键优化内存"""
         reply = QMessageBox.question(
             self,
-            "确认优化内存 - 核弹级方案",
-            "核弹级方案：\n"
-            "1. NtOpenProcess 兜底覆盖受保护进程（解决 OpenProcess 拒绝访问）\n"
-            "2. 暂停所有非核心进程 → 硬限制工作集为 1 字节\n"
-            "3. 分配大块内存制造极端内存压力 → 强迫内核主动 trim\n"
-            "4. 多次清空 standby list 彻底释放物理 RAM\n\n"
-            "执行期间：后台窗口会短暂冻结（暂停进程中），\n"
-            "完成后自动恢复。\n\n"
-            "机械硬盘用户：切换后台窗口时可能严重卡顿，\n"
-            "因为页面需从硬盘重新读入。SSD 用户通常无感。\n\n"
-            "保护：前台窗口、explorer、dwm、csrss、lsass 等核心进程。\n\n确定继续？",
+            _ui("确认优化内存 - 核弹级方案"),
+            _uim("核弹级方案：\n"
+                 "1. NtOpenProcess 兜底覆盖受保护进程（解决 OpenProcess 拒绝访问）\n"
+                 "2. 暂停所有非核心进程 → 硬限制工作集为 1 字节\n"
+                 "3. 分配大块内存制造极端内存压力 → 强迫内核主动 trim\n"
+                 "4. 多次清空 standby list 彻底释放物理 RAM\n\n"
+                 "执行期间：后台窗口会短暂冻结（暂停进程中），\n"
+                 "完成后自动恢复。\n\n"
+                 "机械硬盘用户：切换后台窗口时可能严重卡顿，\n"
+                 "因为页面需从硬盘重新读入。SSD 用户通常无感。\n\n"
+                 "保护：前台窗口、explorer、dwm、csrss、lsass 等核心进程。\n\n确定继续？"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -2268,7 +2284,7 @@ class CopilotPanel(QFrame):
         self.refresh_btn.setEnabled(False)
         self.progress.setValue(0)
         self.log_edit.clear()
-        self.status_label.setText("正在优化内存...")
+        self.status_label.setText(_ui("正在优化内存..."))
 
         self.memory_worker = MemoryWorker()
         self.memory_worker.progress.connect(self._on_progress)
@@ -2279,7 +2295,8 @@ class CopilotPanel(QFrame):
         self.memory_btn.setEnabled(True)
         self.migrate_btn.setEnabled(True)
         self.refresh_btn.setEnabled(True)
-        self.status_label.setText(f"共扫描到 {len(self.apps)} 个应用" if self.apps else "就绪")
+        self.status_label.setText(
+            _uif("共扫描到 {n} 个应用", n=len(self.apps)) if self.apps else _ui("就绪"))
 
         if result.get("success"):
             self.progress.setValue(100)
@@ -2287,13 +2304,12 @@ class CopilotPanel(QFrame):
             detail_text = "\n".join(f"  - {d}" for d in details) if details else ""
             QMessageBox.information(
                 self,
-                "内存优化完成",
-                f"{result['message']}\n\n"
-                f"优化详情:\n{detail_text}",
+                _ui("内存优化完成"),
+                _uif('{a0}\n\n优化详情:\n{a1}', a0=result['message'], a1=detail_text),
             )
         else:
             self.progress.setValue(0)
-            QMessageBox.critical(self, "优化失败", result.get("message", "未知错误"))
+            QMessageBox.critical(self, _ui("优化失败"), result.get("message", "未知错误"))
 
     def mousePressEvent(self, event):
         # 浮层不参与窗口拖动（由 AI 面板统一定位），仅记录点击以便外部收起逻辑判断

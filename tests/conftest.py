@@ -45,6 +45,31 @@ def _isolated_data_root(tmp_path_factory):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _pin_ui_language():
+    """把界面/提示词语言钉死为中文，并在会话结束后复位。
+
+    背景（真实回归）：i18n 的语言状态优先读 QSettings（用户在设置里选的），
+    而 QSettings 是**机器级持久化**的 —— 用例断言中文文案时，若本机设置里存着
+    en_US，``detect_prompt_lang()`` 就会返回英文，于是提示词查表全部命中英文译文，
+    断言中文的用例假失败（实测 test_agent_collab_perms 的收件箱注入用例）。
+
+    这类失败与被测逻辑无关，但排查成本极高（会误判成「改了提示词拼接」）。
+    故在此集中钉住语言：会话内所有用例都跑在确定的中文提示词语言下，
+    需要验证英文行为的用例自行在用例内调用 i18n.set_lang 覆盖。
+    """
+    from zhuzhu_Copilot.core import i18n
+    prev_ui = i18n._state["ui"]
+    prev_prompt = i18n._state["prompt"]
+    with i18n._lock:
+        i18n._state["ui"] = i18n.ZH_CN
+        i18n._state["prompt"] = i18n.ZH_CN
+    yield
+    with i18n._lock:
+        i18n._state["ui"] = prev_ui
+        i18n._state["prompt"] = prev_prompt
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _qt_widget_teardown():
     yield
     try:

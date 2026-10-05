@@ -383,6 +383,25 @@ def _sync_app_palette(app) -> None:
         print(f"[theme] 应用调色板下发失败: {_e!r}", flush=True)
 
 
+def _init_i18n():
+    """启动预热 i18n：解析语言（--lang / 环境变量 / 设置 / 安装器 / 系统区域）并加载语言包。
+
+    必须在任何 UI 文案被渲染前完成（面板顶栏、启动动画的标题都在其后），
+    否则首帧会先用中文构建界面、随后才切英文，出现「一帧中文闪现」。
+    """
+    try:
+        from zhuzhu_Copilot.core import i18n
+        force = ""
+        argv = sys.argv
+        if "--lang" in argv:
+            i = argv.index("--lang")
+            if i + 1 < len(argv):
+                force = argv[i + 1]
+        i18n.init(force)
+    except Exception:
+        pass          # 国际化永远不能阻止应用启动
+
+
 def main():
     # 旧版（WinAppMigrator）遗留数据迁移：注册表设置 + 用户数据目录。
     # 必须最先执行：后续所有读取 QSettings / 用户数据目录的代码都依赖迁移后的状态。
@@ -391,6 +410,7 @@ def main():
     install_thread_excepthook()
     install_native_crash_hook()
     _preload_media_dlls()
+    _init_i18n()        # 语言必须在任何 UI 文案渲染前就绪（先于 QApplication 与面板导入）
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough

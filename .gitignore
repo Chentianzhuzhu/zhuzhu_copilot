@@ -62,6 +62,9 @@ build/workflows_seed/romance_companion/
 src/build/
 tts_output/
 src/tts_output/
+
+# 微信 ClawBot 入站文件落盘目录（用户上传的文件，属运行时数据，不入库）
+wechat_inbox/
 src/_focus.log
 src/_wfa_result.json
 src/*.pyc

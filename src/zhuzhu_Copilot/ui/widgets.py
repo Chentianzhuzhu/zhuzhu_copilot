@@ -16,6 +16,7 @@ from PyQt6.QtGui import (QColor, QPainter, QIcon, QFont, QFontMetrics, QPixmap,
 
 from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
 from zhuzhu_Copilot.ui.tokens import COMBO_ARROW_W
+from zhuzhu_Copilot.core.i18n import ui as _ui, uim as _uim, uif as _uif
 
 # 卸载/安装类程序名，图标无意义，查找主程序时排除
 _BANNED_EXE = {
@@ -289,13 +290,13 @@ class DataDirDialog(QDialog):
 
     def __init__(self, candidates, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("选择要一并迁移的数据目录")
+        self.setWindowTitle(_ui("选择要一并迁移的数据目录"))
         self.setMinimumWidth(600)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
-        tip = QLabel("检测到以下与安装目录之外的关联数据目录，勾选后将一并移动到目标盘：")
+        tip = QLabel(_ui("检测到以下与安装目录之外的关联数据目录，勾选后将一并移动到目标盘："))
         tip.setWordWrap(True)
         tip.setStyleSheet(f"color: {PALETTE['text']}; font-size: 13px; font-weight: 600;")
         layout.addWidget(tip)
@@ -310,17 +311,17 @@ class DataDirDialog(QDialog):
             self._items.append(p)
             layout.addWidget(cb)
 
-        hint = QLabel("提示：如微信/QQ 的聊天记录目录。迁移后若应用找不到数据，请在应用设置内重新指定该目录。")
+        hint = QLabel(_ui("提示：如微信/QQ 的聊天记录目录。迁移后若应用找不到数据，请在应用设置内重新指定该目录。"))
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 11px;")
         layout.addWidget(hint)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        skip_btn = QPushButton("仅迁移主目录")
+        skip_btn = QPushButton(_ui("仅迁移主目录"))
         skip_btn.clicked.connect(lambda: self.done(QDialog.DialogCode.Rejected))
         btn_layout.addWidget(skip_btn)
-        ok_btn = PrimaryButton("迁移勾选目录")
+        ok_btn = PrimaryButton(_ui("迁移勾选目录"))
         ok_btn.clicked.connect(self.accept)
         btn_layout.addWidget(ok_btn)
         layout.addLayout(btn_layout)
@@ -334,53 +335,54 @@ class UninstallConfirmDialog(QDialog):
 
     def __init__(self, plan, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("确认强力卸载")
+        self.setWindowTitle(_ui("确认强力卸载"))
         self.setMinimumWidth(620)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
-        head = QLabel(f"将强力卸载 <b>{plan.app.name}</b>（{plan.app.app_type}）")
+        head = QLabel(_uif("将强力卸载 <b>{a0}</b>（{a1}）", a0=plan.app.name, a1=plan.app.app_type))
         head.setStyleSheet(f"font-size: 15px; color: {PALETTE['text']};")
         layout.addWidget(head)
 
         if plan.is_uwp:
             info = QLabel(
-                f"UWP 应用包：<b>{plan.package_name}</b>\n"
-                "将调用 Remove-AppxPackage 卸载该应用及其数据。"
+                _uim("UWP 应用包：<b>{pkg}</b>\n"
+                     "将调用 Remove-AppxPackage 卸载该应用及其数据。")
+                .format(pkg=plan.package_name)
             )
             info.setWordWrap(True)
             info.setStyleSheet(f"color: {PALETTE['text_secondary']}; font-size: 13px;")
             layout.addWidget(info)
         else:
-            self._add_section(layout, "安装根目录（将删除）", [str(plan.root)])
+            self._add_section(layout, _ui("安装根目录（将删除）"), [str(plan.root)])
             native = getattr(plan, "native_uninstaller", None)
             if native:
                 native_exe = native[0] if isinstance(native, tuple) else native
                 self._add_section(
-                    layout, "自带卸载器（将优先调用）",
-                    [native_exe, "运行完成后再执行下方清理，以正确保留卸载钩子。"],
+                    layout, _ui("自带卸载器（将优先调用）"),
+                    [native_exe, _ui("运行完成后再执行下方清理，以正确保留卸载钩子。")],
                 )
             if plan.data_dirs:
-                self._add_section(layout, "数据/存档/聊天记录目录（将删除）", [str(d) for d in plan.data_dirs])
+                self._add_section(layout, _ui("数据/存档/聊天记录目录（将删除）"), [str(d) for d in plan.data_dirs])
             else:
-                self._add_section(layout, "数据目录", ["未检测到关联数据目录"])
-            self._add_section(layout, "其他清理", [
+                self._add_section(layout, _ui("数据目录"), [_ui("未检测到关联数据目录")])
+            self._add_section(layout, _ui("其他清理"), [
                 f"快捷方式：{len(plan.shortcuts)} 个",
                 f"注册表关联项：{len(plan.registry_entries)} 处",
             ])
 
-        warn = QLabel("此操作不可恢复！以上内容将被永久删除。")
+        warn = QLabel(_ui("此操作不可恢复！以上内容将被永久删除。"))
         warn.setWordWrap(True)
         warn.setStyleSheet(f"color: {PALETTE['danger']}; font-size: 13px; font-weight: 700;")
         layout.addWidget(warn)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        cancel_btn = QPushButton("取消")
+        cancel_btn = QPushButton(_ui("取消"))
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
-        ok_btn = QPushButton("确认卸载")
+        ok_btn = QPushButton(_ui("确认卸载"))
         ok_btn.setStyleSheet(
             f"QPushButton {{ background-color: {PALETTE['danger']}; color: white; font-weight: 700; "
             "border: none; border-radius: 8px; padding: 8px 22px; }"

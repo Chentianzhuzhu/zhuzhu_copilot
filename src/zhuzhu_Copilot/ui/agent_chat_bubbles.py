@@ -4,7 +4,8 @@
 结构规范：AI 事件流（每个可见节点有固定的类名与几何，见下方各处的 `.xxx` 标注）。
 与旧实现（单个填充色气泡 + 内部富文本）的关键差异：
 
-- AI 回合**没有填充气泡**：改为上下 1px 虚线分区 + 左侧竖向虚线（demo `.ai-turn`），
+- AI 回合**没有填充气泡**：改为**顶部一条 1px 虚线分区**（早期版本还有底部横虚线与
+  左侧竖虚线 demo `.vline`，为简约化已移除 —— 见 `ChatTurn.paintEvent`），
   左上角骑在虚线上的「耗时徽章」（demo `.cost-ribbon`）。
 - 思考过程是**独立气泡**（demo `.think-bubble`：卡片底 + 1px 边框 + 非对称圆角
   6/16/16/16 + 图标壳 + tag 胶囊），正文超 THINK_FOLD_LINES 行自动折叠渐隐。
@@ -85,12 +86,14 @@ from zhuzhu_Copilot.ui.tokens import (
 BUBBLE_PAD_V = 13              # .msg padding: 13px 18px
 BUBBLE_PAD_H = 18
 # 回合内/回合间留白：demo 原值 18/6/30，实测观感过于松散（每段文字上下都有大片空白），
-# 按用户反馈收紧到 12/6/18；虚线分区与「耗时徽章骑线」的结构不变。
+# 按用户反馈收紧到 12/6/18；「顶部虚线分区 + 耗时徽章骑线」的结构不变。
+# 注：AI_TURN_GAP 原同时充当底部虚线的上边距，底部虚线移除后它只剩「回合间距」语义。
 AI_TURN_PAD_TOP = 8            # demo 18 → 8（收紧）
 AI_TURN_PAD_BOTTOM = 3         # demo 6  → 3
 AI_TURN_GAP = 10               # demo 30 → 10（回合间距；原值在紧凑界面里像大片空白）
 RIBBON_H = 21                  # .cost-ribbon 实测高度（上下 padding 4 + 行高 12 + 边框）
-LEFT_GUTTER = 14               # .vline left:-14px 的等效留白（竖虚线到内容左缘）
+LEFT_GUTTER = 14               # 顶部虚线的起画 x（原为左侧竖虚线 demo .vline left:-14px
+                 # 的等效留白，竖线移除后仍作为横线起点 —— 与内容左缘对齐）
 THINK_PAD_V = 11               # .think-bubble padding: 13px 15px → 11px 15px（收紧）
 THINK_PAD_H = 15
 THINK_HEAD_GAP = 8             # .tb-head margin-bottom
@@ -2743,7 +2746,7 @@ class _BlockRef:
 class ChatTurn(QWidget):
     """AI 回合容器（demo .ai-turn）。
 
-    结构：上下 1px 虚线分区 + 左侧竖向虚线 + 耗时徽章（骑线）+ 过程区 + 正文 + 系统时间。
+    结构：顶部 1px 虚线分区 + 耗时徽章（骑线）+ 过程区 + 正文 + 系统时间。
     过程区（思考/工具/命令/富文本段，以及多轮任务里非最终的正文）在回合完成后整体
     收起，只留最后一段正文与「查看执行过程」开关（demo `.ai-turn.done .ai-proc`）。
     """
@@ -3895,21 +3898,37 @@ class ChatTurn(QWidget):
             self._ribbon.freeze(seconds)
         return seconds
 
-    # ---------- 绘制：虚线分区 ----------
+    # ---------- 绘制：顶部虚线分区 ----------
     def _dash_bottom_y(self) -> int:
-        """下虚线位置：容器底边向上让出 AI_TURN_GAP（demo 的 margin-bottom 30px）"""
+        """下虚线位置：容器底边向上让出 AI_TURN_GAP（demo 的 margin-bottom 30px）
+
+        **当前不再绘制底部横线**（见 `paintEvent`），仅在需要按虚线位置对齐内容时
+        仍可复用此几何，故保留。
+        """
         return max(0, self.height() - AI_TURN_GAP - 1)
 
     def paintEvent(self, _e):
+        """只画**顶部一条横虚线**（回合与上一条消息之间的分区线）。
+
+        早期版本画三条：顶部横线 + 底部横线 + 左侧竖虚线（demo `.vline`，
+        left:-14px，故竖线画在 x=0）。三者同时存在时，回合被一个「左开口的口」框住，
+        视觉上像一个未闭合的容器边框，简约感被破坏 —— 用户反馈要求去掉左侧与尾部
+        （底部）的虚线轮廓。
+
+        现只保留顶部一条：它承担的是**分区语义**（这里是一条 AI 回合并的开始），
+        去掉它就失去了回合边界；而左侧/尾部两条纯属装饰，边框感越强越不简约。
+
+        副作用（均为预期）：
+        - `LEFT_GUTTER` 这个「竖线到内容左缘」的留白不再被竖线占用，横线仍从该 x 起
+          画（与内容左缘对齐），故内容位置不变，无需调整任何边距常量；
+        - 耗时徽章仍骑在顶部虚线上（见 `_inset` / `_place_ribbon`），不受影响。
+        """
         p = QPainter(self)
         p.setPen(_dashed_pen(self._style.dash))
         top = self._inset
         right = max(LEFT_GUTTER, self.width() - 1)
         p.drawLine(LEFT_GUTTER, top, right, top)
-        bottom = self._dash_bottom_y()
-        p.drawLine(LEFT_GUTTER, bottom, right, bottom)
-        # 左侧竖向虚线（demo .vline：top 18px / bottom 8px）
-        p.drawLine(0, top + AI_TURN_PAD_TOP, 0, max(top + AI_TURN_PAD_TOP, self.height() - 8))
+        # 已移除（简约化）：底部横虚线与左侧竖虚线（demo .vline）。理由见上。
         p.end()
 
     def _place_ribbon(self):

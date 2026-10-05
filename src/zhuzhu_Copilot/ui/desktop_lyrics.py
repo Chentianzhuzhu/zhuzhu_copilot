@@ -6,6 +6,7 @@
 - 可拖动，位置持久化；字体保持系统默认粗细（禁止加粗）
 - 悬停时底部显示控制条：暂停/播放、上一首、下一首、关闭（关闭仅本次生效，设置页可再次打开）
 """
+from zhuzhu_Copilot.core.i18n import ui as _ui
 from zhuzhu_Copilot import app_identity
 from PyQt6.QtCore import QPoint, QRectF, QTimer, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QCursor, QIcon
@@ -319,10 +320,10 @@ class DesktopLyrics(QWidget):
     def _update_toggle_icon(self):
         if self._player is not None and self._player.is_playing() and not self._player.is_paused():
             self._btn_toggle.setIcon(_svg_icon(_ICON_PAUSE, CTRL_COLOR, 15))
-            self._btn_toggle.setToolTip("暂停")
+            self._btn_toggle.setToolTip(_ui("暂停"))
         else:
             self._btn_toggle.setIcon(_svg_icon(_ICON_PLAY, CTRL_COLOR, 15))
-            self._btn_toggle.setToolTip("播放")
+            self._btn_toggle.setToolTip(_ui("播放"))
 
     def _on_prev(self):
         if self._player is not None:

@@ -429,6 +429,9 @@ TOOL_ICON_SPEC = {
     # ---- 可视化预览（用户浏览器）----
     "preview_open": ("globe", "play"),
     "preview_refresh": ("globe", "refresh"),
+    # ---- 微信交付（ClawBot 推送到手机微信）----
+    "send_file_to_wechat": ("globe", "out"),
+    "send_files_to_wechat": ("globe", "check"),
     # ---- 文档与办公 ----
     "extract_text": ("doc", "out"),
     "create_docx": ("doc", "plus"),

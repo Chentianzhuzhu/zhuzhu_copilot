@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
+from zhuzhu_Copilot.core.i18n import ui as _ui
+
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt6.QtGui import QPixmap, QIcon, QAction
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu
@@ -184,9 +186,9 @@ class DesktopPet(QWidget):
 
     def contextMenuEvent(self, event) -> None:
         menu = QMenu(self)
-        act_stay = QAction("回到右下角", self)
+        act_stay = QAction(_ui("回到右下角"), self)
         act_stay.triggered.connect(self._place_bottom_right)
-        act_quit = QAction("退出", self)
+        act_quit = QAction(_ui("退出"), self)
         # 仅隐藏本次会话（停定时器），不退出整个程序；重启程序后桌宠重新显示
         act_quit.triggered.connect(self._hide_pet)
         menu.addAction(act_stay)

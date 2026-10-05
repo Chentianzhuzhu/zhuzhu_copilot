@@ -6,6 +6,7 @@
 """
 
 from zhuzhu_Copilot import app_identity
+from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 import os
 import sys
 import time
@@ -43,11 +44,11 @@ class _TaskRow(QWidget):
         self._on_pause = on_pause
         self._on_cancel = on_cancel
 
-        self.name_label = QLabel("准备中…")
+        self.name_label = QLabel(_ui("准备中…"))
         self.name_label.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {PALETTE['text']};")
         self.name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        self.pause_btn = QPushButton("暂停")
+        self.pause_btn = QPushButton(_ui("暂停"))
         self.pause_btn.setFixedSize(56, 26)
         self.pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.pause_btn.setStyleSheet(
@@ -56,7 +57,7 @@ class _TaskRow(QWidget):
         )
         self.pause_btn.clicked.connect(self._click_pause)
 
-        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn = QPushButton(_ui("取消"))
         self.cancel_btn.setFixedSize(56, 26)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.setStyleSheet(
@@ -90,18 +91,18 @@ class _TaskRow(QWidget):
         if self.task.snapshot()["status"] == "paused":
             self._on_pause(self.task)  # 实际是 resume
             self.pause_btn.setEnabled(False)
-            self.pause_btn.setText("继续中")
+            self.pause_btn.setText(_ui("继续中"))
             return
         self._on_pause(self.task)
         self.pause_btn.setEnabled(False)
-        self.pause_btn.setText("暂停中")
+        self.pause_btn.setText(_ui("暂停中"))
 
     def _click_cancel(self, *_):
         """点击取消：立即反馈，等待线程退出"""
         self._on_cancel(self.task)
         self.pause_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
-        self.info_label.setText("⏹ 正在取消…")
+        self.info_label.setText(_ui("⏹ 正在取消…"))
 
     def update_view(self, snap: dict, speed: float):
         """按任务快照刷新显示"""
@@ -118,7 +119,7 @@ class _TaskRow(QWidget):
         if status == "downloading":
             self.pause_btn.setVisible(True)
             self.pause_btn.setEnabled(True)
-            self.pause_btn.setText("暂停")
+            self.pause_btn.setText(_ui("暂停"))
             segs = int(snap.get("segments") or 16)
             mode_txt = f"{segs} 线程并发" if snap.get("mode") == "multi" else "单线程"
             info = f"⏳ 下载中 · {_fmt_size(done)} / {_fmt_size(total)} · {mode_txt}"
@@ -126,14 +127,14 @@ class _TaskRow(QWidget):
                 info += f" · {_fmt_size(int(speed))}/s"
             self.cancel_btn.setVisible(True)
             self.cancel_btn.setEnabled(True)
-            self.cancel_btn.setText("取消")
+            self.cancel_btn.setText(_ui("取消"))
         elif status == "paused":
             self.pause_btn.setVisible(True)
             self.pause_btn.setEnabled(True)
-            self.pause_btn.setText("继续")
+            self.pause_btn.setText(_ui("继续"))
             self.cancel_btn.setVisible(True)
             self.cancel_btn.setEnabled(True)
-            self.cancel_btn.setText("取消")
+            self.cancel_btn.setText(_ui("取消"))
             info = f"⏸ 已暂停 · {_fmt_size(done)} / {_fmt_size(total)}（分片已保留，可随时继续）"
         elif status == "done":
             self.pause_btn.setVisible(False)
@@ -150,10 +151,10 @@ class _TaskRow(QWidget):
         else:  # pending
             self.pause_btn.setVisible(True)
             self.pause_btn.setEnabled(True)
-            self.pause_btn.setText("暂停")
+            self.pause_btn.setText(_ui("暂停"))
             self.cancel_btn.setVisible(True)
             self.cancel_btn.setEnabled(True)
-            self.cancel_btn.setText("取消")
+            self.cancel_btn.setText(_ui("取消"))
             info = "⏳ 正在连接服务器…"
         self.info_label.setText(info)
         self.info_label.setToolTip(info)
@@ -172,7 +173,7 @@ class DownloadDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🚀 高速下载")
+        self.setWindowTitle(_ui("🚀 高速下载"))
         self.setWindowIcon(QIcon(_app_icon_path()))
         self.setMinimumSize(1048, 492)
         self.resize(1048, 492)
@@ -194,17 +195,17 @@ class DownloadDialog(QDialog):
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
 
-        title = QLabel("🚀 高速下载（多线程分段加速，比浏览器快 2-3 倍）")
+        title = QLabel(_ui("🚀 高速下载（多线程分段加速，比浏览器快 2-3 倍）"))
         title.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {PALETTE['text']};")
         lay.addWidget(title)
 
         input_row = QHBoxLayout()
         self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText("粘贴文件下载地址（http/https），如 https://example.com/file.zip")
+        self.url_edit.setPlaceholderText(_ui("粘贴文件下载地址（http/https），如 https://example.com/file.zip"))
         self.url_edit.setMinimumHeight(36)
         self.url_edit.returnPressed.connect(self._add_task)
         input_row.addWidget(self.url_edit, 1)
-        self.add_btn = QPushButton("＋ 添加任务")
+        self.add_btn = QPushButton(_ui("＋ 添加任务"))
         self.add_btn.setMinimumHeight(36)
         self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_btn.setStyleSheet(
@@ -217,13 +218,13 @@ class DownloadDialog(QDialog):
 
         opt_row = QHBoxLayout()
         opt_row.setSpacing(8)
-        opt_label = QLabel("速度档位")
+        opt_label = QLabel(_ui("速度档位"))
         opt_label.setStyleSheet(f"font-size: 13px; color: {PALETTE['text_secondary']};")
         opt_row.addWidget(opt_label)
         self.seg_combo = QComboBox()
-        self.seg_combo.addItem("⚡ 极限 · 32 连接（榨干带宽）", 32)
-        self.seg_combo.addItem("🚀 高速 · 16 连接", 16)
-        self.seg_combo.addItem("标准 · 8 连接", 8)
+        self.seg_combo.addItem(_ui("⚡ 极限 · 32 连接（榨干带宽）"), 32)
+        self.seg_combo.addItem(_ui("🚀 高速 · 16 连接"), 16)
+        self.seg_combo.addItem(_ui("标准 · 8 连接"), 8)
         saved = self._settings.value("download_segments", 32, type=int)
         idx = self.seg_combo.findData(saved)
         self.seg_combo.setCurrentIndex(idx if idx >= 0 else 0)
@@ -238,8 +239,7 @@ class DownloadDialog(QDialog):
         )
         lay.addWidget(self.task_list, 1)
 
-        hint = QLabel("提示：支持 http/https 直链；多线程并发下载（动态分段 + 连接池），"
-                      "服务器不支持 Range 时自动单线程")
+        hint = QLabel(_ui("提示：支持 http/https 直链；多线程并发下载（动态分段 + 连接池），服务器不支持 Range 时自动单线程"))
         hint.setStyleSheet(f"font-size: 12px; color: {PALETTE['text_secondary']};")
         lay.addWidget(hint)
         add_brand_footer(self)
@@ -250,7 +250,7 @@ class DownloadDialog(QDialog):
         last = self._settings.value("download_dir", str(Path.home() / "Downloads"))
         if not os.path.isdir(str(last)):
             last = str(Path.home())
-        dest = QFileDialog.getExistingDirectory(self, "选择下载保存目录", str(last))
+        dest = QFileDialog.getExistingDirectory(self, _ui("选择下载保存目录"), str(last))
         if dest:
             self._settings.setValue("download_dir", dest)
         return dest or None
@@ -258,7 +258,7 @@ class DownloadDialog(QDialog):
     def _add_task(self, *_):
         url = "".join(self.url_edit.text().split())  # 清理所有空白/换行
         if not url.lower().startswith(("http://", "https://")):
-            QMessageBox.warning(self, "提示", "请输入以 http:// 或 https:// 开头的下载地址")
+            QMessageBox.warning(self, _ui("提示"), _ui("请输入以 http:// 或 https:// 开头的下载地址"))
             return
         dest = self._pick_dir()
         if not dest:
@@ -312,8 +312,8 @@ class DownloadDialog(QDialog):
                   if t.snapshot()["status"] in ("downloading", "paused")]
         if active:
             ret = QMessageBox.question(
-                self, "下载未完成",
-                f"还有 {len(active)} 个任务未完成（下载中/已暂停），关闭将取消这些任务并删除分片。确定关闭？",
+                self, _ui("下载未完成"),
+                _uif("还有 {a0} 个任务未完成（下载中/已暂停），关闭将取消这些任务并删除分片。确定关闭？", a0=len(active)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
