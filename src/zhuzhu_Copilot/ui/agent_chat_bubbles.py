@@ -24,15 +24,17 @@
 """
 from __future__ import annotations
 from zhuzhu_Copilot import app_identity
+from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 
 import dataclasses
 import datetime
 import os
 import re
+from collections import OrderedDict
 import time
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QObject, QPoint, QRect, QSize, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFontMetrics,
@@ -178,7 +180,7 @@ BLOCK_GAP = {KIND_THINK: 8, KIND_TOOL: 0, KIND_CMD: 8, KIND_RICH: SPACING_XS,
 # 归入「过程区」的段类型（AI 完成汇报后整体收起，只留正文）
 PROC_KINDS = frozenset({KIND_THINK, KIND_TOOL, KIND_CMD, KIND_RICH})
 
-TOGGLE_OPEN_TEXT = "收起执行过程"
+TOGGLE_OPEN_TEXT = "收起执行过程"   # 中文原文（界面语言由 _ui() 在渲染时解析）
 TOGGLE_CLOSED_TEXT = "查看执行过程"
 
 
@@ -340,6 +342,46 @@ def _need_resize(cur: int, want: int) -> bool:
     return want > 0 and abs(int(want) - int(cur)) >= _H_DELTA_EPS
 
 
+# 跨气泡的富文本高度缓存：(原文, 显示宽度) -> 高度。
+# 为什么需要它：_label_hfw 的缓存挂在**单个标签**上，而标签是每轮新建的，
+# 于是历史批量重建时每个标签都要真跑一次 QLabel.heightForWidth（Qt 侧纯开销，
+# profile 实测占首屏约 12%）。但真实对话流里大量区块文本是重复的 ——
+# 状态行、工具名、"Read File"/"Search Files" 这类短标签会在几十轮里反复出现，
+# 且宽度一致。heightForWidth 对相同 (文本, 宽度, 字体) 是确定性的，
+# 故可跨气泡复用，把这部分成本压到接近 0。
+#
+# key 里带上字体指纹：换主题/缩放后度量会变，缓存必须失效。
+_HFW_SHARED: "OrderedDict[tuple, int]" = OrderedDict()
+_HFW_SHARED_MAX = 4096
+
+
+def _font_key(lbl) -> tuple:
+    f = lbl.font()
+    return (f.family(), f.pointSize(), f.pixelSize(), f.bold(), f.italic())
+
+
+def _shared_hfw(lbl, width: int, ver: int) -> int:
+    """跨气泡共享的高度测量缓存；未命中则回落到实例级 _label_hfw。"""
+    try:
+        txt = lbl.text()
+    except Exception:
+        return _label_hfw(lbl, width, ver)
+    if not txt or len(txt) > 4000:
+        return _label_hfw(lbl, width, ver)
+    try:
+        key = (txt, int(width)) + _font_key(lbl)
+    except Exception:
+        return _label_hfw(lbl, width, ver)
+    hit = _HFW_SHARED.get(key)
+    if hit is not None:
+        return hit
+    val = _label_hfw(lbl, width, ver)
+    if len(_HFW_SHARED) >= _HFW_SHARED_MAX:
+        _HFW_SHARED.popitem(last=False)     # LRU 淘汰，防无界增长
+    _HFW_SHARED[key] = val
+    return val
+
+
 def _label_hfw(lbl: QLabel, width: int, ver: int) -> int:
     """按 (内容版本, 宽度) 缓存**单个标签**的高度测量结果。
 
@@ -446,9 +488,21 @@ def cap_output(text: str) -> tuple:
 
 
 def _widget_hfw(wid: QWidget, width: int) -> int:
-    """控件在给定宽度下的真实高度：优先 heightForWidth（换行标签），否则用 sizeHint。"""
+    """控件在给定宽度下的真实高度：优先 heightForWidth（换行标签），否则用 sizeHint。
+
+    历史批量重建时同一段文本会在几十个回合里反复出现（状态行/工具名/短标签），
+    而 heightForWidth 对 (文本, 宽度, 字体) 是确定性的 —— 故先查跨控件共享缓存
+    （见 _shared_hfw / _HFW_SHARED），把重复测量压到一次字典查找。
+    仅当控件本身是 QLabel 且带文本时走缓存；其余（复合块）仍实测，
+    因为其高度还取决于子控件排布，不等价于文本。
+    """
+    w = max(1, int(width))
+    if isinstance(wid, QLabel):
+        cached = _shared_hfw(wid, w, int(getattr(wid, "_content_ver", 0) or 0))
+        if cached:
+            return cached
     try:
-        h = wid.heightForWidth(max(1, int(width)))
+        h = wid.heightForWidth(w)
         if isinstance(h, int) and h > 0:
             return h
     except Exception:
@@ -1344,13 +1398,13 @@ class _FoldMixin:
         """
         self._fold_style = style
         self._fold_provider = icon_provider
-        self._fold_open_text = open_text
+        self._fold_open_text = _ui(open_text)   # 中文原文 → 当前界面语言
         self._fold_fill = fill            # 遮罩终色（换肤时由 _fold_restyle 更新）
         self._fold_parts: list = []      # 各段全文（与 `_fold_targets()` 一一对应）
         self._fold_full = ""             # 各段拼接（非空判定 / 长度口径，兼容既有调用方）
         self._fold_h_key = None          # 各段全文高度缓存的键 (内容版本, 宽度)
         self._fold_h_val: list = []
-        self._fold_btn = PillButton(style, open_text, self._fold_chev(),
+        self._fold_btn = PillButton(style, self._fold_open_text, self._fold_chev(),
                                     dashed=True, parent=self)
         self._fold_btn.clicked.connect(self._fold_toggle)
         self._fold_btn.hide()
@@ -1505,7 +1559,19 @@ class _FoldMixin:
         return any(h > limit for h in self._fold_heights(width))
 
     def _fold_is_folded(self) -> bool:
-        return self._fold_foldable() and self._fold_open is not True
+        return self._fold_state()
+
+    def _fold_state(self, width: int = None) -> bool:
+        """当前是否处于「真折叠」态（裁剪正文 + 只铺前缀 + 显示遮罩）。
+
+        判据必须是「开关可见（可折叠）**且**用户没手动展开」，而不是只看「用户没展开」：
+        开关是由**估算**决定是否出现的（见 `_fold_full_h`），估算与真实排版不可避免有
+        偏差。旧实现只看 `_fold_open`，于是「估算说不够长 → 不显示开关，但真实内容已超
+        上限」时，正文仍被按上限裁掉 —— 用户看到的就是**输出被压掉几行、又没有「展开
+        全部」可点**（工具/命令输出的折叠按钮因此被挤掉/内容互相遮挡）。改为以「是否真
+        折叠」为准后，开关不可见时一定铺全文，裁剪只发生在有开关可点的时候。
+        """
+        return self._fold_foldable(width) and self._fold_open is not True
 
     # ---------- 应用 ----------
     def _fold_shown_parts(self) -> list:
@@ -1514,8 +1580,8 @@ class _FoldMixin:
         预算**按段各自给**（`_fold_preview()`）：命令与输出各留一份，任一超长的段都不会
         因为另一段太长而被整段挤掉，用户点开两段同时看到全文。
         """
-        if self._fold_open is True:
-            return list(self._fold_parts)
+        if not self._fold_state():
+            return list(self._fold_parts)      # 非折叠态（含「短到不需要开关」）：铺全文
         budget = self._fold_preview()
         return [p if len(p) <= budget else safe_prefix(p, budget) + "…"
                 for p in self._fold_parts]
@@ -1537,18 +1603,21 @@ class _FoldMixin:
         块高预算必须用它，而不是直接测标签：折叠态标签里铺的是**前缀**（比上限长，
         为的是让折叠判定稳定），直接测就会按前缀申请高度 —— 块比可见内容高出一截，
         底部留白（正是此前反复修掉的那类问题）。
+
+        只在**真折叠**态才按上限裁剪（见 `_fold_state`）：非折叠态若也裁剪，块高就会被
+        钉得比真实内容矮一截，正是「输出被挤压/元素互相遮挡」的成因。
         """
         w = self._fold_avail_w(width)
         if w <= 0:
             return 0
         limit = self._fold_limit_h()
-        open_ = self._fold_open is True
+        folded = self._fold_state(width)
         total = 0
         for lbl in self._fold_targets():
             if lbl.isHidden():
                 continue
             h = _label_hfw(lbl, w, self._content_ver)
-            total += h if open_ else min(h, limit)
+            total += min(h, limit) if folded else h
         return total
 
     def _fold_pin(self, width: int = None):
@@ -1556,17 +1625,19 @@ class _FoldMixin:
 
         **绝不允许钉入超过折叠上限的值**：否则本块真实高度远超 heightForWidth 的估算，
         把整条回合撑爆、把下方开关压扁（与思考气泡同一条约束）。
+        反之，**非折叠态也绝不允许按上限裁剪**（见 `_fold_state`）：那会把真实内容截掉
+        几行而开关又不可见，用户再也看不到被截的部分。
         """
         w = self._fold_avail_w(width)
         if w <= 0:
             return
         limit = self._fold_limit_h()
-        open_ = self._fold_open is True
+        folded = self._fold_state(width)
         for lbl in self._fold_targets():
             if lbl.isHidden():
                 continue
             h = _label_hfw(lbl, w, self._content_ver)
-            target = h if open_ else min(h, limit)
+            target = min(h, limit) if folded else h
             if target > 0 and _need_resize(lbl.minimumHeight(), target):
                 lbl.setMinimumHeight(target)
 
@@ -1584,7 +1655,7 @@ class _FoldMixin:
         短输出到达后标签仍是空串）。
         """
         foldable = self._fold_foldable()
-        folded = foldable and self._fold_open is not True
+        folded = self._fold_state()
         self._fold_apply_text()
         if self._folded == folded:
             self._fold_pin()
@@ -1594,31 +1665,138 @@ class _FoldMixin:
         self._fold_on_state(foldable)      # 先让外壳显隐到位，再钉子项
         self._fold_btn.setVisible(foldable)
         self._fold_pin()
-        self._fold_mask.setVisible(folded)
+        # 遮罩的显隐与定位统一交给 _fold_place_mask（未拿到真实几何前先不显示，
+        # 否则会在错误位置生成一块黑/白色块 —— 见该方法的说明）
         self._fold_place_mask()
         self.updateGeometry()
 
     def _fold_place_mask(self):
-        """遮罩贴在折叠边界。用 `_folded` 判定而非 isVisible —— 面板未显示时 isVisible 恒为
-        False，据此判定会让遮罩在显示后落在错误位置。"""
-        if not self._folded:
+        """遮罩贴在折叠边界：**挂成承载标签自己的子控件**，位置用标签本地坐标。
+
+        为什么必须挂到标签下、而不是挂在块上再 `mapTo` 换算：承载标签往往嵌在多层
+        嵌套布局里（工具行是 `块 → _body → _out_box → 标签`），而块的 `resizeEvent`
+        与事件过滤器回调都**早于父布局把标签挪到最终位置**，此时 `lbl.mapTo(self, …)`
+        读到的是上一轮的父级几何。实测标签真实 y=63，遮罩却按 y=76 贴出—— 差 13px，
+        渐隐带整体浮到正文中间（用户看到的「折叠时黑色/白色阴影压在文字上」）。更糟的
+        是随后的 Resize/Move 回调读到的仍是同一个陈旧值，**永不自愈**。
+
+        挂成标签子控件后由 Qt 保证「子随父动」：布局把标签挪到哪，遮罩就跟到哪；只需在
+        标签**自身**尺寸变化时更新一次本地 y —— 那时读到的一定是标签自己的最新高度，
+        不涉及任何跨层级换算，从根上消除对布局时序的依赖。
+
+        `_laid_out` 闸门保留：首次真实布局之前标签尺寸是控件默认值，贴了也是错的。
+
+        用 `_folded` 判定而非 isVisible —— 面板未显示时 isVisible 恒为 False，
+        据此判定会让遮罩在显示后落在错误位置。
+        """
+        mask = self._fold_mask
+        if not self._folded or not getattr(self, "_laid_out", False):
+            mask.hide()
             return
         lbl = self._fold_label()
-        p = lbl.mapTo(self, QPoint(0, 0))
-        y = p.y() + lbl.height() - FADE_H
-        self._fold_mask.setGeometry(p.x(), max(0, y), max(1, lbl.width()), FADE_H)
-        self._fold_mask.raise_()      # 覆盖在正文之上：控件创建顺序不保证叠放次序
+        self._fold_watch_label(lbl)
+        h = lbl.height()
+        if lbl.width() <= 1 or h < FADE_H:
+            mask.hide()
+            return
+        # 标签本地坐标：底边对齐折叠边界。宽度取标签自身宽度，不含其 contentsMargins，
+        # 免得遮罩越出标签盖到兄弟控件上。
+        want = QRect(0, h - FADE_H, lbl.width(), FADE_H)
+        if mask.parent() is not lbl:
+            # 首次挂载（或 `_fold_label()` 换了标签）：setParent 会隐掉子控件，
+            # 故挂载与显隐必须成对完成。
+            mask.setParent(lbl)
+            mask.setGeometry(want)
+            mask.show()
+            mask.raise_()
+            return
+        if mask.geometry() != want:
+            mask.setGeometry(want)
+        if mask.isHidden():
+            mask.show()
+        mask.raise_()      # 覆盖在正文之上：控件创建顺序不保证叠放次序
+
+    def _fold_watch_label(self, lbl: QLabel):
+        """给承载遮罩的标签装事件过滤器（幂等），用于跟随标签**自身**尺寸变化。
+
+        标签在布局里被**移动**时遮罩自动跟随（子控件），无需干预；只有标签自身
+        高度/宽度改变（折叠态切换、流式换行重算、钉高变化）才需要把遮罩重贴一次
+        本地底边 —— 那一刻读到的是标签自己的最新尺寸，必然准确。
+        """
+        if getattr(self, "_mask_lbl", None) is lbl:
+            return
+        old = getattr(self, "_mask_lbl", None)
+        if old is not None:
+            try:
+                old.removeEventFilter(self)
+            except Exception:
+                pass
+        self._mask_lbl = lbl
+        try:
+            lbl.installEventFilter(self)
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, ev):
+        """标签**自身尺寸**变化 → 把遮罩重新贴到标签本地底边（见 `_fold_watch_label`）。
+
+        只在折叠态且遮罩已挂到该标签下时生效：非折叠态遮罩本就隐藏，标签的每一次流式
+        resize 都不该拖上这项工作。Move/Show/LayoutRequest 不再需要处理 ——
+        「子随父动」由 Qt 保证。
+        """
+        if obj is getattr(self, "_mask_lbl", None) and self._folded \
+                and getattr(self, "_fold_mask", None) is not None \
+                and self._fold_mask.parent() is obj \
+                and ev.type() == QEvent.Type.Resize:
+            self._fold_place_mask()
+        return super().eventFilter(obj, ev)
 
     def _fold_toggle(self):
         opened = self._fold_open is not True
         self._fold_open = opened
-        self._fold_btn.setText(FOLD_CLOSED_TEXT if opened else self._fold_open_text)
+        self._fold_btn.setText(_ui(FOLD_CLOSED_TEXT) if opened else self._fold_open_text)
         self._fold_btn.setIcon(self._fold_chev(180 if opened else 0))
         self._fold_apply_text()      # 展开铺全文 / 收起回到前缀
         self._bump_content()         # 折叠态影响高度 → 测量缓存失效
         self._fold_apply()
+        self._fold_invalidate_layout()
         if self._fold_handler is not None:
             self._fold_handler()
+
+    def _fold_invalidate_layout(self):
+        """折叠态切换后作废 Qt 布局的**内部尺寸缓存**与本块的高度测量缓存。
+
+        这是「点收起后高度回不来、正文下方留一大片空白」的根因，两层缓存都要破：
+
+        ① `QLayout` 把 `sizeHint/minimumSize` 缓存在内部，只在 `invalidate()` 时重算。
+           折叠切换走的是 `setMinimumHeight`（钉高），Qt **不会**因此失效该缓存：
+             · `layout().totalMinimumSize()` 现算 → 266（正确，折叠后真实需求）
+             · `QWidget.minimumSizeHint()` 读缓存 → 1204（展开态旧值）
+
+        ② `ChatTurn._measure_block` 的块级 `_msh_cache` 会把上面那个**错误的** 1204
+           缓存下来。实测时序：`invalidate()` 后的同一帧内 `minimumSizeHint()` 仍返回
+           1204（布局尚未重算），这一读被写进 `_msh_cache`；之后即便 Qt 自己恢复到 266，
+           缓存仍返回 1204 —— 块被 `setFixedHeight(1204)` 钉死在展开高度，再也收不回来。
+
+        故顺序必须是：先 invalidate 布局、再清块级缓存，让下一次测量读到已重算的值。
+        内层嵌套容器（工具行的 `_body`/`_out_box` 等）同样要作废：`minimumSizeHint`
+        会递归问它们的最小尺寸，任一层残留旧缓存都会把整条链拖回展开态高度。
+        """
+        self._msh_cache = None      # 块级测量缓存：下一轮重新问 Qt
+        lay = self.layout()
+        if lay is None:
+            return
+        try:
+            lay.invalidate()
+            for ch in self.findChildren(QWidget):
+                cl = ch.layout()
+                if cl is not None:
+                    try:
+                        cl.invalidate()
+                    except Exception:
+                        continue
+        except RuntimeError:
+            return              # 控件已销毁：随对象一起作废即可
 
 
 class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
@@ -1650,7 +1828,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._icon = _tile(style, icon_provider("think", FONT_BODY + 3, style.icon_color),
                            THINK_ICON, RADIUS_SM)
         hl.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._title = QLabel("思考过程")
+        self._title = QLabel(_ui("思考过程"))
         self._title.setStyleSheet(
             f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
             f" font-family: {style.font_ui}; background: transparent;")
@@ -1957,6 +2135,13 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
         """开关外壳只在可折叠时占位：不可折叠时整层收起，工具行恢复为「一行调用 + 输出」"""
         self._fold_holder.setVisible(foldable)
 
+    def resizeEvent(self, e):
+        """真实几何就位（含延迟建块补显后的布局激活）后重新收敛折叠态：
+        重新钉高并把渐隐遮罩贴回正确位置 —— 否则首次 _fold_apply 在布局暂停期间
+        藏起的遮罩不会再出现 / 会残留在错误位置（与 ThinkBubble.resizeEvent 同职责）。"""
+        super().resizeEvent(e)
+        self._fold_apply()
+
     def _emerge_area(self) -> QRect:
         """工具行文字区域：文字容器矩形（含标题/meta/chip/输出），图标壳与行样式不参与。"""
         body = self._body
@@ -2154,15 +2339,21 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         root.addWidget(bar)
 
         self._cmd = _mk_label(style)
+        # 留白用 setContentsMargins 而非 QSS padding：QLabel 带 QSS padding 时
+        # heightForWidth 恒定多算约一行（实测 +13px），钉入最小高后不收缩 → 命令行下方
+        # 多出一条空白、输出起始被压低（用户反馈的「输出气泡顶部区域过大」）。
+        self._cmd.setContentsMargins(
+            CMD_PAD_H, CMD_PAD_V + 4, CMD_PAD_H, CMD_PAD_V + 4)
         self._cmd.setStyleSheet(
-            f"background: transparent; padding: {CMD_PAD_V + 4}px {CMD_PAD_H}px;"
+            f"background: transparent;"
             f" color: {style.cmd_fg}; font-size: {FONT_BODY}px;"
             f" font-family: {style.font_mono};")
         root.addWidget(self._cmd)
 
         self._body = _mk_label(style)
+        self._body.setContentsMargins(CMD_PAD_H, 0, CMD_PAD_H, CMD_PAD_V + 4)
         self._body.setStyleSheet(
-            f"background: transparent; padding: 0 {CMD_PAD_H}px {CMD_PAD_V + 4}px;"
+            f"background: transparent;"
             f" color: {style.ok_fg}; font-size: {FONT_SMALL}px;"
             f" font-family: {style.font_mono};")
         root.addWidget(self._body)
@@ -2201,12 +2392,16 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._bar_label.setStyleSheet(
             f"color: {style.text_dim}; font-size: {FONT_CAPTION}px;"
             f" font-family: {style.font_mono}; background: transparent;")
+        # 换肤重设 QSS（不含 padding），随后补一次直接 margins，防止 repolish 把留白重置
+        self._cmd.setContentsMargins(
+            CMD_PAD_H, CMD_PAD_V + 4, CMD_PAD_H, CMD_PAD_V + 4)
         self._cmd.setStyleSheet(
-            f"background: transparent; padding: {CMD_PAD_V + 4}px {CMD_PAD_H}px;"
+            f"background: transparent;"
             f" color: {style.cmd_fg}; font-size: {FONT_BODY}px;"
             f" font-family: {style.font_mono};")
+        self._body.setContentsMargins(CMD_PAD_H, 0, CMD_PAD_H, CMD_PAD_V + 4)
         self._body.setStyleSheet(
-            f"background: transparent; padding: 0 {CMD_PAD_H}px {CMD_PAD_V + 4}px;"
+            f"background: transparent;"
             f" color: {style.ok_fg}; font-size: {FONT_SMALL}px;"
             f" font-family: {style.font_mono};")
         self._fold_restyle(style, style.panel)
@@ -2232,6 +2427,12 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
     def _fold_on_state(self, foldable: bool):
         """开关外壳只在可折叠时占位（不可折叠时命令块恢复为原样）"""
         self._fold_holder.setVisible(foldable)
+
+    def resizeEvent(self, e):
+        """真实几何就位（含延迟建块补显后的布局激活）后重新收敛折叠态：
+        重新钉高并把渐隐遮罩贴回正确位置（与 ThinkBubble.resizeEvent 同职责）。"""
+        super().resizeEvent(e)
+        self._fold_apply()
 
     def _emerge_area(self) -> QRect:
         """命令块正文区域：`$ 命令` 与输出两段的并集（标题栏不参与浮现）。
@@ -2514,7 +2715,7 @@ class _BlockRef:
     """
 
     __slots__ = ("kind", "sig", "widget", "spacer", "is_proc", "h", "payload", "dead",
-                 "style_stale", "stale_payload", "stale_sig")
+                 "style_stale", "stale_payload", "stale_sig", "sph")
 
     def __init__(self, kind: str, sig, widget: QWidget, spacer: QSpacerItem, is_proc: bool):
         self.kind = kind
@@ -2523,6 +2724,9 @@ class _BlockRef:
         self.spacer = spacer
         self.is_proc = is_proc
         self.h = 0      # 最近一次钉定的块高：增量重排据此用高度差修正回合总额
+        # 最近一次计入回合总额的间距高度：增量重排还要补上间距差（收起态 spacer=0 →
+        # 展开 gap），否则总额会漏掉每个新显示块的间距
+        self.sph = 0
         self.payload = None   # 最近一次渲染的区块载荷（延迟建块时由此填充内容）
         self.dead = False     # 已被 _drop_from 移除（空闲建块任务据此放弃）
         # 隐藏块的「懒刷新」挂账：换肤/换主题后，隐藏（收起的过程区）块不做即时
@@ -2590,26 +2794,75 @@ class ChatTurn(QWidget):
         self._box_lay.setSpacing(0)
         self._lay.addWidget(self._box)
 
-        self._ribbon = CostRibbon(style, icon_provider("clock", FONT_SMALL, style.accent), self)
-        self._ribbon.hide()
-
-        self._toggle = PillButton(style, TOGGLE_CLOSED_TEXT,
-                                  icon_provider("chev", FONT_SMALL, style.accent), parent=self)
-        self._toggle.clicked.connect(self._on_toggle)
-        self._toggle.hide()
+        # ------------------------------------------------------------------
+        # 惰性控件：历史回合绝大多数**永远不显示**这几个控件，构造期一律不建，
+        # 改为首次真正需要时才由 _lazy_* 构造（构造参数与原 __init__ 完全一致）。
+        #
+        # 为什么值得：实测「空回合入树」3.80ms，其中这三个控件的有源构造占 3.35ms
+        # （每个都是 QPushButton+setStyleSheet 或 QLabel，且要进布局吃布局级联）。
+        # 长对话首屏要为**每条**历史回复各建一套 —— 120 轮 ≈ 白花 0.8s，
+        # 而它们在历史回合里全是隐藏的，纯浪费。
+        #
+        # 为什么徽章（_ribbon）虽然「常驻」也能惰性：常驻指的是「不因为无数据而隐藏」
+        # （见 _finalize_ribbon），而不是「构造期必须存在」—— 首次 render 就会
+        # 经 _lazy_ribbon() 建出来，对调用方完全透明。
+        #
+        # 布局顺序：块 …→ _toggle → _more …→ _sys（末尾）。未建时它们不在布局里
+        # （省掉布局项，隐藏控件本来也不占高度，见 relayout_heights / heightForWidth）；
+        # 建出来时按位置 insert/append，见 _lazy_toggle/_lazy_more/_lazy_sys。
+        # ------------------------------------------------------------------
         self._toggle_idx = -1
+        self._ribbon = None
+        self._toggle = None
+        self._more = None
+        self._sys = None
 
-        # 「继续显示」：长过程区按页给出（见 _PROC_PAGE），本按钮负责拉取下一页
-        self._more = PillButton(style, "", dashed=True, parent=self)
-        self._more.clicked.connect(self._reveal_page)
-        self._more.hide()
+    # ---------- 惰性控件构造（首次需要时才建；参数与原 __init__ 完全一致） ----------
+    def _lazy_ribbon(self) -> "CostRibbon":
+        if self._ribbon is None:
+            r = CostRibbon(self._style, self._icon_provider("clock", FONT_SMALL,
+                                                             self._style.accent), self)
+            r.hide()
+            self._ribbon = r
+        return self._ribbon
 
-        self._sys = QLabel("")          # demo .sys-meta：回合的「开始 → 结束」时间行
-        self._sys.setStyleSheet(
-            f"background: transparent; color: {style.muted};"
-            f" font-size: {FONT_CAPTION}px; font-family: {style.font_mono};")
-        self._sys.hide()
-        self._box_lay.addWidget(self._sys)
+    def _lazy_toggle(self) -> "PillButton":
+        """过程区开关按钮（位置由 _place_toggle 决定：过程区末尾、正文之前）。
+
+        这里只负责建控件并挂进布局末尾，**紧接着**由调用方（_apply_done）走
+        _place_toggle 把它挪到正确位置 —— 与原实现完全同一条路径，只是建控件
+        推迟到这一刻，故插入位置/顺序语义完全不变。
+        """
+        if self._toggle is None:
+            btn = PillButton(self._style, _ui(TOGGLE_CLOSED_TEXT),
+                             self._icon_provider("chev", FONT_SMALL, self._style.accent),
+                             parent=self)
+            btn.clicked.connect(self._on_toggle)
+            btn.hide()
+            self._toggle = btn
+            self._box_lay.addWidget(btn)
+        return self._toggle
+
+    def _lazy_more(self) -> "PillButton":
+        if self._more is None:
+            btn = PillButton(self._style, "", dashed=True, parent=self)
+            btn.clicked.connect(self._reveal_page)
+            btn.hide()
+            self._more = btn
+            self._box_lay.addWidget(btn)
+        return self._more
+
+    def _lazy_sys(self) -> QLabel:
+        """系统时间行（恒在布局末尾）。"""
+        if self._sys is None:
+            s = QLabel("")     # demo .sys-meta：回合的「开始 → 结束」时间行
+            s.setStyleSheet(
+                f"background: transparent; color: {self._style.muted};"
+                f" font-size: {FONT_CAPTION}px; font-family: {self._style.font_mono};")
+            s.hide()
+            self._sys = s
+            self._box_lay.addWidget(s)   # 末尾
+        return self._sys
 
     def restyle(self, style: ChatStyle):
         """原地换肤整条回合：外壳按钮/徽章/时间行 + 逐块 `restyle`，**不重建任何控件**。
@@ -2620,16 +2873,21 @@ class ChatTurn(QWidget):
         """
         self._style = style
         self.style_obj = style
-        ribbon = getattr(self, "_ribbon", None)
-        if ribbon is not None:
-            ribbon.restyle(style)
-        self._toggle.restyle(style)
-        self._toggle.setIcon(rotate_icon(
-            self._icon_provider("chev", FONT_SMALL, style.accent), 0, FONT_SMALL))
-        self._more.restyle(style)
-        self._sys.setStyleSheet(
-            f"background: transparent; color: {style.muted};"
-            f" font-size: {FONT_CAPTION}px; font-family: {style.font_mono};")
+        # 惰性控件：未建则跳过（建出来时会用**当前** style 构造，天然是新样式）
+        for name in ("_ribbon", "_toggle", "_more", "_sys"):
+            w = getattr(self, name, None)
+            if w is None:
+                continue
+            fn = getattr(w, "restyle", None)
+            if callable(fn):
+                fn(style)
+        if self._toggle is not None:
+            self._toggle.setIcon(rotate_icon(
+                self._icon_provider("chev", FONT_SMALL, style.accent), 0, FONT_SMALL))
+        if self._sys is not None:
+            self._sys.setStyleSheet(
+                f"background: transparent; color: {style.muted};"
+                f" font-size: {FONT_CAPTION}px; font-family: {style.font_mono};")
         # 逐块换肤：延迟建块（widget=None）的块没有控件可换，跳过即可。
         # **隐藏块也跳过**（挂账到显示时补，见 _refresh_stale）：收起的过程区在长会话里
         # 占绝大多数，对不可见控件重设 QSS 是纯浪费 —— 切换耗时会随历史长度线性膨胀。
@@ -2720,11 +2978,16 @@ class ChatTurn(QWidget):
                                if self._block_proc(kind, payload))
         # 系统时间行**先落位**：耗时徽章在缺少 cost 时要由它推导（老会话兜底），
         # 因此必须先于 _finalize_ribbon 写入，否则读到的是上一轮的时间行。
-        show_sys = bool(sys_meta)
-        if self._sys.isHidden() == show_sys:
-            self._sys.setVisible(show_sys)
+        # 惰性：有 sys_meta 才建控件（历史回合多为空 → 不建）。
+        if sys_meta:
+            s = self._lazy_sys()
+            if s.isHidden():
+                s.setVisible(True)
+                self._layer_dirty = True
+            s.setText(sys_meta)
+        elif self._sys is not None and not self._sys.isHidden():
+            self._sys.setVisible(False)
             self._layer_dirty = True
-        self._sys.setText(sys_meta or "")
         self._finalize_ribbon(cost, live)
         self._apply_done(done)
         self._apply_live()
@@ -2795,17 +3058,29 @@ class ChatTurn(QWidget):
             self._set_proc_visible(not done)
 
             show_toggle = self._settled and self._proc_count > 0
-            toggle_changed = self._toggle.isHidden() == show_toggle
-            if toggle_changed:
-                self._toggle.setVisible(show_toggle)
-            text = TOGGLE_CLOSED_TEXT if done else TOGGLE_OPEN_TEXT
-            if self._toggle.text() != text:
-                self._toggle.setText(text)
-                self._toggle.setIcon(rotate_icon(
-                    self._icon_provider("chev", FONT_SMALL, self._style.accent),
-                    0 if done else 180, FONT_SMALL))
+            # 惰性开关：无过程块/未结束时不显示 → 压根不建按钮（省一次构造 + 布局项）
             if show_toggle:
+                tg = self._lazy_toggle()
+                toggle_changed = tg.isHidden()
+                if toggle_changed:
+                    tg.setVisible(True)
+                text = _ui(TOGGLE_CLOSED_TEXT) if done else _ui(TOGGLE_OPEN_TEXT)
+                if tg.text() != text:
+                    tg.setText(text)
+                    tg.setIcon(rotate_icon(
+                        self._icon_provider("chev", FONT_SMALL, self._style.accent),
+                        0 if done else 180, FONT_SMALL))
+                # 「继续显示」与系统时间行锚点在此一并建出（隐藏占位）：纯懒建会让 done
+                # 渲染后开关之后没有任何锚点（indexOf(_sys) 落空），破坏「开关必须排在正文、
+                # 系统行之前」的顺序；settled 且有过程块时这两个锚点迟早要用，代价可忽略。
+                self._lazy_more()
+                self._lazy_sys()
                 self._place_toggle()
+            else:
+                # 收起且无过程块：已建则隐藏（未建天然隐藏，无需任何操作）
+                if self._toggle is not None and not self._toggle.isHidden():
+                    self._toggle.setVisible(False)
+                toggle_changed = False
             # 长回合流式刷新的主开销就在这一句：只有内容变化的块（通常 1 个）需要重测时
             # 走增量路径，其余情况（结构增删/边距/开关变化）才全量重排。
             # 过程区可见性切换（展开/收起/继续显示）也走增量：只有状态变过的块需要重测，
@@ -2814,6 +3089,10 @@ class ChatTurn(QWidget):
             if structural or toggle_changed or self._layer_dirty or self._hfw_cache is None:
                 self._proc_dirty = []
                 self.relayout_heights(monotonic=self._live)
+                # 结构变化（新块插入/移除）：重排只钉了各块固定高，显式激活一次让
+                # 布局立刻按这些高度分配几何，避免新块停在错位（骑到前一块上）。
+                if structural:
+                    self._box_lay.activate()
             else:
                 pd = self._take_proc_dirty()
                 if pd:
@@ -2837,6 +3116,9 @@ class ChatTurn(QWidget):
         if not visible:
             self._reveal_pending.clear()          # 收起：取消未完成的补显与分页
             self._reveal_rest = None
+            t = getattr(self, "_reveal_qtimer", None)   # 停掉尚未触发的补显步进
+            if t is not None:
+                t.stop()
             self._update_more()
             return self._apply_proc_visible([r for r in self._items if r.is_proc], False)
         if self._live:
@@ -2844,7 +3126,12 @@ class ChatTurn(QWidget):
             # 这里只做一次廉价对账
             return self._apply_proc_visible([r for r in self._items if r.is_proc], True)
         if self._reveal_pending:
-            return False                          # 本页还在补显：不打断
+            # 本页还在补显：不打断。但要兜底「链停摆」（定时器事件在主线程繁忙时
+            # 被丢弃等）——pending 非空而定时器没在跑就重启，避免补显永久卡住。
+            t = getattr(self, "_reveal_qtimer", None)
+            if t is not None and not t.isActive():
+                t.start(0)
+            return False
         if self._reveal_rest is None:
             # 首次展开是用户主动交互：先丢弃后台「隐藏块收尾」积压（长会话里上百个，
             # 见 _IdleSpreader.drop_pending），把主线程立刻让给这次点击 —— 否则点击
@@ -2858,6 +3145,27 @@ class ChatTurn(QWidget):
                                  and (r.widget is None or r.widget.isHidden())]
         return self._reveal_page()
 
+    def _reveal_timer(self):
+        """本回合自有的补显定时器（单轮惰性创建）。
+
+        **为什么不用全局 `_spreader`**：补显链不是「可丢弃收尾」——全局队列会在用户展开
+        别的回合时被 `drop_pending()` 整体清空，若本回合的 `_reveal_step` 正在队列里，
+        补显链会永久中断（`_reveal_pending` 还剩一批却没人再调度），表现为已显示的块
+        叠在一起、必须逐一点折叠开关触发全量重排才恢复（用户反馈的「想折叠」）。
+        用回合自有定时器，其他回合的交互无法打断它。
+        """
+        t = getattr(self, "_reveal_qtimer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._reveal_step)
+            self._reveal_qtimer = t
+        return t
+
+    def _reveal_schedule(self):
+        """安排一次补显/完成步进（0ms：让出当前调用，下一轮事件循环即执行）。"""
+        self._reveal_timer().start(0)
+
     def _reveal_page(self):
         """显示「下一页」过程块：首个分片同步显示（点击即有内容），其余进空闲切片。
         返回本页是否真的改动了可见性（不变则不 invalidate 布局）。"""
@@ -2868,8 +3176,10 @@ class ChatTurn(QWidget):
             return False
         changed = self._apply_proc_visible(page[:_REVEAL_CHUNK], True)
         self._reveal_pending = page[_REVEAL_CHUNK:]
-        if self._reveal_pending:
-            _spreader().push(self._reveal_step)
+        # **无论本页是否还有剩余分片，都安排一次步进**：它在 pending 排空时执行完成
+        # 回调（重排 + activate）。否则最后一页（≤2 块、走「继续显示」点击直达）只会
+        # invalidate，几何依赖事件驱动激活，可能停在错位/叠放状态。
+        self._reveal_schedule()
         self._update_more()
         return changed
 
@@ -2877,9 +3187,12 @@ class ChatTurn(QWidget):
         """「继续显示」按钮的显隐与文案：过程区展开且仍有未显示的过程块时才出现"""
         n = len(self._reveal_rest or [])
         show = bool(n) and self._user_open is True
-        self._more.setVisible(show)
         if show:
-            self._more.setText(f"继续显示（还有 {n} 步）")
+            mr = self._lazy_more()
+            mr.setVisible(True)
+            mr.setText(_uif("继续显示（还有 {a0} 步）", a0=n))
+        elif self._more is not None and not self._more.isHidden():
+            self._more.setVisible(False)
         self._place_toggle()
 
     def _apply_proc_visible(self, refs: list, visible: bool) -> bool:
@@ -2938,6 +3251,9 @@ class ChatTurn(QWidget):
             seen = {id(r) for r in self._proc_dirty}
             self._proc_dirty.extend(r for r in dirty if id(r) not in seen)
             lay.invalidate()
+            # 可见性/间距变了：布局最小高（重排的兜底口径）必须重算，否则空闲分片
+            # 收尾的增量重排会用过小的旧兜底值，导致回合偏短、块间互相压住
+            self._lay_min_dirty = True
         return bool(dirty)
 
     def _take_proc_dirty(self) -> list:
@@ -2961,19 +3277,33 @@ class ChatTurn(QWidget):
                 batch = self._reveal_pending[:_REVEAL_CHUNK]
                 del self._reveal_pending[:_REVEAL_CHUNK]
                 self._apply_proc_visible(batch, True)
+                # 立刻钉定本批块高并激活：让本批出现时就按最终高度就位、不与前面的
+                # 块重叠。只做**回合级**重排；面板级同步仍推迟到排空（每片都触发消息流
+                # 重排曾实测让补显总耗时 4s→96s）。
+                self.relayout_heights(self.width(), dirty=self._take_proc_dirty())
+                self._box_lay.activate()
                 self.updateGeometry()
             except RuntimeError:
                 self._reveal_pending.clear()      # 控件已销毁：停止补显
                 return
+            except Exception:
+                # 其余异常也**不能让补显链永久中断**（否则已显示的块会叠在一起、
+                # 只能逐一点折叠开关恢复）。本批已弹出，继续推进剩余分片；失败的块
+                # 会在下次 render 时由 _set_proc_visible 对账补显。
+                if self._done:
+                    self._reveal_pending.clear()
+                    return
             if self._reveal_pending:
-                _spreader().push(self._reveal_step)
+                self._reveal_schedule()
                 return
-        # 排空：一次性钉准几何，并让面板按新高度重排（滚动区跟手）。
-        # 走**增量**（只重测本页新显示的那些块）：整表重测会把上百个未变的块也算一遍。
-        # 「钉几何」与「面板跟手」**分两帧**执行：两者各自都可能上百毫秒（回合内上百个
-        # 布局项），挤在同一帧里就是一次可感知的卡顿。
+        # 排空：统一钉准几何（最后一批通常已在上面钉过，这里做收尾），并让面板按新
+        # 高度重排（滚动区跟手）。
         try:
             self.relayout_heights(self.width(), dirty=self._take_proc_dirty())
+            # 显式激活布局、同步分配几何：补显的块是在布局禁用期间 show 的，重新启用后
+            # 只 invalidate()，末批块的 LayoutRequest 会被合并丢弃而停在 y=0（与前面
+            # 的块叠在一起）。这里一次 activate 保证全部块按顺序就位。
+            self._box_lay.activate()
         except RuntimeError:
             return
         if self._toggle_handler is not None:
@@ -3016,12 +3346,20 @@ class ChatTurn(QWidget):
         if anchor is not None:
             pos = self._box_lay.indexOf(anchor.spacer)
             idx = pos + 1 if pos >= 0 else self._box_lay.count()
-        if idx != self._toggle_idx or self._toggle.parent() is not self._box:
+        # 惰性：未建的开关/「继续显示」不占布局项，无需就位（也就没有 remove/insert 开销）
+        if self._toggle is None:
+            self._toggle_idx = -1
+        elif idx != self._toggle_idx or self._toggle.parent() is not self._box:
             self._toggle_idx = idx
             self._box_lay.removeWidget(self._toggle)
             self._box_lay.insertWidget(idx, self._toggle)
-        if self._more.parent() is not self._box:
-            self._box_lay.insertWidget(self._box_lay.indexOf(self._toggle) + 1, self._more)
+        # 「继续显示」恒在开关之后一格：懒建/锚点预建都已把它加进 _box，不能再用
+        # 「parent 不是 _box」作为是否重排的判据（否则它会停在正文/末尾），改为按
+        # 目标槽位比对、错位即插拔。
+        if self._more is not None and self._toggle is not None:
+            want_more = self._box_lay.indexOf(self._toggle) + 1
+            if self._box_lay.indexOf(self._more) != want_more:
+                self._box_lay.insertWidget(want_more, self._more)
 
     # ---------- 增量重建 ----------
     def _rebuild_blocks(self, specs: list):
@@ -3138,6 +3476,12 @@ class ChatTurn(QWidget):
         推迟到「真的要看」的那一刻才是正确取舍：闲置时零开销，交互延迟与历史长度解耦。
         """
         self.setUpdatesEnabled(False)
+        # 插入期间暂停布局：① insertWidget 不触发逐块布局级联；② 让下面的显式
+        # show() 不产生「向上可见祖先」的失效级联；③ 保证随后全量重排时新块已可见、
+        # 会被测量（否则新块要等后续布局激活才显示，出生那次重排按隐藏跳过它，
+        # 块高不钉死，最终几何可能错位 —— 新正文骑到前一块上）。
+        lay = self._box_lay
+        lay.setEnabled(False)
         created = []
         for kind, payload, sig in specs:
             is_proc = self._block_proc(kind, payload)
@@ -3147,7 +3491,7 @@ class ChatTurn(QWidget):
                 continue
             wid = self._make_block(kind, parent=None)
             self._update_block(wid, kind, payload, defer=False)
-            # 新块先同步流式状态再交付布局：占位/命令这类「一次成型」的块内容在创建时就
+            # 新块先同步流式状态再交付布局：占位/命令这类「一次成型」的块内容在创建时
             # 已写入，只有此刻就带上 live，随后的首次布局重排才能把整块记为「刚浮现」。
             wid.set_live(self._live)
             self._wire(wid)
@@ -3159,7 +3503,7 @@ class ChatTurn(QWidget):
             ref0 = self._items[index]
             anchor = ref0.widget if ref0.widget is not None else ref0.spacer
             pos = self._box_lay.indexOf(anchor)
-        if pos < 0:
+        if pos < 0 and self._sys is not None:
             pos = self._box_lay.indexOf(self._sys)   # 追加：系统行之前
         if pos < 0:
             pos = self._box_lay.count()
@@ -3178,11 +3522,12 @@ class ChatTurn(QWidget):
             ref.payload = payload
             self._items.insert(index + i, ref)
             if wid is not None:
-                # 新块必须在紧随其后的重排**之前**就处于「该可见」的状态：Qt 新建的子控件
-                # 默认是隐藏的（`isHidden()` 为真），而 relayout_heights 把隐藏块按 0 高
-                # 跳过 —— 刚插入的这一块高度不计入回合总额，内层布局随即被挤、块又被钳回
-                # 最小高，于是后一块骑到前一块上（超长工具输出「遮挡/挤压正文」的成因之一）。
+                # 显式决定显隐（布局暂停期间不产生级联开销）：
+                # 可见块必须此刻就 show —— 它作为可见父级的子控件创建时不会自动显示，
+                # 只靠 insertWidget 的显示要等到布局激活，会让出生那次全量重排漏掉它。
                 wid.setVisible(not hidden)
+        lay.setEnabled(True)
+        lay.invalidate()
         self.setUpdatesEnabled(True)
 
     def _ensure_block(self, ref: "_BlockRef"):
@@ -3277,19 +3622,21 @@ class ChatTurn(QWidget):
         """
         if live:
             self._t0 = self._t0 or time.time()
-            if not self._ribbon.is_live:
-                self._ribbon.start(self._t0)   # 进行中：实时刷新（重复渲染不重启计时）
+            rb = self._lazy_ribbon()          # 徽章常驻（见 _finalize_ribbon 文档）
+            if not rb.is_live:
+                rb.start(self._t0)   # 进行中：实时刷新（重复渲染不重启计时）
             self._ensure_inset(True)
             return
         if cost is None:
             cost = self._cost        # 已冻结的耗时保持稳定（重复渲染不闪烁）
         if cost is None:
-            cost = cost_from_meta(self._sys.text())
+            cost = cost_from_meta(self._sys.text() if self._sys is not None else "")
         if cost is not None:
-            self._ribbon.freeze(float(cost))
+            rb = self._lazy_ribbon()
+            rb.freeze(float(cost))
             self._cost = float(cost)
         else:
-            self._ribbon.freeze_unknown()
+            self._lazy_ribbon().freeze_unknown()
         self._ensure_inset(True)
         self._place_ribbon()         # 徽章由隐藏转常驻：立即就位（resize 之前也要贴住虚线）
 
@@ -3332,10 +3679,16 @@ class ChatTurn(QWidget):
             total = self._hfw_cache[1]
             for ref in dirty:
                 wdg = ref.widget
+                shown = not (wdg is None or wdg.isHidden())
                 # 延迟创建的块（widget=None，见 _BlockRef）：本就按 h=0 计，跳过
-                h = 0 if (wdg is None or wdg.isHidden()) else self._measure_block(ref, inner, monotonic)
+                h = self._measure_block(ref, inner, monotonic) if shown else 0
                 total += h - ref.h
                 ref.h = h
+                # 间距差也要计入：收起态 spacer=0、展开态 spacer=gap，漏掉会让回合
+                # 总额偏短、后一块骑到前一块上
+                sph = ref.spacer.sizeHint().height() if shown else 0
+                total += sph - ref.sph
+                ref.sph = sph
         else:
             total = self._outer_pad() + m.top() + m.bottom()
             for ref in self._items:
@@ -3345,14 +3698,18 @@ class ChatTurn(QWidget):
                 # （过程块可见），因此不会被误跳。
                 # widget is None = 延迟创建的隐藏过程块（见 _BlockRef）：同样按 h=0 跳过，
                 # 绝不可直接 .isHidden()（NoneType 崩溃，布局期间会逐帧刷屏）。
-                h = 0 if (wdg is None or wdg.isHidden()) else self._measure_block(ref, inner, monotonic)
+                shown = not (wdg is None or wdg.isHidden())
+                h = self._measure_block(ref, inner, monotonic) if shown else 0
                 ref.h = h
-                total += h + ref.spacer.sizeHint().height()
-            if self._settled:   # 开关常驻（按 _settled 判定，与 heightForWidth 同口径）
+                sph = ref.spacer.sizeHint().height() if shown else 0
+                ref.sph = sph
+                total += h + sph
+            # 三个惰性控件未建 = 隐藏 = 不占布局（原实现 isHidden() 为真同样不计）
+            if self._toggle is not None and not self._toggle.isHidden():
                 total += self._toggle.sizeHint().height()
-            if not self._more.isHidden():   # 「继续显示」也是布局里的一项，漏算会让回合矮一截
-                total += self._more.sizeHint().height()
-            if not self._sys.isHidden():
+            if self._more is not None and not self._more.isHidden():
+                total += self._more.sizeHint().height()   # 漏算会让回合矮一截
+            if self._sys is not None and not self._sys.isHidden():
                 total += _widget_hfw(self._sys, inner)
         # 兜底用的「布局最小需求」：全量路径、或可见性刚变过（`_lay_min_dirty`）时重算。
         # `minimumSize()` 会遍历全部子项，流式每 tick 都无条件调会把单帧成本顶上去
@@ -3424,12 +3781,42 @@ class ChatTurn(QWidget):
         if callable(pin):
             pin(inner)          # 先固定内部标签高度，再据此固定块高度
         h = _widget_hfw(wdg, inner)
-        # 槽位不得小于块自己算出的最小尺寸：块内布局的 `minimumSize` 会被**折叠态标签的
-        # minimumHeight**（已钉到折叠上限）抬高，可能大于 `heightForWidth` 的自算值。
-        # 只按 heightForWidth 给槽位时，`setMinimumHeight` 会把块就地撑高而槽位不变 ——
-        # 紧随其后的块便骑到它身上（用户看到的「块互相重叠」）。
+        # 槽位不得小于块内布局的**真实**最小需求：块内布局的 `minimumSize` 会被**折叠态
+        # 标签的 minimumHeight**（已钉到折叠上限）抬高，可能大于 `heightForWidth` 的
+        # 自算值。只按 heightForWidth 给槽位时，`setMinimumHeight` 会把块就地撑高而
+        # 槽位不变 —— 紧随其后的块便骑到它身上（用户看到的「块互相重叠」）。
+        #
+        # **必须用 `layout().totalMinimumSize()`，不能用 `QWidget.minimumSizeHint()`**：
+        # 后者读的是 Qt 布局的**内部缓存**，只有 `invalidate()` 才重算，而 `setMinimumHeight`
+        # /折叠态切换都不会触发它失效。更糟的是它会把块**自己**被 `setFixedHeight` 钉住的
+        # 高度当成「最小需求」返回，形成自我强化的闭环：实测工具行输出展开 1204px，
+        # 点「收起」后 `heightForWidth` 与 `totalMinimumSize` 都已回到 266px，
+        # `minimumSizeHint()` 却仍返回 1204px → 块被永久钉在展开高度，收起「看起来
+        # 完全无效」，正文下方留一大片空白且再也回不来（用户报的「气泡大片空白」）。
+        # `totalMinimumSize()` 每次现算内层布局的递归最小尺寸，与钉高无关，口径可靠。
+        #
+        # 性能：递归最小尺寸计算实测 3.4ms/块（首屏最大单项），故仍按
+        # 「内容版本 + 宽度 + 内部标签钉高 + 折叠态」缓存：同一内容同一宽度下的重复
+        # 重排（流式每 tick、切会话、缩放后复核）直接命中；内容或折叠态一变即失效。
         try:
-            h = max(h, int(wdg.minimumSizeHint().height()))
+            lbl = getattr(wdg, "_body", None)
+            lbl_h = int(lbl.minimumHeight()) if lbl is not None else 0
+            fold_state = getattr(wdg, "_folded", None)
+            mkey = (int(getattr(wdg, "_content_ver", 0)), int(inner),
+                    int(getattr(wdg, "_pin_w", -1)), lbl_h,
+                    None if fold_state is None else int(bool(fold_state)))
+            msh = getattr(wdg, "_msh_cache", None)
+            if msh is not None and msh[0] == mkey:
+                mh = msh[1]
+            else:
+                blay = wdg.layout()
+                mh = int(blay.totalMinimumSize().height()) if blay is not None \
+                    else int(wdg.minimumSizeHint().height())
+                wdg._msh_cache = (mkey, mh)
+            # 兜底不得反向放大：`totalMinimumSize` 偶尔会因上轮钉高残留而略大于自算值，
+            # 允许它把块抬高，但抬高幅度不得超过内容真实需求（否则又变成空白）。
+            if mh > h:
+                h = min(mh, max(h, int(wdg.heightForWidth(inner) or h)))
         except Exception:
             pass
         # 只在**同一宽度**下沿用「只增不减」：宽度变了，旧最小高度是另一个换行宽度的
@@ -3504,7 +3891,8 @@ class ChatTurn(QWidget):
         seconds = max(0.0, time.time() - self._t0)
         self._t0 = 0.0
         self._cost = seconds
-        self._ribbon.freeze(seconds)
+        if self._ribbon is not None:
+            self._ribbon.freeze(seconds)
         return seconds
 
     # ---------- 绘制：虚线分区 ----------
@@ -3525,6 +3913,8 @@ class ChatTurn(QWidget):
         p.end()
 
     def _place_ribbon(self):
+        if self._ribbon is None:
+            return          # 惰性：未建（无耗时数据）时无处可贴
         self._ribbon.adjustSize()
         try:
             self._ribbon.move(0, 0)
@@ -3561,6 +3951,24 @@ class ChatTurn(QWidget):
             # 不让异常冒泡进事件循环逐帧刷屏。
             return super().sizeHint()
 
+    def minimumSizeHint(self) -> QSize:
+        """回合最小尺寸：直接复用高度缓存，避免 Qt 递归测量每个子块。
+
+        性能：Qt 默认实现走 `layout()->minimumSize()` → 逐个子块（含富文本 QLabel 的
+        QTextDocument 布局）再问一遍 `minimumSizeHint`，实测单次 ~4.6ms。长会话重建/
+        切换时布局系统会对每个回合各问一次，120 回合白烧 0.55s（切会话卡顿的主要残留项）。
+
+        安全性：本类高度完全自管 —— `relayout_heights` 按固定宽度算准并写回
+        `_hfw_cache`，外层 `_TurnWrap._real_h()` 也以同一个 `heightForWidth` 为基准
+        并自行 setFixedHeight。因此这里返回缓存高度与包裹层的取值同源，不会压扁回合；
+        宽度不设下限（竖排回合的宽度由外层行布局的 stretch 决定，最小宽度无意义，
+        设为 0 反而避免把滚动区容器的可压缩宽度顶大）。
+        """
+        c = self._hfw_cache
+        if c is not None:
+            return QSize(0, int(c[1]))
+        return super().minimumSizeHint()
+
     def heightForWidth(self, width: int) -> int:
         """整条回合在给定宽度下的高度（供消息区钉住最小高度）。
 
@@ -3584,11 +3992,11 @@ class ChatTurn(QWidget):
             if ref.widget is None or ref.widget.isHidden():
                 continue
             h += _widget_hfw(ref.widget, inner) + ref.spacer.sizeHint().height()
-        if self._settled:      # 开关一旦出现就常驻（不按 isHidden 判定，理由同上）
+        if self._toggle is not None and not self._toggle.isHidden():
             h += self._toggle.sizeHint().height()
-        if not self._more.isHidden():   # 同 `relayout_heights`：「继续显示」也是一项
+        if self._more is not None and not self._more.isHidden():   # 同 `relayout_heights`
             h += self._more.sizeHint().height()
-        if not self._sys.isHidden():
+        if self._sys is not None and not self._sys.isHidden():
             h += _widget_hfw(self._sys, inner)
         # 与 `relayout_heights` 同一条兜底，且**必须同口径**（都用 `_lay_min_h`）：
         # 若这里改用实时 `_box.sizeHint()`、那边用缓存值，二者会在流式期间短暂不一致，

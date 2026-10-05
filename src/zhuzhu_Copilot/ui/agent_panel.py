@@ -1,8 +1,15 @@
 from zhuzhu_Copilot import app_identity
+from zhuzhu_Copilot.core.i18n import (
+    ui as _ui,
+    uim as _uim,
+    uif as _uif,
+    html as _html,
+    is_english as _is_en,
+)
 import base64
 import ctypes
 import datetime
-import html as _html
+import html as _htmlmod
 import json
 import math
 import os
@@ -96,6 +103,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
@@ -131,6 +139,7 @@ from zhuzhu_Copilot.core.agent_mcp import McpManager
 from zhuzhu_Copilot.ui import agent_chat_bubbles as chat_bubbles
 from zhuzhu_Copilot.ui import tool_icons
 from zhuzhu_Copilot.ui.tokens import (
+    COMBO_ARROW_W,
     FONT_BASE,
     FONT_BODY,
     FONT_CAPTION,
@@ -190,7 +199,7 @@ _CURSOR_FLASH_MS_ON_WALLPAPER = 620
 # 注意**不能**靠自绘静态竖线来「始终可见」——静态自绘会盖住原生光标、
 # 表现为「光标一直在但不闪烁」。加宽原生光标既是 Qt 支持的做法，也保留原生闪烁。
 _CURSOR_WIDTH = 2
-_CURSOR_WIDTH_ON_WALLPAPER = 3
+_CURSOR_WIDTH_ON_WALLPAPER = 4
 
 # 全局滚动条滑块不透明度：淡灰极简，滑块压到 30% 半透明（悬停提亮到 55% 保持可辨）
 _SCROLLBAR_OPACITY = 0.30
@@ -418,6 +427,15 @@ def _base_color(key: str, fallback: str = "#101216") -> str:
     return str(_BASE_PALETTE.get(key) or fallback)
 
 
+def _provider_disp(p) -> str:
+    """服务商显示名：内置默认服务商的名字以中文原文存在配置数据里，英文界面须翻译。
+
+    用户自建服务商的名字是用户数据，语言包里查不到 → `_ui` 原样返回，不受影响。
+    """
+    name = str((p or {}).get("name", "") or "")
+    return _ui(name) if name else name
+
+
 def _panel_surface(key: str = "BG") -> str:
     """停靠/悬浮面板的表面色：壁纸生效时透明（让自定义背景透出），否则原始色板实色。
 
@@ -434,14 +452,20 @@ def _panel_stroke(key: str = "BORDER") -> str:
 
 
 def _input_bg() -> str:
-    """输入框底色：壁纸透出模式下全透明（底完全让给壁纸）。
+    """输入框底色：壁纸透出模式下用极淡半透明底托住光标。
 
-    不再用半透明 scrim 兜底：对比度改由「聚焦泛光加粗（见 _focus_glow_params）」
-    与「光标加宽提速（见 apply_input_caret / apply_cursor_flash）」承担，
-    输入框本身保持干净通透。
+    完全透明时光标色跟随壁纸**全局**平均亮度选黑/白，但输入框位置的**局部**
+    背景可能与全局相反（亮壁纸上的深色区域）→ 光标与底色重合、看起来像
+    「点进去没有闪烁光标」。加一层与光标反色的极淡底（~10% 不透明度），
+    视觉上几乎仍通透，但光标脚下始终有均匀底色，对比度兜底。
     """
     if _feedback_boosted():
-        return "transparent"
+        fg = _wallpaper_foreground()
+        # 光标黑→白底，光标白→黑底；10% 不透明度几乎看不见但能托住光标
+        bg = "#FFFFFF" if fg == "#000000" else "#000000"
+        c = QColor(bg)
+        c.setAlphaF(0.10)
+        return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
     return PANEL
 
 
@@ -540,7 +564,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     global CODE_BG
     global ICON_GRAY
     global _BTN_GHOST, _BTN_COMPACT, _BTN_GHOST_ACCENT, _BTN_PRIMARY, _BTN_DIM
-    global _QCOMBO, _BTN_ICON, _BTN_DANGER
+    global _QCOMBO, _HOME_COMBO, _BTN_ICON, _BTN_DANGER
     global _THEME_VERSION, _LAST_PALETTE
     # 幂等：色板与上次一致则跳过，避免 _THEME_VERSION 无谓自增 + QSS 重复生成
     if not force and _LAST_PALETTE and _LAST_PALETTE == t:
@@ -602,20 +626,54 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                 f"font-size: {FONT_BODY}px; font-weight: 700; }}"
                 f"QPushButton:hover {{ background: #64748B; }}"
                 f"QPushButton:disabled {{ background: {CARD}; color: {TEXT_DIM}; }}")
-    # 控件本体（底色/描边）保持跟随主题表面色（壁纸下透明 = 输入框观感）；
-    # **弹出列表是独立不透明层**，底/描边/选中一律取原始色板（_base_color）：
-    # 壁纸模式下 PANEL/BORDER/HOVER 被覆写为 transparent，弹层拿到透明底不填色
-    # → 渲染成深色（用户反馈「浅色 + 自定义背景下拉菜单仍是深色」）。
-    _QCOMBO = (f"QComboBox {{ background: {PANEL}; color: {TEXT};"
-               f" border: 1px solid {BORDER};"
+    # 下拉框（选择框）**本体与弹出列表一律取原始色板**（_base_color），不再跟随
+    # 容器表面色（PANEL/BORDER/HOVER）。
+    #
+    # 原因：_QCOMBO 会被拼进 `_panel_root_qss()`（见其调用点），而祖先样式表优先于
+    # 应用级 —— 于是一次「设背景」把 PANEL/BORDER 覆写成 transparent 后，**面板树里
+    # 每一个 QComboBox 都会跟着变成透明底 + 透明描边**（用户反馈「首次设置背景时 todos
+    # 面板和预览面板的选择框底色、边框色被设为透明」）。Qt 对 transparent 的处理是
+    # 「不填底、不描边」，于是选择框整个消失在壁纸上，只剩一段文字。
+    #
+    # 交互控件的底/边属于「控件自身皮肤」，不是容器表面：壁纸透出模式只该让**大面积
+    # 容器底**透明（见 _apply_surface_mode），弹层与控件本体保持实色才可读。
+    _combo_bg = _base_color("PANEL")
+    _combo_bd = _base_color("BORDER")
+    _combo_hover = _base_color("HOVER")
+    _QCOMBO = (f"QComboBox {{ background: {_combo_bg}; color: {TEXT};"
+               f" border: 1px solid {_combo_bd};"
                f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                f"font-size: {FONT_SMALL}px; }}"
-               f"QComboBox::drop-down {{ border: none; width: 22px; }}"
-               f"QComboBox QAbstractItemView {{ background: {_base_color('PANEL')};"
+               f"QComboBox:hover {{ border-color: {ACCENT_HOVER}; }}"
+               f"QComboBox:focus {{ border-color: {ACCENT_HOVER}; }}"
+               f"QComboBox:disabled {{ background: {_combo_hover}; color: {TEXT_DIM};"
+               f" border-color: {_combo_bd}; }}"
+               f"QComboBox::drop-down {{ border: none; width: {COMBO_ARROW_W}px; }}"
+               f"QComboBox QAbstractItemView {{ background: {_combo_bg};"
                f" color: {TEXT};"
-               f"border: 1px solid {_base_color('BORDER')};"
-               f" selection-background-color: {_base_color('HOVER')};"
+               f"border: 1px solid {_combo_bd};"
+               f" selection-background-color: {_combo_hover};"
                f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
+    # 主页下拉菜单（会话 / 模型选择器）：本体跟随容器表面色（壁纸模式下透明底+透明描边，
+    # 让自定义背景透出来），弹出列表（QAbstractItemView 是独立窗口）保持实色才可读。
+    # 与 _QCOMBO 的区别仅在本体 background/border：_QCOMBO 本体始终实色（用于设置对话框等
+    # 独立不透明窗口），_HOME_COMBO 本体在壁纸模式下透明（用于主面板上的下拉菜单）。
+    _home_surf = _panel_surface("PANEL")
+    _home_bd = _panel_stroke("BORDER")
+    _HOME_COMBO = (f"QComboBox {{ background: {_home_surf}; color: {TEXT};"
+                   f" border: 1px solid {_home_bd};"
+                   f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
+                   f"font-size: {FONT_SMALL}px; }}"
+                   f"QComboBox:hover {{ border-color: {ACCENT_HOVER}; }}"
+                   f"QComboBox:focus {{ border-color: {ACCENT_HOVER}; }}"
+                   f"QComboBox:disabled {{ background: {_combo_hover}; color: {TEXT_DIM};"
+                   f" border-color: {_home_bd}; }}"
+                   f"QComboBox::drop-down {{ border: none; width: {COMBO_ARROW_W}px; }}"
+                   f"QComboBox QAbstractItemView {{ background: {_combo_bg};"
+                   f" color: {TEXT};"
+                   f"border: 1px solid {_combo_bd};"
+                   f" selection-background-color: {_combo_hover};"
+                   f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
     _BTN_ICON = (f"QPushButton {{ background: transparent; border: 1px solid {BORDER};"
                  f"border-radius: {RADIUS_SM}px; }}"
                  f"QPushButton:hover {{ background: {HOVER}; border-color: {BORDER_SOFT}; }}")
@@ -932,6 +990,21 @@ def _lucide(body: str) -> str:
             f' stroke-linejoin="round">{body}</svg>')
 
 
+# WiFi 在线/离线：Lucide 开源线条矢量图（ISC 许可，v0.544.0）
+_WIFI_SVG = _lucide(
+    '<path d="M5 13a10 10 0 0 1 14 0"/>'
+    '<path d="M8.5 16.5a5 5 0 0 1 7 0"/>'
+    '<path d="M2 8.82a15 15 0 0 1 20 0"/>'
+    '<line x1="12" x2="12.01" y1="20" y2="20"/>')
+_WIFI_OFF_SVG = _lucide(
+    '<line x1="2" x2="22" y1="2" y2="22"/>'
+    '<path d="M8.5 16.5a5 5 0 0 1 7 0"/>'
+    '<path d="M2 8.82a15 15 0 0 1 4.17-2.65"/>'
+    '<path d="M10.66 5c4.01-.36 8.14.9 11.34 3.76"/>'
+    '<path d="M16.85 11.25a10 10 0 0 1 2.22 1.68"/>'
+    '<line x1="12" x2="12.01" y1="20" y2="20"/>')
+
+
 # ---------------------------------------------------------------------------
 # 设置页左侧导航图标：Lucide 开源线条矢量图（ISC 许可，v0.544.0）
 #
@@ -1015,6 +1088,9 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
         '<rect width="18" height="18" x="3" y="3" rx="2"/>'
         '<circle cx="8.5" cy="8.5" r="1.5"/>'
         '<path d="m21 15-5-5L5 21"/>'),
+    # 微信 ClawBot：消息气泡 —— 手机微信扫码绑定，局域网通信
+    "wechat": _lucide(
+        '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
 }
 
 # 设置页导航项（展示顺序 = 左侧导航顺序，与 _page_builders 的下标一一对应）
@@ -1033,7 +1109,16 @@ _NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("Agent 管理", "agents"),
     ("工作流", "workflow"),
     ("背景", "wallpaper"),
+    ("微信 ClawBot", "wechat"),
 )
+
+# 插件类型 -> 列表里的中文标注。值是 i18n key，展示时统一过 _uim，
+# 故与 _NAV_ITEMS 一样必须保持「中文原文」，不能在模块导入期求值。
+_PLUGIN_KIND_LABEL = {
+    "mcp": "工具",
+    "skill": "技能",
+    "combined": "工具+技能",
+}
 
 # 导航图标尺寸（px）：18px 下 brain-circuit / puzzle 这类细密图形的笔画才分得开
 _NAV_ICON_SIZE = 18
@@ -1222,10 +1307,15 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
         p.drawLine(QPointF(s * 0.28, s * 0.40), QPointF(s * 0.40, s * 0.50))
         p.drawLine(QPointF(s * 0.28, s * 0.60), QPointF(s * 0.40, s * 0.50))
         p.drawLine(QPointF(s * 0.48, s * 0.56), QPointF(s * 0.72, s * 0.56))
-    elif kind == "net":         # 网络（模型接入）
+    elif kind == "net":         # 网络（模型接入）/ WiFi 在线
         p.drawEllipse(QPointF(s * 0.5, s * 0.28), s * 0.10, s * 0.10)
         p.drawArc(QRectF(s * 0.22, s * 0.28, s * 0.56, s * 0.52), 0, 180 * 16)
         p.drawArc(QRectF(s * 0.32, s * 0.28, s * 0.36, s * 0.34), 0, 180 * 16)
+    elif kind == "wifi-off":    # WiFi 离线（WiFi 弧 + 一道斜线）
+        p.drawEllipse(QPointF(s * 0.5, s * 0.28), s * 0.10, s * 0.10)
+        p.drawArc(QRectF(s * 0.22, s * 0.28, s * 0.56, s * 0.52), 0, 180 * 16)
+        p.drawArc(QRectF(s * 0.32, s * 0.28, s * 0.36, s * 0.34), 0, 180 * 16)
+        p.drawLine(QPointF(s * 0.20, s * 0.80), QPointF(s * 0.80, s * 0.20))
     elif kind == "folder":      # 文件夹（技能/浏览）
         p.drawRoundedRect(QRectF(s * 0.16, s * 0.32, s * 0.68, s * 0.46),
                           s * 0.05, s * 0.05)
@@ -1446,7 +1536,7 @@ def _decode_thumb_qimage(path, size: int = 18):
 
 
 def _esc(s: str) -> str:
-    return _html.escape(str(s), quote=False)
+    return _htmlmod.escape(str(s), quote=False)
 
 
 def _collapse_blank(s: str) -> str:
@@ -1480,12 +1570,13 @@ _WELCOME_GREETINGS = (
 
 
 def _welcome_greeting(now=None) -> str:
-    """按本地时间返回欢迎页欢迎语（默认取当前时间，可注入 datetime 便于测试）"""
+    """按本地时间返回欢迎页欢迎语（默认取当前时间，可注入 datetime 便于测试）。
+    文案常量保留中文原文作为 i18n key，此处统一过 _ui，英文模式自动切换。"""
     hour = (now or datetime.datetime.now()).hour
     for start, end, text in _WELCOME_GREETINGS:
         if start <= hour <= end:
-            return text
-    return _WELCOME_GREETINGS[0][2]   # 兜底：正常覆盖全天，极端情况回凌晨
+            return _ui(text)
+    return _ui(_WELCOME_GREETINGS[0][2])   # 兜底：正常覆盖全天，极端情况回凌晨
 
 
 def _warn_box(parent, title: str, text: str):
@@ -1930,6 +2021,17 @@ _STREAM_COST_DECAY = 0.8      # 成本估计的回落系数（每帧；涨即时
 # 与内容节拍解耦）保证，观感不会变生硬。
 _STREAM_TICK_LONG_MS = 16
 _STREAM_TICK_BLOCKS = 12      # 区块数达到该值即视为长任务
+# 长对话首屏渲染的分片预算（见 _render_history_all / _hist_step）：
+# rows 超过 _RENDER_CHUNK 才走分片路径；每片按**时间预算**推进而非固定条数 ——
+# 一条长文本气泡的渲染成本可达单行气泡的十几倍，按条数切无法压平单帧卡顿。
+# 12ms/片 兼顾「肉眼不可察的单帧阻塞」与「分片本身的事件循环往返开销」。
+_RENDER_CHUNK = 24
+_RENDER_CHUNK_MS = 12
+# 单行气泡构造成本差异极大（实测 user ≈1ms、含长文本的 AI 回合 ≈13ms），
+# 固定预算必然「要么插不满一片、要么单行就超预算」。故按**上一行的实测耗时**
+# 预测插下一行是否还会超预算：超了就先让出事件循环，等下一片再插。
+# 这样单片阻塞稳定在「一行成本 + 一片小行」量级，长行不叠加、长流不被切碎。
+_RENDER_ROW_COST_EMA = 6.0      # 行成本滑动平均初值（ms）
 # 流式落字节奏（reveal pacing，见 AgentPanel._reveal_tick）：模型是**成批**吐字的
 # （一次 10~200 字），把最新文本直接塞进气泡的观感就是「一跳一大段」—— 这是「文字输出
 # 太快」的真实成因（平均速度由模型决定，界面能做的是把「批」摊成连续落字）。
@@ -2112,19 +2214,22 @@ def _op_status_text(name: str) -> str:
 
     三层查找：精确映射 → 族兜底（前缀→关键词）→ 「正在调用工具 <名>」。
     新增工具未登记精确文案时自动落到所属族的描述，避免生硬回退。
+
+    出口统一翻译：映射表与兜底表一律保留中文原文（作为翻译 key），
+    此处一次性过 `_uim`，新增工具只需填中文文案，无需再逐条包裹。
     """
     n = str(name or "")
     hit = _OP_STATUS.get(n)
     if hit:
-        return hit
+        return _uim(hit)
     low = n.casefold()
     for prefix, text in _OP_FAMILY_PREFIX:
         if low.startswith(prefix):
-            return text
+            return _uim(text)
     for kw, text in _OP_FAMILY_KEYWORD:
         if kw in low:
-            return text
-    return f"正在调用工具 {n}"
+            return _uim(text)
+    return _uim(f"正在调用工具 {n}")
 
 
 def _seg_sig(seg: dict) -> tuple:
@@ -2268,18 +2373,18 @@ class _MultiLineInputDialog(QDialog):
             f"QPlainTextEdit:focus {{ border: 1px solid {_bd};"
             f" background: {_hover}; }}")
         lay.addWidget(self.edit, 1)
-        hint = QLabel("回车 = 换行｜Ctrl + 回车 = 确定｜Esc = 取消")
+        hint = QLabel(_ui("回车 = 换行｜Ctrl + 回车 = 确定｜Esc = 取消"))
         hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
         lay.addWidget(hint)
         btns = QHBoxLayout()
         btns.addStretch(1)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(_ui("取消"))
         cancel.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
                              f"border: 1px solid {_bd}; border-radius: 8px;"
                              "padding: 7px 18px;")
         cancel.setAutoDefault(False)
         cancel.clicked.connect(self.reject)
-        ok = QPushButton("确定")
+        ok = QPushButton(_ui("确定"))
         ok.setStyleSheet(f"background: {ACCENT}; color: #FFFFFF; border: none;"
                          "border-radius: 8px; padding: 7px 24px; font-weight: 700;")
         ok.setAutoDefault(False)
@@ -2321,7 +2426,7 @@ class _ConfirmDialog(QDialog):
 
     def __init__(self, name: str, args: dict, risk: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("AI 请求执行操作")
+        self.setWindowTitle(_ui("AI 请求执行操作"))
         self.setMinimumSize(560, 430)
         self.result_ok = False
         self.bulk_allow = False    # "本次任务内全部允许"：整段任务免（非危险）确认
@@ -2344,9 +2449,8 @@ class _ConfirmDialog(QDialog):
         lay.setSpacing(12)
 
         risk_color = {"safe": OK, "risky": WARN, "dangerous": ERR}
-        risk_txt = {"safe": "安全（白名单）", "risky": "需谨慎", "dangerous": "危险（确认后将执行）"}
-        head = QLabel(f"AI 想执行：<b>{_esc(name)}</b>　风险：<span style='color:{risk_color.get(risk, TEXT)}'>"
-                      f"{risk_txt.get(risk, risk)}</span>")
+        risk_txt = {"safe": _ui("安全（白名单）"), "risky": _ui("需谨慎"), "dangerous": _ui("危险（确认后将执行）")}
+        head = QLabel(_uif("AI 想执行：<b>{a0}</b>　风险：<span style='color:{a1}'>{a2}</span>", a0=_esc(name), a1=risk_color.get(risk, TEXT), a2=risk_txt.get(risk, risk)))
         head.setStyleSheet("font-size: 14px;")
         lay.addWidget(head)
 
@@ -2370,8 +2474,9 @@ class _ConfirmDialog(QDialog):
             else:
                 shown = {"目标路径": args.get("path", ""),
                          "操作": {"write_file": "覆盖写入", "edit_file": "精确替换"}.get(name, name)}
-            arg_txt.setPlainText("（写入内容已隐藏，仅确认是否允许此操作）\n\n"
-                                 + json.dumps(shown, ensure_ascii=False, indent=2))
+            arg_txt.setPlainText(
+                _uim("（写入内容已隐藏，仅确认是否允许此操作）\n\n")
+                + json.dumps(shown, ensure_ascii=False, indent=2))
         else:
             text = json.dumps(args, ensure_ascii=False, indent=2)
             # 命令/内容过长时截断显示，避免弹窗被超长文本撑爆
@@ -2380,21 +2485,20 @@ class _ConfirmDialog(QDialog):
             arg_txt.setPlainText(text)
 
         # 快捷键提示
-        hint = QLabel("回车 = 允许｜空格 + 回车 = 允许并加入白名单（该命令免确认）｜Esc = 拒绝｜"
-                      "弹窗将一直等待你的选择，不会自动超时")
+        hint = QLabel(_ui("回车 = 允许｜空格 + 回车 = 允许并加入白名单（该命令免确认）｜Esc = 拒绝｜弹窗将一直等待你的选择，不会自动超时"))
         hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
         lay.addWidget(hint)
 
         btns = QHBoxLayout()
-        deny = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogNoButton), "拒绝")
+        deny = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogNoButton), _ui("拒绝"))
         deny.setStyleSheet(f"background: {ERR}; color: white;")
         deny.setAutoDefault(False)
         deny.clicked.connect(self._deny)
-        allow = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), "允许执行")
+        allow = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), _ui("允许执行"))
         allow.setStyleSheet(f"background: {OK}; color: #06281B;")
         allow.setAutoDefault(False)
         allow.clicked.connect(self._allow)
-        wl = QPushButton("允许并加入白名单")
+        wl = QPushButton(_ui("允许并加入白名单"))
         wl.setStyleSheet(f"background: {ACCENT}; color: white;")
         wl.setAutoDefault(False)
         wl.clicked.connect(self._allow_whitelist)
@@ -2405,12 +2509,12 @@ class _ConfirmDialog(QDialog):
         # 次级操作：本次任务内批量授权 / 拒绝并停止整段任务（缓解多步自动化点击疲劳）
         sub = QHBoxLayout()
         sub.addStretch(1)
-        bulk = QPushButton("本次任务内全部允许")
+        bulk = QPushButton(_ui("本次任务内全部允许"))
         bulk.setStyleSheet(f"background: transparent; color: {ACCENT}; border: none;"
                            f"font-size: {FONT_SMALL}px; font-weight: 700;")
         bulk.setAutoDefault(False)
         bulk.clicked.connect(self._allow_bulk)
-        stop = QPushButton("拒绝并停止任务")
+        stop = QPushButton(_ui("拒绝并停止任务"))
         stop.setStyleSheet(f"background: transparent; color: {ERR}; border: none;"
                            f"font-size: {FONT_SMALL}px; font-weight: 700;")
         stop.setAutoDefault(False)
@@ -2528,6 +2632,7 @@ class _AgentSettingsDialog(QDialog):
     workflow_progress = pyqtSignal(int, str)  # 工作流生成进度（百分比, 阶段提示），后台线程回主线程
     plugin_progress = pyqtSignal(int, str)    # 插件生成进度（百分比, 阶段提示），后台线程回主线程
     plugin_progress = pyqtSignal(int, str)  # 插件生成进度（百分比, 阶段提示）
+    wechat_message_signal = pyqtSignal(str)   # 微信消息：后台线程 → 主线程分发
 
     # 极简配色：纯黑 / 淡黑 / 白 / 深蓝
     _BG = "#000000"
@@ -2563,7 +2668,7 @@ class _AgentSettingsDialog(QDialog):
         self._pbar = None
         self._pbar_timer = None
         self._pbar_val = 0
-        self.setWindowTitle("AI 设置")
+        self.setWindowTitle(_ui("AI 设置"))
         # objectName 用于限定透明背景规则只作用于设置对话框自身，不级联到其子弹窗
         # （QMessageBox/QInputDialog 等也是 QDialog 子类，若规则用裸 QDialog 选择器，
         #  会继承 background:transparent → 弹窗透明显示为纯黑）
@@ -2580,17 +2685,22 @@ class _AgentSettingsDialog(QDialog):
 
         # ---------- 左侧导航栏（矢量图标 + 文字） ----------
         self.nav = QListWidget()
-        self.nav.setFixedWidth(176)
+        # 导航列宽按**当前语言**的译文实测宽度自适应：中文下算出的值与原
+        # 176px 一致（视觉零变化）；英文 "System Prompt" / "Agent 管理" 等
+        # 译文更宽，自动放宽以免被 QListView 裁成 "System Pr…"（文字挤压）。
+        self.nav.setFixedWidth(self._nav_col_w())
         self.nav.setStyleSheet(self._nav_qss())
         # 图标尺寸与 QListWidget 默认值（16px）不同，必须显式同步，否则 QListView
         # 会按默认尺寸缩放/裁切图标。
         self.nav.setIconSize(QSize(_NAV_ICON_SIZE, _NAV_ICON_SIZE))
         for name, key in _NAV_ITEMS:
             # 四态配色与本项 QSS 同源：常态次要文字色 / 悬停正文色 / 选中强调色
+            # 文案在此处（而非常量处）过 _ui：_NAV_ITEMS 必须保持「中文原文」
+            # 作为 i18n key，模块导入期不能求值，否则切换语言后不再刷新。
             self.nav.addItem(QListWidgetItem(
                 _nav_icon(_LUCIDE_NAV_ICONS[key], _NAV_ICON_SIZE,
                           self._DIM, self._TEXT, self._ACCENT_HOVER, self._DIM),
-                name))
+                _ui(name)))
         self.nav.setCurrentRow(0)
         self.nav.currentRowChanged.connect(self._switch_page)
         root.addWidget(self.nav)
@@ -2616,6 +2726,7 @@ class _AgentSettingsDialog(QDialog):
             self._build_agent_page,
             self._build_workflow_page,
             self._build_wallpaper_page,
+            self._build_wechat_page,
         ]
         self.stack.addWidget(self._page_builders[0]())
         # 页面栈显式透明背景：QStackedWidget 在样式表环境下会被风格系统置为
@@ -2635,13 +2746,13 @@ class _AgentSettingsDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        save = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), "保存")
+        save = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), _ui("保存"))
         save.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
                            "border: none; border-radius: 8px; padding: 8px 28px;"
                            "font-size: 13px; font-weight: 700;")
         save.setAutoDefault(False)
         save.clicked.connect(self._save)
-        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn = QPushButton(_ui("取消"))
         self.cancel_btn.setStyleSheet(self._cancel_btn_qss())
         self.cancel_btn.setAutoDefault(False)
         self.cancel_btn.clicked.connect(self.reject)
@@ -2723,50 +2834,130 @@ class _AgentSettingsDialog(QDialog):
     def _page_body(self, w: QWidget) -> QVBoxLayout:
         return w.layout()
 
+    def _nav_col_w(self) -> int:
+        """左侧导航列宽度：按**当前语言**的导航项译文实测宽度自适应。
+
+        为什么不能写死 176px：那是按中文导航项（"通用与记忆"）量出来的。
+        英文 "System Prompt" / "Custom Rules" / "Agent Management" 明显更宽，
+        写死会被 QListView 裁成 "System Pr…" —— 即用户反馈的**文字挤压遮挡**。
+
+        与 :meth:`_label_col_w` 同源思路：把导航项在本语言下的文本交给
+        ``label_width`` 取最大值，并封顶（超长项由 QListWidget 自身省略号
+        兜底，不无限撑宽挤掉右侧内容区）。
+        """
+        from zhuzhu_Copilot.core.i18n import label_width
+        return label_width(
+            [_ui(name) for name, _ in _NAV_ITEMS],
+            base=176, max_w=260)
+
+    def _label_col_w(self) -> int:
+        """设置项左侧标签列的宽度：按**当前语言**的实际文案自适应。
+
+        原来所有标签列都写死 70px —— 那是按中文短标签（"界面主题" ≈ 52px）
+        量出来的。英文 "System Prompt Language" 需要 286px，写死会被 Qt
+        裁成 "System Pr…"，即用户反馈的**文字挤压遮挡**；换字体/DPI 后更糟。
+
+        这里列出各页标签在本语言下的文本，由 core.i18n.label_width 取最大值
+        并封顶：中文下算出的值与原来的 70px 一致（视觉零变化），英文自动放宽。
+        """
+        from zhuzhu_Copilot.core.i18n import label_width
+        return label_width((
+            _ui("界面主题"), _ui("界面语言"), _ui("提示词语言"), _ui("面板位置"),
+            _ui("锐评间隔"), _ui("执行模式"), _ui("思考强度"), _ui("思考模式"),
+            _ui("语速"), _ui("适配方式"), _ui("名称"), _ui("类型"), _ui("操作"),
+        ))
+
     def _build_general_page(self, s) -> QWidget:
-        w = self._page("通用与记忆")
+        w = self._page(_ui("通用与记忆"))
         lay = self._page_body(w)
         # 主题：深色 / 浅色 / 按时间自动（8-20 浅色、20-次日8 深色），保存后立即重建面板生效
         theme_row = QHBoxLayout()
         theme_row.setSpacing(10)
-        theme_lbl = QLabel("界面主题")
+        theme_lbl = QLabel(_ui("界面主题"))
         theme_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        theme_lbl.setFixedWidth(70)
+        theme_lbl.setFixedWidth(self._label_col_w())
         theme_row.addWidget(theme_lbl)
         self.theme_combo = _ArrowComboBox()
-        self.theme_combo.addItem("深色", "dark")
-        self.theme_combo.addItem("浅色", "light")
-        self.theme_combo.addItem("按时间自动（8-20 浅色）", "auto")
+        self.theme_combo.addItem(_ui("深色"), "dark")
+        self.theme_combo.addItem(_ui("浅色"), "light")
+        self.theme_combo.addItem(_ui("按时间自动（8-20 浅色）"), "auto")
         saved_theme = _theme_setting()
         ti = self.theme_combo.findData(saved_theme)
         self.theme_combo.setCurrentIndex(ti if ti >= 0 else 2)
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         theme_row.addWidget(self.theme_combo, 1)
         lay.addLayout(theme_row)
-        self.memory_check = QCheckBox("开启长期记忆（save_memory / load_memory）")
+
+        # ------------------------------------------------------------------
+        # 语言：界面语言与提示词语言**解耦**。
+        #   · 界面语言 —— 面板/设置等所有 UI 文案（简体中文 / English）
+        #   · 提示词语言 —— 喂给 LLM 的系统提示词与工具描述语言
+        # 两者独立可选：有人喜欢中文界面 + 英文 prompt（英文工具描述对英文模型更稳），
+        # 也有人反过来，故不合并成一个选项。
+        # 切换立即写入 QSettings 并广播，界面在关闭设置后重建时整体生效
+        # （已在屏的控件文字无法原地改，必须重建，与主题切换行为一致）。
+        # ------------------------------------------------------------------
+        from zhuzhu_Copilot.core import i18n as _i18n
+
+        lang_row = QHBoxLayout()
+        lang_row.setSpacing(10)
+        lang_lbl = QLabel(_ui("界面语言"))
+        lang_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
+        lang_lbl.setFixedWidth(self._label_col_w())
+        lang_row.addWidget(lang_lbl)
+        self.ui_lang_combo = _ArrowComboBox()
+        for code, name in _i18n.LANGUAGES:
+            # 语言名用该语言自身书写（简体中文 / English），用户永远认得母语
+            self.ui_lang_combo.addItem(name, code)
+        _ui_now = _i18n.current_lang()
+        _ui_i = self.ui_lang_combo.findData(_ui_now)
+        self.ui_lang_combo.setCurrentIndex(_ui_i if _ui_i >= 0 else 0)
+        self.ui_lang_combo.currentIndexChanged.connect(self._on_ui_lang_changed)
+        self.ui_lang_combo.setToolTip(_ui("选择界面语言（中文 / English）：切换后重启应用生效"))
+        lang_row.addWidget(self.ui_lang_combo, 1)
+        lay.addLayout(lang_row)
+
+        # 提示词语言（与界面语言独立）
+        plang_row = QHBoxLayout()
+        plang_row.setSpacing(10)
+        plang_lbl = QLabel(_ui("提示词语言"))
+        plang_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
+        plang_lbl.setFixedWidth(self._label_col_w())
+        plang_row.addWidget(plang_lbl)
+        self.prompt_lang_combo = _ArrowComboBox()
+        for code, name in _i18n.LANGUAGES:
+            self.prompt_lang_combo.addItem(name, code)
+        _pl_now = _i18n.current_prompt_lang()
+        _pl_i = self.prompt_lang_combo.findData(_pl_now)
+        self.prompt_lang_combo.setCurrentIndex(_pl_i if _pl_i >= 0 else 0)
+        self.prompt_lang_combo.currentIndexChanged.connect(self._on_prompt_lang_changed)
+        self.prompt_lang_combo.setToolTip(_ui("选择提示词语言（喂给 AI 的系统提示词语言）"))
+        plang_row.addWidget(self.prompt_lang_combo, 1)
+        lay.addLayout(plang_row)
+        self.memory_check = QCheckBox(_ui("开启长期记忆（save_memory / load_memory）"))
         self.memory_check.setChecked(bool(s.get("memory_enabled", True)))
         self.memory_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.memory_check)
         # 任务清单窗口：关闭后 AI 面板不再显示 todos 独立窗口（连续清空提示中可一键跳转此处）
-        self.todos_check = QCheckBox("显示任务清单窗口（todos）")
+        self.todos_check = QCheckBox(_ui("显示任务清单窗口（todos）"))
         self.todos_check.setChecked(self._todos_enabled())
         self.todos_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.todos_check.toggled.connect(self._on_todos_toggled)
         lay.addWidget(self.todos_check)
         # Git 分支面板：关闭后 AI 面板不再显示 git 只读面板
-        self.git_check = QCheckBox("显示 Git 分支面板（git）")
+        self.git_check = QCheckBox(_ui("显示 Git 分支面板（git）"))
         self.git_check.setChecked(self._git_enabled())
         self.git_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.git_check.toggled.connect(self._on_git_toggled)
         lay.addWidget(self.git_check)
         # 工作树面板：关闭后 AI 面板不再显示 worktree 文件树（主窗口 worktree 已移除，仅此一处）
-        self.wt_check = QCheckBox("显示工作树文件面板（worktree）")
+        self.wt_check = QCheckBox(_ui("显示工作树文件面板（worktree）"))
         self.wt_check.setChecked(self._wt_enabled())
         self.wt_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.wt_check.toggled.connect(self._on_wt_toggled)
         lay.addWidget(self.wt_check)
         # 代码预览面板：双击工作树文件在右侧预览，关闭后不显示
-        self.code_check = QCheckBox("显示代码预览面板（双击文件预览）")
+        self.code_check = QCheckBox(_ui("显示代码预览面板（双击文件预览）"))
         self.code_check.setChecked(self._code_enabled())
         self.code_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.code_check.toggled.connect(self._on_code_toggled)
@@ -2774,81 +2965,81 @@ class _AgentSettingsDialog(QDialog):
         # 面板位置：子面板可自由拖动并记忆位置；一键恢复默认停靠布局
         reset_row = QHBoxLayout()
         reset_row.setSpacing(10)
-        reset_lbl = QLabel("面板位置")
+        reset_lbl = QLabel(_ui("面板位置"))
         reset_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        reset_lbl.setFixedWidth(70)
+        reset_lbl.setFixedWidth(self._label_col_w())
         reset_row.addWidget(reset_lbl)
-        reset_btn = QPushButton("重置全部面板位置（恢复默认停靠）")
+        reset_btn = QPushButton(_ui("重置全部面板位置（恢复默认停靠）"))
         reset_btn.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER};"
             "border-radius: 8px; padding: 6px 14px; font-weight: 600;")
         reset_btn.setAutoDefault(False)
         reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        reset_btn.setToolTip("将 todos / Git / 工作树 / 代码预览等子面板的拖动位置清除，"
-                             "回到主面板侧边的默认停靠布局")
+        reset_btn.setToolTip(_ui("将 todos / Git / 工作树 / 代码预览等子面板的拖动位置清除，回到主面板侧边的默认停靠布局"))
         reset_btn.clicked.connect(self._on_reset_panels)
         reset_row.addWidget(reset_btn, 1)
         lay.addLayout(reset_row)
         # 面板偏好：四个子面板（工作树/Git/任务清单/代码预览）与主面板的关系
-        pref_lbl = QLabel("面板偏好")
+        pref_lbl = QLabel(_ui("面板偏好"))
         pref_lbl.setStyleSheet(
             f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
         lay.addWidget(pref_lbl)
         self.panel_mode_combo = _ArrowComboBox()
-        self.panel_mode_combo.addItem("贴附主面板（独立窗口靠边悬浮）", "attach")
-        self.panel_mode_combo.addItem("融入主面板（与主面板同一窗口）", "dock")
+        self.panel_mode_combo.addItem(_ui("贴附主面板（独立窗口靠边悬浮）"), "attach")
+        self.panel_mode_combo.addItem(_ui("融入主面板（与主面板同一窗口）"), "dock")
         saved_mode = _panel_mode_setting()
         _mi = self.panel_mode_combo.findData(saved_mode)
         self.panel_mode_combo.setCurrentIndex(_mi if _mi >= 0 else 0)
         self.panel_mode_combo.setStyleSheet(_QCOMBO)
-        self.panel_mode_combo.setToolTip("贴附 = 子面板为独立窗口，依序停靠主面板左右侧；"
-                                        "融入 = 子面板嵌入主面板左右栏内，随主面板同显同隐（同一窗口）")
+        self.panel_mode_combo.setToolTip(_ui("贴附 = 子面板为独立窗口，依序停靠主面板左右侧；融入 = 子面板嵌入主面板左右栏内，随主面板同显同隐（同一窗口）"))
         self.panel_mode_combo.currentIndexChanged.connect(self._on_panel_mode_changed)
-        lay.addWidget(self.panel_mode_combo)
-        pref_sub = QLabel("贴附：子面板悬浮在主面板外侧，可各自拖动位置与调整大小；"
-                          "融入：四块面板嵌入主面板左右栏，作为同一窗口的一部分。设置保存后立即生效。")
+        # 下拉框长度减小40%：占行宽60%，右侧留40%空白
+        _mode_row = QHBoxLayout()
+        _mode_row.addWidget(self.panel_mode_combo, 3)
+        _mode_row.addStretch(2)
+        lay.addLayout(_mode_row)
+        pref_sub = QLabel(_ui("贴附：子面板悬浮在主面板外侧，可各自拖动位置与调整大小；融入：四块面板嵌入主面板左右栏，作为同一窗口的一部分。设置保存后立即生效。"))
         pref_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         pref_sub.setWordWrap(True)
         lay.addWidget(pref_sub)
         # 能力开关：分别控制 MCP / 技能 / 插件，关闭后 AI 不再加载对应能力（settings cap_*）
-        cap_lbl = QLabel("能力开关")
+        cap_lbl = QLabel(_ui("能力开关"))
         cap_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
         lay.addWidget(cap_lbl)
-        self.cap_mcp_check = QCheckBox("启用 MCP 服务器（外部工具）")
+        self.cap_mcp_check = QCheckBox(_ui("启用 MCP 服务器（外部工具）"))
         self.cap_mcp_check.setChecked(agent_skills.cap_enabled("mcp"))
-        self.cap_mcp_check.setToolTip("关闭后 AI 不再暴露任何 MCP 服务器工具")
+        self.cap_mcp_check.setToolTip(_ui("关闭后 AI 不再暴露任何 MCP 服务器工具"))
         self.cap_mcp_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.cap_mcp_check)
-        self.cap_skill_check = QCheckBox("启用技能（自动匹配 / 指令注入）")
+        self.cap_skill_check = QCheckBox(_ui("启用技能（自动匹配 / 指令注入）"))
         self.cap_skill_check.setChecked(agent_skills.cap_enabled("skill"))
-        self.cap_skill_check.setToolTip("关闭后 AI 不再加载任何技能规范流程")
+        self.cap_skill_check.setToolTip(_ui("关闭后 AI 不再加载任何技能规范流程"))
         self.cap_skill_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.cap_skill_check)
-        self.cap_plugin_check = QCheckBox("启用插件（技能 + MCP）")
+        self.cap_plugin_check = QCheckBox(_ui("启用插件（技能 + MCP）"))
         self.cap_plugin_check.setChecked(agent_skills.cap_enabled("plugin"))
-        self.cap_plugin_check.setToolTip("关闭后插件登记的技能与 MCP 服务器不再生效")
+        self.cap_plugin_check.setToolTip(_ui("关闭后插件登记的技能与 MCP 服务器不再生效"))
         self.cap_plugin_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.cap_plugin_check)
         # 工具管控：禁用指定工具 / 禁用全部工具调用（系统层面：schema 与执行层双重生效，
         # 既有设置期也即时生效，提示词干预无法绕过）
-        tool_lbl = QLabel("工具管控")
+        tool_lbl = QLabel(_ui("工具管控"))
         tool_lbl.setStyleSheet(
             f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
         lay.addWidget(tool_lbl)
-        self.disable_all_check = QCheckBox("禁用全部工具调用（AI 仅可对话回复）")
+        self.disable_all_check = QCheckBox(_ui("禁用全部工具调用（AI 仅可对话回复）"))
         self.disable_all_check.setChecked(agent_sandbox.tools_disabled_all())
-        self.disable_all_check.setToolTip("开启后 AI 无法调用任何工具（含 grep/read_file/web_search 等），"
-                                          "只能以文本对话作答")
+        self.disable_all_check.setToolTip(_ui("开启后 AI 无法调用任何工具（含 grep/read_file/web_search 等），只能以文本对话作答"))
         self.disable_all_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.disable_all_check)
-        dis_sub = QLabel("禁用指定工具：每行一个工具名（如 grep / read_file / web_search / run_command）。"
-                         "被禁用工具将无法被 AI 调用，即使提示词诱导也会被系统直接拒绝。")
+        dis_sub = QLabel(_ui("禁用指定工具：每行一个工具名（如 grep / read_file / web_search / run_command）。被禁用工具将无法被 AI 调用，即使提示词诱导也会被系统直接拒绝。"))
         dis_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         dis_sub.setWordWrap(True)
         lay.addWidget(dis_sub)
         self.disable_tools_edit = QPlainTextEdit()
-        self.disable_tools_edit.setPlaceholderText("每行一个工具名，如：\ngrep\nread_file\nweb_search")
+        self.disable_tools_edit.setPlaceholderText(_uim(
+            "每行一个工具名，如：\ngrep\nread_file\nweb_search"))
         _banned = sorted(agent_sandbox.disabled_tools())
         if _banned:
             self.disable_tools_edit.setPlainText("\n".join(_banned))
@@ -2860,26 +3051,26 @@ class _AgentSettingsDialog(QDialog):
             f"QPlainTextEdit:focus {{ border: 1px solid {self._BORDER}; }}")
         lay.addWidget(self.disable_tools_edit)
         # 趣味互动：AI 随机截屏分析屏幕并弹出俏皮锐评气泡（涉及周期性全屏截图，默认开启）
-        fun_lbl = QLabel("趣味互动")
+        fun_lbl = QLabel(_ui("趣味互动"))
         fun_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
         lay.addWidget(fun_lbl)
-        self.fun_check = QCheckBox("AI 趣味锐评（随机截屏分析并弹可爱气泡）")
+        self.fun_check = QCheckBox(_ui("AI 趣味锐评（随机截屏分析并弹可爱气泡）"))
         self.fun_check.setChecked(
             str(app_identity.qsettings().value("agent_fun", "1"))
             .strip().lower() in ("1", "true", "yes", "on"))
-        self.fun_check.setToolTip("开启后 AI 每隔几分钟随机截取全屏分析，在屏幕底部弹出俏皮锐评气泡（5 秒后消失，不计入上下文与记忆）")
+        self.fun_check.setToolTip(_ui("开启后 AI 每隔几分钟随机截取全屏分析，在屏幕底部弹出俏皮锐评气泡（5 秒后消失，不计入上下文与记忆）"))
         self.fun_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.fun_check)
         fun_interval_row = QHBoxLayout()
         fun_interval_row.setSpacing(10)
-        fun_interval_lbl = QLabel("锐评间隔")
+        fun_interval_lbl = QLabel(_ui("锐评间隔"))
         fun_interval_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        fun_interval_lbl.setFixedWidth(70)
+        fun_interval_lbl.setFixedWidth(self._label_col_w())
         fun_interval_row.addWidget(fun_interval_lbl)
         self.fun_interval_combo = _ArrowComboBox()
-        self.fun_interval_combo.addItem("1~3 分钟", "frequent")
-        self.fun_interval_combo.addItem("3~6 分钟", "normal")
-        self.fun_interval_combo.addItem("5~10 分钟", "relaxed")
+        self.fun_interval_combo.addItem(_ui("1~3 分钟"), "frequent")
+        self.fun_interval_combo.addItem(_ui("3~6 分钟"), "normal")
+        self.fun_interval_combo.addItem(_ui("5~10 分钟"), "relaxed")
         saved_fun = str(app_identity.qsettings().value("agent_fun_interval", "normal"))
         fi = self.fun_interval_combo.findData(saved_fun)
         self.fun_interval_combo.setCurrentIndex(fi if fi >= 0 else 1)
@@ -2888,14 +3079,14 @@ class _AgentSettingsDialog(QDialog):
         # 执行模式：AskBeforeEdit / Edit / YOLO（原面板顶栏下拉，迁入设置页）
         mode_row = QHBoxLayout()
         mode_row.setSpacing(10)
-        mode_lbl = QLabel("执行模式")
+        mode_lbl = QLabel(_ui("执行模式"))
         mode_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        mode_lbl.setFixedWidth(70)
+        mode_lbl.setFixedWidth(self._label_col_w())
         mode_row.addWidget(mode_lbl)
         self.mode_combo = _ArrowComboBox()
-        self.mode_combo.addItem("AskBeforeEdit（每步操作确认）", "ask")
-        self.mode_combo.addItem("Edit（仅非白名单 bash 命令确认）", "edit")
-        self.mode_combo.addItem("YOLO（无确认直行，不设任何限制）", "yolo")
+        self.mode_combo.addItem(_ui("AskBeforeEdit（每步操作确认）"), "ask")
+        self.mode_combo.addItem(_ui("Edit（仅非白名单 bash 命令确认）"), "edit")
+        self.mode_combo.addItem(_ui("YOLO（无确认直行，不设任何限制）"), "yolo")
         saved_mode = app_identity.qsettings().value("agent_mode", "ask")
         mi = self.mode_combo.findData(saved_mode)
         self.mode_combo.setCurrentIndex(mi if mi >= 0 else 0)
@@ -2904,7 +3095,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(mode_row)
         # 工作目录已迁移到「对话流」页按会话设置（删除通用设置里的全局入口，
         # 避免两处入口语义冲突；会话未设置时仍回退历史全局默认值 agent_workdir）
-        tip = QLabel("记忆：AI 可将重要信息写入 memory.md 并在后续任务中读取。")
+        tip = QLabel(_ui("记忆：AI 可将重要信息写入 memory.md 并在后续任务中读取。"))
         tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         lay.addWidget(tip)
         lay.addStretch(1)
@@ -2912,10 +3103,9 @@ class _AgentSettingsDialog(QDialog):
 
     def _build_sessions_page(self, s=None) -> QWidget:
         """对话流页面：为每个对话分配独立工作目录（新建对话自动沿用上一对话目录）"""
-        w = self._page("对话流")
+        w = self._page(_ui("对话流"))
         lay = self._page_body(w)
-        tip = QLabel("为每个对话分配独立的工作目录；新建对话会自动沿用上一个对话的工作目录。"
-                     "留空表示该对话沿用全局工作目录。")
+        tip = QLabel(_ui("为每个对话分配独立的工作目录；新建对话会自动沿用上一个对话的工作目录。留空表示该对话沿用全局工作目录。"))
         tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -2939,7 +3129,7 @@ class _AgentSettingsDialog(QDialog):
             lst = []
         lst = sorted(lst, key=lambda x: x.get("updated", 0), reverse=True)
         if not lst:
-            empty = QLabel("暂无对话记录")
+            empty = QLabel(_ui("暂无对话记录"))
             empty.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
             body_lay.addWidget(empty)
         for item in lst:
@@ -2959,10 +3149,10 @@ class _AgentSettingsDialog(QDialog):
             name_lbl.setToolTip(sid)
             row.addWidget(name_lbl)
             wd_edit = QLineEdit()
-            wd_edit.setPlaceholderText("留空沿用全局工作目录")
+            wd_edit.setPlaceholderText(_ui("留空沿用全局工作目录"))
             wd_edit.setText(wd)
             row.addWidget(wd_edit, 1)
-            browse = QPushButton(_line_icon("folder", 18), "浏览…")
+            browse = QPushButton(_line_icon("folder", 18), _ui("浏览…"))
             browse.setFixedWidth(96)
             browse.setFixedHeight(30)
             browse.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
@@ -2970,7 +3160,7 @@ class _AgentSettingsDialog(QDialog):
                                  "padding: 0 10px; font-weight: 600;")
             browse.setAutoDefault(False)
             browse.setCursor(Qt.CursorShape.PointingHandCursor)
-            browse.setToolTip("选择该对话的工作目录")
+            browse.setToolTip(_ui("选择该对话的工作目录"))
             browse.clicked.connect(
                 lambda _=False, e=wd_edit: self._browse_session_workdir(e))
             row.addWidget(browse)
@@ -3048,7 +3238,7 @@ class _AgentSettingsDialog(QDialog):
             except Exception:
                 pass
             start = next((p for p in cands if p and os.path.isdir(p)), "")
-            d = QFileDialog.getExistingDirectory(self, "选择该对话的工作目录", start)
+            d = QFileDialog.getExistingDirectory(self, _ui("选择该对话的工作目录"), start)
             if d:
                 edit.setText(d)
         finally:
@@ -3064,6 +3254,80 @@ class _AgentSettingsDialog(QDialog):
             mode = "auto"
         app_identity.qsettings().setValue("agent_theme", mode)
         setattr(self, "_theme_changed", True)
+
+    # ---------- 语言 ----------
+    def _on_ui_lang_changed(self, *_):
+        """界面语言切换：仅写入 QSettings，**不更新当前会话语言状态**。
+
+        Qt 已构建的控件文字无法原地重查文案，部分子窗口/浮窗/缓存文本在
+        运行时切换会出现半中半英的混搭，故语言切换改为「写入设置 + 提示重启」，
+        只有重启应用后新语言才全面生效。
+
+        提示词语言跟随逻辑保留：
+        - 用户显式单独设过 prompt_lang（prompt_lang_explicit=1）→ 保持该值
+        - 未设过（含旧 bug 误写入）→ 清除 prompt_lang，重启后自动跟随界面语言
+        """
+        from zhuzhu_Copilot.core import i18n as _i18n
+        from zhuzhu_Copilot import app_identity
+        from PyQt6.QtWidgets import QMessageBox
+        lang = self.ui_lang_combo.currentData() or _i18n.DEFAULT_LANG
+        st = app_identity.qsettings()
+        # 仅持久化界面语言，不调用 set_lang（当前会话不切换，重启后生效）
+        st.setValue("ui_lang", lang)
+        explicit = str(st.value("prompt_lang_explicit", "") or "").strip()
+        if explicit != "1":
+            # 用户未显式设过提示词语言：清除旧 bug 可能误写入的 prompt_lang，
+            # 重启后 detect_prompt_lang() 会自动跟随新的界面语言
+            st.remove("prompt_lang")
+        st.sync()
+        # 弹出重启提示：OK=立即重启，Cancel/关闭按钮=暂不重启（下次启动生效）
+        reply = QMessageBox.question(
+            self,
+            _ui("语言切换"),
+            _ui("重启应用程序以切换目标语言"),
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok)
+        if reply == QMessageBox.StandardButton.Ok:
+            self._restart_app()
+
+    def _restart_app(self):
+        """重启应用程序：启动新实例后退出当前实例。
+
+        兼容开发模式（python main.py）与打包模式（exe）：
+        - frozen（PyInstaller 等）：sys.executable 即程序本身，直接重启
+        - 开发模式：sys.executable + sys.argv 重启
+        """
+        import sys
+        from PyQt6.QtCore import QProcess
+        from PyQt6.QtWidgets import QApplication
+        # 关闭设置对话框
+        self.close()
+        # 启动新实例
+        if getattr(sys, "frozen", False):
+            QProcess.startDetached(sys.executable, sys.argv[1:])
+        else:
+            QProcess.startDetached(sys.executable, sys.argv)
+        # 退出当前实例
+        QApplication.quit()
+
+    def _on_prompt_lang_changed(self, *_):
+        """提示词语言切换：立即生效（下一轮 system prompt 即用新语言）。
+
+        不重建面板：提示词只影响发给模型的内容，不影响任何 UI 文案。
+        仍标记 _lang_changed，让设置关闭后重建面板时顺带刷新界面文案。
+        用户在此处单独选择提示词语言 → 打上 prompt_lang_explicit=1 标记，
+        之后切换界面语言时保持该值（不再跟随界面语言）。
+        """
+        from zhuzhu_Copilot.core import i18n as _i18n
+        plang = self.prompt_lang_combo.currentData() or _i18n.DEFAULT_LANG
+        _i18n.set_lang(_i18n.current_lang(), persist=True, prompt_lang=plang)
+        try:
+            from zhuzhu_Copilot import app_identity
+            app_identity.qsettings().setValue("prompt_lang_explicit", "1")
+            app_identity.qsettings().sync()
+        except Exception:
+            pass
+        setattr(self, "_lang_changed", True)
 
     # ---------- 子面板开关 ----------
     def _todos_enabled(self) -> bool:
@@ -3123,50 +3387,48 @@ class _AgentSettingsDialog(QDialog):
             panel._apply_reserve()
 
     def _build_rules_page(self, s) -> QWidget:
-        w = self._page("自定义规则")
+        w = self._page(_ui("自定义规则"))
         lay = self._page_body(w)
-        sub = QLabel("每行一条，追加到系统提示词末尾，约束 AI 行为")
+        sub = QLabel(_ui("每行一条，追加到系统提示词末尾，约束 AI 行为"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         lay.addWidget(sub)
         self.rules_edit = QPlainTextEdit()
-        self.rules_edit.setPlaceholderText("如：\n操作注册表前必须先 ask_user 确认\n不要移动正在运行的应用")
+        self.rules_edit.setPlaceholderText(_uim(
+            "如：\n操作注册表前必须先 ask_user 确认\n不要移动正在运行的应用"))
         self.rules_edit.setPlainText("\n".join(str(r) for r in (s.get("custom_rules") or [])))
         lay.addWidget(self.rules_edit, 1)
         return w
 
     def _build_prompt_page(self, s) -> QWidget:
-        w = self._page("系统提示词")
+        w = self._page(_ui("系统提示词"))
         lay = self._page_body(w)
-        sub = QLabel("追加到默认人设之后，不覆盖内置角色设定")
+        sub = QLabel(_ui("追加到默认人设之后，不覆盖内置角色设定"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         lay.addWidget(sub)
         self.prompt_edit = QPlainTextEdit()
-        self.prompt_edit.setPlaceholderText("补充的提示词…")
+        self.prompt_edit.setPlaceholderText(_ui("补充的提示词…"))
         self.prompt_edit.setPlainText(str(s.get("custom_system_prompt") or ""))
         lay.addWidget(self.prompt_edit, 1)
         return w
 
     def _build_bash_page(self, s) -> QWidget:
-        w = self._page("bash 命令白名单")
+        w = self._page(_ui("bash 命令白名单"))
         lay = self._page_body(w)
-        sub = QLabel("每行一条，命中前缀即免确认（如填 git push 可匹配 git push origin main；"
-                     "单命令词如 python 需整条完全一致，防止 -c 注入被放行）")
+        sub = QLabel(_ui("每行一条，命中前缀即免确认（如填 git push 可匹配 git push origin main；单命令词如 python 需整条完全一致，防止 -c 注入被放行）"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
         self.safe_edit = QPlainTextEdit()
-        self.safe_edit.setPlaceholderText("如：\nnpm\npip\npython\ngit")
+        self.safe_edit.setPlaceholderText(_uim("如：\nnpm\npip\npython\ngit"))
         self.safe_edit.setPlainText(
             "\n".join(str(c) for c in (s.get("custom_safe_commands") or [])))
         lay.addWidget(self.safe_edit, 1)
         return w
 
     def _build_model_page(self, s) -> QWidget:
-        w = self._page("模型接入")
+        w = self._page(_ui("模型接入"))
         lay = self._page_body(w)
-        sub = QLabel("多服务商模型：每个服务商一张卡片，点击卡片编辑其地址/Key/模型；"
-                    "全部服务商模型统一参与路由与切换，模型名含纯文本关键字（如 deepseek）"
-                    "自动禁用图片/截图能力")
+        sub = QLabel(_ui("多服务商模型：每个服务商一张卡片，点击卡片编辑其地址/Key/模型；全部服务商模型统一参与路由与切换，模型名含纯文本关键字（如 deepseek）自动禁用图片/截图能力"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
@@ -3211,12 +3473,12 @@ class _AgentSettingsDialog(QDialog):
         # 服务商操作按钮
         prow = QHBoxLayout()
         prow.setSpacing(8)
-        add_p = QPushButton(_std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder), "添加服务商")
+        add_p = QPushButton(_std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder), _ui("添加服务商"))
         add_p.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
                             "border-radius: 8px; padding: 7px 16px; font-weight: 700;")
         add_p.setAutoDefault(False)
         add_p.clicked.connect(self._on_provider_add)
-        self.del_provider_btn = QPushButton(_line_icon("trash", 16), "删除")
+        self.del_provider_btn = QPushButton(_line_icon("trash", 16), _ui("删除"))
         self.del_provider_btn.setAutoDefault(False)
         self.del_provider_btn.clicked.connect(self._on_provider_delete)
         prow.addWidget(add_p)
@@ -3224,7 +3486,7 @@ class _AgentSettingsDialog(QDialog):
         prow.addStretch(1)
         lay.addLayout(prow)
         # 选中提示语（状态栏）
-        self.provider_hint = QLabel("点击选中服务商卡片（删除按钮随之变红可用）；双击卡片编辑")
+        self.provider_hint = QLabel(_ui("点击选中服务商卡片（删除按钮随之变红可用）；双击卡片编辑"))
         self.provider_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         self.provider_hint.setWordWrap(True)
         lay.addWidget(self.provider_hint)
@@ -3236,17 +3498,18 @@ class _AgentSettingsDialog(QDialog):
         self._declared_efforts = None
         eff_row = QHBoxLayout()
         eff_row.setSpacing(10)
-        eff_lbl = QLabel("思考强度")
+        eff_lbl = QLabel(_ui("思考强度"))
         eff_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        eff_lbl.setFixedWidth(70)
+        eff_lbl.setFixedWidth(self._label_col_w())
         eff_row.addWidget(eff_lbl)
         self.effort_slider = QSlider(Qt.Orientation.Horizontal)
         self.effort_slider.setRange(0, len(agent_llm.EFFORTS) - 1)
         self.effort_slider.setFixedWidth(180)
         self.effort_slider.setPageStep(1)
-        _eff_lv = [agent_llm.effort_label(x) for x in agent_llm.EFFORTS]
-        self.effort_slider.setToolTip("思考强度（工作力度）：决定思考档位与所用模型，"
-                                      + " / ".join(_eff_lv))
+        _eff_lv = [_ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS]
+        self.effort_slider.setToolTip(
+            _ui("思考强度（工作力度）：决定思考档位与所用模型，")
+            + " / ".join(_eff_lv))
         self.effort_slider.setStyleSheet(
             f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
             "border-radius: 2px; }}"
@@ -3256,11 +3519,12 @@ class _AgentSettingsDialog(QDialog):
             f"QSlider::handle:horizontal:hover {{ background: {self._ACCENT_HOVER}; }}")
         self.effort_slider.valueChanged.connect(self._on_effort_slider)
         eff_row.addWidget(self.effort_slider)
-        self.effort_label = QLabel(agent_llm.effort_label(self._effort))
+        self.effort_label = QLabel(_ui(agent_llm.effort_label(self._effort)))
         self.effort_label.setStyleSheet(
             f"color: {self._ACCENT}; font-size: 14px; font-weight: 800;")
         self.effort_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.effort_label.setFixedWidth(56)
+        # 英文标签（Very High / Extreme 等）比中文长，固定 56px 会挤压遮挡 → 最小宽度 + 自适应
+        self.effort_label.setMinimumWidth(72)
         eff_row.addWidget(self.effort_label)
         eff_row.addStretch(1)
         lay.addLayout(eff_row)
@@ -3269,9 +3533,9 @@ class _AgentSettingsDialog(QDialog):
         self.effort_hint.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
         self.effort_hint.setWordWrap(True)
         lay.addWidget(self.effort_hint)
-        self.auto_effort_check = QCheckBox("自动按难度（按任务难度自动选择工作力度）")
+        self.auto_effort_check = QCheckBox(_ui("自动按难度（按任务难度自动选择工作力度）"))
         self.auto_effort_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
-        self.auto_effort_check.setToolTip("按任务难度自动选择工作力度（智能调用）；关闭后仅手动拖动")
+        self.auto_effort_check.setToolTip(_ui("按任务难度自动选择工作力度（智能调用）；关闭后仅手动拖动"))
         self.auto_effort_check.toggled.connect(self._on_effort_auto)
         # 先初始化滑块值（屏蔽信号），再设自动开关：避免 setChecked 触发回调时
         # 读到未初始化的滑块（值为 0=low）把 _effort 覆盖成 low —— 这是「工作力度
@@ -3293,27 +3557,25 @@ class _AgentSettingsDialog(QDialog):
         self._force_think = bool(cfg.get("force_think", False))
         think_row = QHBoxLayout()
         think_row.setSpacing(10)
-        think_lbl = QLabel("思考模式")
+        think_lbl = QLabel(_ui("思考模式"))
         think_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        think_lbl.setFixedWidth(70)
+        think_lbl.setFixedWidth(self._label_col_w())
         think_row.addWidget(think_lbl)
         self.think_combo = _ArrowComboBox()
-        self.think_combo.addItem("跟随自动（按工作力度）", "auto")
-        self.think_combo.addItem("始终开启（强制思考）", "on")
-        self.think_combo.addItem("始终关闭（不思考）", "off")
+        self.think_combo.addItem(_ui("跟随自动（按工作力度）"), "auto")
+        self.think_combo.addItem(_ui("始终开启（强制思考）"), "on")
+        self.think_combo.addItem(_ui("始终关闭（不思考）"), "off")
         _ti = self.think_combo.findData(self._think_mode)
         self.think_combo.setCurrentIndex(_ti if _ti >= 0 else 0)
         self.think_combo.setStyleSheet(_QCOMBO)
-        self.think_combo.setToolTip("跟随自动 = 按工作力度自动开关思考；"
-                                    "始终开启/关闭 = 每次请求带对应思考参数覆盖默认行为")
+        self.think_combo.setToolTip(_ui("跟随自动 = 按工作力度自动开关思考；始终开启/关闭 = 每次请求带对应思考参数覆盖默认行为"))
         self.think_combo.currentIndexChanged.connect(self._on_think_mode_changed)
         think_row.addWidget(self.think_combo, 1)
         think_row.addStretch(1)
         lay.addLayout(think_row)
-        self.force_think_check = QCheckBox("每次发送消息时强制思考（不允许模型选择不思考）")
+        self.force_think_check = QCheckBox(_ui("每次发送消息时强制思考（不允许模型选择不思考）"))
         self.force_think_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
-        self.force_think_check.setToolTip("勾选后每次请求都强制启用思考参数，模型无法选择不思考；"
-                                          "同时自动把上方思考模式切到「始终开启」")
+        self.force_think_check.setToolTip(_ui("勾选后每次请求都强制启用思考参数，模型无法选择不思考；同时自动把上方思考模式切到「始终开启」"))
         self.force_think_check.blockSignals(True)
         self.force_think_check.setChecked(self._force_think)
         self.force_think_check.blockSignals(False)
@@ -3325,14 +3587,11 @@ class _AgentSettingsDialog(QDialog):
         #   1M 开关 > 上游服务商声明 > 服务商配置手填 > 内置已知表 > 模型名推断
         self._context_1m = bool(cfg.get("context_1m", False))
         self.context_1m_check = QCheckBox(
-            "开启 1M 上下文（模型支持1M上下文窗口，输入+输出=1M上下文窗口）")
+            _ui("开启 1M 上下文（模型支持1M上下文窗口，输入+输出=1M上下文窗口）"))
         self.context_1m_check.setStyleSheet(
             f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.context_1m_check.setToolTip(
-            "模型支持1M上下文窗口，输入+输出=1M上下文窗口；"
-            "勾选后，所有上下文用量与压缩阈值一律按 1M token 上限计算"
-            f"（{_fmt_tokens(agent_llm.ONE_M_CONTEXT)}）；"
-            "服务商实际是否支持由上游决定，若上游拒绝请关闭本开关。")
+            _uif("模型支持1M上下文窗口，输入+输出=1M上下文窗口；勾选后，所有上下文用量与压缩阈值一律按 1M token 上限计算（{a0}）；服务商实际是否支持由上游决定，若上游拒绝请关闭本开关。", a0=_fmt_tokens(agent_llm.ONE_M_CONTEXT)))
         self.context_1m_check.blockSignals(True)
         self.context_1m_check.setChecked(self._context_1m)
         self.context_1m_check.blockSignals(False)
@@ -3343,9 +3602,7 @@ class _AgentSettingsDialog(QDialog):
         self.context_hint.setWordWrap(True)
         lay.addWidget(self.context_hint)
         self._sync_context_hint()
-        tip = QLabel("思考模式按上方开关手动控制。开启「始终思考」后，思考强度取当前「思考强度」"
-                     "滑块档位并自动映射：DeepSeek V4 仅 high/max、GLM-5.2 全档、"
-                     "OpenAI o 系列 reasoning_effort、Agnes reasoning_effort 等")
+        tip = QLabel(_ui("思考模式按上方开关手动控制。开启「始终思考」后，思考强度取当前「思考强度」滑块档位并自动映射：DeepSeek V4 仅 high/max、GLM-5.2 全档、OpenAI o 系列 reasoning_effort、Agnes reasoning_effort 等"))
         tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -3353,30 +3610,29 @@ class _AgentSettingsDialog(QDialog):
         return w
 
     def _build_tts_page(self) -> QWidget:
-        w = self._page("语音合成")
+        w = self._page(_ui("语音合成"))
         lay = self._page_body(w)
         cfg = agent_tts.load_config()
-        tip = QLabel(f"当前音色：{agent_tts.VOICE_DISPLAY_NAME}（AI 回复时自动流式合成语音，"
-                     "边生成边播放，无需手动选择音色）")
+        tip = QLabel(_uif("当前音色：{a0}（AI 回复时自动流式合成语音，边生成边播放，无需手动选择音色）", a0=agent_tts.VOICE_DISPLAY_NAME))
         tip.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         tip.setWordWrap(True)
         lay.addWidget(tip)
-        self.auto_read_check = QCheckBox("AI 回复自动朗读（开关默认开启，关闭后仅显式要求朗读时播放）")
+        self.auto_read_check = QCheckBox(_ui("AI 回复自动朗读（开关默认开启，关闭后仅显式要求朗读时播放）"))
         self.auto_read_check.setChecked(bool(cfg.get("auto_read", True)))
         self.auto_read_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.auto_read_check)
         # 语速调节：对齐参考音频节奏（0.5x~1.5x，默认 1.0 = 与参考一致）
         spd_row = QHBoxLayout()
         spd_row.setSpacing(10)
-        spd_lbl = QLabel("语速")
+        spd_lbl = QLabel(_ui("语速"))
         spd_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        spd_lbl.setFixedWidth(70)
+        spd_lbl.setFixedWidth(self._label_col_w())
         spd_row.addWidget(spd_lbl)
         self.speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_slider.setRange(50, 150)
         self.speed_slider.setValue(int(float(cfg.get("speech_rate") or 1.0) * 100))
         self.speed_slider.setPageStep(5)
-        self.speed_slider.setToolTip("拖动调节语速（100% = 与参考音频一致）")
+        self.speed_slider.setToolTip(_ui("拖动调节语速（100% = 与参考音频一致）"))
         self.speed_slider.setStyleSheet(
             f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
             "border-radius: 2px; }"
@@ -3404,7 +3660,7 @@ class _AgentSettingsDialog(QDialog):
         except Exception:
             return
         try:
-            QMessageBox.information(self, "面板位置", "已重置全部子面板位置，恢复默认停靠布局。")
+            QMessageBox.information(self, _ui("面板位置"), _ui("已重置全部子面板位置，恢复默认停靠布局。"))
         except Exception:
             pass
 
@@ -3415,19 +3671,18 @@ class _AgentSettingsDialog(QDialog):
 
     # ---------- 音乐播放 ----------
     def _build_music_page(self) -> QWidget:
-        w = self._page("音乐")
+        w = self._page(_ui("音乐"))
         lay = self._page_body(w)
         from zhuzhu_Copilot.core import music_player as agent_music
         self._music = player = agent_music.get_player()
 
-        tip = QLabel("上传 MP3 / WAV 等音频到本地库，支持播放进度记忆、音量调节、"
-                     "顺序 / 随机 / 单曲循环切换以及打开 AI 面板自动播放。")
+        tip = QLabel(_ui("上传 MP3 / WAV 等音频到本地库，支持播放进度记忆、音量调节、顺序 / 随机 / 单曲循环切换以及打开 AI 面板自动播放。"))
         tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         tip.setWordWrap(True)
         lay.addWidget(tip)
 
         # 当前曲目 + 状态
-        self.music_now = QLabel("未在播放")
+        self.music_now = QLabel(_ui("未在播放"))
         self.music_now.setStyleSheet(f"color: {self._ACCENT}; font-size: 13px; font-weight: 700;")
         self.music_now.setWordWrap(True)
         lay.addWidget(self.music_now)
@@ -3435,13 +3690,13 @@ class _AgentSettingsDialog(QDialog):
         # 操作行：上传 / 删除
         ops = QHBoxLayout()
         ops.setSpacing(8)
-        up = QPushButton(_line_icon("plus", 16, self._TEXT), "上传歌曲")
+        up = QPushButton(_line_icon("plus", 16, self._TEXT), _ui("上传歌曲"))
         up.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
                          "border-radius: 8px; padding: 7px 16px; font-weight: 700;")
         up.setAutoDefault(False)
         up.clicked.connect(self._music_upload)
         ops.addWidget(up)
-        self.music_del = QPushButton(_line_icon("trash", 16, self._TEXT), "删除选中")
+        self.music_del = QPushButton(_line_icon("trash", 16, self._TEXT), _ui("删除选中"))
         self.music_del.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
             "border-radius: 8px; padding: 7px 14px; font-weight: 600;")
@@ -3457,16 +3712,16 @@ class _AgentSettingsDialog(QDialog):
         self._lyrics = get_lyrics_engine().bind(player)
         lyr_head = QHBoxLayout()
         lyr_head.setSpacing(8)
-        lyr_t = QLabel("歌词")
+        lyr_t = QLabel(_ui("歌词"))
         lyr_t.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; font-weight: 700;")
         lyr_head.addWidget(lyr_t)
-        self.lyrics_import = QPushButton(_line_icon("plus", 14, self._TEXT), "导入歌词")
+        self.lyrics_import = QPushButton(_line_icon("plus", 14, self._TEXT), _ui("导入歌词"))
         self.lyrics_import.setStyleSheet(
             f"background: transparent; color: {self._DIM}; border: 1px solid {self._BORDER};"
             "border-radius: 6px; padding: 3px 10px; font-size: 12px;")
         self.lyrics_import.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lyrics_import.setAutoDefault(False)
-        self.lyrics_import.setToolTip("为当前歌曲选择 .lrc 歌词文件，复制入库并绑定（重启后仍有效）")
+        self.lyrics_import.setToolTip(_ui("为当前歌曲选择 .lrc 歌词文件，复制入库并绑定（重启后仍有效）"))
         self.lyrics_import.clicked.connect(self._lyrics_import)
         lyr_head.addWidget(self.lyrics_import)
         # 桌面歌词开关：始终置顶小窗，当前句纯白左→右填充 + 下一句淡灰预唱；
@@ -3486,7 +3741,7 @@ class _AgentSettingsDialog(QDialog):
                 _lyr_on = True
         except RuntimeError:
             _lyr_on = False
-        self.lyrics_desktop = QPushButton(_line_icon("music", 14, self._TEXT), " 桌面歌词")
+        self.lyrics_desktop = QPushButton(_line_icon("music", 14, self._TEXT), _ui(" 桌面歌词"))
         self.lyrics_desktop.setCheckable(True)
         self.lyrics_desktop.setChecked(_lyr_on)
         self.lyrics_desktop.setStyleSheet(
@@ -3498,9 +3753,7 @@ class _AgentSettingsDialog(QDialog):
                self._ACCENT, self._ACCENT))
         self.lyrics_desktop.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lyrics_desktop.setAutoDefault(False)
-        self.lyrics_desktop.setToolTip("开启/关闭桌面歌词（状态记忆）。始终置顶最多 2 行："
-                               "当前句纯白左→右填充在上、下一句淡灰预唱在下；"
-                               "鼠标悬停显示背景版，滚轮调整字号并自动记忆")
+        self.lyrics_desktop.setToolTip(_ui("开启/关闭桌面歌词（状态记忆）。始终置顶最多 2 行：当前句纯白左→右填充在上、下一句淡灰预唱在下；鼠标悬停显示背景版，滚轮调整字号并自动记忆"))
         self.lyrics_desktop.toggled.connect(self._toggle_desktop_lyrics)
         lyr_head.addWidget(self.lyrics_desktop)
         lyr_head.addStretch(1)
@@ -3538,7 +3791,7 @@ class _AgentSettingsDialog(QDialog):
         self.music_prev = QPushButton(_line_icon("prev", 18, self._TEXT), "")
         self.music_toggle = QPushButton(_line_icon("play", 18, "#06281B"), "")
         self.music_next = QPushButton(_line_icon("next", 18, self._TEXT), "")
-        self.music_mode = QPushButton(_line_icon("repeat", 16, self._TEXT), " 顺序")
+        self.music_mode = QPushButton(_line_icon("repeat", 16, self._TEXT), _ui(" 顺序"))
         for b in (self.music_prev, self.music_next, self.music_mode):
             b.setStyleSheet(
                 f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
@@ -3586,7 +3839,7 @@ class _AgentSettingsDialog(QDialog):
         # 音量
         vol = QHBoxLayout()
         vol.setSpacing(8)
-        vl = QLabel("音量")
+        vl = QLabel(_ui("音量"))
         vl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         vl.setFixedWidth(42)
         vol.addWidget(vl)
@@ -3605,7 +3858,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(vol)
 
         # 自动播放
-        self.music_auto = QCheckBox("打开 AI 面板后自动播放歌曲（自动续播上次位置）")
+        self.music_auto = QCheckBox(_ui("打开 AI 面板后自动播放歌曲（自动续播上次位置）"))
         self.music_auto.setChecked(player.autoplay())
         self.music_auto.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.music_auto.toggled.connect(player.set_autoplay)
@@ -3647,14 +3900,14 @@ class _AgentSettingsDialog(QDialog):
         self.music_prev.setEnabled(bool(lib))
         self.music_next.setEnabled(bool(lib))
         if cur:
-            self.music_now.setText(f"当前：{cur}")
+            self.music_now.setText(_uif("当前：{a0}", a0=cur))
         else:
-            self.music_now.setText("未在播放")
+            self.music_now.setText(_ui("未在播放"))
         playing = mp.is_playing()
         self.music_toggle.setIcon(
             _line_icon("pause" if playing and not mp.is_paused() else "play",
                        18, "#06281B" if playing else "#06281B"))
-        self.music_toggle.setToolTip("暂停" if playing and not mp.is_paused() else "播放")
+        self.music_toggle.setToolTip(_ui("暂停") if playing and not mp.is_paused() else _ui("播放"))
         self.music_mode.setText(f" {mp.mode_label()}")
         self.music_mode.setIcon(
             _line_icon("shuffle" if mp.mode() == "random"
@@ -3675,8 +3928,8 @@ class _AgentSettingsDialog(QDialog):
         lines = self._lyrics.lines()
         self.lyrics_view.set_lines(lines)
         self.lyrics_import.setToolTip(
-            "为当前歌曲选择 .lrc 歌词文件" if self._music.current()
-            else "请先选择要导入歌词的歌曲")
+            _ui("为当前歌曲选择 .lrc 歌词文件") if self._music.current()
+            else _ui("请先选择要导入歌词的歌曲"))
         self.lyrics_import.setEnabled(bool(self._music.current()))
         self._ensure_lyrics_timer()
 
@@ -3742,12 +3995,12 @@ class _AgentSettingsDialog(QDialog):
         if not song:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择歌词文件", "", "歌词文件 (*.lrc);;所有文件 (*.*)")
+            self, _ui("选择歌词文件"), "", _ui("歌词文件 (*.lrc);;所有文件 (*.*)"))
         if not path:
             return
         if not self._lyrics.import_lyric(song, path):
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "导入歌词", "无法导入：文件不是有效的 LRC 歌词或读取失败。")
+            QMessageBox.warning(self, _ui("导入歌词"), _ui("无法导入：文件不是有效的 LRC 歌词或读取失败。"))
             return
         self._lyrics_update()
 
@@ -3802,19 +4055,17 @@ class _AgentSettingsDialog(QDialog):
         self._music_refresh()
 
     def _build_skill_page(self) -> QWidget:
-        w = self._page("技能")
+        w = self._page(_ui("技能"))
         lay = self._page_body(w)
         sub = QLabel(
-            "技能按工作流隔离：切换到/激活某工作流时，只加载该工作流启用的技能。"
-            "选择下方工作流作用域后，可逐项启用/禁用内置与用户私有技能（即时生效）；"
-            "导入/删除同样在技能目录即时生效。")
+            _ui("技能按工作流隔离：切换到/激活某工作流时，只加载该工作流启用的技能。选择下方工作流作用域后，可逐项启用/禁用内置与用户私有技能（即时生效）；导入/删除同样在技能目录即时生效。"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
         # 工作流作用域选择
         scope = QHBoxLayout()
         scope.setSpacing(8)
-        scope.addWidget(QLabel("工作流作用域:"))
+        scope.addWidget(QLabel(_ui("工作流作用域:")))
         self.skill_wf_combo = _ArrowComboBox()
         self.skill_wf_combo.setMinimumWidth(240)
         self.skill_wf_combo.setStyleSheet(
@@ -3830,6 +4081,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(scope)
         # 技能启停列表（勾选=启用；取消=禁用）
         self.skill_list = QListWidget()
+        self.skill_list.setWordWrap(True)   # 长英文描述自动换行，避免被右缘挤压遮挡
         self.skill_list.setStyleSheet(
             f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
@@ -3845,30 +4097,28 @@ class _AgentSettingsDialog(QDialog):
         # 换行布局：同插件页 —— 长按钮排会撑破页面最小宽度（见 _build_plugin_page）
         row = FlowLayout(spacing=SPACING_SM)
         imp = QPushButton(_std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder),
-                          "导入市场标准技能（SKILL.md 或 zip 包）…")
+                          _ui("导入市场标准技能（SKILL.md 或 zip 包）…"))
         imp.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                           "padding: 8px 16px; font-weight: 600;")
         imp.setAutoDefault(False)
-        imp.setToolTip("选择市场标准的 SKILL.md 文件或含 SKILL.md 的 zip 包，"
-                       "导入到技能目录并即时生效（/技能名 或对话描述即可调用）")
+        imp.setToolTip(_ui("选择市场标准的 SKILL.md 文件或含 SKILL.md 的 zip 包，导入到技能目录并即时生效（/技能名 或对话描述即可调用）"))
         imp.clicked.connect(self._import_skill)
         row.addWidget(imp)
-        del_skill = QPushButton(_std_icon(QStyle.StandardPixmap.SP_TrashIcon), "删除技能…")
+        del_skill = QPushButton(_std_icon(QStyle.StandardPixmap.SP_TrashIcon), _ui("删除技能…"))
         del_skill.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
                                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                 "padding: 8px 16px; font-weight: 600;")
         del_skill.setAutoDefault(False)
-        del_skill.setToolTip("删除用户导入/创建的技能（连同 SKILL.md 与附属文件）；内置技能不可删除")
+        del_skill.setToolTip(_ui("删除用户导入/创建的技能（连同 SKILL.md 与附属文件）；内置技能不可删除"))
         del_skill.clicked.connect(self._delete_skill)
         row.addWidget(del_skill)
-        wf_skill = QPushButton("分配工作流…")
+        wf_skill = QPushButton(_ui("分配工作流…"))
         wf_skill.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                "padding: 8px 16px; font-weight: 600;")
         wf_skill.setAutoDefault(False)
-        wf_skill.setToolTip("指定技能可用的一个或多个工作流（空=全局所有工作流）；"
-                            "绑定后其他工作流不再加载该技能")
+        wf_skill.setToolTip(_ui("指定技能可用的一个或多个工作流（空=全局所有工作流）；绑定后其他工作流不再加载该技能"))
         wf_skill.clicked.connect(self._on_skill_workflows)
         row.addWidget(wf_skill)
         lay.addLayout(row)
@@ -3885,11 +4135,11 @@ class _AgentSettingsDialog(QDialog):
         for wf in agent_workflow.list_workflows():
             label = wf["name"]
             if wf["is_default"]:
-                label += "（默认）"
+                label += _ui("（默认）")
             elif wf["active"]:
-                label += "（激活中）"
+                label += _ui("（激活中）")
             elif not wf.get("enabled", True):
-                label += "（已禁用）"
+                label += _ui("（已禁用）")
             self.skill_wf_combo.addItem(label, wf["name"])
         idx = self.skill_wf_combo.findData(active)
         if idx < 0:
@@ -3914,15 +4164,26 @@ class _AgentSettingsDialog(QDialog):
         self.skill_list.clear()
         for s in agent_skills.list_skills_for_workflow(workflow):
             if s["workflow_skill"]:
-                tag = "工作流专属"
+                tag = _ui("工作流专属")
             elif s["builtin"]:
-                tag = "内置"
+                tag = _ui("内置")
             else:
-                tag = "用户"
-            bind = f"   [工作流: {', '.join(s['workflows'])}]" if s.get("workflows") else ""
-            text = f"{s['name']}  [{tag}]{bind}  {s['description']}"
+                tag = _ui("用户")
+            bind = (_uif("   [工作流: {wfs}]", wfs=", ".join(s["workflows"]))
+                    if s.get("workflows") else "")
+            # 技能名是标识符（不译），来源标注与描述是文案（走语言包）
+            # 技能描述走提示词语言包（key: skill.<name>.desc）：与注入 system prompt 时
+            # 的翻译同源（agent_skills._tp），内置技能有英文译文，用户自定义技能回退原文。
+            try:
+                from zhuzhu_Copilot.core import i18n as _i18n_mod
+                _skill_desc = _i18n_mod.tp(f"skill.{s['name']}.desc", s["description"] or "")
+            except Exception:
+                _skill_desc = s["description"] or ""
+            text = _uif("{name}  [{tag}]{bind}  {desc}",
+                        name=s["name"], tag=tag, bind=bind,
+                        desc=_skill_desc)
             item = QListWidgetItem(text)
-            item.setToolTip(s["description"])
+            item.setToolTip(_skill_desc)
             if s["workflow_skill"]:
                 # 工作流专属技能恒启用（该工作流自带），不允许在此停用
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
@@ -3954,12 +4215,12 @@ class _AgentSettingsDialog(QDialog):
         """指定技能可用的工作流（多选/逗号分隔；空=全局）"""
         row = self.skill_list.currentRow()
         if row < 0:
-            QMessageBox.information(self, "提示", "请先选择一个技能")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个技能"))
             return
         item = self.skill_list.item(row)
         name = item.data(Qt.ItemDataRole.UserRole) if item else None
         if not name:
-            QMessageBox.information(self, "提示", "工作流专属技能由所属工作流自带，无需分配")
+            QMessageBox.information(self, _ui("提示"), _ui("工作流专属技能由所属工作流自带，无需分配"))
             return
         current = agent_skills.get_workflow_binding("skill", name)
         ws, ok = self._ask_workflow_names(f"分配技能「{name}」的工作流", ", ".join(current))
@@ -3967,15 +4228,15 @@ class _AgentSettingsDialog(QDialog):
             return
         ok2, msg = agent_skills.set_workflow_binding("skill", name, ws)
         if ok2:
-            QMessageBox.information(self, "技能", msg)
+            QMessageBox.information(self, _ui("技能"), msg)
         else:
-            QMessageBox.warning(self, "操作失败", msg)
+            QMessageBox.warning(self, _ui("操作失败"), msg)
         self._reload_skill_list(self._current_skill_workflow())
 
     def _build_mcp_page(self) -> QWidget:
-        w = self._page("MCP 服务器")
+        w = self._page(_ui("MCP 服务器"))
         lay = self._page_body(w)
-        sub = QLabel("配置外部工具服务器（stdio 本地命令 / sse 远程 URL），保存后自动重连，AI 即可调用其工具")
+        sub = QLabel(_ui("配置外部工具服务器（stdio 本地命令 / sse 远程 URL），保存后自动重连，AI 即可调用其工具"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
@@ -3989,18 +4250,18 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(self.mcp_list, 1)
         row = QHBoxLayout()
         row.setSpacing(8)
-        add_b = QPushButton(_std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder), "添加")
+        add_b = QPushButton(_std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder), _ui("添加"))
         add_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
                             "border: none; border-radius: 8px; padding: 7px 16px; font-weight: 700;")
         add_b.setAutoDefault(False)
         add_b.clicked.connect(self._on_mcp_add)
-        edit_b = QPushButton("编辑")
+        edit_b = QPushButton(_ui("编辑"))
         edit_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                              "padding: 7px 16px; font-weight: 600;")
         edit_b.setAutoDefault(False)
         edit_b.clicked.connect(self._on_mcp_edit)
-        del_b = QPushButton(_line_icon("trash", 16), "删除")
+        del_b = QPushButton(_line_icon("trash", 16), _ui("删除"))
         del_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                             "padding: 7px 16px; font-weight: 600;")
@@ -4016,18 +4277,17 @@ class _AgentSettingsDialog(QDialog):
 
     def _build_agent_page(self) -> QWidget:
         """Agent 管理：主 Agent（每个对话流 agent.py 人格）+ 自定义子 Agent（sub_<名>）"""
-        w = self._page("Agent 管理")
+        w = self._page(_ui("Agent 管理"))
         lay = self._page_body(w)
         sub = QLabel(
-            "管理每个对话流（工作流）的主 Agent 与自定义子 Agent：主 Agent 人格由该对话流"
-            "agent.py 定义（可编辑）；子 Agent 以 sub_<名> 注册进指定对话流，对话中可直接调用。")
+            _ui("管理每个对话流（工作流）的主 Agent 与自定义子 Agent：主 Agent 人格由该对话流agent.py 定义（可编辑）；子 Agent 以 sub_<名> 注册进指定对话流，对话中可直接调用。"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
 
         # 对话流选择
         wf_row = QHBoxLayout()
-        wf_lbl = QLabel("对话流")
+        wf_lbl = QLabel(_ui("对话流"))
         wf_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         wf_row.addWidget(wf_lbl)
         self.agent_wf = _ArrowComboBox()
@@ -4036,7 +4296,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(wf_row)
 
         # ---- 主 Agent ----
-        mh = QLabel("主 Agent")
+        mh = QLabel(_ui("主 Agent"))
         mh.setStyleSheet(f"color: {self._ACCENT}; font-size: 13px; font-weight: 700;")
         lay.addWidget(mh)
         self.agent_main_info = QLabel("")
@@ -4045,7 +4305,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(self.agent_main_info)
         mrow = QHBoxLayout()
         mrow.setSpacing(8)
-        m_edit = QPushButton("编辑主 Agent（agent.py）")
+        m_edit = QPushButton(_ui("编辑主 Agent（agent.py）"))
         m_edit.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
                              "border-radius: 8px; padding: 7px 14px; font-weight: 700;")
         m_edit.setAutoDefault(False)
@@ -4055,7 +4315,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(mrow)
 
         # ---- 子 Agent ----
-        sh = QLabel("子 Agent（本对话流注册）")
+        sh = QLabel(_ui("子 Agent（本对话流注册）"))
         sh.setStyleSheet(f"color: {self._ACCENT}; font-size: 13px; font-weight: 700;")
         lay.addWidget(sh)
         self.agent_sub_list = QListWidget()
@@ -4068,12 +4328,12 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(self.agent_sub_list, 1)
         srow = QHBoxLayout()
         srow.setSpacing(8)
-        s_add = QPushButton("注册子 Agent")
+        s_add = QPushButton(_ui("注册子 Agent"))
         s_add.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
                             "border-radius: 8px; padding: 7px 14px; font-weight: 700;")
         s_add.setAutoDefault(False)
         s_add.clicked.connect(self._on_agent_add_sub)
-        s_del = QPushButton("删除选中")
+        s_del = QPushButton(_ui("删除选中"))
         s_del.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                             "padding: 7px 14px; font-weight: 600;")
@@ -4111,7 +4371,7 @@ class _AgentSettingsDialog(QDialog):
     def _refresh_agent_main(self):
         name = self._agent_current_wf()
         if not name:
-            self.agent_main_info.setText("请选择对话流")
+            self.agent_main_info.setText(_ui("请选择对话流"))
             return
         wf = next((x for x in agent_workflow.list_workflows() if x["name"] == name), None)
         files = ", ".join(wf["core_files"]) if wf and wf["core_files"] else "—"
@@ -4120,7 +4380,9 @@ class _AgentSettingsDialog(QDialog):
         except Exception:
             custom = False
         self.agent_main_info.setText(
-            f"主 Agent 人格：{'自定义（agent.py）' if custom else '内置默认'}\n核心文件：{files}")
+            _uif("主 Agent 人格：{a0}\n核心文件：{a1}",
+                 a0=_ui("自定义（agent.py）") if custom else _ui("内置默认"),
+                 a1=files))
 
     def _refresh_agent_subs(self):
         if not hasattr(self, "agent_sub_list"):
@@ -4131,7 +4393,8 @@ class _AgentSettingsDialog(QDialog):
             desc = (it["description"] or "").strip()
             goal = (it["goal"] or "").strip()
             item = QListWidgetItem(it["name"])
-            item.setText(f"{it['name']}  {desc[:30]}\n    目标: {goal[:60]}")
+            item.setText(_uif('{a0}  {a1}\n    {a2}: {a3}', a0=it['name'], a1=desc[:30],
+                             a2=_ui("目标"), a3=goal[:60]))
             item.setToolTip(goal)
             item.setData(Qt.ItemDataRole.UserRole, it["name"])
             self.agent_sub_list.addItem(item)
@@ -4140,15 +4403,16 @@ class _AgentSettingsDialog(QDialog):
         """编辑选中对话流的主 Agent 人格（agent.py）"""
         name = self._agent_current_wf()
         if not name:
-            QMessageBox.information(self, "提示", "请先选择对话流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择对话流"))
             return
         rok, content = agent_workflow.read_core_file(name, "agent.py")
         if not rok:
             # 内置对话流未添加 agent.py：引导到工作流页添加
             QMessageBox.information(
-                self, "提示",
-                f"对话流「{name}」尚无 agent.py 自定义文件。\n"
-                "请到「工作流」页选中该对话流，用「添加」加入 agent.py 后即可编辑主 Agent 人格。")
+                self, _ui("提示"),
+                _uim("对话流「{name}」尚无 agent.py 自定义文件。\n"
+                     "请到「工作流」页选中该对话流，用「添加」加入 agent.py 后即可编辑主 Agent 人格。")
+                .format(name=name))
             return
         text, ok2 = _MultiLineInputDialog.get(
             self, f"编辑主 Agent · {name}", "修改主 Agent 人格（agent.py）：",
@@ -4158,21 +4422,21 @@ class _AgentSettingsDialog(QDialog):
         wok, msg = agent_workflow.write_core_file(name, "agent.py", text)
         if wok:
             self._wf_changed = True
-            QMessageBox.information(self, "已保存", msg)
+            QMessageBox.information(self, _ui("已保存"), msg)
         else:
-            QMessageBox.warning(self, "保存失败", msg)
+            QMessageBox.warning(self, _ui("保存失败"), msg)
         self._refresh_agent_main()
 
     def _on_agent_add_sub(self, *_):
         """注册子 Agent 到选中对话流（subagents.json）"""
         name = self._agent_current_wf()
         if not name:
-            QMessageBox.information(self, "提示", "请先选择对话流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择对话流"))
             return
-        sname, ok1 = QInputDialog.getText(self, "注册子 Agent", "子 Agent 名称（如 sub_reviewer）：")
+        sname, ok1 = QInputDialog.getText(self, _ui("注册子 Agent"), _ui("子 Agent 名称（如 sub_reviewer）："))
         if not ok1 or not sname.strip():
             return
-        desc, ok2 = QInputDialog.getText(self, "注册子 Agent", "简短描述（列表展示用）：")
+        desc, ok2 = QInputDialog.getText(self, _ui("注册子 Agent"), _ui("简短描述（列表展示用）："))
         if not ok2:
             return
         goal, ok3 = _MultiLineInputDialog.get(
@@ -4180,16 +4444,16 @@ class _AgentSettingsDialog(QDialog):
         if not ok3 or not goal.strip():
             return
         allowed, ok4 = QInputDialog.getText(
-            self, "注册子 Agent",
-            "允许工具（逗号分隔，如 read_file,write_file；留空=全部白名单）：")
+            self, _ui("注册子 Agent"),
+            _ui("允许工具（逗号分隔，如 read_file,write_file；留空=全部白名单）："))
         if not ok4:
             return
         ok, msg = agent_subagent.register_subagent(
             sname.strip(), desc.strip(), goal.strip(), allowed.strip(), workflow=name)
         if ok:
-            QMessageBox.information(self, "注册成功", msg)
+            QMessageBox.information(self, _ui("注册成功"), msg)
         else:
-            QMessageBox.warning(self, "注册失败", msg)
+            QMessageBox.warning(self, _ui("注册失败"), msg)
         self._refresh_agent_subs()
 
     def _on_agent_del_sub(self, *_):
@@ -4197,32 +4461,31 @@ class _AgentSettingsDialog(QDialog):
         name = self._agent_current_wf()
         it = self.agent_sub_list.currentItem()
         if not name or it is None:
-            QMessageBox.information(self, "提示", "请选择要删除的子 Agent")
+            QMessageBox.information(self, _ui("提示"), _ui("请选择要删除的子 Agent"))
             return
         sname = str(it.data(Qt.ItemDataRole.UserRole) or "")
         ret = QMessageBox.question(
-            self, "确认删除", f"确定从对话流「{name}」删除子 Agent「{sname}」？")
+            self, _ui("确认删除"), _uif("确定从对话流「{a0}」删除子 Agent「{a1}」？", a0=name, a1=sname))
         if ret != QMessageBox.StandardButton.Yes:
             return
         ok, msg = agent_subagent.unregister_subagent(sname, workflow=name)
         if ok:
-            QMessageBox.information(self, "已删除", msg)
+            QMessageBox.information(self, _ui("已删除"), msg)
         else:
-            QMessageBox.warning(self, "删除失败", msg)
+            QMessageBox.warning(self, _ui("删除失败"), msg)
         self._refresh_agent_subs()
 
     def _build_workflow_page(self) -> QWidget:
         """工作流管理（Cordis）：列表 + 自然语言 AI 生成 + 添加/编辑/删除核心文件 + 切换/禁用/删除"""
-        w = self._page("工作流")
+        w = self._page(_ui("工作流"))
         lay = self._page_body(w)
         sub = QLabel(
-            "管理自定义 Agent 工作流（Cordis）：默认使用内置工作流，可用自然语言让 AI 生成核心文件，"
-            "从下方「内置工作流」一键创建预设，或进入内置工作流添加/编辑核心文件；切换即热插拔生效。"
-            "默认工作流 _default 内置只读，可添加/删除用户覆盖文件；用户工作流可整体启用/禁用或删除。")
+            _ui("管理自定义 Agent 工作流（Cordis）：默认使用内置工作流，可用自然语言让 AI 生成核心文件，从下方「内置工作流」一键创建预设，或进入内置工作流添加/编辑核心文件；切换即热插拔生效。默认工作流 _default 内置只读，可添加/删除用户覆盖文件；用户工作流可整体启用/禁用或删除。"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
         self.wf_list = QListWidget()
+        self.wf_list.setWordWrap(True)   # 长英文描述自动换行，避免被右缘挤压遮挡
         self.wf_list.setStyleSheet(
             f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
@@ -4247,20 +4510,20 @@ class _AgentSettingsDialog(QDialog):
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        nl_b = _btn("创建", accent=True,
-                    tip="创建（自然语言）：输入自然语言描述，AI 直接生成工作流核心文件")
+        nl_b = _btn(_ui("创建"), accent=True,
+                    tip=_ui("创建（自然语言）：输入自然语言描述，AI 直接生成工作流核心文件"))
         nl_b.clicked.connect(self._on_workflow_create)
-        add_b = _btn("添加", tip="添加核心文件：为选中工作流添加单个核心文件（含内置工作流）")
+        add_b = _btn(_ui("添加"), tip=_ui("添加核心文件：为选中工作流添加单个核心文件（含内置工作流）"))
         add_b.clicked.connect(self._on_workflow_add_file)
-        edit_b = _btn("编辑", tip="编辑文件：编辑选中工作流的某个核心文件")
+        edit_b = _btn(_ui("编辑"), tip=_ui("编辑文件：编辑选中工作流的某个核心文件"))
         edit_b.clicked.connect(self._on_workflow_edit_file)
-        del_file_b = _btn("删文件", tip="删除文件：删除选中工作流的某个核心文件（回退内置）")
+        del_file_b = _btn(_ui("删文件"), tip=_ui("删除文件：删除选中工作流的某个核心文件（回退内置）"))
         del_file_b.clicked.connect(self._on_workflow_delete_file)
-        switch_b = _btn("切换", tip="切换/激活：把选中工作流切换为激活（立即生效）")
+        switch_b = _btn(_ui("切换"), tip=_ui("切换/激活：把选中工作流切换为激活（立即生效）"))
         switch_b.clicked.connect(self._on_workflow_switch)
-        toggle_b = _btn("开关", tip="启用/禁用：启用或禁用选中用户工作流（默认工作流不可禁用）")
+        toggle_b = _btn(_ui("开关"), tip=_ui("启用/禁用：启用或禁用选中用户工作流（默认工作流不可禁用）"))
         toggle_b.clicked.connect(self._on_workflow_toggle)
-        del_b = _btn("删除", tip="删除：删除选中用户工作流（默认工作流不可删除）")
+        del_b = _btn(_ui("删除"), tip=_ui("删除：删除选中用户工作流（默认工作流不可删除）"))
         del_b.clicked.connect(self._on_workflow_delete)
         for b in (nl_b, add_b, edit_b, del_file_b, switch_b, toggle_b, del_b):
             row.addWidget(b)
@@ -4270,16 +4533,16 @@ class _AgentSettingsDialog(QDialog):
         # 内置工作流预设：随包提供，一键创建（含核心文件与多个注册式子 Agent）
         preset_row = QHBoxLayout()
         preset_row.setSpacing(8)
-        preset_lbl = QLabel("内置工作流")
+        preset_lbl = QLabel(_ui("内置工作流"))
         preset_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         preset_row.addWidget(preset_lbl)
         self.wf_preset_combo = _ArrowComboBox()
         self.wf_preset_combo.setStyleSheet(_QCOMBO)   # 主题自适应下拉（浅色下避免黑底黑字）
         self.wf_preset_combo.setMinimumWidth(260)
         preset_row.addWidget(self.wf_preset_combo, 1)
-        preset_b = _btn("创建内置", accent=True,
-                        tip="从内置预设创建工作流（如三省六部制度：中书省主 Agent + 门下省/尚书省"
-                            "与吏户礼兵刑工六部，共 8 个注册式子 Agent，编队共用共同上下文空间）")
+        preset_b = _btn(_ui("创建内置"), accent=True,
+                        tip=_ui("从内置预设创建工作流（如三省六部制度：中书省主 Agent + 门下省/尚书省"
+                                "与吏户礼兵刑工六部，共 8 个注册式子 Agent，编队共用共同上下文空间）"))
         preset_b.clicked.connect(self._on_workflow_create_builtin)
         preset_row.addWidget(preset_b)
         lay.addLayout(preset_row)
@@ -4293,54 +4556,65 @@ class _AgentSettingsDialog(QDialog):
             return
         self.wf_preset_combo.clear()
         for p in agent_workflow.list_builtin_workflows():
-            tag = "（已创建）" if p.get("created") else ""
-            self.wf_preset_combo.addItem(f"{p.get('display_name') or p.get('id')}{tag}",
-                                         p.get("id"))
+            tag = _ui("（已创建）") if p.get("created") else ""
+            self.wf_preset_combo.addItem(
+                f"{_ui(p.get('display_name') or '') or p.get('id')}{tag}", p.get("id"))
 
     def _on_workflow_create_builtin(self, *_):
         """一键创建选中的内置工作流（复制预设核心文件并登记注册式子 Agent）"""
         pid = str(self.wf_preset_combo.currentData() or "")
         if not pid:
-            QMessageBox.information(self, "提示", "暂无可创建的内置工作流预设")
+            QMessageBox.information(self, _ui("提示"), _ui("暂无可创建的内置工作流预设"))
             return
         preset = next((p for p in agent_workflow.list_builtin_workflows()
                        if p.get("id") == pid), {})
         wf_name = preset.get("workflow_name") or pid
         agents = preset.get("agents") or []
-        detail = (f"创建内置工作流「{preset.get('display_name') or pid}」？\n\n"
+        detail = (f"创建内置工作流「{_ui(preset.get('display_name') or '') or pid}」？\n\n"
                   f"工作流名：{wf_name}\n"
                   + (f"注册式子 Agent：{len(agents)} 个\n" if agents else "")
-                  + "\n创建后可在列表中选择该工作流并点「切换」激活生效。")
-        if QMessageBox.question(self, "创建内置工作流", detail) \
+                  + "\n" + _uim("创建后可在列表中选择该工作流并点「切换」激活生效。"))
+        if QMessageBox.question(self, _ui("创建内置工作流"), detail) \
                 != QMessageBox.StandardButton.Yes:
             return
         ok, msg = agent_workflow.create_builtin_workflow(pid)
         if ok:
             self._wf_changed = True
-            QMessageBox.information(self, "创建内置工作流", msg)
+            QMessageBox.information(self, _ui("创建内置工作流"), msg)
         else:
-            QMessageBox.warning(self, "创建内置工作流失败", msg)
+            QMessageBox.warning(self, _ui("创建内置工作流失败"), msg)
         self._reload_builtin_presets()
         self._reload_workflow_list()
 
     def _reload_workflow_list(self):
         if not hasattr(self, "wf_list") or self.wf_list is None:
             return   # 工作流页尚未懒加载构建时跳过
+        # 由内置预设创建的工作流：描述改取**预设译文**，英文界面下才不会残留中文
+        # （预设描述随包提供、有英文译文；用户自建工作流的描述是用户数据，原样显示）。
+        preset_desc = {}
+        if _is_en():
+            preset_desc = {p.get("id"): p.get("description", "")
+                           for p in agent_workflow.list_builtin_workflows()}
         self.wf_list.clear()
         for wf in agent_workflow.list_workflows():
             if wf["is_default"]:
-                tag = "默认"
+                tag = _ui("默认")
             elif wf["active"]:
-                tag = "激活"
+                tag = _ui("激活")
             elif not wf.get("enabled", True):
-                tag = "禁用"
+                tag = _ui("禁用")
             else:
-                tag = "未激活"
+                tag = _ui("未激活")
             desc = (wf.get("description") or "").strip()
+            pdesc = preset_desc.get(wf.get("preset") or "")
+            if pdesc:
+                desc = _ui(pdesc)
             if len(desc) > 40:
                 desc = desc[:40] + "…"
             files = ", ".join(wf["core_files"]) if wf["core_files"] else "—"
-            self.wf_list.addItem(f"{wf['name']}  [{tag}]  {desc}\n    核心文件: {files}")
+            self.wf_list.addItem(_uif('{a0}  [{a1}]  {a2}\n    {a3}: {a4}',
+                                      a0=wf['name'], a1=tag, a2=desc,
+                                      a3=_ui("核心文件"), a4=files))
 
     def _current_workflow(self) -> dict:
         row = self.wf_list.currentRow()
@@ -4431,44 +4705,44 @@ class _AgentSettingsDialog(QDialog):
         self._pbar_close()
         if ok == "1":
             self._wf_changed = True
-            QMessageBox.information(self, "创建工作流", msg)
+            QMessageBox.information(self, _ui("创建工作流"), msg)
         else:
-            QMessageBox.warning(self, "创建工作流失败", msg)
+            QMessageBox.warning(self, _ui("创建工作流失败"), msg)
         self._reload_workflow_list()
 
     def _on_workflow_add_file(self, *_):
         wf = self._current_workflow()
         if not wf:
-            QMessageBox.information(self, "提示", "请先选择要添加核心文件的工作流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择要添加核心文件的工作流"))
             return
         file, ok = QInputDialog.getItem(
-            self, "添加核心文件", f"选择要添加到 {wf['name']} 的核心文件：",
+            self, _ui("添加核心文件"), _uif("选择要添加到 {a0} 的核心文件：", a0=wf['name']),
             ["tools.py", "agent.py", "llm.py", "mcp.json", "skills/", "plugins/"], 0, False)
         if not ok:
             return
         ok2, msg = agent_workflow.add_core_file(wf["name"], file.rstrip("/"))
         if ok2:
             self._wf_changed = True
-            QMessageBox.information(self, "添加核心文件", msg)
+            QMessageBox.information(self, _ui("添加核心文件"), msg)
         else:
-            QMessageBox.warning(self, "添加失败", msg)
+            QMessageBox.warning(self, _ui("添加失败"), msg)
         self._reload_workflow_list()
 
     def _on_workflow_edit_file(self, *_):
         wf = self._current_workflow()
         if not wf:
-            QMessageBox.information(self, "提示", "请先选择工作流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择工作流"))
             return
         files = [f for f in wf["core_files"] if f in ("agent.py", "llm.py", "tools.py", "mcp.json")]
         if not files:
-            QMessageBox.information(self, "提示", "该工作流没有可编辑的文件型核心文件，请先添加")
+            QMessageBox.information(self, _ui("提示"), _ui("该工作流没有可编辑的文件型核心文件，请先添加"))
             return
-        file, ok = QInputDialog.getItem(self, "编辑核心文件", "选择要编辑的文件：", files, 0, False)
+        file, ok = QInputDialog.getItem(self, _ui("编辑核心文件"), _ui("选择要编辑的文件："), files, 0, False)
         if not ok:
             return
         rok, content = agent_workflow.read_core_file(wf["name"], file)
         if not rok:
-            QMessageBox.warning(self, "读取失败", content)
+            QMessageBox.warning(self, _ui("读取失败"), content)
             return
         text, ok2 = _MultiLineInputDialog.get(
             self, f"编辑 {file}", "修改文件内容：", content, wrap=False, min_size=(680, 480))
@@ -4477,92 +4751,92 @@ class _AgentSettingsDialog(QDialog):
         wok, msg = agent_workflow.write_core_file(wf["name"], file, text)
         if wok:
             self._wf_changed = True
-            QMessageBox.information(self, "已保存", msg)
+            QMessageBox.information(self, _ui("已保存"), msg)
         else:
-            QMessageBox.warning(self, "保存失败", msg)
+            QMessageBox.warning(self, _ui("保存失败"), msg)
         self._reload_workflow_list()
 
     def _on_workflow_delete_file(self, *_):
         wf = self._current_workflow()
         if not wf:
-            QMessageBox.information(self, "提示", "请先选择工作流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择工作流"))
             return
         files = [f for f in wf["core_files"] if f in ("agent.py", "llm.py", "tools.py", "mcp.json")]
         if not files:
-            QMessageBox.information(self, "提示", "该工作流没有可删除的文件型核心文件")
+            QMessageBox.information(self, _ui("提示"), _ui("该工作流没有可删除的文件型核心文件"))
             return
-        file, ok = QInputDialog.getItem(self, "删除核心文件",
-                                        "选择要删除的文件（删除后回退内置默认）：", files, 0, False)
+        file, ok = QInputDialog.getItem(self, _ui("删除核心文件"),
+                                        _ui("选择要删除的文件（删除后回退内置默认）："), files, 0, False)
         if not ok:
             return
         ret = QMessageBox.question(
-            self, "确认删除", f"确定删除 {wf['name']}/{file}？该模块将回退到内置默认实现。")
+            self, _ui("确认删除"), _uif("确定删除 {a0}/{a1}？该模块将回退到内置默认实现。", a0=wf['name'], a1=file))
         if ret != QMessageBox.StandardButton.Yes:
             return
         dok, msg = agent_workflow.delete_core_file(wf["name"], file)
         if dok:
             self._wf_changed = True
-            QMessageBox.information(self, "已删除", msg)
+            QMessageBox.information(self, _ui("已删除"), msg)
         else:
-            QMessageBox.warning(self, "删除失败", msg)
+            QMessageBox.warning(self, _ui("删除失败"), msg)
         self._reload_workflow_list()
 
     def _on_workflow_switch(self, *_):
         wf = self._current_workflow()
         if not wf:
-            QMessageBox.information(self, "提示", "请先选择要切换的工作流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择要切换的工作流"))
             return
         ok, msg = agent_workflow.set_active(wf["name"])
         if ok:
             self._wf_changed = True
-            QMessageBox.information(self, "已切换", msg + "（保存后立即生效）")
+            QMessageBox.information(self, _ui("已切换"), msg + "（保存后立即生效）")
         else:
-            QMessageBox.warning(self, "切换失败", msg)
+            QMessageBox.warning(self, _ui("切换失败"), msg)
         self._reload_workflow_list()
 
     def _on_workflow_toggle(self, *_):
         wf = self._current_workflow()
         if not wf:
-            QMessageBox.information(self, "提示", "请先选择工作流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择工作流"))
             return
         ok, msg = agent_workflow.set_enabled(wf["name"], not wf.get("enabled", True))
         if ok:
             self._wf_changed = True
-            QMessageBox.information(self, "已更新", msg + "（保存后立即生效）")
+            QMessageBox.information(self, _ui("已更新"), msg + "（保存后立即生效）")
         else:
-            QMessageBox.warning(self, "操作失败", msg)
+            QMessageBox.warning(self, _ui("操作失败"), msg)
         self._reload_workflow_list()
 
     def _on_workflow_delete(self, *_):
         wf = self._current_workflow()
         if not wf:
-            QMessageBox.information(self, "提示", "请先选择要删除的工作流")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择要删除的工作流"))
             return
         if wf["is_default"]:
-            QMessageBox.warning(self, "不可删除", "默认工作流不可删除")
+            QMessageBox.warning(self, _ui("不可删除"), _ui("默认工作流不可删除"))
             return
         ret = QMessageBox.question(
-            self, "确认删除", f"确定删除工作流「{wf['name']}」？文件将一并删除，不可恢复。")
+            self, _ui("确认删除"), _uif("确定删除工作流「{a0}」？文件将一并删除，不可恢复。", a0=wf['name']))
         if ret != QMessageBox.StandardButton.Yes:
             return
         ok, msg = agent_workflow.delete_workflow(wf["name"])
         if ok:
             self._wf_changed = True
-            QMessageBox.information(self, "已删除", msg)
+            QMessageBox.information(self, _ui("已删除"), msg)
         else:
-            QMessageBox.warning(self, "删除失败", msg)
+            QMessageBox.warning(self, _ui("删除失败"), msg)
         self._reload_workflow_list()
 
 
     def _build_plugin_page(self) -> QWidget:
-        w = self._page("插件")
+        w = self._page(_ui("插件"))
         lay = self._page_body(w)
-        sub = QLabel("统一管理插件：用自然语言描述即可创建可运行插件（MCP 工具 + 标准技能 SKILL.md），"
-                     "或导入插件包 / 标准技能。停用插件即时移除其 MCP 工具。")
+        sub = QLabel(_ui("统一管理插件：用自然语言描述即可创建可运行插件（MCP 工具 + 标准技能 SKILL.md），或导入插件包 / 标准技能。停用插件即时移除其 MCP 工具。"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
         self.plugin_list = QListWidget()
+        self.plugin_list.setWordWrap(True)   # 长英文描述自动换行，避免被右缘挤压遮挡
         self.plugin_list.setStyleSheet(
             f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
@@ -4574,49 +4848,47 @@ class _AgentSettingsDialog(QDialog):
         # 只要字体/DPI 略大就撑破页面，把所有页的右侧内容（如外观页滑杆数值）
         # 推出视口裁掉 —— 改 FlowLayout 后最小需求降到单个按钮宽。
         row = FlowLayout(spacing=SPACING_SM)
-        create_b = QPushButton(_line_icon("plus", 16), "创建插件（自然语言）")
+        create_b = QPushButton(_line_icon("plus", 16), _ui("创建插件（自然语言）"))
         create_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
                                "border: none; border-radius: 8px; padding: 7px 14px; font-weight: 700;")
         create_b.setAutoDefault(False)
-        create_b.setToolTip("输入自然语言描述，AI 自动生成可运行的插件（MCP server + SKILL.md + 脚本/资源/示例）")
+        create_b.setToolTip(_ui("输入自然语言描述，AI 自动生成可运行的插件（MCP server + SKILL.md + 脚本/资源/示例）"))
         create_b.clicked.connect(self._on_plugin_create)
-        imp_zip = QPushButton(_line_icon("folder", 16), "导入插件包")
+        imp_zip = QPushButton(_line_icon("folder", 16), _ui("导入插件包"))
         imp_zip.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                               "padding: 7px 14px; font-weight: 600;")
         imp_zip.setAutoDefault(False)
-        imp_zip.setToolTip("导入 zip 插件包（含 plugin.json 的完整插件）")
+        imp_zip.setToolTip(_ui("导入 zip 插件包（含 plugin.json 的完整插件）"))
         imp_zip.clicked.connect(self._on_plugin_import_zip)
-        imp_skill = QPushButton("导入标准技能")
+        imp_skill = QPushButton(_ui("导入标准技能"))
         imp_skill.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                 "padding: 7px 14px; font-weight: 600;")
         imp_skill.setAutoDefault(False)
-        imp_skill.setToolTip("导入市场标准 SKILL.md（或含 SKILL.md 的 zip），包装为 skill 型插件")
+        imp_skill.setToolTip(_ui("导入市场标准 SKILL.md（或含 SKILL.md 的 zip），包装为 skill 型插件"))
         imp_skill.clicked.connect(self._on_plugin_import_skill)
-        call_b = QPushButton("调用")
+        call_b = QPushButton(_ui("调用"))
         call_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                              "padding: 7px 14px; font-weight: 600;")
         call_b.setAutoDefault(False)
-        call_b.setToolTip("关闭设置并回到对话页，输入框预填「/插件名 」，回车即调用该插件；"
-                          "调用时会把插件说明与调用规范直接交给模型")
+        call_b.setToolTip(_ui("关闭设置并回到对话页，输入框预填「/插件名 」，回车即调用该插件；调用时会把插件说明与调用规范直接交给模型"))
         call_b.clicked.connect(self._on_plugin_call)
-        toggle_b = QPushButton("启用/停用")
+        toggle_b = QPushButton(_ui("启用/停用"))
         toggle_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                                "padding: 7px 14px; font-weight: 600;")
         toggle_b.setAutoDefault(False)
         toggle_b.clicked.connect(self._on_plugin_toggle)
-        wf_b = QPushButton("分配工作流…")
+        wf_b = QPushButton(_ui("分配工作流…"))
         wf_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                            "padding: 7px 14px; font-weight: 600;")
         wf_b.setAutoDefault(False)
-        wf_b.setToolTip("指定插件可用的一个或多个工作流（空=全局所有工作流）；"
-                        "插件技能与 MCP 服务器随之绑定生效")
+        wf_b.setToolTip(_ui("指定插件可用的一个或多个工作流（空=全局所有工作流）；插件技能与 MCP 服务器随之绑定生效"))
         wf_b.clicked.connect(self._on_plugin_workflows)
-        del_b = QPushButton(_line_icon("trash", 16), "删除")
+        del_b = QPushButton(_line_icon("trash", 16), _ui("删除"))
         del_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                             "padding: 7px 14px; font-weight: 600;")
@@ -4638,11 +4910,25 @@ class _AgentSettingsDialog(QDialog):
             return   # 插件页尚未懒加载构建时跳过
         self.plugin_list.clear()
         for p in agent_plugins.list_plugins():
-            kind = {"mcp": "工具", "skill": "技能", "combined": "工具+技能"}.get(p.get("kind"), p.get("kind", ""))
-            state = "启用" if p.get("enabled") else "停用"
+            kind = _PLUGIN_KIND_LABEL.get(p.get("kind"), "")
+            kind = _uim(kind) if kind else str(p.get("kind", ""))
+            state = _ui("启用") if p.get("enabled") else _ui("停用")
             bound = agent_plugins.plugin_workflows(p.get("name", ""))
-            wf = f"   [工作流: {', '.join(bound)}]" if bound else ""
-            self.plugin_list.addItem(f"{p.get('name', '?')}   [{kind}]   {state}{wf}   {p.get('description', '')}")
+            wf = (_uif("   [工作流: {wfs}]", wfs=", ".join(bound))
+                  if bound else "")
+            # 插件名是标识符（不译），类型/状态/描述是文案（走语言包）
+            # 插件描述走提示词语言包（key: plugin.<name>.desc）：与注入 system prompt 时
+            # 的翻译同源（agent_plugins._tp），内置插件有英文译文，用户自定义回退原文。
+            try:
+                from zhuzhu_Copilot.core import i18n as _i18n_mod
+                _plugin_desc = _i18n_mod.tp(f"plugin.{p.get('name','?')}.desc",
+                                            p.get("description", "") or "")
+            except Exception:
+                _plugin_desc = p.get("description", "") or ""
+            self.plugin_list.addItem(_uif(
+                "{name}   [{kind}]   {state}{wf}   {desc}",
+                name=p.get("name", "?"), kind=kind, state=state, wf=wf,
+                desc=_plugin_desc))
 
     def _current_plugin(self) -> dict:
         row = self.plugin_list.currentRow()
@@ -4663,7 +4949,7 @@ class _AgentSettingsDialog(QDialog):
         _kinds = ["combined（工具+技能）", "web（工具+技能+本地网页界面）",
                   "mcp（仅工具）", "skill（仅技能）"]
         kind, k_ok = QInputDialog.getItem(
-            self, "创建插件", "插件类型：", _kinds, 0, False)
+            self, _ui("创建插件"), _ui("插件类型："), _kinds, 0, False)
         if not k_ok:
             return
         k = {"combined（工具+技能）": "combined",
@@ -4689,9 +4975,9 @@ class _AgentSettingsDialog(QDialog):
     def _on_plugin_done(self, ok: str, msg: str):
         self._pbar_close()
         if ok == "1":
-            QMessageBox.information(self, "创建插件", msg)
+            QMessageBox.information(self, _ui("创建插件"), msg)
         else:
-            QMessageBox.warning(self, "创建插件失败", msg)
+            QMessageBox.warning(self, _ui("创建插件失败"), msg)
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers()
         self._reload_mcp_list()
@@ -4699,14 +4985,14 @@ class _AgentSettingsDialog(QDialog):
     def _on_plugin_import_zip(self, *_):
         """导入插件 zip 包（含 plugin.json）：导入后自动登记技能/MCP，刷新并重连"""
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择插件包", "", "插件压缩包 (*.zip);;所有文件 (*.*)")
+            self, _ui("选择插件包"), "", _ui("插件压缩包 (*.zip);;所有文件 (*.*)"))
         if not path:
             return
         ok, msg = agent_plugins.import_plugin_zip(path)
         if ok:
-            QMessageBox.information(self, "导入插件", msg)
+            QMessageBox.information(self, _ui("导入插件"), msg)
         else:
-            QMessageBox.warning(self, "导入失败", msg)
+            QMessageBox.warning(self, _ui("导入失败"), msg)
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers()
         self._reload_mcp_list()
@@ -4716,29 +5002,29 @@ class _AgentSettingsDialog(QDialog):
     def _on_plugin_import_skill(self, *_):
         """导入标准技能为 skill 型插件"""
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择标准技能文件", "",
-            "技能文件 (*.md);;压缩包 (*.zip);;所有文件 (*.*)")
+            self, _ui("选择标准技能文件"), "",
+            _ui("技能文件 (*.md);;压缩包 (*.zip);;所有文件 (*.*)"))
         if not path:
             return
         ok, msg = agent_plugins.import_plugin_skill(path)
         if ok:
-            QMessageBox.information(self, "导入技能插件", msg)
+            QMessageBox.information(self, _ui("导入技能插件"), msg)
         else:
-            QMessageBox.warning(self, "导入失败", msg)
+            QMessageBox.warning(self, _ui("导入失败"), msg)
         self._reload_plugin_list()
 
     def _on_plugin_toggle(self, *_):
         """启用/停用插件：停用移除 MCP 登记，启用恢复；刷新列表与 MCP 列表"""
         p = self._current_plugin()
         if p is None:
-            QMessageBox.information(self, "提示", "请先选择一个插件")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
             return
         name = p.get("name", "")
         ok, msg = agent_plugins.set_plugin_enabled(name, not bool(p.get("enabled")))
         if ok:
-            QMessageBox.information(self, "插件", msg)
+            QMessageBox.information(self, _ui("插件"), msg)
         else:
-            QMessageBox.warning(self, "操作失败", msg)
+            QMessageBox.warning(self, _ui("操作失败"), msg)
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers()
         self._reload_mcp_list()
@@ -4752,15 +5038,15 @@ class _AgentSettingsDialog(QDialog):
         """
         p = self._current_plugin()
         if p is None:
-            QMessageBox.information(self, "提示", "请先在列表中选择一个插件")
+            QMessageBox.information(self, _ui("提示"), _ui("请先在列表中选择一个插件"))
             return
         name = str(p.get("name") or "")
         if not p.get("enabled", True):
-            QMessageBox.warning(self, "调用插件", f"插件「{name}」已停用，请先启用再调用。")
+            QMessageBox.warning(self, _ui("调用插件"), _uif("插件「{a0}」已停用，请先启用再调用。", a0=name))
             return
         fn = getattr(self.parent(), "request_plugin_call", None)
         if not callable(fn):
-            QMessageBox.information(self, "调用插件", f"请在输入框输入 /{name} 调用该插件。")
+            QMessageBox.information(self, _ui("调用插件"), _uif("请在输入框输入 /{a0} 调用该插件。", a0=name))
             return
         fn(name)
         self.accept()      # 收起设置页：回到对话页即可直接回车调用
@@ -4769,18 +5055,20 @@ class _AgentSettingsDialog(QDialog):
         """删除插件：移除插件目录并解绑 MCP/技能"""
         p = self._current_plugin()
         if p is None:
-            QMessageBox.information(self, "提示", "请先选择一个插件")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
             return
         name = p.get("name", "")
         reply = QMessageBox.question(
-            self, "确认删除", f"确定删除插件「{name}」吗？\n将同时移除其目录与登记的 MCP 工具/技能。")
+            self, _ui("确认删除"),
+            _uim("确定删除插件「{name}」吗？\n将同时移除其目录与登记的 MCP 工具/技能。")
+            .format(name=name))
         if reply != QMessageBox.StandardButton.Yes:
             return
         ok, msg = agent_plugins.delete_plugin(name)
         if ok:
-            QMessageBox.information(self, "删除插件", msg)
+            QMessageBox.information(self, _ui("删除插件"), msg)
         else:
-            QMessageBox.warning(self, "删除失败", msg)
+            QMessageBox.warning(self, _ui("删除失败"), msg)
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers()
         self._reload_mcp_list()
@@ -4789,7 +5077,7 @@ class _AgentSettingsDialog(QDialog):
         """指定插件可用的工作流（多选/逗号分隔；空=全局）"""
         p = self._current_plugin()
         if p is None:
-            QMessageBox.information(self, "提示", "请先选择一个插件")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
             return
         name = p.get("name", "")
         current = agent_plugins.plugin_workflows(name)
@@ -4799,9 +5087,9 @@ class _AgentSettingsDialog(QDialog):
             return
         ok2, msg = agent_plugins.set_plugin_workflows(name, ws)
         if ok2:
-            QMessageBox.information(self, "插件", msg)
+            QMessageBox.information(self, _ui("插件"), msg)
         else:
-            QMessageBox.warning(self, "操作失败", msg)
+            QMessageBox.warning(self, _ui("操作失败"), msg)
         self._reload_plugin_list()
         if hasattr(self, "skill_wf_combo") and self.skill_wf_combo is not None:
             self._reload_skill_list(self._current_skill_workflow())
@@ -4812,7 +5100,9 @@ class _AgentSettingsDialog(QDialog):
         names = ", ".join(w["name"] for w in all_wf) or "（暂无）"
         hint = "可用工作流: " + names
         text, ok = QInputDialog.getText(
-            self, title, f"工作流名用逗号分隔（可多选）；留空=全局所有工作流可用。\n{hint}",
+            self, title,
+            _uim("工作流名用逗号分隔（可多选）；留空=全局所有工作流可用。\n{hint}")
+            .format(hint=hint),
             QLineEdit.EchoMode.Normal, initial)
         if not ok:
             return [], False
@@ -4832,11 +5122,10 @@ class _AgentSettingsDialog(QDialog):
         设了背景后主界面容器底色会整体改透明（让壁纸透出来），压暗纱是正文
         可读性的地板 —— 调得太低，正文会直接压在照片上而看不清。
         """
-        w = self._page("背景")
+        w = self._page(_ui("背景"))
         lay = self._page_body(w)
 
-        tip = QLabel("选择一张图片作为 AI 面板背景：png / jpg / jpeg / bmp / webp。"
-                     "图片会收进应用数据目录，重启后仍然有效。")
+        tip = QLabel(_ui("选择一张图片作为 AI 面板背景：png / jpg / jpeg / bmp / webp。图片会收进应用数据目录，重启后仍然有效。"))
         tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -4849,13 +5138,13 @@ class _AgentSettingsDialog(QDialog):
 
         ops = QHBoxLayout()
         ops.setSpacing(8)
-        pick = QPushButton(_line_icon("plus", 16, self._TEXT), "选择图片")
+        pick = QPushButton(_line_icon("plus", 16, self._TEXT), _ui("选择图片"))
         pick.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
                            "border-radius: 8px; padding: 7px 16px; font-weight: 700;")
         pick.setAutoDefault(False)
         pick.clicked.connect(self._wallpaper_pick)
         ops.addWidget(pick)
-        clr = QPushButton(_line_icon("trash", 16, self._TEXT), "清除背景")
+        clr = QPushButton(_line_icon("trash", 16, self._TEXT), _ui("清除背景"))
         clr.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT};"
             f" border: 1px solid {self._BORDER};"
@@ -4868,13 +5157,13 @@ class _AgentSettingsDialog(QDialog):
 
         fit_row = QHBoxLayout()
         fit_row.setSpacing(10)
-        fit_lbl = QLabel("适配方式")
+        fit_lbl = QLabel(_ui("适配方式"))
         fit_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        fit_lbl.setFixedWidth(70)
+        fit_lbl.setFixedWidth(self._label_col_w())
         fit_row.addWidget(fit_lbl)
         self.wallpaper_fit = _ArrowComboBox()
-        for fit, label in (("cover", "铺满裁切"), ("contain", "完整显示"),
-                           ("stretch", "拉伸铺满"), ("tile", "平铺重复")):
+        for fit, label in (("cover", _ui("铺满裁切")), ("contain", _ui("完整显示")),
+                           ("stretch", _ui("拉伸铺满")), ("tile", _ui("平铺重复"))):
             self.wallpaper_fit.addItem(label, fit)
         _idx = self.wallpaper_fit.findData(app_wallpaper.params().bg_fit)
         self.wallpaper_fit.setCurrentIndex(_idx if _idx >= 0 else 0)
@@ -4884,19 +5173,258 @@ class _AgentSettingsDialog(QDialog):
 
         p = app_wallpaper.params()
         blur_row, self.wallpaper_blur, _bl = self._wallpaper_slider_row(
-            "模糊程度", p.bg_blur, app_wallpaper.BLUR_MAX, " px",
-            "背景图的高斯模糊半径：0 为原图，越大越糊、越不干扰正文阅读",
+            _ui("模糊程度"), p.bg_blur, app_wallpaper.BLUR_MAX, " px",
+            _ui("背景图的高斯模糊半径：0 为原图，越大越糊、越不干扰正文阅读"),
             self._wallpaper_blur_changed)
         lay.addLayout(blur_row)
         dim_row, self.wallpaper_dim, _dl = self._wallpaper_slider_row(
-            "压暗程度", p.bg_dim, app_wallpaper.DIM_MAX, "%",
-            "壁纸之上压一层主题底色的强度：越高正文越清晰、壁纸越淡",
+            _ui("压暗程度"), p.bg_dim, app_wallpaper.DIM_MAX, "%",
+            _ui("壁纸之上压一层主题底色的强度：越高正文越清晰、壁纸越淡"),
             self._wallpaper_dim_changed)
         lay.addLayout(dim_row)
 
         self._wallpaper_refresh("")
         lay.addStretch(1)
         return w
+
+    def _build_wechat_page(self) -> QWidget:
+        """微信 ClawBot 绑定页：官方 iLink 协议，扫码绑定后在微信中与 agent 对话。
+
+        架构：调用微信官方 iLink API 获取二维码 → 手机微信扫码确认 → 拿到 bot_token →
+        getupdates 长轮询收消息 → sendmessage 发回复（必须回传 context_token）→
+        文件经 AES-128-ECB 加密后上传微信 CDN 再推送。
+        """
+        from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+        w = self._page(_ui("微信 ClawBot"))
+        lay = self._page_body(w)
+
+        tip = QLabel(_ui("用手机微信扫码绑定 ClawBot，在微信中直接给 agent 发消息、接收回复和文件，也可直接把 PPT / Word / Excel / 图片 / 代码等文件发给 agent 读取。基于微信官方 iLink 协议，无需公网 IP。"))
+        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        # 绑定状态
+        self.wechat_status = QLabel("")
+        self.wechat_status.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        self.wechat_status.setWordWrap(True)
+        lay.addWidget(self.wechat_status)
+
+        # 二维码显示区域
+        self.wechat_qr = QLabel("")
+        self.wechat_qr.setFixedSize(200, 200)
+        self.wechat_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.wechat_qr.setStyleSheet(f"background: {self._PANEL}; border: 1px solid {self._BORDER}; border-radius: 8px;")
+        qr_row = QHBoxLayout()
+        qr_row.addStretch(1)
+        qr_row.addWidget(self.wechat_qr)
+        qr_row.addStretch(1)
+        lay.addLayout(qr_row)
+
+        # 操作按钮
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self.wechat_bind_btn = QPushButton(_ui("扫码绑定"))
+        self.wechat_bind_btn.setStyleSheet(
+            f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
+            "border-radius: 8px; padding: 8px 24px; font-weight: 700;")
+        self.wechat_bind_btn.setAutoDefault(False)
+        self.wechat_bind_btn.clicked.connect(self._wechat_start_binding)
+        btn_row.addWidget(self.wechat_bind_btn)
+        self.wechat_unbind_btn = QPushButton(_ui("解除绑定"))
+        self.wechat_unbind_btn.setStyleSheet(
+            f"background: {self._PANEL}; color: {self._TEXT};"
+            f" border: 1px solid {self._BORDER};"
+            "border-radius: 8px; padding: 8px 20px; font-weight: 600;")
+        self.wechat_unbind_btn.setAutoDefault(False)
+        self.wechat_unbind_btn.clicked.connect(self._wechat_unbind)
+        self.wechat_unbind_btn.setVisible(False)
+        btn_row.addWidget(self.wechat_unbind_btn)
+        btn_row.addStretch(1)
+        lay.addLayout(btn_row)
+
+        # 扫码提示
+        qr_tip = QLabel(_ui("打开手机微信 → 右上角「+」→ 扫一扫 → 扫描上方二维码 → 在微信中确认绑定 → 直接对话"))
+        qr_tip.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
+        qr_tip.setWordWrap(True)
+        qr_tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(qr_tip)
+
+        # 初始化状态
+        bridge = get_bridge()
+        if bridge.bound:
+            self.wechat_status.setText(_ui("已绑定，微信消息实时同步中"))
+            self.wechat_status.setStyleSheet(f"color: #22C55E; font-size: 12px;")
+            self.wechat_qr.setText(_ui("已绑定"))
+            self.wechat_bind_btn.setVisible(False)
+            self.wechat_unbind_btn.setVisible(True)
+            # 恢复消息轮询
+            self._wechat_start_polling()
+        else:
+            self.wechat_status.setText(_ui("未绑定，点击下方按钮获取二维码"))
+            self.wechat_status.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+
+        lay.addStretch(1)
+        return w
+
+    def _wechat_start_binding(self):
+        """获取二维码并启动状态轮询。"""
+        from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+        bridge = get_bridge()
+        qr = bridge.get_qrcode()
+        qrcode_token = qr.get("qrcode", "")
+        qr_img = qr.get("qrcode_img_content", "") or qr.get("qrcode_url", "") or qr.get("img", "")
+        if not qrcode_token:
+            self.wechat_status.setText(_ui("获取二维码失败，请检查网络后重试"))
+            self.wechat_status.setStyleSheet(f"color: #EF4444; font-size: 12px;")
+            return
+        # 显示二维码
+        self.wechat_status.setText(_ui("请用手机微信扫描二维码"))
+        self.wechat_status.setStyleSheet(f"color: {self._ACCENT}; font-size: 12px;")
+        self.wechat_qr.setText(_ui("加载二维码..."))
+        # 后台加载二维码图片：优先官方图片URL，失败时用qrcode库本地生成
+        threading.Thread(target=self._wechat_load_qr_image, args=(qr_img, qrcode_token), daemon=True).start()
+        # 启动二维码状态轮询
+        self._wechat_qr_token = qrcode_token
+        self._wechat_qr_polling = True
+        threading.Thread(target=self._wechat_qr_poll_loop, daemon=True).start()
+
+    def _wechat_load_qr_image(self, url: str, qrcode_token: str):
+        """后台加载二维码图片。
+
+        qrcode_img_content 可能是：
+        1. 二维码图片 URL（如 CDN 图片）→ 下载显示
+        2. 扫码跳转 URL（如 weixin.qq.com/x/...）→ 用 qrcode 库生成二维码
+        3. 空 → 用扫码 API URL 生成二维码
+        """
+        pm = None
+        qr_content = ""
+
+        # 判断 url 类型
+        if url and url.startswith("http"):
+            # 微信短链/登录页 URL → 作为二维码内容
+            if "weixin.qq.com" in url and "/x/" in url:
+                qr_content = url
+            # ilink 登录页 URL → 作为二维码内容
+            elif "ilinkai.weixin.qq.com" in url and "qrcode" in url:
+                qr_content = url
+            # 其他 → 尝试作为图片下载
+            else:
+                try:
+                    import urllib.request
+                    import ssl
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    data = urllib.request.urlopen(req, timeout=15, context=ctx).read()
+                    pm = QPixmap()
+                    pm.loadFromData(data)
+                    if pm.isNull():
+                        pm = None
+                        qr_content = url  # 下载失败，当作二维码内容
+                except Exception:
+                    qr_content = url  # 下载失败，当作二维码内容
+
+        # 用 qrcode 库生成二维码
+        if pm is None or pm.isNull():
+            if not qr_content:
+                qr_content = f"https://ilinkai.weixin.qq.com/ilink/bot/get_qrcode_status?qrcode={qrcode_token}"
+            try:
+                import qrcode
+                from qrcode.constants import ERROR_CORRECT_M
+                qr = qrcode.QRCode(version=None, error_correction=ERROR_CORRECT_M, box_size=8, border=2)
+                qr.add_data(qr_content)
+                qr.make(fit=True)
+                img = qr.make_image(fill_color="black", back_color="white")
+                import io
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                pm = QPixmap()
+                pm.loadFromData(buf.getvalue())
+            except Exception as e:
+                print("[WeChat] QR generate failed:", e)
+                pm = None
+
+        # 显示
+        if pm is not None and not pm.isNull():
+            self.wechat_qr.setPixmap(pm.scaled(190, 190, Qt.AspectRatioMode.KeepAspectRatio,
+                                                Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.wechat_qr.setText(_ui("二维码加载失败"))
+
+    def _wechat_qr_poll_loop(self):
+        """轮询二维码扫码状态：wait → scaned → confirmed。"""
+        from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+        bridge = get_bridge()
+        token = getattr(self, "_wechat_qr_token", "")
+        while getattr(self, "_wechat_qr_polling", False):
+            result = bridge.poll_qrcode_status(token)
+            if result is None:
+                time.sleep(2)
+                continue
+            status = result.get("status", "")
+            if status == "scaned":
+                self.wechat_status.setText(_ui("已扫描，请在微信中确认绑定"))
+                self.wechat_status.setStyleSheet(f"color: {self._ACCENT}; font-size: 12px;")
+            elif status == "confirmed":
+                self._wechat_qr_polling = False
+                self.wechat_status.setText(_ui("绑定成功！微信消息实时同步中"))
+                self.wechat_status.setStyleSheet(f"color: #22C55E; font-size: 12px;")
+                self.wechat_qr.setText(_ui("已绑定"))
+                self.wechat_bind_btn.setVisible(False)
+                self.wechat_unbind_btn.setVisible(True)
+                self._wechat_start_polling()
+                return
+            elif status == "expired":
+                self._wechat_qr_polling = False
+                self.wechat_status.setText(_ui("二维码已过期，请重新获取"))
+                self.wechat_status.setStyleSheet(f"color: #EF4444; font-size: 12px;")
+                self.wechat_qr.setText(_ui("已过期"))
+                return
+            time.sleep(2)
+
+    def _wechat_start_polling(self):
+        """委托主面板启动微信消息轮询（单一实现）。
+
+        设置对话框不再自行启动轮询/回复线程：与主面板两套并存时会各起一份
+        回复推送线程、on_message 回调在两者间来回切换，是重复消息的来源之一。
+        统一委托给 AgentPanel._wechat_start_polling()。
+        """
+        panel = self._find_main_panel()
+        if panel is not None:
+            panel._wechat_start_polling()
+        else:
+            print("[WeChatBridge] settings: main panel not found, start skipped")
+
+    def _find_main_panel(self):
+        """找到主面板 AgentPanel 实例。"""
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, AgentPanel):
+                return p
+            p = p.parent()
+        from PyQt6.QtWidgets import QApplication
+        for w in QApplication.topLevelWidgets():
+            if isinstance(w, AgentPanel):
+                return w
+        return None
+
+    def _wechat_unbind(self):
+        """解除绑定：清除凭据，停止轮询。"""
+        from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+        bridge = get_bridge()
+        bridge.stop()
+        bridge.logout()
+        self._wechat_polling = False
+        self._wechat_qr_polling = False
+        panel = self._find_main_panel()
+        if panel is not None:
+            panel._wechat_polling = False   # 主面板回复推送线程随之退出
+        self.wechat_status.setText(_ui("已解除绑定"))
+        self.wechat_status.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        self.wechat_qr.clear()
+        self.wechat_bind_btn.setVisible(True)
+        self.wechat_unbind_btn.setVisible(False)
 
     def _wallpaper_slider_row(self, title: str, cur: float, top: float, unit: str,
                               tip: str, commit):
@@ -4951,7 +5479,7 @@ class _AgentSettingsDialog(QDialog):
         """刷新当前背景显示（附一条操作回执，空则只显示现状）。"""
         p = app_wallpaper.params()
         name = Path(p.bg_image).name if p.bg_image else ""
-        cur = f"当前背景：{name}" if name else "当前背景：未设置（使用主题渐变）"
+        cur = _uif("当前背景：{a0}", a0=name) if name else _ui("当前背景：未设置（使用主题渐变）")
         self.wallpaper_now.setText(f"{cur}　{msg}" if msg else cur)
         # 同步滑杆：参数也可能被 agent 工具改过（页面已构建时才能同步）
         for slider, value in ((getattr(self, "wallpaper_blur", None), p.bg_blur),
@@ -4967,8 +5495,8 @@ class _AgentSettingsDialog(QDialog):
 
     def _wallpaper_pick(self, *_):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择背景图", "",
-            "图片文件 (*.png *.jpg *.jpeg *.bmp *.webp);;所有文件 (*.*)")
+            self, _ui("选择背景图"), "",
+            _ui("图片文件 (*.png *.jpg *.jpeg *.bmp *.webp);;所有文件 (*.*)"))
         if not path:
             return
         ok, msg, _stored = app_wallpaper.import_background(path)
@@ -5018,14 +5546,14 @@ class _AgentSettingsDialog(QDialog):
         v = QVBoxLayout(card)
         v.setContentsMargins(12, 8, 12, 8)
         v.setSpacing(2)
-        name_text = str(p.get("name", ""))
+        name_text = _provider_disp(p)
         if agent_llm.is_default_provider(p):
-            name_text += "（内置 · 锁定）"
+            name_text += _ui("（内置 · 锁定）")
         if p.get("kind") == "deepseek_web":
             try:
                 from zhuzhu_Copilot.core import agent_web_llm
-                name_text += (" · 已登录" if agent_web_llm.has_valid_credentials()
-                              else " · 未登录")
+                name_text += (_ui(" · 已登录") if agent_web_llm.has_valid_credentials()
+                              else _ui(" · 未登录"))
             except Exception:
                 pass
         name = QLabel(name_text)
@@ -5038,8 +5566,9 @@ class _AgentSettingsDialog(QDialog):
         url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         v.addWidget(url)
         mm = set(p.get("multimodal_models") or [])
-        models = QLabel("模型：" + ", ".join(
-            f"{x}（视觉）" if x in mm else str(x) for x in (p.get("models") or [])))
+        models = QLabel(_ui("模型：") + ", ".join(
+            _uif("{m}（视觉）", m=x) if x in mm else str(x)
+            for x in (p.get("models") or [])))
         models.setWordWrap(True)   # 长模型列表换行完整显示，不被裁剪
         models.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         v.addWidget(models)
@@ -5152,18 +5681,18 @@ class _AgentSettingsDialog(QDialog):
                     f"background: {self._PANEL}; color: {self._DIM};"
                     f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                     "padding: 7px 16px; font-weight: 600;")
-                self.del_provider_btn.setToolTip("内置默认服务商（agnes）不可删除")
+                self.del_provider_btn.setToolTip(_ui("内置默认服务商（agnes）不可删除"))
                 self.provider_hint.setText(
-                    f"「{sel.get('name')}」为内置默认服务商，整行锁定：不可删除、不可编辑")
+                    _uif("「{a0}」为内置默认服务商，整行锁定：不可删除、不可编辑", a0=_provider_disp(sel)))
                 self.provider_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
             else:
                 self.del_provider_btn.setStyleSheet(
                     f"background: {self._DANGER}; color: #FFFFFF; border: none;"
                     "border-radius: 8px; padding: 7px 16px; font-weight: 700;")
-                self.del_provider_btn.setToolTip(f"删除服务商「{sel.get('name')}」")
+                self.del_provider_btn.setToolTip(_uif("删除服务商「{a0}」", a0=_provider_disp(sel)))
                 models = ", ".join(sel.get("models") or [])
                 self.provider_hint.setText(
-                    f"已选中「{sel.get('name')}」｜接口 {sel.get('base_url')}｜模型：{models}")
+                    _uif("已选中「{a0}」｜接口 {a1}｜模型：{a2}", a0=_provider_disp(sel), a1=sel.get('base_url'), a2=models))
                 self.provider_hint.setStyleSheet(
                     f"color: {self._ACCENT_HOVER}; font-size: 12px;")
         else:
@@ -5172,8 +5701,8 @@ class _AgentSettingsDialog(QDialog):
                 f"background: {self._PANEL}; color: {self._DIM};"
                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                 "padding: 7px 16px; font-weight: 600;")
-            self.del_provider_btn.setToolTip("请先选中一个服务商")
-            self.provider_hint.setText("点击选中服务商卡片（删除按钮随之变红可用）；双击卡片编辑")
+            self.del_provider_btn.setToolTip(_ui("请先选中一个服务商"))
+            self.provider_hint.setText(_ui("点击选中服务商卡片（删除按钮随之变红可用）；双击卡片编辑"))
             self.provider_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         # 卡片高亮：选中卡片纯蓝底 + 白字（无边框）
         for i in range(self.provider_list.count()):
@@ -5199,7 +5728,7 @@ class _AgentSettingsDialog(QDialog):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             p = dlg.provider_data()
             if any(x.get("name") == p["name"] for x in self._providers):
-                QMessageBox.warning(self, "提示", f"已存在同名服务商「{p['name']}」")
+                QMessageBox.warning(self, _ui("提示"), _uif("已存在同名服务商「{a0}」", a0=p['name']))
                 return
             self._providers.append(p)
             self._reload_provider_list()
@@ -5212,7 +5741,7 @@ class _AgentSettingsDialog(QDialog):
             return
         p = self._providers[idx]
         if agent_llm.is_default_provider(p):
-            QMessageBox.information(self, "提示", "内置默认服务商（agnes）不可编辑")
+            QMessageBox.information(self, _ui("提示"), _ui("内置默认服务商（agnes）不可编辑"))
             return
         dlg = _ProviderDialog(provider=p, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -5225,17 +5754,17 @@ class _AgentSettingsDialog(QDialog):
     def _on_provider_delete(self, *_):
         item = self.provider_list.currentItem()
         if item is None:
-            QMessageBox.information(self, "提示", "请先选中一个服务商")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选中一个服务商"))
             return
         idx = self.provider_list.row(item)
         if not (0 <= idx < len(self._providers)):
             return
         p = self._providers[idx]
         if agent_llm.is_default_provider(p):
-            QMessageBox.information(self, "提示", "内置默认服务商（agnes）不可删除")
+            QMessageBox.information(self, _ui("提示"), _ui("内置默认服务商（agnes）不可删除"))
             return
         reply = QMessageBox.question(
-            self, "删除服务商", f"确定删除服务商「{p.get('name')}」？",
+            self, _ui("删除服务商"), _uif("确定删除服务商「{a0}」？", a0=p.get('name')),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
@@ -5253,7 +5782,8 @@ class _AgentSettingsDialog(QDialog):
             typ = "stdio" if srv.get("type", "stdio") == "stdio" else "sse"
             detail = srv.get("command", "") or srv.get("url", "")
             bound = agent_skills.get_workflow_binding("mcp", srv.get("name", ""))
-            wf = f"   [工作流: {', '.join(bound)}]" if bound else ""
+            wf = (_uif("   [工作流: {wfs}]", wfs=", ".join(bound))
+                  if bound else "")
             self.mcp_list.addItem(f"{srv.get('name', '?')}   [{typ}]   {detail}{wf}")
 
     def _current_mcp(self) -> dict:
@@ -5272,7 +5802,7 @@ class _AgentSettingsDialog(QDialog):
 
     def _on_mcp_edit(self, *_):
         if self._current_mcp() is None:
-            QMessageBox.information(self, "提示", "请先选择一个服务器")
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个服务器"))
             return
         old = self._current_mcp()
         dlg = _McpServerDialog(server=old, parent=self)
@@ -5302,11 +5832,11 @@ class _AgentSettingsDialog(QDialog):
         val = self.mode_combo.itemData(idx)
         if val == "yolo":
             ret = QMessageBox.question(
-                self, "开启直接工作模式",
-                "YOLO 模式：AI 将直接执行任务，不再逐步询问/确认/约束，"
-                "可操作任意目录（含系统目录）、执行任意命令，不再做危险操作拦截。\n"
-                "请注意：此模式可能造成系统文件误删、关键配置被改等不可逆后果，请谨慎使用。"
-                "确定开启？",
+                self, _ui("开启直接工作模式"),
+                _uim("YOLO 模式：AI 将直接执行任务，不再逐步询问/确认/约束，"
+                     "可操作任意目录（含系统目录）、执行任意命令，不再做危险操作拦截。\n"
+                     "请注意：此模式可能造成系统文件误删、关键配置被改等不可逆后果，请谨慎使用。"
+                     "确定开启？"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if ret != QMessageBox.StandardButton.Yes:
@@ -5319,16 +5849,16 @@ class _AgentSettingsDialog(QDialog):
         app_identity.qsettings().setValue("agent_mode", val or "ask")
 
     def _on_effort_slider(self, *_):
-        """用户拖动思考强度滑块：自动按难度开启时自动关闭（让手动值立即生效），并刷新中文标签"""
+        """用户拖动思考强度滑块：自动按难度开启时自动关闭（让手动值立即生效），并刷新标签"""
         if self.auto_effort_check.isChecked():
             self.auto_effort_check.setChecked(False)
         self._effort = agent_llm.EFFORTS[self.effort_slider.value()]
-        self.effort_label.setText(agent_llm.effort_label(self._effort))
+        self.effort_label.setText(_ui(agent_llm.effort_label(self._effort)))
         self._sync_effort_ui()
 
     def _on_effort_auto(self, *_):
         """自动按难度开关变更：刷新力度标签（不改手动值，保持已保存的手动力度）"""
-        self.effort_label.setText(agent_llm.effort_label(self._effort))
+        self.effort_label.setText(_ui(agent_llm.effort_label(self._effort)))
         self._sync_effort_ui()
 
     def _on_panel_mode_changed(self, *_):
@@ -5367,18 +5897,19 @@ class _AgentSettingsDialog(QDialog):
         model = str(models[0]) if models else ""
         ctx = agent_llm.resolve_context(first.get("base_url"), model,
                                         provider=first, long_1m=long_1m)
-        src_txt = {"1m": "1M 开关", "upstream": "上游服务商声明",
-                   "configured": "服务商配置手填",
-                   "known": "内置已知服务商表",
-                   "inferred": "模型名推断"}.get(ctx.get("source"), "未知")
+        src_txt = {"1m": _ui("1M 开关"), "upstream": _ui("上游服务商声明"),
+                   "configured": _ui("服务商配置手填"),
+                   "known": _ui("内置已知服务商表"),
+                   "inferred": _ui("模型名推断")}.get(ctx.get("source"), _ui("未知"))
         reserve = int(ctx.get("max_output") or 0) or agent_engine._DEFAULT_MAX_OUTPUT
         budget = max(4096, int(ctx.get("window") or 0) - reserve)
         rate = int((agent_engine._CTX_RATIO_COMPRESS_LONG if long_1m
                     else agent_engine._CTX_RATIO_COMPRESS) * 100)
-        return (f"当前上限：{_fmt_tokens(ctx.get('window'))} tokens（来源：{src_txt}）"
-                f"；窗口由输入+输出共用：预留输出 {_fmt_tokens(reserve)}，"
-                f"可用输入预算 {_fmt_tokens(budget)}"
-                f"；达到预算 {rate}% 时自动用模型摘要压缩上下文。")
+        return (_uif("当前上限：{a0} tokens（来源：{a1}）",
+                     a0=_fmt_tokens(ctx.get('window')), a1=src_txt)
+                + _uif("；窗口由输入+输出共用：预留输出 {a0}，", a0=_fmt_tokens(reserve))
+                + _uif("可用输入预算 {a0}", a0=_fmt_tokens(budget))
+                + _uif("；达到预算 {a0}% 时自动用模型摘要压缩上下文。", a0=rate))
 
     def _sync_context_hint(self):
         """刷新窗口说明（幂等；控件未建好时静默跳过——重建/懒加载期间会被反复调用）"""
@@ -5440,9 +5971,8 @@ class _AgentSettingsDialog(QDialog):
         if hint is None:
             return
         if declared:
-            names = " / ".join(agent_llm.effort_label(x) for x in declared)
-            hint.setText(f"上游声明本模型可调思考力度：{names}"
-                         "（未列出的挡位发送时按邻近档自动折算）")
+            names = " / ".join(_ui(agent_llm.effort_label(x)) for x in declared)
+            hint.setText(_uif("上游声明本模型可调思考力度：{a0}（未列出的挡位发送时按邻近档自动折算）", a0=names))
             if self._effort not in declared:
                 nearest = min(declared, key=lambda x: abs(
                     agent_llm.effort_index(x) - agent_llm.effort_index(self._effort)))
@@ -5450,10 +5980,10 @@ class _AgentSettingsDialog(QDialog):
                 self.effort_slider.blockSignals(True)
                 self.effort_slider.setValue(agent_llm.effort_index(nearest))
                 self.effort_slider.blockSignals(False)
-                self.effort_label.setText(agent_llm.effort_label(nearest))
+                self.effort_label.setText(_ui(agent_llm.effort_label(nearest)))
         else:
-            hint.setText(" · ".join(agent_llm.effort_label(x) for x in agent_llm.EFFORTS)
-                         + "（未声明时按模型类型自动映射思考强度）")
+            hint.setText(" · ".join(_ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS)
+                         + _ui("（未声明时按模型类型自动映射思考强度）"))
 
     def _save(self, *_):
         # 懒加载页面后保存：先补齐全部页面，确保读取到所有页控件的当前状态
@@ -5533,7 +6063,7 @@ class _AgentSettingsDialog(QDialog):
             if mcp_ok and p is not None and hasattr(p, "_reconnect_mcp"):
                 p._reconnect_mcp()
             if not mcp_ok:
-                QMessageBox.warning(self, "提示", "MCP 配置保存失败（无写入权限），其余设置已保存")
+                QMessageBox.warning(self, _ui("提示"), _ui("MCP 配置保存失败（无写入权限），其余设置已保存"))
             # 音色与自动朗读：独立写入 tts.json，避免被 settings.json 覆写
             agent_tts.save_config(auto_read=self.auto_read_check.isChecked(),
                                   speech_rate=round(self.speed_slider.value() / 100.0, 2)
@@ -5548,21 +6078,21 @@ class _AgentSettingsDialog(QDialog):
                 pass
             self.accept()
         else:
-            QMessageBox.warning(self, "错误", "保存设置失败（无写入权限）")
+            QMessageBox.warning(self, _ui("错误"), _ui("保存设置失败（无写入权限）"))
 
     def _import_skill(self, *_):
         """导入市场标准技能文件：SKILL.md 单文件或含 SKILL.md 的 zip 包"""
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择市场标准技能文件", "",
-            "技能文件 (*.md);;压缩包 (*.zip);;所有文件 (*.*)")
+            self, _ui("选择市场标准技能文件"), "",
+            _ui("技能文件 (*.md);;压缩包 (*.zip);;所有文件 (*.*)"))
         if not path:
             return
         ok, msg = agent_skills.import_skill_file(path)
         if ok:
-            QMessageBox.information(self, "导入技能", msg)
+            QMessageBox.information(self, _ui("导入技能"), msg)
             self._reload_skill_list(self._current_skill_workflow())
         else:
-            QMessageBox.warning(self, "导入失败", msg)
+            QMessageBox.warning(self, _ui("导入失败"), msg)
 
     def _delete_skill(self, *_):
         """删除用户技能：下拉选择（排除内置 JSON/md 技能），确认后删除并即时生效"""
@@ -5571,29 +6101,30 @@ class _AgentSettingsDialog(QDialog):
         deletable = [s["name"] for s in agent_skills.load_skills()
                      if s.get("name") and s["name"] not in builtin]
         if not deletable:
-            QMessageBox.information(self, "删除技能", "没有可删除的技能（内置技能不可删除）")
+            QMessageBox.information(self, _ui("删除技能"), _ui("没有可删除的技能（内置技能不可删除）"))
             return
-        name, ok = QInputDialog.getItem(self, "删除技能", "选择要删除的技能：",
+        name, ok = QInputDialog.getItem(self, _ui("删除技能"), _ui("选择要删除的技能："),
                                         deletable, 0, False)
         if not ok or not name:
             return
         reply = QMessageBox.question(
-            self, "确认删除",
-            f"确定删除技能「{name}」吗？\n将同时删除其 SKILL.md 与附属文件（resources 等）。")
+            self, _ui("确认删除"),
+            _uim("确定删除技能「{name}」吗？\n将同时删除其 SKILL.md 与附属文件（resources 等）。")
+            .format(name=name))
         if reply != QMessageBox.StandardButton.Yes:
             return
         ok2, msg = agent_skills.delete_skill(name)
         if ok2:
-            QMessageBox.information(self, "删除技能", msg)
+            QMessageBox.information(self, _ui("删除技能"), msg)
             self._reload_skill_list(self._current_skill_workflow())
         else:
-            QMessageBox.warning(self, "删除失败", msg)
+            QMessageBox.warning(self, _ui("删除失败"), msg)
 
 class _McpServerDialog(QDialog):
     """单个 MCP 服务器配置：stdio（命令+参数）或 SSE（URL）"""
     def __init__(self, server: dict = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("编辑 MCP 服务器" if server else "添加 MCP 服务器")
+        self.setWindowTitle(_ui("编辑 MCP 服务器") if server else _ui("添加 MCP 服务器"))
         self.setMinimumWidth(480)
         # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
         # 而本对话框是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
@@ -5618,31 +6149,31 @@ class _McpServerDialog(QDialog):
         form.setSpacing(12)
 
         self.name_edit = QLineEdit(server.get("name", "") if server else "")
-        self.name_edit.setPlaceholderText("服务器名称，如 Excel、WPS")
-        form.addRow("名称", self.name_edit)
+        self.name_edit.setPlaceholderText(_ui("服务器名称，如 Excel、WPS"))
+        form.addRow(_ui("名称"), self.name_edit)
 
         self.type_combo = _ArrowComboBox()
-        self.type_combo.addItem("stdio（本地命令）", "stdio")
-        self.type_combo.addItem("sse（远程 URL）", "sse")
+        self.type_combo.addItem(_ui("stdio（本地命令）"), "stdio")
+        self.type_combo.addItem(_ui("sse（远程 URL）"), "sse")
         if server:
             idx = self.type_combo.findData(server.get("type", "stdio"))
             self.type_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.type_combo.currentIndexChanged.connect(self._sync_type)
-        form.addRow("类型", self.type_combo)
+        form.addRow(_ui("类型"), self.type_combo)
 
         self.template_combo = _ArrowComboBox()
         for tpl, _ in _MCP_TEMPLATES:
-            self.template_combo.addItem(tpl)
+            self.template_combo.addItem(_ui(tpl))
         self.template_combo.currentIndexChanged.connect(self._apply_template)
-        form.addRow("模板", self.template_combo)
+        form.addRow(_ui("模板"), self.template_combo)
 
         self.command_edit = QLineEdit(server.get("command", "") if server else "")
-        self.command_edit.setPlaceholderText("如 npx / uvx / python")
-        form.addRow("命令", self.command_edit)
+        self.command_edit.setPlaceholderText(_ui("如 npx / uvx / python"))
+        form.addRow(_ui("命令"), self.command_edit)
 
         self.args_edit = QLineEdit(" ".join(server.get("args", [])) if server else "")
-        self.args_edit.setPlaceholderText("参数，空格分隔，如 -y @executeautomation/excel-mcp-server")
-        form.addRow("参数", self.args_edit)
+        self.args_edit.setPlaceholderText(_ui("参数，空格分隔，如 -y @executeautomation/excel-mcp-server"))
+        form.addRow(_ui("参数"), self.args_edit)
 
         self.url_edit = QLineEdit(server.get("url", "") if server else "")
         self.url_edit.setPlaceholderText("https://…/sse")
@@ -5652,16 +6183,16 @@ class _McpServerDialog(QDialog):
         if server:
             bound = agent_skills.get_workflow_binding("mcp", server.get("name", ""))
             self.workflow_edit.setText(", ".join(bound))
-        self.workflow_edit.setPlaceholderText("工作流名，逗号分隔；留空=全局所有工作流可用")
-        form.addRow("工作流", self.workflow_edit)
+        self.workflow_edit.setPlaceholderText(_ui("工作流名，逗号分隔；留空=全局所有工作流可用"))
+        form.addRow(_ui("工作流"), self.workflow_edit)
 
         btns = QHBoxLayout()
-        ok = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), "确定")
+        ok = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), _ui("确定"))
         ok.setStyleSheet(f"background: {ACCENT}; color: #FFFFFF; border: none;"
                           "border-radius: 8px; padding: 8px 24px; font-weight: 700;")
         ok.setAutoDefault(False)
         ok.clicked.connect(self._accept_check)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(_ui("取消"))
         cancel.setStyleSheet(f"background: {_mcp_in}; color: {TEXT};"
                              f"border: 1px solid {_mcp_bd}; border-radius: 8px;"
                              "padding: 8px 22px; font-weight: 600;")
@@ -5695,15 +6226,15 @@ class _McpServerDialog(QDialog):
     def _accept_check(self, *_):
         name = self.name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, "提示", "请输入服务器名称")
+            QMessageBox.warning(self, _ui("提示"), _ui("请输入服务器名称"))
             return
         if self.type_combo.currentData() == "sse":
             if not self.url_edit.text().strip():
-                QMessageBox.warning(self, "提示", "SSE 类型需要填写 URL")
+                QMessageBox.warning(self, _ui("提示"), _ui("SSE 类型需要填写 URL"))
                 return
         else:
             if not self.command_edit.text().strip():
-                QMessageBox.warning(self, "提示", "stdio 类型需要填写命令")
+                QMessageBox.warning(self, _ui("提示"), _ui("stdio 类型需要填写命令"))
                 return
         self.accept()
 
@@ -5798,7 +6329,7 @@ class _ProviderDialog(QDialog):
         self._DIM = TEXT_DIM
         self._ERR = ERR
         self._OK = OK
-        self.setWindowTitle("编辑服务商" if provider else "添加服务商")
+        self.setWindowTitle(_ui("编辑服务商") if provider else _ui("添加服务商"))
         self.setMinimumWidth(520)
         _pvd_qss = (
             f"QDialog {{ background: {self._BG}; }}"
@@ -5825,11 +6356,11 @@ class _ProviderDialog(QDialog):
 
         # 预设服务商：一键填入主流 coding/Agent 服务商（仍需填 Key 并测试）
         self.preset_combo = _ArrowComboBox()
-        self.preset_combo.addItem("（自定义 / 手动填写）", None)
+        self.preset_combo.addItem(_ui("（自定义 / 手动填写）"), None)
         for p in agent_llm.PRESET_PROVIDERS:
-            self.preset_combo.addItem(p["name"], p)
+            self.preset_combo.addItem(_ui(p["name"]), p)
         self.preset_combo.currentIndexChanged.connect(self._apply_preset)
-        form.addRow("预设服务商", self.preset_combo)
+        form.addRow(_ui("预设服务商"), self.preset_combo)
         self.preset_hint = QLabel("")
         # 描述行：显式分行 + 实测字体高度（不依赖布局宽度换算），杜绝裁切/挤压
         self.preset_hint.setWordWrap(False)
@@ -5837,9 +6368,8 @@ class _ProviderDialog(QDialog):
         self.preset_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         form.addRow("", self.preset_hint)
 
-        self.web_login_btn = QPushButton("登录网页版 DeepSeek")
-        self.web_login_btn.setToolTip("启动独立浏览器到 chat.deepseek.com，登录一次后凭证持久化，"
-                                     "此后免费调用不再弹登录")
+        self.web_login_btn = QPushButton(_ui("登录网页版 DeepSeek"))
+        self.web_login_btn.setToolTip(_ui("启动独立浏览器到 chat.deepseek.com，登录一次后凭证持久化，此后免费调用不再弹登录"))
         self.web_login_btn.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._ACCENT};"
             "border-radius: 8px; padding: 6px 14px; font-weight: 600;")
@@ -5850,39 +6380,38 @@ class _ProviderDialog(QDialog):
         wrow = QHBoxLayout()
         wrow.addWidget(self.web_login_btn)
         wrow.addWidget(self.web_status, 1)
-        form.addRow("网页版登录", wrow)
+        form.addRow(_ui("网页版登录"), wrow)
 
         self.name_edit = QLineEdit(self._provider.get("name", ""))
-        self.name_edit.setPlaceholderText("服务商名称，如 火山方舟、智谱、DeepSeek")
-        form.addRow("名称", self.name_edit)
+        self.name_edit.setPlaceholderText(_ui("服务商名称，如 火山方舟、智谱、DeepSeek"))
+        form.addRow(_ui("名称"), self.name_edit)
 
         self.base_edit = QLineEdit(self._provider.get("base_url", ""))
         self.base_edit.setPlaceholderText("https://api.example.com/v1")
-        form.addRow("接口地址", self.base_edit)
+        form.addRow(_ui("接口地址"), self.base_edit)
 
         self.key_edit = QLineEdit(self._provider.get("api_key", ""))
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_edit.setPlaceholderText("sk-xxxxxxxx（必填，用于连通性测试）")
+        self.key_edit.setPlaceholderText(_ui("sk-xxxxxxxx（必填，用于连通性测试）"))
         form.addRow("API Key", self.key_edit)
 
         self.models_edit = QLineEdit(", ".join(self._provider.get("models", [])))
-        self.models_edit.setPlaceholderText("模型名逗号分隔，如 glm-4.7, glm-4.7-flash")
+        self.models_edit.setPlaceholderText(_ui("模型名逗号分隔，如 glm-4.7, glm-4.7-flash"))
         # 模型列表变化 → 声明的上下文只读行同步（用户手改列表时也要反映匹配结果）
         self.models_edit.textChanged.connect(self._sync_declared_label)
         mrow = QHBoxLayout()
         mrow.setSpacing(8)
         mrow.addWidget(self.models_edit, 1)
-        self.fetch_btn = QPushButton("从上游获取")
+        self.fetch_btn = QPushButton(_ui("从上游获取"))
         self.fetch_btn.setToolTip(
-            "请求当前接口地址的 /models 端点，从服务商上游拉取可用模型列表并自动填入；"
-            "多数服务商无需 API Key 即可枚举，填了 Key 会带上；失败时保留手动列表")
+            _ui("请求当前接口地址的 /models 端点，从服务商上游拉取可用模型列表并自动填入；多数服务商无需 API Key 即可枚举，填了 Key 会带上；失败时保留手动列表"))
         self.fetch_btn.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._BORDER};"
             "border-radius: 8px; padding: 6px 14px; font-weight: 600;")
         self.fetch_btn.setAutoDefault(False)
         self.fetch_btn.clicked.connect(self._fetch_models)
         mrow.addWidget(self.fetch_btn)
-        form.addRow("模型列表", mrow)
+        form.addRow(_ui("模型列表"), mrow)
 
         # 上游声明的上下文能力（只读展示）：把"服务商自己声明的窗口/最大输出"直接摆给用户看，
         # 窗口决策优先级为 1M 开关 > 上游声明 > 手填 > 内置已知表 > 模型名推断
@@ -5890,24 +6419,25 @@ class _ProviderDialog(QDialog):
         self.declared_lbl.setWordWrap(True)
         self.declared_lbl.setTextFormat(Qt.TextFormat.PlainText)
         self.declared_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        form.addRow("声明的上下文", self.declared_lbl)
+        form.addRow(_ui("声明的上下文"), self.declared_lbl)
         self._sync_declared_label()
 
         self.multimodal_edit = QLineEdit(", ".join(self._provider.get("multimodal_models", [])))
         self.multimodal_edit.setPlaceholderText(
-            "多模态（视觉）模型逗号分隔，留空按模型名自动识别；自动选择模式下视觉任务优先路由到这些模型")
-        form.addRow("多模态模型", self.multimodal_edit)
+            _ui("多模态（视觉）模型逗号分隔，留空按模型名自动识别；自动选择模式下视觉任务优先路由到这些模型"))
+        form.addRow(_ui("多模态模型"), self.multimodal_edit)
 
         self.protocol_combo = _ArrowComboBox()
-        self.protocol_combo.addItem("Chat Completions（/v1/chat/completions）", "chat")
-        self.protocol_combo.addItem("Responses API（/v1/responses）", "responses")
+        self.protocol_combo.addItem(_ui("Chat Completions（/v1/chat/completions）"), "chat")
+        self.protocol_combo.addItem(_ui("Responses API（/v1/responses）"), "responses")
+        self.protocol_combo.addItem(_ui("Anthropic Messages API（/v1/messages）"), "anthropic")
         pidx = self.protocol_combo.findData(self._provider.get("protocol", "chat"))
         self.protocol_combo.setCurrentIndex(pidx if pidx >= 0 else 0)
-        form.addRow("接口协议", self.protocol_combo)
+        form.addRow(_ui("接口协议"), self.protocol_combo)
 
         # 连通性测试：真实请求通过后保存；配置变化需重新测试
         trow = QHBoxLayout()
-        self.test_btn = QPushButton("测试连接")
+        self.test_btn = QPushButton(_ui("测试连接"))
         self.test_btn.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid {self._ACCENT};"
             "border-radius: 8px; padding: 8px 18px; font-weight: 600;")
@@ -5924,7 +6454,7 @@ class _ProviderDialog(QDialog):
         trow.addWidget(self.ai_hint, 1)
         form.addRow("", trow)
         # 测试结果：独立整行（全宽换行显示不被挤压），成功后可点击查看完整保存信息
-        self.test_result = QLabel("添加/编辑服务商前必须先通过连通性测试")
+        self.test_result = QLabel(_ui("添加/编辑服务商前必须先通过连通性测试"))
         self.test_result.setWordWrap(True)
         self.test_result.setTextFormat(Qt.TextFormat.RichText)
         self.test_result.setTextInteractionFlags(
@@ -5938,11 +6468,11 @@ class _ProviderDialog(QDialog):
         self.ai_done.connect(self._on_ai_done_web_login_forward)
 
         row = QHBoxLayout()
-        ok = QPushButton("确定")
+        ok = QPushButton(_ui("确定"))
         ok.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
                          "border-radius: 8px; padding: 8px 24px; font-weight: 700;")
         ok.clicked.connect(self._confirm)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(_ui("取消"))
         cancel.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                              "padding: 8px 20px; font-weight: 600;")
@@ -5963,7 +6493,7 @@ class _ProviderDialog(QDialog):
     def _invalidate(self, *_):
         self._test_ok = False
         self.test_result.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        self.test_result.setText("配置已变化，需重新测试连接")
+        self.test_result.setText(_ui("配置已变化，需重新测试连接"))
         self.ai_hint.setText("")
         self._refresh_web_status()
 
@@ -5975,7 +6505,7 @@ class _ProviderDialog(QDialog):
             self._refresh_web_status()
             self._fit_preset_hint()
             return
-        self.name_edit.setText(p.get("name", ""))
+        self.name_edit.setText(_ui(p.get("name", "")))
         self.base_edit.setText(p.get("base_url", ""))
         self.key_edit.setText("")   # Key 必须用户填写
         self.models_edit.setText(", ".join(p.get("models") or []))
@@ -5983,7 +6513,7 @@ class _ProviderDialog(QDialog):
         pidx = self.protocol_combo.findData(p.get("protocol", "chat"))
         if pidx >= 0:
             self.protocol_combo.setCurrentIndex(pidx)
-        self.preset_hint.setText(p.get("desc", ""))
+        self.preset_hint.setText(_ui(p.get("desc", "")))
         self._fit_preset_hint()
         self._preset_kind = p.get("kind") or ""
         self._refresh_web_status()
@@ -6022,12 +6552,12 @@ class _ProviderDialog(QDialog):
         self.web_status.setVisible(vis)
         self.key_edit.setEnabled(not vis)          # 网页版免 API Key
         if vis:
-            self.key_edit.setPlaceholderText("网页版免费接入，无需 API Key")
+            self.key_edit.setPlaceholderText(_ui("网页版免费接入，无需 API Key"))
             self.key_edit.clear()
-            self.test_btn.setText("验证登录")
+            self.test_btn.setText(_ui("验证登录"))
         else:
-            self.key_edit.setPlaceholderText("sk-xxxxxxxx（必填，用于连通性测试）")
-            self.test_btn.setText("测试连接")
+            self.key_edit.setPlaceholderText(_ui("sk-xxxxxxxx（必填，用于连通性测试）"))
+            self.test_btn.setText(_ui("测试连接"))
         if not vis:
             return
         try:
@@ -6041,7 +6571,7 @@ class _ProviderDialog(QDialog):
 
     def _on_web_login(self, *_):
         self.web_login_btn.setEnabled(False)
-        self.web_status.setText("正在打开浏览器，请在窗口中完成登录…")
+        self.web_status.setText(_ui("正在打开浏览器，请在窗口中完成登录…"))
         threading.Thread(target=self._web_login_worker, daemon=True).start()
 
     def _web_login_worker(self):
@@ -6059,10 +6589,10 @@ class _ProviderDialog(QDialog):
         if ok == "1":
             self._test_ok = True
             self.test_result.setStyleSheet(f"color: {self._OK}; font-size: 12px;")
-            self.test_result.setText("✓ 网页版登录成功，可直接点「确定」保存（免 API Key）")
-            QMessageBox.information(self, "网页版登录", msg)
+            self.test_result.setText(_ui("✓ 网页版登录成功，可直接点「确定」保存（免 API Key）"))
+            QMessageBox.information(self, _ui("网页版登录"), msg)
         else:
-            QMessageBox.warning(self, "网页版登录失败", msg)
+            QMessageBox.warning(self, _ui("网页版登录失败"), msg)
 
     def _on_ai_done_web_login_forward(self, payload):
         if str(payload).startswith("web_login|"):
@@ -6078,13 +6608,13 @@ class _ProviderDialog(QDialog):
         if ok_creds:
             self._test_ok = True
             self.test_result.setStyleSheet(f"color: {self._OK}; font-size: 12px;")
-            self.test_result.setText("✓ 网页版登录态有效，可保存使用（免 API Key）")
+            self.test_result.setText(_ui("✓ 网页版登录态有效，可保存使用（免 API Key）"))
             if from_ok:
                 self.accept()
         else:
             self._test_ok = False
             self.test_result.setStyleSheet(f"color: {self._ERR}; font-size: 12px;")
-            self.test_result.setText("未检测到网页版登录态，已引导登录；登录完成后点「确定」保存")
+            self.test_result.setText(_ui("未检测到网页版登录态，已引导登录；登录完成后点「确定」保存"))
             self._on_web_login()
 
     def _fetch_models(self, *_):
@@ -6100,13 +6630,13 @@ class _ProviderDialog(QDialog):
         base = self.base_edit.text().strip()
         if not base:
             self.test_result.setStyleSheet(f"color: {self._ERR}; font-size: 12px;")
-            self.test_result.setText("请先填写接口地址")
+            self.test_result.setText(_ui("请先填写接口地址"))
             return
         key = self.key_edit.text().strip()   # 可空：匿名枚举
         self.fetch_btn.setEnabled(False)
-        self.fetch_btn.setText("获取中…")
+        self.fetch_btn.setText(_ui("获取中…"))
         self.test_result.setStyleSheet(f"color: {self._ACCENT}; font-size: 12px;")
-        self.test_result.setText(f"正在从上游 {base}/models 拉取模型列表…")
+        self.test_result.setText(_uif("正在从上游 {a0}/models 拉取模型列表…", a0=base))
         self._models_thread = _ModelsFetchThread(base, key, self)
         self._models_thread.done.connect(self._on_models_fetched)
         self._models_thread.finished.connect(self._models_thread.deleteLater)
@@ -6144,7 +6674,7 @@ class _ProviderDialog(QDialog):
     def _on_models_fetched(self, ok: bool, msg: str, source: str = "", vision_csv: str = "",
                            declared: dict = None):
         self.fetch_btn.setEnabled(True)
-        self.fetch_btn.setText("从上游获取")
+        self.fetch_btn.setText(_ui("从上游获取"))
         self._models_thread = None
         if ok:
             self.models_edit.setText(msg)   # 上游真实列表填入；textChanged 触发 _invalidate 重测
@@ -6175,14 +6705,13 @@ class _ProviderDialog(QDialog):
                 if len(merged) > len(existing):
                     self.test_result.setStyleSheet(f"color: {self._OK}; font-size: 12px;")
                     self.test_result.setText(
-                        f"✓ 已获取 {n} 个模型{note}，并自动识别 {len(merged) - len(existing)} 个多模态模型"
-                        f"（可编辑）")
+                        _uif("✓ 已获取 {a0} 个模型{a1}，并自动识别 {a2} 个多模态模型（可编辑）", a0=n, a1=note, a2=len(merged) - len(existing)))
                     return
             self.test_result.setStyleSheet(f"color: {self._OK}; font-size: 12px;")
-            self.test_result.setText(f"✓ 已获取 {n} 个模型{note}，请检查后点击「测试连接」")
+            self.test_result.setText(_uif("✓ 已获取 {a0} 个模型{a1}，请检查后点击「测试连接」", a0=n, a1=note))
         else:
             self.test_result.setStyleSheet(f"color: {self._ERR}; font-size: 12px;")
-            self.test_result.setText(f"获取模型失败（保留当前列表）：{msg}")
+            self.test_result.setText(_uif("获取模型失败（保留当前列表）：{a0}", a0=msg))
 
     def _confirm(self, *_):
         """确定：已通过测试直接保存；否则自动先测，通过后再保存"""
@@ -6207,12 +6736,12 @@ class _ProviderDialog(QDialog):
         p = self._current_params()
         if not p["base_url"] or not p["api_key"] or not p["models"]:
             self.test_result.setStyleSheet(f"color: {self._ERR}; font-size: 12px;")
-            self.test_result.setText("请先填写接口地址、API Key 与至少一个模型名")
+            self.test_result.setText(_ui("请先填写接口地址、API Key 与至少一个模型名"))
             return
         self.test_btn.setEnabled(False)
-        self.test_btn.setText("测试中…")
+        self.test_btn.setText(_ui("测试中…"))
         self.test_result.setStyleSheet(f"color: {self._ACCENT}; font-size: 12px;")
-        self.test_result.setText(f"正在连接 {p['base_url']} 测试模型「{p['models'][0]}」…")
+        self.test_result.setText(_uif("正在连接 {a0} 测试模型「{a1}」…", a0=p['base_url'], a1=p['models'][0]))
         self._test_thread = _ConnTestThread(p["base_url"], p["api_key"], p["models"][0],
                                             p["protocol"], self)
         self._test_thread.done.connect(
@@ -6222,14 +6751,15 @@ class _ProviderDialog(QDialog):
 
     def _on_test_done(self, ok: bool, msg: str, from_ok: bool):
         self.test_btn.setEnabled(True)
-        self.test_btn.setText("测试连接")
+        self.test_btn.setText(_ui("测试连接"))
         self._test_thread = None   # 测试完成：清除引用，允许再次测试
         if ok:
             self._test_ok = True
             self.test_result.setStyleSheet(f"color: {self._OK}; font-size: 12px;")
             self.test_result.setText(
                 "✓ " + _esc(msg)
-                + "　<a href='show' style='color:#2563EB'>查看完整保存信息</a>")
+                + "　<a href='show' style='color:#2563EB'>"
+                + _ui("查看完整保存信息") + "</a>")
             self.ai_hint.setText("")
             if from_ok:
                 self.accept()
@@ -6238,14 +6768,14 @@ class _ProviderDialog(QDialog):
             self.test_result.setStyleSheet(f"color: {self._ERR}; font-size: 12px;")
             self.test_result.setText(_esc(msg))
             self.ai_hint.setStyleSheet(f"color: {self._ACCENT}; font-size: 12px;")
-            self.ai_hint.setText("正在用默认 AI 分析失败原因，生成排障建议…")
+            self.ai_hint.setText(_ui("正在用默认 AI 分析失败原因，生成排障建议…"))
             # 默认 AI 排障分析（后台线程，不阻塞界面）
             p = self._current_params()
             ctx = (f"接口地址：{p.get('base_url')}\n模型：{', '.join(p.get('models') or [])}\n"
                    f"协议：{p.get('protocol')}\n失败信息：{msg}")
             threading.Thread(target=self._ai_analyze, args=(ctx,), daemon=True).start()
             if from_ok:
-                QMessageBox.warning(self, "连通性测试失败", msg)
+                QMessageBox.warning(self, _ui("连通性测试失败"), msg)
 
     def _ai_analyze(self, ctx: str):
         """后台线程：调用默认 AI 分析连通性失败原因（结果经 ai_done 信号回主线程）"""
@@ -6266,7 +6796,16 @@ class _ProviderDialog(QDialog):
             return
         key = p.get("api_key") or ""
         masked = (key[:6] + "…" + key[-4:]) if len(key) > 10 else ("…" if key else "(未填写)")
-        ep = "responses" if p.get("protocol") == "responses" else "chat/completions"
+        _proto = p.get("protocol", "chat")
+        if _proto == "responses":
+            ep = "responses"
+            proto_label = "Responses API"
+        elif _proto == "anthropic":
+            ep = "v1/messages"
+            proto_label = "Anthropic Messages API"
+        else:
+            ep = "chat/completions"
+            proto_label = "Chat Completions"
         endpoint = f"{p.get('base_url').rstrip('/')}/{ep}"
         lines = [
             f"服务商：{p.get('name') or '未命名'}",
@@ -6274,13 +6813,13 @@ class _ProviderDialog(QDialog):
             f"请求端点：{endpoint}",
             f"API Key：{masked}",
             f"模型列表：{', '.join(p.get('models') or []) or '（空）'}",
-            f"接口协议：{'Responses API' if p.get('protocol') == 'responses' else 'Chat Completions'}",
+            f"接口协议：{proto_label}",
         ]
         mm = self.multimodal_edit.text().strip()
         if mm:
             lines.append(f"多模态模型：{mm}")
         box = QMessageBox(self)
-        box.setWindowTitle("完整保存信息")
+        box.setWindowTitle(_ui("完整保存信息"))
         box.setStyleSheet(
             f"QMessageBox {{ background: {self._PANEL}; }}"
             f"QMessageBox QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
@@ -6288,8 +6827,8 @@ class _ProviderDialog(QDialog):
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
             f"padding: 6px 14px; font-size: 13px; }}")
         box.setText("\n".join(lines))
-        copy = box.addButton("复制完整信息", QMessageBox.ButtonRole.ActionRole)
-        box.addButton("关闭", QMessageBox.ButtonRole.AcceptRole)
+        copy = box.addButton(_ui("复制完整信息"), QMessageBox.ButtonRole.ActionRole)
+        box.addButton(_ui("关闭"), QMessageBox.ButtonRole.AcceptRole)
         box.exec()
         if box.clickedButton() is copy:
             QApplication.clipboard().setText("\n".join(lines))
@@ -6323,7 +6862,7 @@ class _AskUserDialog(QDialog):
 
     def __init__(self, question: str, options: list, multi_select: bool, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("AI 询问")
+        self.setWindowTitle(_ui("AI 询问"))
         self.setMinimumWidth(460)
         self._answer = ""
         # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
@@ -6369,7 +6908,7 @@ class _AskUserDialog(QDialog):
         self._choice_btns = []
         # 自定义输入框：有选项时默认隐藏（由"其他…"勾选控制显示），无选项时直接作自由回答
         self._free_input = QLineEdit()
-        self._free_input.setPlaceholderText("输入自定义内容…")
+        self._free_input.setPlaceholderText(_ui("输入自定义内容…"))
         self._free_input.hide()
         lay.addWidget(self._free_input)
         if options:
@@ -6379,26 +6918,26 @@ class _AskUserDialog(QDialog):
                 self._choice_btns.append(b)
                 lay.addWidget(b)
             # "其他…"选项：勾选后显示输入框，可输入自定义内容
-            other = QCheckBox("其他…") if multi_select else QRadioButton("其他…")
+            other = QCheckBox(_ui("其他…")) if multi_select else QRadioButton(_ui("其他…"))
             other.setAutoExclusive(not multi_select)
             other.toggled.connect(lambda on: self._free_input.setVisible(on))
             self._choice_btns.append(other)
             lay.addWidget(other)
-            self._free_input.setPlaceholderText("输入自定义内容…")
+            self._free_input.setPlaceholderText(_ui("输入自定义内容…"))
         else:
-            self._free_input.setPlaceholderText("输入你的回答…")
+            self._free_input.setPlaceholderText(_ui("输入你的回答…"))
             self._free_input.show()
 
         # 无限等待提示：弹窗保持打开直到作答/取消，不会自动超时
-        timeout_hint = QLabel("弹窗将一直等待你的回答，不会自动超时")
+        timeout_hint = QLabel(_ui("弹窗将一直等待你的回答，不会自动超时"))
         timeout_hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
         lay.addWidget(timeout_hint)
 
         btns = QHBoxLayout()
-        ok = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), "确定")
+        ok = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), _ui("确定"))
         ok.setStyleSheet(f"background: {OK}; color: #06281B;")
         ok.clicked.connect(self._accept_clicked)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(_ui("取消"))
         cancel.setStyleSheet(f"background: {_dlg_bg}; color: {TEXT};"
                              f"border: 1px solid {_line_bd};")
         cancel.clicked.connect(self.reject)
@@ -6423,9 +6962,9 @@ class _AskUserDialog(QDialog):
         custom = self._free_input.text().strip() if self._free_input.isVisible() else ""
         # 自定义输入内容替换"其他…"选项；未填写的"其他…"直接忽略
         if custom:
-            sel = [custom if t.startswith("其他…") else t for t in sel]
+            sel = [custom if t.startswith(_ui("其他…")) else t for t in sel]
         else:
-            sel = [t for t in sel if not t.startswith("其他…")]
+            sel = [t for t in sel if not t.startswith(_ui("其他…"))]
         if sel:
             self._answer = " / ".join(sel)
         elif custom:
@@ -6931,16 +7470,14 @@ class TodosPanel(QWidget):
         self.setObjectName("todosPanel")
         # QWidget 默认不绘制 stylesheet 背景 → 加 WA_StyledBackground 才能画出底
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # 表面色见 _panel_surface：壁纸模式下透明（与工作树 / Git / 预览同策略，
-        # 任务清单不再是白底块），非壁纸模式回落原始色板实色。
-        self.setStyleSheet(f"QWidget#todosPanel {{ background: {_panel_surface('BG')}; }}")
+        self.apply_surface_theme()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*self.MARGINS)
         lay.setSpacing(8)
 
         header = QHBoxLayout()
         header.setSpacing(8)
-        title = QLabel("任务清单")
+        title = QLabel(_ui("任务清单"))
         title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 800;")
         header.addWidget(title)
         self._count = QLabel("")
@@ -6958,7 +7495,7 @@ class TodosPanel(QWidget):
             f"QPushButton {{ background: transparent; color: {TEXT_DIM};"
             "border: none; border-radius: 6px; }}"
             f"QPushButton:hover {{ background: rgba(255,255,255,42); color: {TEXT}; }}")
-        self._close_btn.setToolTip("清空任务清单")
+        self._close_btn.setToolTip(_ui("清空任务清单"))
         self._close_btn.clicked.connect(self.clear_requested.emit)
         header.addWidget(self._close_btn)
         lay.addLayout(header)
@@ -6980,6 +7517,30 @@ class TodosPanel(QWidget):
         self._last_h = -1      # 上次应用的列表内容高度（变化时才通知宿主，避免重复 relayout）
         self.update_todos([])
 
+    def apply_surface_theme(self):
+        """按当前表面色就地刷新本面板的底色与描边（构造与换肤共用同一来源）。
+
+        表面色见 `_panel_surface`、描边色见 `_panel_stroke`：壁纸模式下两者都透明
+        （与工作树 / Git / 预览同策略，任务清单不再是白底块、也不在自定义背景上留
+        实色描边），非壁纸模式回落原始色板实色。
+
+        **必须显式写 `border: none`**：`QWidget` 的 QSS 里一旦给了 `background`，
+        Qt 会启用样式化绘制，而未声明 border 时不同样式后端可能补出默认描边 ——
+        壁纸模式下就表现为「设了背景后 TODOS 面板四周多出一圈实色边框」。dock 栏
+        容器（`_apply_dock_surface`）与工作树面板（`wtWin`）都是这么写的，本面板
+        原先漏了，与其余面板不一致。
+
+        由 `TodosWindow.apply_surface_theme` 调用；换肤/设背景的快路径只刷新四个侧栏
+        窗口，本面板是 `TodosWindow` 的子控件，不会被那条循环直接命中 —— 不在这里
+        补一次就会残留旧主题的底色/描边。
+        """
+        try:
+            self.setStyleSheet(
+                f"QWidget#todosPanel {{ background: {_panel_surface('BG')};"
+                f" border: {_panel_stroke('BORDER')}; }}")
+        except Exception:
+            pass
+
     def update_todos(self, todos: list):
         """全量刷新任务列表；面板默认常显，无任务时显示提示语占位"""
         while self._list_lay.count() > 1:
@@ -6992,7 +7553,7 @@ class TodosPanel(QWidget):
             for t in todos:
                 self._list_lay.insertWidget(self._list_lay.count() - 1, self._row(t))
         else:
-            empty = QLabel("复杂任务进度将会在这显示")
+            empty = QLabel(_ui("复杂任务进度将会在这显示"))
             empty.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             # 固定占位高度：QLabel 的 sizeHint 只按 12px 字号给一行高度，直接放入
@@ -7286,9 +7847,9 @@ def _preview_xlsx(path: str, max_rows: int = 200, max_cols: int = 40) -> str:
                                   if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")],
                                  key=lambda n: int(re.sub(r"\D", "", n.split("/")[-1]) or 0))
     except Exception:
-        return _esc("无法读取 xlsx 结构")
+        return _esc(_ui("无法读取 xlsx 结构"))
     if not sheet_files:
-        return _esc("未找到工作表")
+        return _esc(_ui("未找到工作表"))
     rows_map, max_c = {}, 0
     try:
         root = ET.fromstring(_zip_read_bytes(path, sheet_files[0]))
@@ -7322,9 +7883,9 @@ def _preview_xlsx(path: str, max_rows: int = 200, max_cols: int = 40) -> str:
                     break
             rows_map[r_idx] = cells
     except Exception:
-        return _esc("xlsx 解析失败")
+        return _esc(_ui("xlsx 解析失败"))
     if not rows_map:
-        return _esc("工作表为空")
+        return _esc(_ui("工作表为空"))
     rows_list = sorted(rows_map.items())[:max_rows]
     thead = "<tr>" + "".join(f"<th style='font-weight:600;'>{_esc(_col_letter(i))}</th>"
                              for i in range(max_c + 1)) + "</tr>"
@@ -7358,9 +7919,9 @@ def _preview_pptx(path: str, max_slides: int = 60) -> str:
                              if re.match(r"ppt/slides/slide\d+\.xml$", n)],
                             key=lambda n: int(re.sub(r"\D", "", n.split("/")[-1]) or 0))
     except Exception:
-        return _esc("无法读取 pptx 结构")
+        return _esc(_ui("无法读取 pptx 结构"))
     if not slides:
-        return _esc("未找到幻灯片")
+        return _esc(_ui("未找到幻灯片"))
     parts = []
     for idx, name in enumerate(slides[:max_slides], 1):
         root = None
@@ -7375,10 +7936,10 @@ def _preview_pptx(path: str, max_slides: int = 60) -> str:
             if txt:
                 lines.append(_esc(txt))
         if lines:
-            parts.append(f"<p style='margin:0 0 2px;'><b>第 {idx} 页</b></p>"
+            parts.append(f"<p style='margin:0 0 2px;'><b>{_uif('第 {idx} 页', idx=idx)}</b></p>"
                          + "".join(f"<p style='margin:0 0 2px 10px;'>{x}</p>" for x in lines))
     if not parts:
-        return _esc("幻灯片内无文本内容")
+        return _esc(_ui("幻灯片内无文本内容"))
     return "".join(parts)
 
 
@@ -7387,11 +7948,11 @@ def _preview_docx(path: str, max_chars: int = 60000) -> str:
     import xml.etree.ElementTree as ET
     data = _zip_read_bytes(path, "word/document.xml")
     if not data:
-        return _esc("无法读取 docx 文档")
+        return _esc(_ui("无法读取 docx 文档"))
     try:
         root = ET.fromstring(data)
     except Exception:
-        return _esc("docx 解析失败")
+        return _esc(_ui("docx 解析失败"))
     body = next(_xml_elems(root, "body"), root)
     out, total = [], 0
     for node in body:
@@ -7401,7 +7962,8 @@ def _preview_docx(path: str, max_chars: int = 60000) -> str:
         if local == "p":
             text = "".join((t.text or "") for t in _xml_elems(node, "t"))
             if total + len(text) > max_chars:
-                out.append("<p style='color:" + TEXT_DIM + ";'>…（内容过长，已截断预览）</p>")
+                out.append("<p style='color:" + TEXT_DIM + ";'>&hellip;"
+                           + _esc(_ui("（内容过长，已截断预览）")) + "</p>")
                 break
             total += len(text)
             style = ""
@@ -7416,7 +7978,7 @@ def _preview_docx(path: str, max_chars: int = 60000) -> str:
                 out.append("<p style='margin:0;'>&nbsp;</p>")
         elif local == "tbl":
             out.append(_docx_table_html(node))
-    return "".join(out) or _esc("文档正文为空")
+    return "".join(out) or _esc(_ui("文档正文为空"))
 
 
 def _docx_table_html(tbl) -> str:
@@ -7966,7 +8528,7 @@ class _TokenStatsPopover(QFrame):
 
         head = QHBoxLayout()
         head.setSpacing(SPACING_SM)
-        self._title = QLabel("上下文统计")
+        self._title = QLabel(_ui("上下文统计"))
         self._title.setObjectName("tkTitle")
         head.addWidget(self._title)
         head.addStretch(1)
@@ -8002,7 +8564,7 @@ class _TokenStatsPopover(QFrame):
         self._ticks_lbl.setWordWrap(True)
         lay.addWidget(self._ticks_lbl)
 
-        self._cache_lbl = QLabel("缓存命中率 —")
+        self._cache_lbl = QLabel(_ui("缓存命中率 —"))
         self._cache_lbl.setObjectName("tkDim")
         self._cache_lbl.setWordWrap(True)    # 长明细自动折行，不做横向硬裁
         lay.addWidget(self._cache_lbl)
@@ -8015,14 +8577,14 @@ class _TokenStatsPopover(QFrame):
         self._grid.setVerticalSpacing(SPACING_XS)
         self._vals = {}
         self._keys = []
-        for row, (key, text) in enumerate((("last_in", "本次上游输入"),
-                                          ("last_out", "本次输出"),
-                                          ("cum", "累计消耗"),
-                                          ("msgs", "上下文消息"),
-                                          ("window_src", "上限来源"),
-                                          ("compaction", "上下文压缩"),
-                                          ("workflow", "工作流"),
-                                          ("model", "模型"))):
+        for row, (key, text) in enumerate((("last_in", _ui("本次上游输入")),
+                                          ("last_out", _ui("本次输出")),
+                                          ("cum", _ui("累计消耗")),
+                                          ("msgs", _ui("上下文消息")),
+                                          ("window_src", _ui("上限来源")),
+                                          ("compaction", _ui("上下文压缩")),
+                                          ("workflow", _ui("工作流")),
+                                          ("model", _ui("模型")))):
             k = QLabel(text)
             k.setObjectName("tkKey")
             v = QLabel("—")
@@ -8221,8 +8783,9 @@ class _TokenStatsPopover(QFrame):
             status_color = QColor(ACCENT_HOVER)
         else:
             status_color = None
-        src_txt = {"upstream": "上游真实用量", "estimate": "本地估算"}.get(
-            s.get("source") or "", "无数据") if has_engine else "无数据"
+        src_txt = {"upstream": _ui("上游真实用量"),
+                    "estimate": _ui("本地估算")}.get(
+            s.get("source") or "", _ui("无数据")) if has_engine else _ui("无数据")
         sig = (used, win, src_txt, ratio, rate, tuple(sorted(cum.items())),
                tuple(sorted(last.items())), msgs, workflow, model, has_engine,
                budget, warn_now, int(comp.get("count") or 0),
@@ -8237,48 +8800,51 @@ class _TokenStatsPopover(QFrame):
         # 上限来源（1M 开关 / 上游声明 / 手填 / 内置已知表 / 模型名推断）+ 可用输入预算。
         # 用短标签：值列仅约 236px，长名（"内置已知服务商表 · 可用输入预算 122.9k"）会被
         # 省略成"…"，反而看不清来源；全称放在 tooltip。
-        src_short = {"1m": "1M 开关", "upstream": "上游声明",
-                     "configured": "服务商手填",
-                     "known": "内置已知表",
-                     "inferred": "模型名推断"}
-        src_desc = {"1m": "1M 开关（已开启 1M 上下文）",
-                    "upstream": "上游服务商在 /models 中的声明",
-                    "configured": "服务商配置中手填",
-                    "known": "内置已知服务商表（离线兜底）",
-                    "inferred": "按模型名推断（最后兜底）"}
+        src_short = {"1m": _ui("1M 开关"), "upstream": _ui("上游声明"),
+                     "configured": _ui("服务商手填"),
+                     "known": _ui("内置已知表"),
+                     "inferred": _ui("模型名推断")}
+        src_desc = {"1m": _ui("1M 开关（已开启 1M 上下文）"),
+                    "upstream": _ui("上游服务商在 /models 中的声明"),
+                    "configured": _ui("服务商配置中手填"),
+                    "known": _ui("内置已知服务商表（离线兜底）"),
+                    "inferred": _ui("按模型名推断（最后兜底）")}
         src_label = src_short.get(str(s.get("window_source") or ""), "")
         src_full = src_desc.get(str(s.get("window_source") or ""), "")
         if src_label and budget > 0:
-            src_label += f" · 预算 {_fmt_tokens_compact(budget)}"
+            src_label += _uif(" · 预算 {v}", v=_fmt_tokens_compact(budget))
         if src_full and budget > 0:
-            src_full += (f"；窗口 {_fmt_tokens(win)}，预留输出 "
-                         f"{_fmt_tokens(int(s.get('max_output') or 0))}，"
-                         f"可用输入预算 {_fmt_tokens(budget)}")
+            src_full += (_uif("；窗口 {win}，预留输出 {out}，可用输入预算 {budget}",
+                              win=_fmt_tokens(win),
+                              out=_fmt_tokens(int(s.get('max_output') or 0)),
+                              budget=_fmt_tokens(budget)))
         self._set_val("window_src", src_label or "—", full=src_full or src_label or "—")
         # 上下文压缩：次数 + 最近释放量（无则"尚未压缩"）
         n_comp = int(comp.get("count") or 0)
         self._set_val("compaction",
-                      f"{n_comp} 次 · 最近释放 {_fmt_tokens(comp.get('last_saved'))}"
-                      if n_comp > 0 else "尚未压缩")
+                      _uif("{n} 次 · 最近释放 {v}",
+                           n=n_comp, v=_fmt_tokens(comp.get('last_saved')))
+                      if n_comp > 0 else _ui("尚未压缩"))
 
         if not has_engine:
             self._usage.setText("—")
             self._ratio.setText("—")
             self._ratio.setStyleSheet(f"color: {TEXT_DIM};")
             self._bar.set_data([], [])
-            self._src_chip.setText("无数据")
-            self._cache_lbl.setText("缓存命中率 —")
+            self._src_chip.setText(_ui("无数据"))
+            self._cache_lbl.setText(_ui("缓存命中率 —"))
             self._cache_bar.set_data([], [])
             for key in ("last_in", "last_out", "cum", "msgs",
                         "window_src", "compaction"):
                 self._set_val(key, "—")
-            self._hint.setText("本会话尚未产生请求：发送消息后展示服务商返回的真实用量。")
+            self._hint.setText(_ui("本会话尚未产生请求：发送消息后展示服务商返回的真实用量。"))
             return
 
         self._usage.setText(f"{_fmt_tokens(used)} / {_fmt_tokens(base)}")
         self._usage.setToolTip(
-            f"已用（输入+输出）{_fmt_tokens(used)} / 可用输入预算 {_fmt_tokens(base)} tokens"
-            + (f"（窗口 {_fmt_tokens(win)}）" if base != win else ""))
+            _uif("已用（输入+输出）{used} / 可用输入预算 {base} tokens",
+                 used=_fmt_tokens(used), base=_fmt_tokens(base))
+            + (_uif("（窗口 {win}）", win=_fmt_tokens(win)) if base != win else ""))
         self._ratio.setText(_fmt_pct(ratio))
         # 显式取 .name()：不依赖 QColor 的字符串化表现，保证仍是 px 可解析的十六进制
         self._ratio.setStyleSheet(
@@ -8288,44 +8854,51 @@ class _TokenStatsPopover(QFrame):
         self._src_chip.setText(src_txt)
         # 缓存明细：标签行只放紧凑值（精确到千分位会超出卡片宽），精确数字进 tooltip
         if s.get("source") == "upstream":
-            seg_desc = ("命中 " + _fmt_tokens_compact(last.get("cache_hit") or 0)
-                        + " · 未命中 " + _fmt_tokens_compact(last.get("cache_miss") or 0))
-            seg_tip = ("本次提示词缓存：命中 "
-                       + _fmt_tokens(last.get("cache_hit") or 0)
-                       + " tokens · 未命中 "
-                       + _fmt_tokens(last.get("cache_miss") or 0) + " tokens")
+            seg_desc = (_ui("命中 ") + _fmt_tokens_compact(last.get("cache_hit") or 0)
+                        + _ui(" · 未命中 ")
+                        + _fmt_tokens_compact(last.get("cache_miss") or 0))
+            seg_tip = (_uif("本次提示词缓存：命中 {hit} tokens · 未命中 {miss} tokens",
+                            hit=_fmt_tokens(last.get("cache_hit") or 0),
+                            miss=_fmt_tokens(last.get("cache_miss") or 0)))
         else:
-            seg_desc = "上游未返回缓存明细"
+            seg_desc = _ui("上游未返回缓存明细")
             seg_tip = ""
-        self._cache_lbl.setText("缓存命中率 " + (_fmt_pct(rate) if rate is not None else "—")
-                                + f"（{seg_desc}）")
+        self._cache_lbl.setText(
+            _ui("缓存命中率 ") + (_fmt_pct(rate) if rate is not None else "—")
+            + _uif("（{desc}）", desc=seg_desc))
         self._cache_lbl.setToolTip(seg_tip)
         self._cache_bar.set_data(
             [((rate or 0.0), pal["rate"])] if rate is not None else [], [])
         tick_bits = []
         if r_comp > 0:
-            tick_bits.append(f"<span style='color:{pal['tick'].name()};'>●</span> "
-                             f"压缩阈值 {_fmt_pct(r_comp, 0)}（{_fmt_tokens(thr.get('compress'))}）")
+            tick_bits.append(
+                f"<span style='color:{pal['tick'].name()};'>●</span> "
+                + _uif("压缩阈值 {rate}（{tokens}）",
+                       rate=_fmt_pct(r_comp, 0),
+                       tokens=_fmt_tokens(thr.get('compress'))))
         if r_ceil > 0:
-            tick_bits.append(f"<span style='color:{(status_color or pal['tick']).name()};'>●</span> "
-                             f"硬上限 {_fmt_tokens(thr.get('ceiling'))}")
+            tick_bits.append(
+                f"<span style='color:{(status_color or pal['tick']).name()};'>●</span> "
+                + _uif("硬上限 {v}", v=_fmt_tokens(thr.get('ceiling'))))
         # 每条刻度独占一行：两条图例合计需宽超过卡片内容宽，单行会被硬裁掉后半条
         self._ticks_lbl.setText("<br>".join(tick_bits))
         self._set_val("last_in", _fmt_tokens(last.get("prompt") or 0))
         self._set_val("last_out", _fmt_tokens(last.get("completion") or 0))
         # 累计消耗：行内用紧凑单位（1.5M / 234.6k）保证一行放得下，精确值放 tooltip
         self._set_val("cum",
-                      f"{_fmt_tokens_compact(cum.get('total'))}（入 "
-                      f"{_fmt_tokens_compact(cum.get('prompt'))} · 出 "
-                      f"{_fmt_tokens_compact(cum.get('completion'))}）",
-                      full=f"{_fmt_tokens(cum.get('total'))}（输入 "
-                           f"{_fmt_tokens(cum.get('prompt'))} · 输出 "
-                           f"{_fmt_tokens(cum.get('completion'))}）")
-        self._set_val("msgs", "—" if msgs is None else f"{int(msgs)} 条")
+                      _uif("{total}（入 {p} · 出 {c}）",
+                           total=_fmt_tokens_compact(cum.get('total')),
+                           p=_fmt_tokens_compact(cum.get('prompt')),
+                           c=_fmt_tokens_compact(cum.get('completion'))),
+                      full=_uif("{total}（输入 {p} · 输出 {c}）",
+                                total=_fmt_tokens(cum.get('total')),
+                                p=_fmt_tokens(cum.get('prompt')),
+                                c=_fmt_tokens(cum.get('completion'))))
+        self._set_val("msgs", "—" if msgs is None else _uif("{n} 条", n=int(msgs)))
         self._hint.setText(
-            "数据来自上游真实用量（输入+输出），供判断上下文占用。"
+            _ui("数据来自上游真实用量（输入+输出），供判断上下文占用。")
             if s.get("source") == "upstream" else
-            "上游暂未返回用量（或上下文刚被压缩），暂以本地估算值展示。")
+            _ui("上游暂未返回用量（或上下文刚被压缩），暂以本地估算值展示。"))
 
     def _elide(self, text: str, width: int = 190) -> str:
         """文本过长时中间省略（不换行、不撑破卡片宽度）；width 为可用像素宽度。
@@ -8431,7 +9004,7 @@ class _PanelDragHandle(QWidget):
         self._panel = panel
         self.setFixedHeight(self._H)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
-        self.setToolTip("按住拖动面板位置（自动保存）")
+        self.setToolTip(_ui("按住拖动面板位置（自动保存）"))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         dark = QColor(_base_color("BG")).lightness() < 128
         self._stripe = QColor(255, 255, 255, 90) if dark else QColor(0, 0, 0, 60)
@@ -8523,7 +9096,7 @@ class _PanelResizeSlot(QWidget):
             "TR": Qt.CursorShape.SizeBDiagCursor, "BL": Qt.CursorShape.SizeBDiagCursor,
         }
         self.setCursor(cursors.get(mode, Qt.CursorShape.SizeAllCursor))
-        self.setToolTip("拖动调整面板大小（松开自动保存，仅本次面板）")
+        self.setToolTip(_ui("拖动调整面板大小（松开自动保存，仅本次面板）"))
         self._drag = False
         self._start_g = QPoint()
         self._start_rect = QRect()
@@ -9015,9 +9588,9 @@ class CodePreviewWindow(_RoundedFloatWindow):
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(6)
         # 标题栏 + 路径
-        self.title = QLabel("预览 · Bing 搜索")
+        self.title = QLabel(_ui("预览 · Bing 搜索"))
         self.title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
-        self.path_lbl = QLabel("默认展示 Bing 搜索引擎；可在此预览网页 / Markdown / 图片 / Office / 代码")
+        self.path_lbl = QLabel(_ui("默认展示 Bing 搜索引擎；可在此预览网页 / Markdown / 图片 / Office / 代码"))
         self.path_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
         self.path_lbl.setWordWrap(True)
         for w, tt in ((self.title, Qt.TextInteractionFlag.TextSelectableByMouse),
@@ -9037,11 +9610,13 @@ class CodePreviewWindow(_RoundedFloatWindow):
                            ("图片", "img"), ("表格 xlsx", "xlsx"), ("文档 docx", "docx"),
                            ("幻灯片 pptx", "pptx"), ("文本/代码", "text"),
                            ("视频/音乐", "media")):
-            self.mode.addItem(label, key)
-        self.mode.setStyleSheet(_QCOMBO)   # 主题自适应下拉（浅色下避免默认黑底黑字）
+            # label 是中文原文（i18n key），在此处过 _ui：模块级元组不能在
+            # 导入期求值，否则切换语言后下拉文案不再刷新。
+            self.mode.addItem(_ui(label), key)
+        self.mode.setStyleSheet(_HOME_COMBO)   # 壁纸模式下本体透明（与主页下拉菜单一致）
         self.mode.currentIndexChanged.connect(self._on_mode_changed)
         mode_row.addWidget(self.mode, 1)
-        self.open_btn = QPushButton("打开…")
+        self.open_btn = QPushButton(_ui("打开…"))
         self.open_btn.setFixedHeight(26)
         self.open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_btn.clicked.connect(self._browse_file)
@@ -9053,7 +9628,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         web_row.setContentsMargins(0, 0, 0, 0)
         web_row.setSpacing(4)
         self.web_url = QLineEdit()
-        self.web_url.setPlaceholderText("输入网址搜索，回车访问")
+        self.web_url.setPlaceholderText(_ui("输入网址搜索，回车访问"))
         # 显式主题配色：修复地址栏字体在任意模式下不可见
         # （默认渲染受 app 级深色 palette 影响，浅色主题下文字与底对比不足）
         self.web_url.returnPressed.connect(self._go_url)
@@ -9164,6 +9739,19 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 f"border: 1px solid {_base_color('BORDER')}; border-radius: 5px;"
                 f"padding: 2px 9px; font-size: 11px; }}"
                 f"QPushButton:hover {{ background: {_base_color('HOVER')}; }}")
+        # 交互面保持实色以优先保证可读性：
+        # Office 加载提示芯片使用 `_base_color('PANEL')`。
+        # 媒体控制条使用实色背景。
+        # Office 放映按钮按当前主题重新着色。
+        # 模式下拉：必须重设 _HOME_COMBO —— 它在构造期被写死进本控件的样式表，而
+        # apply_surface_theme（换肤/壁纸透明态翻转）不会重建控件。漏了这一步，
+        # 设背景后模式下拉框会保留旧主题的实色底（与面板已透明的底割裂）。
+        _set = getattr(self.mode, "setStyleSheet", None)
+        if callable(_set):
+            try:
+                _set(_HOME_COMBO)
+            except Exception:
+                pass
         fb = getattr(self, "full_btn", None)
         if fb is not None:
             fb.setStyleSheet(
@@ -9178,9 +9766,15 @@ class CodePreviewWindow(_RoundedFloatWindow):
         根 QSS 与各内容面都是构造期用 `_panel_surface / _panel_stroke` 拼出来的
         常量字符串：壁纸开关会改变这些取值（实色 ↔ transparent），改模块级状态
         不会自动落到已有控件上 —— 因此主面板快路径必须显式回调本方法刷新。
+        模式下拉菜单（self.mode）构造期用了 _HOME_COMBO，壁纸翻转后派生常量变了，
+        此处必须重设，否则首次设置壁纸后下拉本体仍残留旧实色底/边框。
         """
         try:
             self.setStyleSheet(f"QWidget#codeWin {{ background: {_panel_surface('BG')}; }}")
+        except Exception:
+            pass
+        try:
+            self.mode.setStyleSheet(_HOME_COMBO)
         except Exception:
             pass
         try:
@@ -9209,11 +9803,11 @@ class CodePreviewWindow(_RoundedFloatWindow):
         vl.setSpacing(0)
         nav = QHBoxLayout()
         nav.setSpacing(4)
-        nav.addWidget(self._btn("‹", self._web_back, "后退"))
-        nav.addWidget(self._btn("›", self._web_forward, "前进"))
-        nav.addWidget(self._btn("⟳", self._web_reload, "刷新"))
-        nav.addWidget(self._btn("⌂", self.show_bing, "Bing 首页"))
-        nav.addWidget(self._btn("＋", self._web_new_tab, "新建标签页"))
+        nav.addWidget(self._btn("‹", self._web_back, _ui("后退")))
+        nav.addWidget(self._btn("›", self._web_forward, _ui("前进")))
+        nav.addWidget(self._btn("⟳", self._web_reload, _ui("刷新")))
+        nav.addWidget(self._btn("⌂", self.show_bing, _ui("Bing 首页")))
+        nav.addWidget(self._btn("＋", self._web_new_tab, _ui("新建标签页")))
         nav.addStretch(1)
         self.web_info = QLabel("")
         self.web_info.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
@@ -9242,11 +9836,12 @@ class CodePreviewWindow(_RoundedFloatWindow):
             hint.setOpenExternalLinks(True)
             # 区分「未安装」与「创建失败」：旧构建在打包环境下 find_spec 探测失败
             # 会误报未安装；这里给出真实原因，避免误导排查方向
-            reason = self._web_err or "未检测到 PyQt6-WebEngine（QtWebEngine）"
+            reason = self._web_err or _ui("未检测到 PyQt6-WebEngine（QtWebEngine）")
             hint.setHtml(_preview_wrap_html(
-                f"<p>Web 引擎不可用：{reason}</p>"
-                "<p>安装 <b>PyQt6-WebEngine</b> 后即可在应用内直接浏览网页。</p>"
-                "<p>Markdown / 图片 / Office / 代码预览功能不受影响。</p>",
+                _html("<p>Web 引擎不可用：{reason}</p>"
+                      "<p>安装 <b>PyQt6-WebEngine</b> 后即可在应用内直接浏览网页。</p>"
+                      "<p>Markdown / 图片 / Office / 代码预览功能不受影响。</p>",
+                      reason=reason),
                 ""))
             vl.addWidget(hint, 1)
         self.stack.addWidget(w)
@@ -9323,7 +9918,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         tw = self._web_tabs
         if tw is None:
             return
-        idx = tw.addTab(self._make_web_tab(), "新标签")
+        idx = tw.addTab(self._make_web_tab(), _ui("新标签"))
         tw.setCurrentIndex(idx)
         self.show_url("https://www.bing.com/")
 
@@ -9382,7 +9977,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 d = os.path.expanduser("~")
             default_path = os.path.join(d, suggested or "download.bin")
             save_path, _ = QFileDialog.getSaveFileName(
-                self, "保存下载文件", default_path)
+                self, _ui("保存下载文件"), default_path)
             if not save_path:
                 item.cancel()
                 self._status("已取消下载")
@@ -9465,7 +10060,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             lay = QVBoxLayout(dlg)
             lay.setContentsMargins(12, 10, 12, 12)
             lay.setSpacing(8)
-            t = QLabel(f"下载完成：{os.path.basename(path) or path}")
+            t = QLabel(_uif("下载完成：{a0}", a0=os.path.basename(path) or path))
             t.setWordWrap(True)
             t.setStyleSheet(f"color:{TEXT};font-size:12px;")
             lay.addWidget(t)
@@ -9530,11 +10125,11 @@ class CodePreviewWindow(_RoundedFloatWindow):
         bar.addWidget(self.slide_info)
         bar.addStretch(1)
         self._slide_btns = []
-        for text, js, tip in (("上一页", "__deckPrev()", "切到上一页"),
-                             ("下一步", "__deckStep()", "播放当前页的下一个动画元素"),
-                             ("从头放映", "__deckPlay(1)", "进入放映态：带动画元素隐藏，从第 1 页逐条播放"),
-                             ("全部显示", "__deckAll()", "退出放映态，本页元素一次性完整显示"),
-                             ("下一页", "__deckNext()", "切到下一页")):
+        for text, js, tip in ((_ui("上一页"), "__deckPrev()", _ui("切到上一页")),
+                             (_ui("下一步"), "__deckStep()", _ui("播放当前页的下一个动画元素")),
+                             (_ui("从头放映"), "__deckPlay(1)", _ui("进入放映态：带动画元素隐藏，从第 1 页逐条播放")),
+                             (_ui("全部显示"), "__deckAll()", _ui("退出放映态，本页元素一次性完整显示")),
+                             (_ui("下一页"), "__deckNext()", _ui("切到下一页"))):
             b = QPushButton(text)
             b.setFixedHeight(24)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -9549,10 +10144,10 @@ class CodePreviewWindow(_RoundedFloatWindow):
             bar.addWidget(b)
             self._slide_btns.append(b)
         # 全屏放映/查看：铺满屏幕呈现（PPT 进入放映态逐条动画，其它放大适宽）
-        self.full_btn = QPushButton("全屏放映")
+        self.full_btn = QPushButton(_ui("全屏放映"))
         self.full_btn.setFixedHeight(24)
         self.full_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.full_btn.setToolTip("全屏呈现：← / → 翻页、空格下一步、Esc 退出、F11 切换全屏")
+        self.full_btn.setToolTip(_ui("全屏呈现：← / → 翻页、空格下一步、Esc 退出、F11 切换全屏"))
         self.full_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT}; color: #FFFFFF; border: none;"
             f"border-radius: 5px; padding: 2px 11px; font-size: 11px; font-weight: 600; }}"
@@ -9562,7 +10157,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self._office_full_win = None       # 当前全屏放映窗口（防多开）
         self.slide_bar.setVisible(False)
         col.addWidget(self.slide_bar)
-        self._office_ph = QLabel("打开 Word / PPT / Excel / PDF 文件后在此保真预览")
+        self._office_ph = QLabel(_ui("打开 Word / PPT / Excel / PDF 文件后在此保真预览"))
         self._office_ph.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
         self._office_ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self._office_ph, 1)
@@ -9583,7 +10178,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             self.slide_bar.setVisible(True)
             for b in self._slide_btns:
                 b.setVisible(is_deck)
-            self.full_btn.setText("全屏放映" if is_deck else "全屏查看")
+            self.full_btn.setText(_ui("全屏放映") if is_deck else _ui("全屏查看"))
         else:
             self.slide_bar.setVisible(False)
 
@@ -9606,7 +10201,8 @@ class CodePreviewWindow(_RoundedFloatWindow):
         except Exception as e:
             office_preview_diag("全屏放映失败: %s: %s" % (type(e).__name__, e))
             try:
-                self.slide_info.setText("全屏不可用：%s" % type(e).__name__)
+                self.slide_info.setText(_uif("全屏不可用：{err}",
+                                                err=type(e).__name__))
             except Exception:
                 pass
 
@@ -9664,11 +10260,12 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 playing = res.get("playing") if isinstance(res, dict) else None
                 txt = ""
                 if slide is not None and total is not None:
-                    txt = f"第 {slide}/{total} 页"
+                    txt = _uif("第 {slide}/{total} 页", slide=slide, total=total)
                 if playing:
-                    txt += f" · 放映中（动画 {step or 0}/{total or 0}）"
+                    txt += _uif(" · 放映中（动画 {step}/{total}）",
+                                step=step or 0, total=total or 0)
                 elif slide is not None:
-                    txt += " · 完整样式"
+                    txt += _ui(" · 完整样式")
                 if txt:
                     self.slide_info.setText(txt)
             except Exception:
@@ -9703,7 +10300,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.stack.addWidget(sc)
 
     def _build_empty_page(self):
-        lb = QLabel("请打开或由 AI 自动分发文件到此预览")
+        lb = QLabel(_ui("请打开或由 AI 自动分发文件到此预览"))
         lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lb.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
         self.stack.addWidget(lb)
@@ -9739,7 +10336,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.video_view = QVideoWidget()
         self.video_view.setStyleSheet("background: #000;")
         self.video_view.setMouseTracking(True)   # 全屏时移动鼠标唤出底部控制条
-        self.media_holder = QLabel("音乐文件预览区")
+        self.media_holder = QLabel(_ui("音乐文件预览区"))
         self.media_holder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.media_holder.setWordWrap(True)
         self.media_holder.setStyleSheet(
@@ -9759,7 +10356,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.media_play.setIcon(_line_icon("play", 16, TEXT))
         self.media_play.setStyleSheet(_BTN_ICON)
         self.media_play.setFixedSize(28, 28)
-        self.media_play.setToolTip("播放 / 暂停")
+        self.media_play.setToolTip(_ui("播放 / 暂停"))
         self.media_play.setAutoDefault(False)
         self.media_play.clicked.connect(self._media_play_toggle)
         h.addWidget(self.media_play)
@@ -9786,14 +10383,14 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.media_vol.setFixedWidth(70)
         self.media_vol.setStyleSheet(self.media_progress.styleSheet())
         self.media_vol.sliderMoved.connect(self._media_volume)
-        self.media_vol.setToolTip("音量")
+        self.media_vol.setToolTip(_ui("音量"))
         h.addWidget(self.media_vol)
 
         self.media_full = QPushButton()
         self.media_full.setIcon(_line_icon("full", 16, TEXT_DIM))
         self.media_full.setStyleSheet(_BTN_ICON)
         self.media_full.setFixedSize(28, 28)
-        self.media_full.setToolTip("全屏沉浸（Esc 退出）")
+        self.media_full.setToolTip(_ui("全屏沉浸（Esc 退出）"))
         self.media_full.setAutoDefault(False)
         self.media_full.clicked.connect(self._media_fullscreen)
         h.addWidget(self.media_full)
@@ -9821,19 +10418,19 @@ class CodePreviewWindow(_RoundedFloatWindow):
         if not self._ensure_media_page():
             # 媒体引擎不可用：降级为文本查看（非二进制）或提示
             try:
-                self.title.setText(f"预览 · {os.path.basename(path)}")
+                self.title.setText(_uif("预览 · {name}", name=os.path.basename(path)))
                 if os.path.isfile(path) and not _is_binary(path):
                     with open(path, "r", encoding="utf-8", errors="replace") as f:
                         self.show_text(path, ext)
                 else:
                     self._switch_mode("text")
-                    self.text.setPlainText(f"媒体引擎不可用，无法播放：{os.path.basename(path)}")
+                    self.text.setPlainText(_uif("媒体引擎不可用，无法播放：{a0}", a0=os.path.basename(path)))
             except Exception:
                 pass
             return
         name = os.path.basename(path)
         self._switch_mode("media")
-        self.title.setText(f"预览 · {name}")
+        self.title.setText(_uif("预览 · {name}", name=name))
         self.path_lbl.setText(path)
         # 停掉设置页 pygame 播放器，避免双音源
         try:
@@ -9848,7 +10445,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             self.media_holder.setText("")
         else:
             self._media_stage.setCurrentIndex(1)   # 音乐占位
-            self.media_holder.setText(f"♪  {name}\n\n播放中…（支持进度/音量调节）")
+            self.media_holder.setText(_uif('♪  {a0}\n\n播放中…（支持进度/音量调节）', a0=name))
         from PyQt6.QtCore import QUrl
         self.media_player.stop()
         self._media_dur = 0          # 切换文件：清空旧时长缓存，等 durationChanged 更新
@@ -9899,12 +10496,13 @@ class CodePreviewWindow(_RoundedFloatWindow):
             except Exception:
                 pass
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
-            self.media_time.setText("无法解码")
+            self.media_time.setText(_ui("无法解码"))
             try:
                 self.media_holder.setText(
-                    f"♪  {os.path.basename(str(self.path_lbl.text()))}\n\n"
-                    "无法解码此文件：编码不受支持或文件损坏。\n"
-                    "请尝试 H.264/AAC 编码的 MP4，或改用 WAV/MP3 音频。")
+                    _uim("♪  {fn}\n\n"
+                         "无法解码此文件：编码不受支持或文件损坏。\n"
+                         "请尝试 H.264/AAC 编码的 MP4，或改用 WAV/MP3 音频。")
+                    .format(fn=os.path.basename(str(self.path_lbl.text()))))
             except Exception:
                 pass
 
@@ -10203,8 +10801,8 @@ class CodePreviewWindow(_RoundedFloatWindow):
     # ---- 公开方法 ----
     def show_bing(self):
         """默认展示 Bing 搜索引擎"""
-        self.title.setText("预览 · Bing 搜索")
-        self.path_lbl.setText("在地址栏输入关键词或网址，回车即用 Bing 搜索")
+        self.title.setText(_ui("预览 · Bing 搜索"))
+        self.path_lbl.setText(_ui("在地址栏输入关键词或网址，回车即用 Bing 搜索"))
         self._switch_mode("web")
         self.show_url("https://www.bing.com/")
 
@@ -10220,11 +10818,13 @@ class CodePreviewWindow(_RoundedFloatWindow):
             except Exception:
                 pass
         # 无 WebEngine：仅提示，不再转交系统浏览器打开（访问页面一律留在应用内）
-        self.web_info.setText("Web 引擎不可用" + (f"：{self._web_err}" if self._web_err else ""))
+        self.web_info.setText(
+            _uif("Web 引擎不可用：{err}", err=self._web_err) if self._web_err
+            else _ui("Web 引擎不可用"))
 
     def show_markdown(self, md_text: str):
         """Markdown 文本 → 主题 HTML 预览"""
-        self.title.setText("预览 · Markdown")
+        self.title.setText(_ui("预览 · Markdown"))
         self._switch_mode("md")
         html = agent_ui_ux.render_markdown_html(md_text or "")
         self.html_view.setHtml(_preview_wrap_html(html, self.path_lbl.text()))
@@ -10235,7 +10835,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.html_view.setHtml(html or "")
 
     def show_image(self, path: str):
-        self.title.setText("预览 · 图片（左键拖拽移动 · 滚轮缩放 · 双击复位）")
+        self.title.setText(_ui("预览 · 图片（左键拖拽移动 · 滚轮缩放 · 双击复位）"))
         self._switch_mode("img")
         pix = QPixmap(path)
         if pix.isNull():
@@ -10296,12 +10896,12 @@ class CodePreviewWindow(_RoundedFloatWindow):
         data URI、含放映脚本），故走 WebEngine 页；Word/Excel/PPT 均按真实结构还原。
         PPT 额外显示放映控制条（上一页/下一步/全部显示/下一页）。
         """
-        self.title.setText(f"预览 · {ext.upper()}")
+        self.title.setText(_uif("预览 · {ext}", ext=ext.upper()))
         self.path_lbl.setText(path)
         html = None
         reason = ""
         # 立即给出加载反馈：渲染 + 载入大文件期间不让面板看起来"空白无响应"
-        self._office_begin_loading(f"正在渲染 {ext.upper()} …")
+        self._office_begin_loading(_uif("正在渲染 {ext} …", ext=ext.upper()))
         try:
             import time as _t
             _t0 = _t.time()
@@ -10309,14 +10909,14 @@ class CodePreviewWindow(_RoundedFloatWindow):
             html = render_office_html(path, ext, _office_preview_theme())
             _render_ms = int((_t.time() - _t0) * 1000)
             if not html:
-                reason = "该类型/文件无法生成保真 HTML"
+                reason = _ui("该类型/文件无法生成保真 HTML")
         except Exception as e:
             html = None
             _render_ms = -1
-            reason = f"保真渲染异常: {type(e).__name__}: {e}"
+            reason = _uif("保真渲染异常: {err}", err=f"{type(e).__name__}: {e}")
         if not self._ensure_office_web():
-            reason = reason or "WebEngine 不可用"
-            why = getattr(self, "_office_web_err", "") or "未知原因"
+            reason = reason or _ui("WebEngine 不可用")
+            why = getattr(self, "_office_web_err", "") or _ui("未知原因")
             self._office_end_loading()
             office_preview_diag(f"[{ext}] {path} → WebEngine 不可用，回退纯文本。原因: {why}")
         view = self.office_web
@@ -10324,7 +10924,8 @@ class CodePreviewWindow(_RoundedFloatWindow):
             try:
                 self._switch_mode("office")
                 self._office_begin_loading(
-                    f"正在载入 {len(html)/1024:.0f} KB 预览…（渲染 {_render_ms} ms）")
+                    _uif("正在载入 {kb} KB 预览…（渲染 {ms} ms）",
+                         kb=f"{len(html)/1024:.0f}", ms=_render_ms))
                 # 优先写临时文件 + setUrl：setHtml 有约 2MB 上限（含内联图片的
                 # PPT 很容易超），超限会白屏；本地文件 URL 无此限制。
                 url = _office_preview_url(html)
@@ -10341,7 +10942,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 self._office_path = path
                 self._set_slide_bar(is_deck)
                 if is_deck:
-                    self.slide_info.setText("完整样式预览（点「从头放映」逐条播放动画）")
+                    self.slide_info.setText(_ui("完整样式预览（点「从头放映」逐条播放动画）"))
                 office_preview_diag(f"[{ext}] {path} → 保真渲染 ok（{len(html)} 字符，"
                                     f"渲染 {_render_ms}ms，{'本地文件URL' if url else 'setHtml'}）")
                 return
@@ -10359,11 +10960,14 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self._switch_mode("md")
         inner = _office_preview_html(path, ext)
         if inner is None:
-            self.html_view.setHtml(_preview_wrap_html("<p>暂不支持该 Office 类型</p>", path))
+            self.html_view.setHtml(_preview_wrap_html(
+                _html("<p>暂不支持该 Office 类型</p>"), path))
             return
-        hint = (f"<p style='color:{TEXT_DIM};font-size:11px;margin:2px 0 8px;'>"
-                f"简化渲染（未启用保真预览）：{_esc(reason or '未进入保真分支')}"
-                f"<br>诊断日志：%TEMP%\\zhuzhu_copilot_preview\\diag.log</p>")
+        hint = _html(
+            "<p style='color:{dim};font-size:11px;margin:2px 0 8px;'>"
+            "简化渲染（未启用保真预览）：{reason}"
+            "<br>诊断日志：%TEMP%\\zhuzhu_copilot_preview\\diag.log</p>",
+            dim=TEXT_DIM, reason=_esc(reason or _ui("未进入保真分支")))
         self.html_view.setHtml(_preview_wrap_html(hint + inner, path))
 
     def show_file(self, path: str):
@@ -10391,7 +10995,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         # 本地 HTML：双击直接用内置 WebView（Web 引擎）渲染，保留脚本与样式
         if ext in ("html", "htm") and key in ("auto", "web"):
             if self._active_web() is not None:
-                self.title.setText("预览 · 本地 HTML 网页")
+                self.title.setText(_ui("预览 · 本地 HTML 网页"))
                 self._switch_mode("web")
                 try:
                     from pathlib import Path as _Path
@@ -10408,18 +11012,19 @@ class CodePreviewWindow(_RoundedFloatWindow):
                     self.show_markdown(f.read())
                 return
             except OSError as e:
-                self.title.setText("预览 · Markdown")
+                self.title.setText(_ui("预览 · Markdown"))
                 self._switch_mode("md")
-                self.html_view.setHtml(_preview_wrap_html(f"<p>读取失败: {e}</p>", path))
+                self.html_view.setHtml(_preview_wrap_html(
+                    _html("<p>读取失败: {e}</p>", e=e), path))
                 return
         # 文本/代码（含手动 text、未知/二进制）
         self.show_text(path, ext)
 
     def show_text(self, path: str, ext: str = ""):
-        self.title.setText(f"预览 · {os.path.basename(path)}")
+        self.title.setText(_uif("预览 · {name}", name=os.path.basename(path)))
         self._switch_mode("text")
         if _is_binary(path):
-            self.text.setPlainText("二进制文件：请用「图片」模式或对应 Office 阅读器打开")
+            self.text.setPlainText(_ui("二进制文件：请用「图片」模式或对应 Office 阅读器打开"))
             self._hl = None
             return
         READ_LIMIT = 1_000_000
@@ -10433,7 +11038,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 content = (content[:READ_LIMIT]
                            + "\n\n…（文件过大，仅显示前 1MB）")
         except OSError as e:
-            self.text.setPlainText(f"读取失败: {e}")
+            self.text.setPlainText(_uif("读取失败: {a0}", a0=e))
             self._hl = None
             return
         self.text.setPlainText(content)
@@ -10687,9 +11292,9 @@ class CodePreviewWindow(_RoundedFloatWindow):
             if os.path.isfile(path):
                 self.show_text(path)
             else:
-                self.title.setText("预览 · 文件已删除")
+                self.title.setText(_ui("预览 · 文件已删除"))
                 self._switch_mode("text")
-                self.text.setPlainText("（该文件已被 AI 删除）")
+                self.text.setPlainText(_ui("（该文件已被 AI 删除）"))
                 self._hl = None
         except Exception:
             pass
@@ -10724,7 +11329,7 @@ class TodosWindow(_RoundedFloatWindow):
         # 非壁纸模式回落原始色板实色。
         self.setObjectName("todosWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"QWidget#todosWin {{ background: {_panel_surface('BG')}; }}")
+        self._apply_surface_qss()
         self.resize(self.WIDTH, 100)   # 宽度可调（右缘拖拽，左侧列联动）
         self.panel = TodosPanel(self)
         self.panel.clear_requested.connect(self.clear_requested.emit)
@@ -10750,12 +11355,42 @@ class TodosWindow(_RoundedFloatWindow):
         self._install_resize_edges(host=self.parent())
         self.apply_saved_panel_size()
 
-    def apply_surface_theme(self):
-        """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
+    def _apply_surface_qss(self):
+        """窗口底色 + 描边（构造与换肤共用同一来源，两处不会漂移）。
+
+        表面色见 `_panel_surface`、描边色见 `_panel_stroke`：壁纸模式下两者都透明
+        （悬浮时由 `_RoundedFloatWindow.paintEvent` 自绘壁纸；融入 dock 时透出主窗口
+        壁纸，窗口不再画成白底块），非壁纸模式回落原始色板实色。
+
+        `border` 必须显式给（`none` 或实色）：QSS 里一旦出现 `background`，Qt 就启用
+        样式化绘制，未声明 border 时部分样式后端会补出默认描边 —— 表现为「设了背景
+        后 TODOS 面板四周多出一圈实色边框」。dock 栏容器（`_apply_dock_surface`）与
+        工作树面板（`wtWin`）都是这么写的。
+        """
         try:
-            self.setStyleSheet(f"QWidget#todosWin {{ background: {_panel_surface('BG')}; }}")
+            self.setStyleSheet(
+                f"QWidget#todosWin {{ background: {_panel_surface('BG')};"
+                f" border: {_panel_stroke('BORDER')}; }}")
         except Exception:
             pass
+
+    def apply_surface_theme(self):
+        """按当前表面色就地刷新本窗口**及其内嵌面板**（壁纸透明态变化时由主面板快路径调用）
+
+        必须连带刷新 `self.panel`：换肤/设背景的快路径只对四个侧栏**窗口**调
+        `apply_surface_theme`（见 `_retheme`），内嵌的 `TodosPanel` 是子控件、不会被
+        那条循环直接命中 —— 只刷窗口就会留下「窗口透明、里面那块面板仍是旧主题实色
+        底 + 实色边框」的半透明界面（用户反馈的「首次设置背景时 TODOS 面板的底色和
+        边框色未设置为透明」）。
+        """
+        self._apply_surface_qss()
+        panel = getattr(self, "panel", None)
+        fn = getattr(panel, "apply_surface_theme", None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
 
     def _on_size_changed(self, w: int, h: int):
         """尺寸变化：按最新宽度重算任务行高度（面板高度随之自适应）"""
@@ -10895,10 +11530,13 @@ class _HtmlListDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         # 每条 Git 记录画独立长方形卡片（背景+边框）：彼此以边框分割开，
-        # 避免整列填充同色背景看起来"合并成一个长方形"
+        # 避免整列填充同色背景看起来"合并成一个长方形"。
+        # 卡片底/边取面板表面色（_panel_surface / _panel_stroke）：壁纸模式下透明，
+        # 让自定义背景透出；非壁纸模式回落原始色板实色。此前硬编码 PANEL/BORDER
+        # 模块级常量 → 首次设置壁纸后卡片仍残留实色块（用户反馈「Git 面板底色不透明」）。
         r = option.rect.adjusted(2, 2, -2, -2)
-        _card_bg = QColor(PANEL)
-        _card_edge = QColor(BORDER)
+        _card_bg = QColor(_panel_surface("PANEL"))
+        _card_edge = QColor(_panel_stroke("BORDER"))
         painter.setPen(QPen(_card_edge, 1))
         painter.setBrush(_card_bg)
         painter.drawRoundedRect(r, 6, 6)
@@ -10977,12 +11615,12 @@ class GitLogWindow(_RoundedFloatWindow):
         # 标题行：标题 + 分支/提交 视图切换
         head = QHBoxLayout()
         head.setSpacing(6)
-        title = QLabel("Git 面板")
+        title = QLabel(_ui("Git 面板"))
         title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
         head.addWidget(title)
         head.addStretch(1)
-        self.branch_btn = QPushButton("分支")
-        self.commit_btn = QPushButton("提交")
+        self.branch_btn = QPushButton(_ui("分支"))
+        self.commit_btn = QPushButton(_ui("提交"))
         for b in (self.branch_btn, self.commit_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setFixedHeight(22)
@@ -11065,7 +11703,7 @@ class GitLogWindow(_RoundedFloatWindow):
                   f"font-size:11px;font-weight:700; }}"
                   f"QPushButton:hover {{ background:{ACCENT_HOVER}; }}")
         idle = (f"QPushButton {{ background:transparent;color:{TEXT_DIM};"
-                f"border:1px solid {_base_color('BORDER')};border-radius:5px;padding:0 8px;"
+                f"border:1px solid {_panel_stroke('BORDER')};border-radius:5px;padding:0 8px;"
                 f"font-size:11px; }}"
                 f"QPushButton:hover {{ color:{TEXT};border-color:{ACCENT_HOVER}; }}")
         self.branch_btn.setStyleSheet(active if view == "branch" else idle)
@@ -11097,7 +11735,7 @@ class GitLogWindow(_RoundedFloatWindow):
             self._pending_refresh = True
             return
         self._busy = True
-        self.list.addItem(self._make_item("加载中…", 40))
+        self.list.addItem(self._make_item(_ui("加载中…"), 40))
 
         def _load():
             from zhuzhu_Copilot.core import agent_git, agent_tools
@@ -11162,12 +11800,13 @@ class GitLogWindow(_RoundedFloatWindow):
 
     def _fill_branches(self, branches: list):
         if not branches:
-            self.list.addItem(self._make_item("（无本地分支）", 40))
+            self.list.addItem(self._make_item(_ui("（无本地分支）"), 40))
             return
         for b in branches:
             if b.get("current"):
                 dot, name_color = "●", ACCENT_HOVER
-                tag = f'<span style="color:{OK};font-size:10px;"> 当前</span>'
+                tag = (f'<span style="color:{OK};font-size:10px;">'
+                       f'{_ui("当前")}</span>')
             else:
                 dot, name_color, tag = "○", TEXT, ""
             html = (
@@ -11179,12 +11818,12 @@ class GitLogWindow(_RoundedFloatWindow):
                 f'{_esc(b["author"])} · {_esc(b["date"])}</div>'
                 f'<div style="color:{TEXT};font-size:11px;">{_esc(b["subject"])}</div>')
             it = self._make_item(html)
-            it.setToolTip(f"分支: {b['branch']}\n作者: {b['author']}\n时间: {b['date']}")
+            it.setToolTip(_uif('分支: {a0}\n作者: {a1}\n时间: {a2}', a0=b['branch'], a1=b['author'], a2=b['date']))
             self.list.addItem(it)
 
     def _fill_commits(self, commits: list):
         if not commits:
-            self.list.addItem(self._make_item("（暂无提交记录）", 40))
+            self.list.addItem(self._make_item(_ui("（暂无提交记录）"), 40))
             return
         # 全量历史可能成百上千条：批量插入期间关闭重绘，避免逐条刷新卡顿
         self.list.setUpdatesEnabled(False)
@@ -11336,8 +11975,11 @@ class WorktreeWindow(_RoundedFloatWindow):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
-        title = QLabel("工作树（双击文件预览）")
+        title = QLabel(_ui("工作树（双击文件预览）"))
         title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
+        # 英文标题比中文长（Worktree (double-click a file to preview)），固定 280px 面板
+        # 宽度下单行会被右缘裁切 → 允许换行，避免标题文字被挤压遮挡。
+        title.setWordWrap(True)
         lay.addWidget(title)
         self.tree = _AnimatedFileTree(self)
         self.tree.setHeaderHidden(True)
@@ -11443,7 +12085,7 @@ class WorktreeWindow(_RoundedFloatWindow):
         self._thumbs_gen += 1      # 作废上一轮仍在跑的缩略图解码（见 _load_thumbs）
         if not root or not os.path.isdir(root):
             self.tree.addTopLevelItem(
-                QTreeWidgetItem(["（未找到工作目录 / git 仓库）"]))
+                QTreeWidgetItem([_ui("（未找到工作目录 / git 仓库）")]))
             return
         top = QTreeWidgetItem([os.path.basename(root.rstrip("\\/")) or root])
         top.setData(0, Qt.ItemDataRole.UserRole, str(root))
@@ -11549,7 +12191,7 @@ class WorktreeWindow(_RoundedFloatWindow):
                 item = QTreeWidgetItem([name + "/"])
                 item.setIcon(0, _line_icon("folder", 18, TEXT_DIM))
                 # 目录默认只挂一个占位符子项：让箭头可展开；_on_expand 时替换为真实子项
-                ph = QTreeWidgetItem(["(点击加载…)"])
+                ph = QTreeWidgetItem([_ui("(点击加载…)")])
                 ph.setData(0, Qt.ItemDataRole.UserRole, None)
                 item.addChild(ph)
             else:
@@ -11569,6 +12211,14 @@ class WorktreeWindow(_RoundedFloatWindow):
             gen = self._thumbs_gen
             threading.Thread(target=self._load_thumbs, args=(pending_thumbs, gen),
                              daemon=True).start()
+        # 填充后重新计算列宽：懒加载展开含长英文名的目录时，ResizeToContents 不会
+        # 自动更新 → 列宽停留在旧值，英文单词被视口右缘裁切遮挡（虽有横向滚动条，
+        # 但 item 文本绘制区域 = 列宽，列宽不足时文字直接被截）。此处强制重算，
+        # 确保最长文件名完整可见，超出面板宽度时横向滚动条自动出现。
+        try:
+            self.tree.resizeColumnToContents(0)
+        except Exception:
+            pass
 
     def _load_thumbs(self, paths: list, gen: int = 0):
         """后台线程解码图片缩略图：**只产出 QImage**（线程安全）。
@@ -11632,12 +12282,12 @@ class WorktreeWindow(_RoundedFloatWindow):
             return
         self.tree.setCurrentItem(item)
         menu = QMenu(self)
-        open_ex = menu.addAction("打开于资源管理器")
+        open_ex = menu.addAction(_ui("打开于资源管理器"))
         open_ex.triggered.connect(lambda: self._open_in_explorer(path))
         if os.path.isdir(path):
-            up = menu.addAction("上传文件到此目录…")
+            up = menu.addAction(_ui("上传文件到此目录…"))
             up.triggered.connect(lambda: self._upload_to(path))
-        dl = menu.addAction("删除")
+        dl = menu.addAction(_ui("删除"))
         dl.triggered.connect(lambda: self._delete_path(path, item))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
@@ -11668,7 +12318,7 @@ class WorktreeWindow(_RoundedFloatWindow):
         msg = f"已上传 {ok} 个文件到 {target_dir}"
         if fail:
             msg += f"，{fail} 个失败"
-        QMessageBox.information(self, "上传完成", msg)
+        QMessageBox.information(self, _ui("上传完成"), msg)
         self.refresh()
 
     def _delete_path(self, path: str, item):
@@ -11680,7 +12330,7 @@ class WorktreeWindow(_RoundedFloatWindow):
             _warn_box(self, "不可删除", "不能删除 .git 目录")
             return
         ret = QMessageBox.question(
-            self, "确认删除", f"确定删除“{os.path.basename(path)}”？不可恢复。")
+            self, _ui("确认删除"), _uif("确定删除“{a0}”？不可恢复。", a0=os.path.basename(path)))
         if ret != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -11689,7 +12339,7 @@ class WorktreeWindow(_RoundedFloatWindow):
             else:
                 os.remove(path)
         except OSError as e:
-            QMessageBox.warning(self, "删除失败", str(e))
+            QMessageBox.warning(self, _ui("删除失败"), str(e))
             return
         parent = item.parent()
         if parent is not None:
@@ -11780,19 +12430,19 @@ class QueuePanel(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(8)
-        tag = QLabel("排队中")
+        tag = QLabel(_ui("排队中"))
         tag.setStyleSheet(f"color: {ACCENT_HOVER}; font-size: 12px; font-weight: 700;")
         head.addWidget(tag)
         self._count = QLabel("")
         self._count.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
         head.addWidget(self._count)
         head.addStretch(1)
-        clear_btn = QPushButton("清空")
+        clear_btn = QPushButton(_ui("清空"))
         clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_btn.setAutoDefault(False)
         clear_btn.setStyleSheet(_BTN_COMPACT)
         clear_btn.setFixedHeight(22)
-        clear_btn.setToolTip("取消全部排队消息")
+        clear_btn.setToolTip(_ui("取消全部排队消息"))
         clear_btn.clicked.connect(self.clear_all)
         head.addWidget(clear_btn)
         lay.addLayout(head)
@@ -11828,7 +12478,7 @@ class QueuePanel(QWidget):
         # 关键：widgetResizable 会把内部 widget 压缩到视口，必须把 minimum 高度设为内容高度，
         # 视口不足时才会出现滚动条（内容不被裁剪），视口充足时消息顶部紧凑排列。
         self._list.setMinimumHeight(self._rows_h)
-        self._count.setText(f"{n} 条" if n else "")
+        self._count.setText(_uif("{n} 条", n=n) if n else "")
         self.setVisible(bool(n))
         if items:
             # 排队消息从下至上：自动滚动到底部，最新排队消息始终可见
@@ -11858,22 +12508,22 @@ class QueuePanel(QWidget):
         lbl.setStyleSheet(f"color: {TEXT}; font-size: 12px;")
         lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         rl.addWidget(lbl, 1)
-        edit = QPushButton("编辑")
+        edit = QPushButton(_ui("编辑"))
         edit.setCursor(Qt.CursorShape.PointingHandCursor)
         edit.setAutoDefault(False)
         edit.setStyleSheet(_BTN_COMPACT)
         edit.setFixedHeight(22)
         edit.setFixedWidth(56)
-        edit.setToolTip("回填到输入框修改，发送后回到原队列位置")
+        edit.setToolTip(_ui("回填到输入框修改，发送后回到原队列位置"))
         edit.clicked.connect(lambda _=False, i=idx: self.edit_clicked.emit(i))
         rl.addWidget(edit)
-        dele = QPushButton("删除")
+        dele = QPushButton(_ui("删除"))
         dele.setCursor(Qt.CursorShape.PointingHandCursor)
         dele.setAutoDefault(False)
         dele.setStyleSheet(_BTN_COMPACT)
         dele.setFixedHeight(22)
         dele.setFixedWidth(56)
-        dele.setToolTip("取消该条排队消息")
+        dele.setToolTip(_ui("取消该条排队消息"))
         dele.clicked.connect(lambda _=False, i=idx: self.delete_clicked.emit(i))
         rl.addWidget(dele)
         row.setFixedHeight(self._ROW_H)
@@ -12183,9 +12833,134 @@ class AgentPanel(QDialog):
     sess_name_signal = pyqtSignal(str, str)  # 会话命名: sid, title（后台 AI 起名 / set_session_name 工具 → 主线程改名）
     optimize_signal = pyqtSignal(str, str)   # 提示词优化完成（ok, 结果/错误信息，后台线程 → 主线程）
     fun_signal = pyqtSignal(str)   # 趣味互动锐评完成（主线程展示底部气泡；空串表示失败静默重排）
+    wechat_message_signal = pyqtSignal(str)   # 微信消息：后台线程 → 主线程分发
     _init_done = pyqtSignal()   # 后台初始化完成 → 主线程继续 UI 就绪
     file_diff_signal = pyqtSignal(str, str, str)  # AI 写/改文件差异(工作线程→主线程): path, old, new
     git_probe_signal = pyqtSignal(str, float)     # git 仓库根/时间戳后台探测完成（→ 主线程更新已知值）
+
+    # ---------- 微信 ClawBot（主面板：消息接收与回复推送） ----------
+    def _wechat_start_polling(self):
+        """启动微信消息长轮询和 agent 回复推送（幂等，回调强制绑定到主面板）。"""
+        from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+        bridge = get_bridge()
+        if not bridge.bound:
+            return
+        # 连接信号（UniqueConnection 防止重复连接）
+        try:
+            self.wechat_message_signal.connect(self._wechat_dispatch,
+                                               Qt.ConnectionType.UniqueConnection)
+        except Exception:
+            pass
+        # 更新回调到主面板：bridge.start 幂等——已有活跃轮询线程时只换回调、
+        # 不重启线程（stop→start 会制造与旧线程并发的"幽灵轮询"：两个线程
+        # 共享游标长轮询，同一条消息被各拉一次、各分发一次，这正是
+        # "微信端发一条、客户端出两条"的根因）
+        bridge.start(on_message=self._wechat_on_message)
+        reply_thread = getattr(self, "_wechat_reply_thread", None)
+        if reply_thread is None or not reply_thread.is_alive():
+            self._wechat_polling = True
+            self._wechat_reply_thread = threading.Thread(
+                target=self._wechat_reply_poll_loop, daemon=True)
+            self._wechat_reply_thread.start()
+
+    def _wechat_on_message(self, text: str, from_user_id: str, context_token: str):
+        """微信发来消息：通过信号切换到主线程转发给 agent。"""
+        print(f"[WeChatBridge] on_message: text={text[:50]} from={from_user_id[:20]}")
+        self._wechat_last_user = from_user_id
+        self._wechat_last_context = context_token
+        self.wechat_message_signal.emit(text)
+
+    def _wechat_dispatch(self, text: str):
+        """在主线程中把微信消息填入输入框并发送，发送后立即显示"正在输入中"。"""
+        print(f"[WeChatBridge] dispatch: text={text[:50]}")
+        if hasattr(self, "input"):
+            self.input.setPlainText(text)
+            actual = self.input.toPlainText()
+            print(f"[WeChatBridge] input after set: '{actual[:50]}'")
+            self._send()
+            print("[WeChatBridge] _send called")
+            # 立即显示"对方正在输入中"
+            from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+            bridge = get_bridge()
+            uid = getattr(self, "_wechat_last_user", "")
+            ctx = getattr(self, "_wechat_last_context", "")
+            if uid and ctx:
+                bridge.send_typing(1, uid, ctx)
+                self._wechat_typing_shown = True
+
+    def _wechat_reply_poll_loop(self):
+        """后台轮询 agent 回复和状态，推送到微信。
+
+        - 任务执行中：显示"对方正在输入中"
+        - 任务结束后：推送最终回复内容，停止"正在输入中"
+        - 检测到错误：完整推送错误信息到微信
+        """
+        from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+        bridge = get_bridge()
+        last_text = ""
+        last_error = ""
+        while getattr(self, "_wechat_polling", False) and bridge.bound:
+            time.sleep(1.5)
+            try:
+                eng = self._engine_for(self._session_id)
+                msgs = getattr(eng, "_messages", []) or []
+                uid = getattr(self, "_wechat_last_user", "")
+                ctx = getattr(self, "_wechat_last_context", "")
+
+                # 调试：打印消息结构
+                if msgs and not getattr(self, "_wechat_debug_msgs", False):
+                    for i, m in enumerate(msgs[-3:]):
+                        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "?")
+                        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+                        print(f"[WeChatBridge] msg[{i}] role={role} content={str(content)[:80]}")
+                    self._wechat_debug_msgs = True
+
+                # 1. 任务执行中：确保显示"正在输入中"
+                if self._task_active and uid and ctx and not getattr(self, "_wechat_typing_shown", False):
+                    bridge.send_typing(1, uid, ctx)
+                    self._wechat_typing_shown = True
+
+                # 2. 检测错误信息（仅 role=error，不把 system 提示词当作错误）
+                for msg in reversed(msgs):
+                    role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+                    content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+                    if role == "error" and content and str(content) != last_error:
+                        last_error = str(content)
+                        if uid and ctx:
+                            bridge.send_typing(2, uid, ctx)
+                            self._wechat_typing_shown = False
+                            bridge.send_text("⚠️ " + str(content), ctx, uid)
+                        break
+
+                # 3. 任务结束后：推送最终 assistant 回复
+                if not self._task_active and uid and ctx:
+                    for msg in reversed(msgs):
+                        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+                        if role == "assistant":
+                            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+                            if content and str(content) != last_text:
+                                last_text = str(content)
+                                # 停止"正在输入中"
+                                bridge.send_typing(2, uid, ctx)
+                                self._wechat_typing_shown = False
+                                print(f"[WeChatBridge] pushing reply: {last_text[:100]}")
+                                # 首次：诊断所有格式
+                                if not getattr(self, "_wechat_format_tested", False):
+                                    self._wechat_format_tested = True
+                                    print("\n********** DIAGNOSTIC: testing ALL formats **********")
+                                    bridge.send_text_all_formats("diagnostic test", ctx, uid)
+                                    print("********** DIAGNOSTIC complete **********\n")
+                                bridge.send_text(last_text, ctx, uid)
+                            break
+
+                # 4. 任务结束且无新回复：停止"正在输入中"
+                if not self._task_active and getattr(self, "_wechat_typing_shown", False):
+                    if uid and ctx:
+                        bridge.send_typing(2, uid, ctx)
+                    self._wechat_typing_shown = False
+
+            except Exception as e:
+                print("[WeChatBridge] reply poll error:", e)
 
     # ---------- 会话感知状态（属性读写当前会话，支撑多对话并发） ----------
     def _cur(self) -> dict:
@@ -12416,8 +13191,19 @@ class AgentPanel(QDialog):
         self._admin_dnd = False
         self._admin_drop_filter = None
         self._scroll_pending = False   # 滚动调度去重标志
+        # P1 长对话优化：批量重建消息流期间为 True —— 新气泡挂载前保持隐藏，
+        # 由 _render_history_all 收尾时整批一次性显示（消除逐条 setVisible 的布局级联）
+        self._build_inflight = False
+        # _build_inflight 期间被隐藏、待收尾恢复的控件（气泡本体 + AI 回合包裹层）。
+        # 用列表而非 set：控件会被复用/重建，去重语义反而可能漏恢复。
+        self._inflight_hidden: list = []
         self._bubble_widgets: list = []  # 所有气泡 QLabel（窗口缩放时同步宽度）
         self._bubble_segs: dict = {}     # 气泡 id → 其 AI 段列表（思考折叠/展开局部重渲染用）
+        # 每个会话一份独立消息流容器（见 _new_stream_view/_attach_view）：切换会话 =
+        # 整容器换挂（O(1)），不再逐条重建历史气泡；只在尾部有新增内容时才增量补齐。
+        self._views: dict = {}           # sid -> view（与 st["view"] 同一对象）
+        self._view_order: list = []      # LRU：最近使用在末尾，超限淘汰最旧的非当前视图
+        self._active_view: dict = None   # 当前挂载的视图（面板工作引用的宿主）
         # 主题切换复用的气泡暂存池（见 _detach_live_bubbles / _take_pooled_bubble）：
         # 重建前把存活气泡从旧树摘出放这里，_add_bubble 优先取回而非新建 —— 省掉
         # 拆树 + 重建全部气泡（实测约占 _retheme 的一半以上）。{"user": [...], "ai": [...]}
@@ -12465,6 +13251,15 @@ class AgentPanel(QDialog):
                 self._restore_workdir()   # 恢复当前会话的独立工作目录（含全局默认回退）
             except Exception:
                 pass
+            # 微信 ClawBot：已绑定则自动启动消息长轮询
+            try:
+                from zhuzhu_Copilot.core.wechat_bridge import get_bridge
+                bridge = get_bridge()
+                if bridge.bound and not bridge.polling:
+                    print("[WeChatBridge] auto-start polling on startup")
+                    self._wechat_start_polling()
+            except Exception as e:
+                print("[WeChatBridge] auto-start failed:", e)
         QTimer.singleShot(0, _finish_startup_init)
 
         self._timer = QTimer(self)
@@ -12544,7 +13339,242 @@ class AgentPanel(QDialog):
         self._last_bw = self._last_ai_bw = -1   # 上次已同步的气泡宽度缓存
         self._last_img_w = -1                   # 上次重渲染时的截图宽度缓存
 
+        # 顶栏时钟：每秒刷新本地时间（xxxx年-xx月-xx日-xx:xx:xx）
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._update_clock)
+        self._clock_timer.setInterval(1000)
+        self._clock_timer.start()
+        # 顶栏网络状态：每5秒检测一次连通性
+        self._net_timer = QTimer(self)
+        self._net_timer.timeout.connect(self._check_network)
+        self._net_timer.setInterval(5000)
+        self._net_timer.start()
+        # 顶栏系统状态：CPU / 内存 / 网速，每秒更新
+        self._init_system_stats()
+        self._sys_timer = QTimer(self)
+        self._sys_timer.timeout.connect(self._update_system_stats)
+        self._sys_timer.setInterval(1000)
+        self._sys_timer.start()
+        # 立即刷新一次（避免标签初始为空）
+        QTimer.singleShot(0, self._update_clock)
+        QTimer.singleShot(0, self._check_network)
+        QTimer.singleShot(0, self._update_system_stats)
+
         threading.Thread(target=self._init_mcp, daemon=True).start()
+
+    # ---------- 顶栏时钟与网络状态 ----------
+    def _update_clock(self):
+        """每秒刷新顶栏时间显示。
+
+        中文：xxxx年-xx月-xx日-xx:xx:xx；英文：xxxx/xx/xx-xx:xx（去年月日汉字）。
+        """
+        from datetime import datetime
+        from zhuzhu_Copilot.core import i18n
+        lbl = getattr(self, "clock_label", None)
+        if lbl is None:
+            return
+        now = datetime.now()
+        if i18n.is_english():
+            lbl.setText(now.strftime("%Y/%m/%d-%H:%M"))
+        else:
+            lbl.setText(now.strftime("%Y年-%m月-%d日-%H:%M:%S"))
+
+    def _check_network(self):
+        """每5秒检测网络连通性，更新顶栏网络状态图标。
+
+        用 socket 连接公共 DNS（8.8.8.8:53 / 223.5.5.5:53）检测，超时 2 秒；
+        比 HTTP 请求轻量，不消耗流量。两个 DNS 任一可达即视为在线。
+        在线：绿色 WiFi 图标；离线：红色 WiFi-off 图标（带斜线）。
+        """
+        import socket
+        lbl = getattr(self, "net_label", None)
+        if lbl is None:
+            return
+        online = False
+        for host, port in (("8.8.8.8", 53), ("223.5.5.5", 53)):
+            try:
+                sock = socket.create_connection((host, port), timeout=2)
+                sock.close()
+                online = True
+                break
+            except Exception:
+                continue
+        if online:
+            lbl.setPixmap(_svg_icon(_WIFI_SVG, 14, "#22C55E").pixmap(14, 14))
+            lbl.setToolTip(_ui("在线"))
+        else:
+            lbl.setPixmap(_svg_icon(_WIFI_OFF_SVG, 14, "#EF4444").pixmap(14, 14))
+            lbl.setToolTip(_ui("离线"))
+
+    # ---------- 系统状态监控（CPU / 内存 / 网速） ----------
+    def _init_system_stats(self):
+        """初始化系统状态监控：CPU/内存/网速，用 Windows API 实现，无第三方依赖。"""
+        self._sys_ok = False
+        try:
+            import ctypes
+            self._sys_ct = ctypes
+            self._sys_kernel32 = ctypes.windll.kernel32
+            self._sys_iphlpapi = ctypes.windll.iphlpapi
+            # FILETIME 结构（8字节）：GetSystemTimes 的参数类型
+            class _FT(ctypes.Structure):
+                _fields_ = [("lo", ctypes.c_ulong), ("hi", ctypes.c_ulong)]
+            self._sys_FT = _FT
+            # 设置函数签名，避免 ctypes 参数推断错误导致崩溃
+            self._sys_kernel32.GetSystemTimes.argtypes = [
+                ctypes.POINTER(_FT), ctypes.POINTER(_FT), ctypes.POINTER(_FT)]
+            self._sys_kernel32.GetSystemTimes.restype = ctypes.c_int
+            self._sys_iphlpapi.GetIfTable.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.c_int]
+            self._sys_iphlpapi.GetIfTable.restype = ctypes.c_ulong
+            # CPU 采样状态
+            self._cpu_last_idle = 0
+            self._cpu_last_kernel = 0
+            self._cpu_last_user = 0
+            self._cpu_usage = 0.0
+            # 网速采样状态
+            self._net_last_in = 0
+            self._net_last_out = 0
+            self._net_last_time = 0.0
+            self._net_up = 0.0
+            self._net_down = 0.0
+            self._sys_ok = True
+        except Exception:
+            self._sys_ok = False
+
+    def _cpu_percent(self) -> float:
+        """CPU 使用率（%）：GetSystemTimes 两次采样计算。"""
+        if not getattr(self, "_sys_ok", False):
+            return 0.0
+        try:
+            ct = self._sys_ct
+            _FT = self._sys_FT
+            idle, kernel, user = _FT(), _FT(), _FT()
+            if not self._sys_kernel32.GetSystemTimes(ct.byref(idle), ct.byref(kernel), ct.byref(user)):
+                return self._cpu_usage
+            i = (idle.hi << 32) | idle.lo
+            k = (kernel.hi << 32) | kernel.lo
+            u = (user.hi << 32) | user.lo
+            if self._cpu_last_idle > 0:
+                di = i - self._cpu_last_idle
+                dk = k - self._cpu_last_kernel
+                du = u - self._cpu_last_user
+                total = dk + du
+                if total > 0:
+                    self._cpu_usage = max(0.0, min(100.0, (1.0 - di / total) * 100.0))
+            self._cpu_last_idle, self._cpu_last_kernel, self._cpu_last_user = i, k, u
+            return self._cpu_usage
+        except Exception:
+            return self._cpu_usage
+
+    def _mem_percent(self) -> float:
+        """内存使用率（%）：GlobalMemoryStatusEx。"""
+        if not getattr(self, "_sys_ok", False):
+            return 0.0
+        try:
+            ct = self._sys_ct
+            class _MS(ct.Structure):
+                _fields_ = [
+                    ("len", ct.c_ulong), ("load", ct.c_ulong),
+                    ("total", ct.c_ulonglong), ("avail", ct.c_ulonglong),
+                    ("total_page", ct.c_ulonglong), ("avail_page", ct.c_ulonglong),
+                    ("total_virt", ct.c_ulonglong), ("avail_virt", ct.c_ulonglong),
+                    ("avail_ext", ct.c_ulonglong),
+                ]
+            ms = _MS()
+            ms.len = ct.sizeof(_MS)
+            if self._sys_kernel32.GlobalMemoryStatusEx(ct.byref(ms)):
+                return float(ms.load)
+            return 0.0
+        except Exception:
+            return 0.0
+
+    def _net_bytes(self) -> tuple:
+        """所有在线网络接口的总收发字节数（GetIfTable）。"""
+        if not getattr(self, "_sys_ok", False):
+            return 0, 0
+        try:
+            ct = self._sys_ct
+            wt = ct.wintypes
+            class _IFROW(ct.Structure):
+                _fields_ = [
+                    ("name", ct.c_wchar * 256), ("type", wt.DWORD), ("mtu", wt.DWORD),
+                    ("speed", wt.DWORD), ("phys_len", wt.DWORD), ("phys", ct.c_ubyte * 8),
+                    ("admin", wt.DWORD), ("oper", wt.DWORD), ("last_change", wt.DWORD),
+                    ("in_octets", wt.DWORD), ("in_ucast", wt.DWORD), ("in_nucast", wt.DWORD),
+                    ("in_disc", wt.DWORD), ("in_err", wt.DWORD), ("in_unk", wt.DWORD),
+                    ("out_octets", wt.DWORD), ("out_ucast", wt.DWORD), ("out_nucast", wt.DWORD),
+                    ("out_disc", wt.DWORD), ("out_err", wt.DWORD), ("out_qlen", wt.DWORD),
+                    ("descr_len", wt.DWORD), ("descr", ct.c_ubyte * 256),
+                ]
+            # 先获取所需缓冲区大小
+            size = wt.DWORD(0)
+            self._sys_iphlpapi.GetIfTable(None, ct.byref(size), 0)
+            if size.value <= 4:
+                return 0, 0
+            # 分配足够大的缓冲区（多留 4KB 余量防止返回大小变化）
+            buf_size = max(size.value + 4096, 8192)
+            buf = (ct.c_ubyte * buf_size)()
+            actual_size = wt.DWORD(buf_size)
+            ret = self._sys_iphlpapi.GetIfTable(ct.cast(buf, ct.c_void_p), ct.byref(actual_size), 0)
+            if ret != 0:  # ERROR_SUCCESS = 0
+                return 0, 0
+            # 解析：前 4 字节是 dwNumEntries，之后是 MIB_IFROW 数组
+            num = ct.cast(buf, ct.POINTER(wt.DWORD)).contents.value
+            if num <= 0 or num > 256:  # 合理范围保护
+                return 0, 0
+            row_size = ct.sizeof(_IFROW)
+            total_in, total_out = 0, 0
+            for i in range(num):
+                offset = 4 + i * row_size
+                if offset + row_size > buf_size:
+                    break
+                row = ct.cast(ct.byref(buf, offset), ct.POINTER(_IFROW)).contents
+                if row.oper == 1:  # MIB_IF_OPER_STATUS_CONNECTED
+                    total_in += int(row.in_octets)
+                    total_out += int(row.out_octets)
+            return total_in, total_out
+        except Exception:
+            return 0, 0
+
+    def _update_system_stats(self):
+        """每秒更新顶栏 CPU / 内存 / 网速标签。"""
+        try:
+            import time
+            cpu = self._cpu_percent()
+            mem = self._mem_percent()
+            # 网速：两次采样计算速率
+            now = time.time()
+            cur_in, cur_out = self._net_bytes()
+            if self._net_last_time > 0 and now > self._net_last_time:
+                dt = now - self._net_last_time
+                if dt > 0:
+                    self._net_down = max(0.0, (cur_in - self._net_last_in) / dt / 1024.0)
+                    self._net_up = max(0.0, (cur_out - self._net_last_out) / dt / 1024.0)
+            self._net_last_in, self._net_last_out, self._net_last_time = cur_in, cur_out, now
+            # 更新标签
+            from zhuzhu_Copilot.core import i18n
+            en = i18n.is_english()
+            cpu_lbl = getattr(self, "cpu_label", None)
+            mem_lbl = getattr(self, "mem_label", None)
+            net_lbl = getattr(self, "speed_label", None)
+            if cpu_lbl is not None:
+                cpu_lbl.setText("CPU %d%%" % int(cpu))
+                cpu_lbl.setToolTip((_ui("CPU 使用率") + ": %.1f%%") % cpu)
+            if mem_lbl is not None:
+                mem_lbl.setText(("MEM %d%%" if en else "内存 %d%%") % int(mem))
+                mem_lbl.setToolTip((_ui("内存使用率") + ": %.1f%%") % mem)
+            if net_lbl is not None:
+                def _fmt(v):
+                    if v >= 1024:
+                        return "%.1f MB/s" % (v / 1024.0)
+                    return "%.0f KB/s" % v
+                up_s = _fmt(self._net_up)
+                down_s = _fmt(self._net_down)
+                net_lbl.setText("↑%s ↓%s" % (up_s, down_s))
+                net_lbl.setToolTip("%s: %s\n%s: %s" % (
+                    _ui("上行"), up_s, _ui("下行"), down_s))
+        except Exception:
+            pass
 
     # ---------- UI ----------
     def _build_ui(self, rescan_ext: bool = True):
@@ -12595,7 +13625,7 @@ class AgentPanel(QDialog):
         self.session_combo.view().viewport().installEventFilter(self._session_ctx_guard)
         self.session_combo.view().installEventFilter(self._session_ctx_guard)
         self._session_ctx_guard.eventFilter = self._session_right_click_filter
-        self.session_combo.setStyleSheet(_QCOMBO)
+        self.session_combo.setStyleSheet(_HOME_COMBO)
         self.session_combo.currentIndexChanged.connect(self._on_session_selected)
         # 下拉列表右键菜单：删除对话
         self.session_combo.view().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -12607,7 +13637,7 @@ class AgentPanel(QDialog):
         self.new_btn.setAutoDefault(False)
         self.new_btn.setFixedSize(34, 34)
         self.new_btn.setIconSize(QSize(18, 18))
-        self.new_btn.setToolTip("新对话")
+        self.new_btn.setToolTip(_ui("新对话"))
         self.new_btn.setStyleSheet(_BTN_ICON)
         self.new_btn.clicked.connect(self._new_session)
         top.addWidget(self.new_btn)
@@ -12617,7 +13647,7 @@ class AgentPanel(QDialog):
         self.settings_btn.setAutoDefault(False)
         self.settings_btn.setFixedSize(34, 34)
         self.settings_btn.setIconSize(QSize(18, 18))
-        self.settings_btn.setToolTip("AI 设置：执行模式 / 工作目录 / 工作力度 / 规则 / 提示词 / 模型接入")
+        self.settings_btn.setToolTip(_ui("AI 设置：执行模式 / 工作目录 / 工作力度 / 规则 / 提示词 / 模型接入"))
         self.settings_btn.setStyleSheet(_BTN_ICON)
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
@@ -12629,10 +13659,45 @@ class AgentPanel(QDialog):
         # 同时作为浮层展示工作流/模型的数据源（见 _token_stats）。
         self.token_label = QLabel("0 tk")
         self.token_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
-        self.token_label.setToolTip("已用 tokens")
+        self.token_label.setToolTip(_ui("已用 tokens"))
         self.wf_label = QLabel("")
         self.wf_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
-        self.wf_label.setToolTip("当前对话使用的工作流")
+        self.wf_label.setToolTip(_ui("当前对话使用的工作流"))
+
+        # 系统状态 + 时间 + 网络：用子布局统一控制间距（2px，极度紧凑）
+        top.addSpacing(8)   # 整体与左侧元素保持视觉间距
+        stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(2)
+        stats_layout.setContentsMargins(0, 0, 0, 0)
+        self.cpu_label = QLabel("CPU 0%")
+        self.cpu_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        self.cpu_label.setContentsMargins(0, 0, 0, 0)
+        self.cpu_label.setMinimumWidth(48)
+        stats_layout.addWidget(self.cpu_label)
+        self.mem_label = QLabel("MEM 0%")
+        self.mem_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        self.mem_label.setContentsMargins(0, 0, 0, 0)
+        self.mem_label.setMinimumWidth(52)
+        stats_layout.addWidget(self.mem_label)
+        self.speed_label = QLabel("↑0 KB/s ↓0 KB/s")
+        self.speed_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        self.speed_label.setContentsMargins(0, 0, 0, 0)
+        self.speed_label.setMinimumWidth(108)
+        stats_layout.addWidget(self.speed_label)
+        # 时间显示：xxxx年-xx月-xx日-xx:xx:xx（每秒刷新）
+        self.clock_label = QLabel("")
+        self.clock_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        self.clock_label.setContentsMargins(0, 0, 0, 0)
+        self.clock_label.setToolTip(_ui("本地时间"))
+        stats_layout.addWidget(self.clock_label)
+        # 网络状态显示（每5秒检测）：用开源矢量 WiFi 图标，在线绿/离线红
+        self.net_label = QLabel("")
+        self.net_label.setFixedSize(18, 18)
+        self.net_label.setContentsMargins(0, 0, 0, 0)
+        self.net_label.setToolTip(_ui("网络连接状态"))
+        stats_layout.addWidget(self.net_label)
+        top.addLayout(stats_layout)
+
         # zhuzhu Copilot 入口：点击在其下方丝滑弹出紧凑浮层（应用迁移/卸载 + 防护 +
         # 通用设置 + 工具），浮层由本面板懒创建并托管，见 _ensure_copilot_panel
         self.copilot_btn = QPushButton(_line_icon("apps", 16, TEXT_DIM), "")
@@ -12640,7 +13705,7 @@ class AgentPanel(QDialog):
         self.copilot_btn.setAutoDefault(False)
         self.copilot_btn.setFixedSize(34, 34)
         self.copilot_btn.setIconSize(QSize(18, 18))
-        self.copilot_btn.setToolTip("zhuzhu Copilot：应用迁移与卸载、安全防护、通用设置与工具")
+        self.copilot_btn.setToolTip(_ui("zhuzhu Copilot：应用迁移与卸载、安全防护、通用设置与工具"))
         self.copilot_btn.setStyleSheet(_BTN_GHOST)
         self.copilot_btn.clicked.connect(self.toggle_copilot_panel)
         top.addWidget(self.copilot_btn)
@@ -12651,7 +13716,7 @@ class AgentPanel(QDialog):
         self.token_btn.setAutoDefault(False)
         self.token_btn.setFixedSize(34, 34)
         self.token_btn.setIconSize(QSize(18, 18))
-        self.token_btn.setToolTip("Token / 上下文统计：占用、阈值、工作流、模型与累计消耗")
+        self.token_btn.setToolTip(_ui("Token / 上下文统计：占用、阈值、工作流、模型与累计消耗"))
         self.token_btn.setStyleSheet(_BTN_GHOST)
         self.token_btn.clicked.connect(self.toggle_token_stats)
         top.addWidget(self.token_btn)
@@ -12661,7 +13726,7 @@ class AgentPanel(QDialog):
         clear_btn.setAutoDefault(False)
         clear_btn.setFixedSize(34, 34)
         clear_btn.setIconSize(QSize(18, 18))
-        clear_btn.setToolTip("清空上下文并永久删除该对话（二次弹窗确认，不可恢复）")
+        clear_btn.setToolTip(_ui("清空上下文并永久删除该对话（二次弹窗确认，不可恢复）"))
         clear_btn.setAutoDefault(False)
         clear_btn.setStyleSheet(_BTN_GHOST)
         clear_btn.clicked.connect(self._clear_chat)
@@ -12705,6 +13770,13 @@ class AgentPanel(QDialog):
         self.msg_lay.setSpacing(10)
         self.msg_lay.addStretch(1)   # 末尾弹性空间，消息自顶向下堆叠
         self.msg_area.setWidget(container)
+        self.msg_container = container   # 消息流容器：批量重建期整体隐藏（见 _hist_clear_stream）
+        # 初始视图登记为面板活动视图（后续每个会话各自持有，见 _new_stream_view）
+        self._active_view = {"w": container, "lay": self.msg_lay,
+                             "bubbles": self._bubble_widgets, "segs": self._bubble_segs,
+                             "nav": self._msg_nav, "sid": "",
+                             "rows_ref": None, "rows_n": 0, "last_row": None,
+                             "seg_sig": None, "live": None, "theme": _THEME_VERSION}
 
         self._welcome_page = self._build_welcome()
         self.msg_stack = QStackedWidget()
@@ -12780,7 +13852,7 @@ class AgentPanel(QDialog):
         self.attach_btn.setAutoDefault(False)
         self.attach_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
         self.attach_btn.setIconSize(QSize(20, 20))
-        self.attach_btn.setToolTip("上传文件/图片给 AI（也可拖拽文件到输入框或 Ctrl+V 粘贴截图）")
+        self.attach_btn.setToolTip(_ui("上传文件/图片给 AI（也可拖拽文件到输入框或 Ctrl+V 粘贴截图）"))
         self.attach_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
         self.attach_btn.clicked.connect(self._pick_attachments)
         bottom.addWidget(self.attach_btn)
@@ -12791,7 +13863,7 @@ class AgentPanel(QDialog):
         self.optimize_btn.setAutoDefault(False)
         self.optimize_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
         self.optimize_btn.setIconSize(QSize(20, 20))
-        self.optimize_btn.setToolTip("优化提示词：结合当前对话上下文，润色输入框中的提示词")
+        self.optimize_btn.setToolTip(_ui("优化提示词：结合当前对话上下文，润色输入框中的提示词"))
         # 与「+」上传按钮同款皮肤（用户要求）：实心面板底 + 描边正圆，hover 描边转强调色
         self.optimize_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
         self.optimize_btn.clicked.connect(self._on_optimize_clicked)
@@ -12801,8 +13873,8 @@ class AgentPanel(QDialog):
         self.model_combo = _ArrowComboBox()
         self.model_combo.setMinimumWidth(150)
         self.model_combo.setMaximumWidth(230)
-        self.model_combo.setStyleSheet(_QCOMBO)
-        self.model_combo.setToolTip("手动切换本次使用的模型；「自动选择」= 按工作力度路由")
+        self.model_combo.setStyleSheet(_HOME_COMBO)
+        self.model_combo.setToolTip(_ui("手动切换本次使用的模型；「自动选择」= 按工作力度路由"))
         self.model_combo.currentIndexChanged.connect(self._on_model_combo)
         self.model_combo.setAcceptDrops(False)   # 文件拖放由面板统一接收
         bottom.addWidget(self.model_combo)
@@ -12814,7 +13886,7 @@ class AgentPanel(QDialog):
         self.action_btn.setFixedSize(34, 34)
         self.action_btn.setIconSize(QSize(16, 16))
         self.action_btn.setStyleSheet(_BTN_PRIMARY)
-        self.action_btn.setToolTip("发送")
+        self.action_btn.setToolTip(_ui("发送"))
         self.action_btn.clicked.connect(self._on_action_clicked)
         bottom.addWidget(self.action_btn)
         # 排队面板：内容自适应高度（消息行数决定），紧贴输入行上方，无底部留白
@@ -12834,11 +13906,11 @@ class AgentPanel(QDialog):
         _wh_lay = QHBoxLayout(self.wd_hint_bar)
         _wh_lay.setContentsMargins(10, 5, 6, 5)
         _wh_lay.setSpacing(8)
-        _wh_txt = QLabel("当前对话流未设置专属工作目录")
+        _wh_txt = QLabel(_ui("当前对话流未设置专属工作目录"))
         _wh_txt.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
         _wh_lay.addWidget(_wh_txt)
         _wh_lay.addStretch(1)
-        _wh_btn = QPushButton(_line_icon("folder", 14, ACCENT), "去设置")
+        _wh_btn = QPushButton(_line_icon("folder", 14, ACCENT), _ui("去设置"))
         _wh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         _wh_btn.setAutoDefault(False)
         _wh_btn.setFixedHeight(26)
@@ -12847,7 +13919,7 @@ class AgentPanel(QDialog):
             f"border: 1px solid {ACCENT}; border-radius: 6px; padding: 0 10px;"
             "font-size: 12px; font-weight: 600; }}"
             f"QPushButton:hover {{ background: {ACCENT_HOVER}; color: #FFFFFF; }}")
-        _wh_btn.setToolTip("跳转到 AI 设置 → 对话流，为该对话配置专属工作目录")
+        _wh_btn.setToolTip(_ui("跳转到 AI 设置 → 对话流，为该对话配置专属工作目录"))
         _wh_btn.clicked.connect(self._open_workdir_settings)
         _wh_lay.addWidget(_wh_btn)
         wd_hint_lay.addWidget(self.wd_hint_bar)
@@ -12994,16 +14066,56 @@ class AgentPanel(QDialog):
             pass
 
     def _msg_nav_clear(self):
-        """清空定位圆点（会话切换/全量重建/清空对话时调用）"""
+        """清空定位圆点（会话切换/全量重建/清空对话时调用）
+
+        就地 clear（不重新绑定列表）：列表对象属于当前视图，换挂视图时要靠它把
+        圆点集合一起带走（见 _rebuild_nav_bar）。
+        """
         for e in self._msg_nav:
             try:
                 e["btn"].deleteLater()
             except Exception:
                 pass
-        self._msg_nav = []
+        self._msg_nav.clear()
         nav = getattr(self, "_nav_bar", None)
         if nav is not None:
             nav.hide()
+
+    def _rebuild_nav_bar(self, view: dict) -> None:
+        """把右侧对话定位器切到指定视图的圆点集合（换挂视图/重建收尾后调用）。
+
+        圆点按钮挂在面板级 `_nav_bar` 上（不属于消息流容器），每个会话各持一组；
+        换挂时先把布局里的旧按钮摘下（hide 保留控件 —— 它属于另一个会话的视图，
+        之后可能换回），再把本组按钮插回布局。缺这一步会出现「切到会话 B 却还显示
+        会话 A 的定位点」，或换回时圆点全丢。
+        """
+        lay = getattr(self, "_nav_lay", None)
+        if lay is None:
+            return
+        try:
+            while lay.count() > 1:
+                item = lay.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.hide()
+        except RuntimeError:
+            return
+        entries = (view or {}).get("nav") or []
+        shown = 0
+        for e in entries:
+            btn = e.get("btn") if isinstance(e, dict) else None
+            if btn is None or not self._bubble_alive(btn):
+                continue
+            try:
+                lay.insertWidget(lay.count() - 1, btn)
+                btn.show()
+                shown += 1
+            except RuntimeError:
+                continue
+        bar = getattr(self, "_nav_bar", None)
+        if bar is not None:
+            has_msg = bool(self._segments or self._history_segments or self._user_msgs)
+            bar.setVisible(bool(shown) and has_msg)
 
     # ---------- 多对话（会话）管理 ----------
     def _sessions_dir(self) -> Path:
@@ -13157,6 +14269,20 @@ class AgentPanel(QDialog):
         st["rows"] = self._rows
         st["user_msgs"] = self._user_msgs
         st["sub_segs"] = self._sub_segs
+        # 视图缓存记账：离开该会话时记录「已渲染到第几行 / 活气泡 / 各索引列表引用」，
+        # 切回时据此增量补齐（见 _view_reusable/_sync_view_incremental）。
+        v = st.get("view")
+        if isinstance(v, dict) and v is self._active_view:
+            v["bubbles"] = self._bubble_widgets
+            v["segs"] = self._bubble_segs
+            v["nav"] = self._msg_nav
+            v["rows_ref"] = self._rows
+            v["rows_n"] = len(self._rows or [])
+            v["last_row"] = (self._rows[-1] if self._rows else None)
+            v["seg_sig"] = self._live_seg_sig(self._segments)
+            v["live"] = (self._ai_bubble
+                         if self._bubble_alive(self._ai_bubble) else None)
+            v["theme"] = _THEME_VERSION
 
     def _live_turn_cost_meta(self, sid: str) -> dict:
         """未归档当前回合的「耗时 + 系统时间行」快照，供 _write_ui_json 一并落盘。
@@ -13573,11 +14699,11 @@ class AgentPanel(QDialog):
                 if st.get("task_active"):   # 后台任务真实结束才通知一次（完成/停止/出错）
                     label = self._session_label(sid)
                     if s == "已停止":
-                        self._toast("AI 任务已停止", f"对话「{label}」的任务已被停止", True)
+                        self._toast(_ui("AI 任务已停止"), f"对话「{label}」的任务已被停止", True)
                     elif s.startswith("错误"):
-                        self._toast("AI 任务出错", f"对话「{label}」的任务执行出错", True)
+                        self._toast(_ui("AI 任务出错"), f"对话「{label}」的任务执行出错", True)
                     else:
-                        self._toast("AI 任务完成", f"对话「{label}」的任务已成功完成", False)
+                        self._toast(_ui("AI 任务完成"), f"对话「{label}」的任务已成功完成", False)
                 st["task_active"] = False
                 self._persist_sid(sid, st)   # 后台任务结束立即落盘，切回即完整
                 self._flush_queue(sid)       # 本轮完成 → 自动发送排队消息
@@ -13652,7 +14778,7 @@ class AgentPanel(QDialog):
     def _suggest_disable_todos(self):
         """弹窗提示可关闭任务清单窗口，并提供一键跳转设置（深色底 + 白字）"""
         box = QMessageBox(self)
-        box.setWindowTitle("提示")
+        box.setWindowTitle(_ui("提示"))
         # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
         # 而消息框是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
         _sk_bg = _base_color("PANEL")
@@ -13666,9 +14792,9 @@ class AgentPanel(QDialog):
             f"border: 1px solid {_sk_bd}; border-radius: 8px;"
             f"padding: 6px 14px; font-size: 13px; }}"
             f"QMessageBox QPushButton:hover {{ background: {_sk_hover}; }}")
-        box.setText("1 秒内连续清空了 3 次任务清单。\n如不需要该窗口，可在设置中关闭任务清单窗口。")
-        go = box.addButton("前往设置", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setText(_uim("1 秒内连续清空了 3 次任务清单。\n如不需要该窗口，可在设置中关闭任务清单窗口。"))
+        go = box.addButton(_ui("前往设置"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_ui("取消"), QMessageBox.ButtonRole.RejectRole)
         box.exec()
         if box.clickedButton() is go:
             self._open_settings()
@@ -13724,9 +14850,16 @@ class AgentPanel(QDialog):
                 except Exception:
                     shot = None
             else:
-                ai_text = (f"请调用工具「{tname}」完成以下任务，参数必须按 JSON 传入。\n"
-                           f"工具参数说明：{self._tool_params_hint(tname)}\n"
-                           f"参数原始文本：{targs or '(无，可自行确定合理参数，不确定时先 ask_user 澄清)'}")
+                ai_text = _uim(
+                    "请调用工具「{tname}」完成以下任务，参数必须按 JSON 传入。\n"
+                    "工具参数说明：{phint}\n"
+                    "参数原始文本：{targs}"
+                ).format(
+                    tname=tname,
+                    phint=self._tool_params_hint(tname),
+                    targs=targs or _uim(
+                        "(无，可自行确定合理参数，不确定时先 ask_user 澄清)"),
+                )
         if files:
             note = "以下为拖入的附件文件，请按需读取内容：\n" + \
                 "\n".join(f"- {p}" for p in files)
@@ -13787,7 +14920,8 @@ class AgentPanel(QDialog):
                     'style="vertical-align:middle;border-radius:6px;">'
                     f'<span style="vertical-align:middle;margin-left:8px;">'
                     f'<span style="color:{TEXT};font-size:13px;">{_esc(fname[:18])}</span>'
-                    f'<br><span style="color:{TEXT_DIM};font-size:10px;">{_esc(fsize or "文件")}</span>'
+                    f'<br><span style="color:{TEXT_DIM};font-size:10px;">'
+                    f'{_esc(fsize or _ui("文件"))}</span>'
                     f'</span></div>')
             src = "<br/>".join(parts)
             b = self._add_bubble(self._scale_user_html(src, self._font_scale()), "user", rich=True)
@@ -13839,7 +14973,7 @@ class AgentPanel(QDialog):
             self._hide_spinner()
             self._set_action_idle()
             try:
-                self._toast("任务启动失败", str(e), warn=True)
+                self._toast(_ui("任务启动失败"), str(e), warn=True)
             except Exception:
                 pass
 
@@ -13909,44 +15043,64 @@ class AgentPanel(QDialog):
 
     def _persist_current(self):
         """保存当前会话：模型消息 + 界面气泡（segments/用户消息）+ 更新时间。
-        模型上下文（含图片压缩，耗时）后台线程异步落盘，UI 线程只做轻量 JSON 快存，
-        避免任务结束/切换会话时主线程阻塞。"""
+
+        全部落盘动作都放到后台线程（模型上下文 + UI json + 会话列表更新时间），
+        主线程只做「快照 + 起线程」。原先 UI json 与会话列表是**同步**写的：
+        长会话实测主线程阻塞 16ms(30 轮) ~ 31ms(120 轮)（json.dumps 全量 rows
+        + 读改写 sessions.json），叠加在气泡构建之上就是切会话卡顿的主要来源之一。
+        快照必须在这里同步取（列表对象随后会被切换/流式改写），故先做不可变拷贝。
+        """
         if not self._session_id:
             return
+        sid = self._session_id
         d = self._sessions_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        if self._engine:
-            eng, sid = self._engine, self._session_id
-            threading.Thread(target=lambda: eng.save_context(d / f"{sid}.json"),
-                             daemon=True).start()
-        _cur = self._sess.get(self._session_id) or {}
+        _cur = self._sess.get(sid) or {}
+        # 同步取快照：rows/segments 列表后续会被流式追加与切换改写，
+        # 线程里再取引用就会把「切换后新内容」写进旧会话（历史串台）
         st = {
-            "history_segments": self._history_segments,
-            "segments": self._segments,
-            "rows": self._rows or self._reconstruct_rows(),
-            "user_msgs": self._user_msgs,
+            "history_segments": list(self._history_segments or []),
+            "segments": list(self._segments or []),
+            "rows": list(self._rows or self._reconstruct_rows()),
+            "user_msgs": list(self._user_msgs or []),
             "loaded": bool(_cur.get("loaded")),   # 未加载完成时不落盘（防护②防竞态覆盖）
             "workflow": _cur.get("workflow"),
-            "queued": _cur.get("queued") or [],   # 排队消息随持久化落盘（关闭不丢）
-            "sub_history": _cur.get("sub_history") or {},  # @子Agent 多轮上下文随会话落盘
-            "sub_synced": _cur.get("sub_synced") or {},    # @子Agent 同步主 Agent 游标随会话落盘
+            "queued": list(_cur.get("queued") or []),   # 排队消息随持久化落盘（关闭不丢）
+            "sub_history": dict(_cur.get("sub_history") or {}),  # @子Agent 多轮上下文随会话落盘
+            "sub_synced": dict(_cur.get("sub_synced") or {}),    # @子Agent 同步主 Agent 游标随会话落盘
             "last_payload": _cur.get("last_payload") or None,  # 重试所需信息随会话落盘
             "regenerate_index": _cur.get("regenerate_index") or None,
         }
-        self._write_ui_json(self._session_id, st)
-        lst = self._load_session_list()
-        for x in lst:
-            if x.get("id") == self._session_id:
-                x["updated"] = time.time()
-                x["name"] = self._session_name
-        self._save_session_list(lst)
+        name = self._session_name
+        eng = self._engine
+
+        def _work():
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                if eng is not None:
+                    try:
+                        eng.save_context(d / f"{sid}.json")
+                    except Exception:
+                        pass
+                self._write_ui_json(sid, st)
+                lst = self._load_session_list()
+                for x in lst:
+                    if x.get("id") == sid:
+                        x["updated"] = time.time()
+                        x["name"] = name
+                self._save_session_list(lst)
+            except Exception:
+                pass
+
+        threading.Thread(target=_work, daemon=True,
+                         name="sess_persist").start()
 
     def _refresh_session_combo(self):
         lst = self._load_session_list()
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
         for s in lst:
-            self.session_combo.addItem(s.get("name", "新对话"), s.get("id"))
+            # 展示层翻译，内部会话名仍保留原文（存盘与比对不受语言影响）
+            self.session_combo.addItem(_uim(s.get("name") or "新对话"), s.get("id"))
         idx = self.session_combo.findData(self._session_id)
         if idx >= 0:
             self.session_combo.setCurrentIndex(idx)
@@ -13975,45 +15129,26 @@ class AgentPanel(QDialog):
         except Exception:
             pass
         self._hide_spinner()
-        while self.msg_lay.count() > 1:  # 清空消息流（保留末尾 stretch）
-            item = self.msg_lay.takeAt(0)
-            self._free_layout_item(item)
-        self._bubble_widgets = []
-        self._bubble_segs = {}
+        # 上一轮重建若因代号作废/异常提前退出，容器可能停在隐藏态：切换前先复位，
+        # 保证任何路径下消息流最终可见（构建中会再次整体隐藏，见 _hide_stream_container）。
+        self._show_stream_container()
+        self._inflight_hidden = []
         st = self._sess.get(sid)
         if st is not None and (st["segments"] or st["rows"] or st["queued"]):
-            # 内存态有实时内容（新建会话的任务/排队/后台生成中）：直接恢复，不覆盖
-            # P2 优化：若当前视图已匹配目标会话内容（_cached_view_sid + rows 签名一致），
-            # 跳过 _render_history_all 的全量重建（每回合约 ~300ms）—— 只需更新绑定信息。
-            # 条件：上次渲染的来源会话仍是目标，且气泡数与非AI行数匹配（粗略但快速）。
-            _prev_sid = getattr(self, "_last_render_sid", None)
-            _need_render = (st.get("_rows_frozen") is None
-                            or _prev_sid != sid
-                            or len(self._bubble_widgets) != len(st.get("_rows_frozen") or []))
+            # 内存态有实时内容（新建会话的任务/排队/后台生成中）：优先**换挂缓存视图**，
+            # 只补增量；无缓存视图（首次进入该会话）才走全量重建。
             st["loaded"] = True
             self._bind_sess(sid)
             self._engine_for(sid)   # 同步 self._engine 指向该会话引擎，避免旧引擎串台
-            if _need_render:
-                self._render_history_all()
+            view = st.get("view")
+            if self._view_reusable(view, st):
+                self._attach_view(view)          # O(1)：历史控件树原样复用（不重建）
+                self._relayout_messages()        # 按当前视口复核宽度/几何
+                self._sync_view_incremental(view, st)   # 补齐后台新增的行/活气泡
+                self._rebuild_nav_bar(view)      # 定位圆点随换挂切到该会话
                 self._last_render_sid = sid
             else:
-                # 复用现有气泡：只恢复 segs 引用与计时起点，跳过整树重建
-                try:
-                    self._segments = list(st.get("segments") or [])
-                    self._user_msgs = list(st.get("user_msgs") or [])
-                    # 更新每条 AI 气泡的 segs 引用
-                    _frozen = st.get("_rows_frozen") or []
-                    idx = 0
-                    for b in self._bubble_widgets:
-                        if getattr(b, "property", lambda _: None)("align") == "ai":
-                            if idx < len(_frozen):
-                                fr = _frozen[idx]
-                                b._seg_cache.clear()
-                                b.set_cost(fr.get("cost"))
-                                b.turn_meta = fr.get("meta", "")
-                            idx += 1
-                except Exception:
-                    pass
+                self._render_history_all()
                 self._last_render_sid = sid
             self._end_badge_shown = False
             self._refresh_session_combo()
@@ -14021,10 +15156,19 @@ class AgentPanel(QDialog):
             self._scroll_bottom()
             self._update_queue_bar()
         else:
-            # 首次进入（或内存态为空）：新建/复用内存态并后台读盘补齐历史
+            # 首次进入（或内存态为空）：挂一块空容器（后台读盘后 _finish_switch 渲染）
             st = self._new_sess_state(sid) if st is None else st
             self._sess[sid] = st
             self._bind_sess(sid)
+            view = st.get("view")
+            if isinstance(view, dict):
+                self._attach_view(view)           # 缓存视图（可能仍有旧内容）：先挂回来
+                self._relayout_messages()
+                self._rebuild_nav_bar(view)
+            else:
+                view = self._new_stream_view()
+                self._remember_view(sid, view)
+                self._attach_view(view)
             d = self._sessions_dir()
             eng = self._engine_for(sid)
 
@@ -14087,7 +15231,7 @@ class AgentPanel(QDialog):
             self._ensure_spinner()
             if self._spinner_lbl is not None and self._think_start:
                 self._spinner_lbl.setText(
-                    f"已思考 {int(time.time() - self._think_start)} 秒")
+                    _uif("已思考 {a0} 秒", a0=int(time.time() - self._think_start)))
         else:
             self._start_think()
         # 恢复发送/停止按钮：停止中→红底禁用；已输出→停止图标；仍思考→转圈
@@ -14103,6 +15247,32 @@ class AgentPanel(QDialog):
         if sid != self._session_id:
             return   # 用户已切走，丢弃过期加载，防止覆盖当前视图
         st = self._sess[sid]
+        # 分片重建进行中 → 本次读盘结果**并入内存态即可，不触发新的整树重建**：
+        # 否则两套渲染并发（分片 + _render_history_all）会让气泡数翻倍。
+        # 长会话正在分片时用户切进来的读盘数据量通常也不小，直接重建会抵消本次优化。
+        if self.__dict__.get("_hist_build"):
+            # 分片正在跑：把读盘结果并入内存态，但**不触发整树重建**（两套渲染并发
+            # 会让气泡数翻倍）。分片按 stb["rows"] 的同一列表对象顺序推进、每片重取
+            # 长度，故这里只需把「分片尚未渲染的尾部」补齐即可。
+            stb = self.__dict__["_hist_build"]
+            cur = stb["rows"]
+            if rows:
+                # 磁盘 rows 是该会话的**权威全量**；内存态可能只有其中一部分
+                # （切换时刚装入）或在其后追加了新消息。
+                # 正确做法：保留「已渲染的前缀 + 磁盘全量中尚未出现的部分 + 内存增量」，
+                # 用内容指纹判重，避免同一段被渲染两次（曾致 68 行/30 轮）。
+                done = int(stb.get("i") or 0)
+                dmarks = {self._row_fingerprint(r) for r in rows}
+                # 未渲染尾部里磁盘没有的（读盘期间新增）按原序保留
+                tail = [r for r in cur[done:]
+                        if self._row_fingerprint(r) not in dmarks]
+                cur[:] = cur[:done] + list(rows) + tail
+                st["rows"] = cur
+                st["_rows_frozen"] = None      # 标记下次切回需重建
+            if ums:
+                st["user_msgs"] = ums
+            st["loaded"] = True
+            return
         # 恢复排队消息（任务运行中关闭窗口时 queued 已持久化，重启后继续排队发送）
         _qd = [q for q in (queued or []) if isinstance(q, dict)]
         if _qd:
@@ -14259,6 +15429,7 @@ class AgentPanel(QDialog):
             item = self.msg_lay.takeAt(0)
             self._free_layout_item(item)
         self._bubble_widgets = []
+        self._inflight_hidden = []
         self._bubble_segs = {}
         self._msg_nav_clear()   # 新会话清空定位圆点
         self._refresh_session_combo()
@@ -16261,6 +17432,8 @@ class AgentPanel(QDialog):
         if on == _SURFACE_TRANSPARENT:
             self.update()
             self._refresh_side_windows()   # 悬浮的透壁纸面板自绘窗口底，需主动重绘
+            # 透明态不变但换图/调压暗：壁纸整体亮度可能变，输入框光标/文字色需重算
+            self._refresh_input_caret()
             return
         global _APP_QSS_DEFER
         _APP_QSS_DEFER = True
@@ -16275,6 +17448,21 @@ class AgentPanel(QDialog):
             self._retheme()
         except Exception:
             pass
+
+    def _refresh_input_caret(self):
+        """壁纸换图/调压暗后刷新输入框样式与光标：壁纸亮度变化时光标/文字色需重算。
+
+        输入框 QSS 是构建时写死的，壁纸参数变化不会自动触发重算；这里主动
+        重新应用 _input_qss()（含新的前景/背景/描边色）与光标宽度。
+        """
+        inp = getattr(self, "input", None)
+        if inp is None:
+            return
+        try:
+            inp.setStyleSheet(_input_qss())
+        except Exception:
+            pass
+        apply_input_caret(inp)
 
     def _refresh_side_windows(self):
         """重绘侧栏面板（工作树 / Git / 代码预览 / 任务清单 / 扩展面板）。
@@ -16428,7 +17616,7 @@ class AgentPanel(QDialog):
             retry.setFixedSize(32, 32)          # 热区即按钮：移入即显示，点击可重试
             retry.setIconSize(QSize(22, 22))
             retry.setCursor(Qt.CursorShape.PointingHandCursor)
-            retry.setToolTip("重试")
+            retry.setToolTip(_ui("重试"))
             retry.setAutoDefault(False)
             # 局部 QToolTip：用当前主题面板/文字色显式配色（浅色=浅底深字、深色=深底浅字）
             retry.setStyleSheet(
@@ -16488,6 +17676,22 @@ class AgentPanel(QDialog):
             row.addWidget(wrap, 1)
         self.msg_lay.insertLayout(self.msg_lay.count() - 1, row)
         bubble._row_lay = row      # 主题切换复用气泡时据此把整行一起摘出（见 _detach_live_bubbles）
+        # P1 长对话优化（_build_inflight）：批量重建期间新气泡**先不显示**。
+        # 挂载即显示会让 Qt 对整条链做布局激活 + heightForWidth 验证，长会话实测
+        # setVisible 1.79s / activate 0.88s / heightForWidth 1.07s（占首屏约 3/4）。
+        # 这里先置隐藏（不进布局、不参与测量），由 _render_history_all 收尾时
+        # 整批一次性显示 —— 布局级联从 O(轮数) 降为 O(1)。
+        # 单条实时插入（_ensure_ai_bubble 等）不受影响：标记为 False，照常立即显示。
+        if getattr(self, "_build_inflight", False):
+            bubble.setVisible(False)
+            # 登记待恢复：收尾统一按表恢复可见。
+            # 不能只依赖 _bubble_widgets —— AI 回合的真正可见性由父级 wrap 决定
+            # （Qt 中父隐藏则子 setVisible(True) 无效），漏恢复 wrap 会让整个
+            # AI 回合连同气泡样式在「启动恢复历史 / 切换对话」后整段不可见。
+            self._inflight_hidden.append(bubble)
+            if align == "ai":
+                wrap.setVisible(False)
+                self._inflight_hidden.append(wrap)
         self._place_spinner_bottom()   # 新气泡加入后动画行移到最底部（AI 气泡下方外侧）
         # 淡入只用于用户气泡（小 QLabel）。AI 回合不做淡入：QGraphicsOpacityEffect 会把
         # 整棵子树重定向到离屏合成，而生成中每帧内容都在变 → 观感就是闪烁还掉帧；
@@ -16521,14 +17725,14 @@ class AgentPanel(QDialog):
             pass
         if st.get("workflow") and st.get("workflow") != agent_workflow.DEFAULT_WORKFLOW:
             self.wf_label.setStyleSheet(f"color: {ACCENT}; font-size: 12px; font-weight: 700;")
-            self.wf_label.setToolTip(f"当前对话使用专属工作流「{wf}」（@工作流 切换）")
+            self.wf_label.setToolTip(_uif("当前对话使用专属工作流「{a0}」（@工作流 切换）", a0=wf))
         elif st.get("workflow"):
             self.wf_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-            self.wf_label.setToolTip("当前对话使用内置默认工作流（_default）")
+            self.wf_label.setToolTip(_ui("当前对话使用内置默认工作流（_default）"))
         else:
             self.wf_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-            self.wf_label.setToolTip("当前对话跟随全局激活工作流")
-        self.wf_label.setText(f"当前工作流: {wf}{team_tag}")
+            self.wf_label.setToolTip(_ui("当前对话跟随全局激活工作流"))
+        self.wf_label.setText(_uif("当前工作流: {a0}{a1}", a0=wf, a1=team_tag))
 
     def _token_stats_ui_context(self) -> dict:
         """统计浮层所需的界面侧信息（工作流 / 模型）。
@@ -16886,12 +18090,12 @@ class AgentPanel(QDialog):
         except Exception:
             pass
 
-    def _notify_blocked(self, text: str, title: str = "操作未完成"):
+    def _notify_blocked(self, text: str, title: str = None):
         """阻断/失败提示改走右下角通知：气泡底部外侧不再出现任何提示小字（那里只保留
         打字指示器），但「点了没反应 / 任务没跑起来」必须有明确回执 —— 通知不浮在消息流里、
         也不会随任务推进不断累积。"""
         try:
-            self._toast(title, str(text), warn=True)
+            self._toast(title if title is not None else _ui("操作未完成"), str(text), warn=True)
         except Exception:
             pass
 
@@ -16956,8 +18160,8 @@ class AgentPanel(QDialog):
         if files:
             tip_lines = [f"{p}  +{a} -{r}" for p, (a, r) in sorted(files.items())]
             if len(tip_lines) > 12:
-                tip_lines = tip_lines[:11] + [f"…共 {len(files)} 个文件"]
-            lbl.setToolTip("文件变更：\n" + "\n".join(tip_lines))
+                tip_lines = tip_lines[:11] + [_uif("…共 {n} 个文件", n=len(files))]
+            lbl.setToolTip(_ui("文件变更：") + "\n" + "\n".join(tip_lines))
         self._attach_capsule(lbl, 1)
 
     def _place_spinner_bottom(self):
@@ -17007,7 +18211,7 @@ class AgentPanel(QDialog):
         self.action_btn.setStyleSheet(
             _BTN_PRIMARY if self.input.toPlainText().strip() else _BTN_DIM)
         self.action_btn.setEnabled(True)
-        self.action_btn.setToolTip("发送")
+        self.action_btn.setToolTip(_ui("发送"))
 
     def _ensure_stop_btn(self):
         """确保发送/停止融合按钮处于「停止」状态（不重启转圈动画，避免误导）"""
@@ -17016,7 +18220,7 @@ class AgentPanel(QDialog):
         self.action_btn.setIcon(_line_icon("stop", self._btn_icon_sz, "#FFFFFF"))
         self.action_btn.setStyleSheet(_BTN_PRIMARY)
         self.action_btn.setEnabled(True)
-        self.action_btn.setToolTip("停止当前任务")
+        self.action_btn.setToolTip(_ui("停止当前任务"))
 
     def _sync_action_style(self, *_):
         """输入框内容变化：任务空闲时刷新发送按钮配色（空→灰蓝，有内容→深蓝）。
@@ -17036,7 +18240,7 @@ class AgentPanel(QDialog):
             self._set_action_idle()
             return
         # 任务运行中：若按钮不在「停止」态则立即恢复（用户点停止后保持禁用态不覆盖）
-        if not self._user_stopped and self.action_btn.toolTip() != "停止当前任务":
+        if not self._user_stopped and self.action_btn.toolTip() != _ui("停止当前任务"):
             self._ensure_stop_btn()
 
     def _set_action_busy(self):
@@ -17044,7 +18248,7 @@ class AgentPanel(QDialog):
         self._action_anim_angle = 0
         self.action_btn.setStyleSheet(_BTN_PRIMARY)
         self.action_btn.setEnabled(True)
-        self.action_btn.setToolTip("停止当前任务")
+        self.action_btn.setToolTip(_ui("停止当前任务"))
         self._action_anim.start()
 
     def _set_action_stopping(self):
@@ -17052,7 +18256,7 @@ class AgentPanel(QDialog):
         self._action_anim_angle = 0
         self.action_btn.setStyleSheet(_BTN_DANGER)
         self.action_btn.setEnabled(False)
-        self.action_btn.setToolTip("停止中…")
+        self.action_btn.setToolTip(_ui("停止中…"))
         self._action_anim.start()
 
     def _tick_action_anim(self):
@@ -17123,9 +18327,9 @@ class AgentPanel(QDialog):
                     pending = False
             if pending:
                 self.input.setFocus()
-                self._notify_blocked("输入法拼字尚未上屏：请先按空格或回车确认候选词，再点击优化提示词")
+                self._notify_blocked(_ui("输入法拼字尚未上屏：请先按空格或回车确认候选词，再点击优化提示词"))
             else:
-                self._notify_blocked("请先输入内容，再点击优化提示词")
+                self._notify_blocked(_ui("请先输入内容，再点击优化提示词"))
             return
         if getattr(self, "_optimizing", False):
             return
@@ -17176,7 +18380,7 @@ class AgentPanel(QDialog):
             self.input.setPlainText(result)
             self.input.setFocus()
         else:
-            self._notify_blocked(result, "提示词优化失败")
+            self._notify_blocked(result, _ui("提示词优化失败"))
 
     # ---------- AI 实时趣味互动（俏皮锐评气泡，不计入上下文/本地记忆） ----------
     _FUN_INTERVALS = {
@@ -17394,6 +18598,41 @@ class AgentPanel(QDialog):
         except Exception:
             return False
 
+    def _restore_bubble_visible(self, bubble, align: str) -> None:
+        """恢复池化气泡（及其 AI 回合包裹层）的可见性（见 `_readd_pooled_bubble`）。
+
+        为什么必须有这一步：`_detach_live_bubbles` 摘气泡时先 `hide()` 再
+        `setParent(None)`（否则控件会瞬间变成顶层窗口闪一下）。而**新建路径**
+        `_add_bubble` 的可见性是随插入一起给的，复用路径若不补这一刀，重挂回去的
+        气泡永远停在隐藏态 —— 表现就是「切换主题后整条对话的气泡全部消失，只剩底部
+        打字指示器」，且因复用气泡不在 `_inflight_hidden` 表里，收尾
+        `_finish_history_build` 的整批恢复根本不会兜住它们。
+
+        批量重建期间（`_build_inflight`）不能就地 show：那会让每个复用气泡立刻触发
+        一次子树布局激活（`_add_bubble` 刻意隐藏气泡正是为了把级联从 O(轮数) 降到
+        O(1)）。此时改登记进 `_inflight_hidden`，由收尾整批一次性恢复。登记顺序
+        与 `_add_bubble` 一致（先气泡、后包裹层），收尾逆序恢复时父级 wrap 先可见。
+        """
+        wrap = getattr(bubble, "_wrap", None) if align == "ai" else None
+        if getattr(self, "_build_inflight", False):
+            self._inflight_hidden.append(bubble)
+            if wrap is not None:
+                self._inflight_hidden.append(wrap)
+            return
+        if wrap is not None:
+            # AI 回合的可见性由父级 wrap 决定：Qt 中父级隐藏时子控件 setVisible(True)
+            # 无效，必须先恢复 wrap 再恢复 bubble。
+            try:
+                if not wrap.isVisible():
+                    wrap.setVisible(True)
+            except RuntimeError:
+                pass          # 包裹层已被销毁：退回只恢复气泡本体
+        try:
+            if not bubble.isVisible():
+                bubble.setVisible(True)
+        except RuntimeError:
+            pass
+
     def _readd_pooled_bubble(self, bubble, align: str, text: str, rich: bool):
         """把复用池里的气泡重新装回刚重建的消息流（见 `_detach_live_bubbles`）。
 
@@ -17413,6 +18652,12 @@ class AgentPanel(QDialog):
                 restyle(self._chat_style())
         except Exception:
             pass
+        # 【关键】摘下时（_detach_live_bubbles）已 hide()，重挂必须恢复可见，
+        # 否则整条对话只剩打字指示器（用户反馈「切换主题后气泡消失，只能新建对话
+        # 再切回来才恢复」）。
+        # AI 回合的可见性由父级 wrap 决定 —— Qt 中父隐藏时子控件 setVisible(True)
+        # 无效，必须**先恢复 wrap 再恢复 bubble**（_inflight_hidden 同理，见 _add_bubble）。
+        self._restore_bubble_visible(bubble, align)
         if align == "user":
             bubble.setMaximumWidth(self._bubble_max_width())
             try:
@@ -17586,14 +18831,14 @@ class AgentPanel(QDialog):
             out = str(seg.get("out") or "")
             if cmd:
                 return (cb.KIND_CMD,
-                        {"label": name or "命令", "cmd": _cmd_html(cmd), "out": out})
+                        {"label": name or _ui("命令"), "cmd": _cmd_html(cmd), "out": out})
             return (cb.KIND_TOOL, {"name": name, "meta": seg.get("meta", ""),
                                    "params": {}, "ico": seg.get("ico"), "out": out,
                                    "tip": seg.get("tip", "")})
         if t == "result":
             out = self._render_seg_html(seg, i, t, f_main, f_sm, f_op, img_w) or ""
             return (cb.KIND_CMD,
-                    {"label": "执行结果", "cmd": _cmd_html(seg.get("cmd")), "out": out})
+                    {"label": _ui("执行结果"), "cmd": _cmd_html(seg.get("cmd")), "out": out})
         html = self._render_seg_html(seg, i, t, f_main, f_sm, f_op, img_w)
         if html is None:
             return None
@@ -17670,20 +18915,24 @@ class AgentPanel(QDialog):
             answered = bool(seg.get("answered"))
             answer = str(seg.get("answer") or "").strip()
             if not answered:
-                answer_html = (f'<span style="color:{TEXT_DIM};">等待你的回答…</span>')
+                answer_html = (f'<span style="color:{TEXT_DIM};">'
+                               f'{_ui("等待你的回答…")}</span>')
             else:
                 a_html = _esc(answer).replace("\n", "<br/>")
                 if answer in ("（用户未作答）", "（用户取消回答）"):
+                    a_html = _esc(_uim(answer))
                     answer_html = f'<span style="color:{TEXT_DIM};">{a_html}</span>'
                 else:
                     answer_html = a_html
             return (
                 f'<div style="margin-top:6px;">'
-                f'<div style="color:{ACCENT};font-size:{f_sm}px;font-weight:600;">AI 提问</div>'
+                f'<div style="color:{ACCENT};font-size:{f_sm}px;font-weight:600;">'
+                f'{_ui("AI 提问")}</div>'
                 f'<div style="color:{TEXT};font-size:{f_main}px;background:{PANEL};'
                 f'border:1px solid {BORDER};border-radius:8px;padding:6px 10px;'
                 f'margin:2px 0;">{q_html}</div>'
-                f'<div style="color:{TEXT_DIM};font-size:{f_sm}px;font-weight:600;">你的回答</div>'
+                f'<div style="color:{TEXT_DIM};font-size:{f_sm}px;font-weight:600;">'
+                f'{_ui("你的回答")}</div>'
                 f'<div style="color:{TEXT};font-size:{f_main}px;margin:2px 0 2px 10px;'
                 f'border-left:2px solid {ACCENT};padding-left:8px;">{answer_html}</div>'
                 f'</div>')
@@ -17701,7 +18950,8 @@ class AgentPanel(QDialog):
             if truncated:
                 html += (
                     f'<div style="color:{TEXT_DIM};font-size:{f_sm}px;">'
-                    f'输出过长已截断显示（完整 {len(seg["html"])} 字符）</div>')
+                    + _uif("输出过长已截断显示（完整 {n} 字符）",
+                           n=len(seg["html"])) + '</div>')
             return html
         if t == "progress":
             # 下载进度条：AI 气泡内实时渲染（面板轮询快照更新）
@@ -17715,7 +18965,7 @@ class AgentPanel(QDialog):
                 f'<div style="background:{ACCENT};height:10px;width:{fill}px;'
                 'border-radius:6px;"></div></div>'
                 f'<div style="color:{TEXT_DIM};font-size:11px;margin-top:3px;">'
-                f'{_esc(seg.get("text") or "下载中…")}</div></div>')
+                f'{_esc(seg.get("text") or _ui("下载中…"))}</div></div>')
         if t == "image":
             # 截图融入主对话气泡：圆角缩略图 + 细边框，不显示“已截屏”等提示小字
             url = seg.get("url", "")
@@ -17739,21 +18989,24 @@ class AgentPanel(QDialog):
             # 折叠态（默认，含老数据）只渲染一行摘要 + 点击展开：展开态由多步工具输出
             # 拼成，实测单块可达 ~90KB 富文本，长对话里十几个子块会让 QLabel 富文本
             # 每次布局耗数百毫秒（滚动/缩放/输入全卡）—— 这是长上下文卡顿的最大来源。
-            stitle = _esc(seg.get("title", "子Agent"))
+            stitle = _esc(seg.get("title") or _ui("子Agent"))
             steps = seg.get("steps") or []
             _link = (f'<a href="sub:toggle:{i}" style="color:{ACCENT};'
                      f'text-decoration:none;">')
             # 暂停态必须可见：点了「暂停」却毫无反馈时，用户会以为点击没生效
             _pause = (f'&nbsp;<span style="color:{ACCENT};font-size:{f_sm}px;">'
-                      f'已暂停</span>') if seg.get("paused") else ""
+                      f'{_ui("已暂停")}</span>') if seg.get("paused") else ""
             if seg.get("collapsed", True):
-                hint = f"{len(steps)} 步 · " if steps else ""
+                hint = _uif("{n} 步 · ", n=len(steps)) if steps else ""
                 return (
                     f'<div style="margin:4px 0 2px;">'
                     f'<span style="color:{ACCENT};font-size:{f_op}px;">'
-                    f'子Agent · {stitle}</span>{_pause}&nbsp;'
+                    + _uif("子Agent · {t}", t=stitle)
+                    + f'</span>{_pause}&nbsp;'
                     f'<span style="color:{TEXT_DIM};font-size:{f_sm}px;">'
-                    f'{_link}（{hint}已折叠 · 点击展开）</a></span></div>')
+                    f'{_link}'
+                    + _uif("（{hint}已折叠 · 点击展开）", hint=hint)
+                    + '</a></span></div>')
             # 展开态：标题（收起入口）+ 最近 N 步 + 总结正文，各自截断保证体积有界
             raw = _collapse_blank(seg.get("raw", ""))
             raw_trunc = len(raw) > _SUB_RAW_TRUNCATE
@@ -17783,26 +19036,31 @@ class AgentPanel(QDialog):
             if len(steps) > len(shown):
                 steps_html = (
                     f'<div style="color:{TEXT_DIM};font-size:{f_sm}px;margin:0 0 4px 10px;">'
-                    f'（共 {len(steps)} 步，仅展示最近 {len(shown)} 步）</div>') + steps_html
+                    + _uif("（共 {a} 步，仅展示最近 {b} 步）",
+                           a=len(steps), b=len(shown))
+                    + '</div>') + steps_html
             body_html = (f'<div style="color:{TEXT_DIM};font-size:{f_sm}px;'
                          f'font-family:Consolas;border-left:2px solid {ACCENT};'
                          f'padding:2px 10px;margin:2px 0 4px 6px;">{body}</div>'
                          + (f'<div style="color:{TEXT_DIM};font-size:{f_sm}px;'
                             f'margin:0 0 4px 6px;">'
-                            f'子Agent 输出过长已截断显示（完整 {len(seg.get("raw") or "")} 字符）</div>'
+                            + _uif("子Agent 输出过长已截断显示（完整 {n} 字符）",
+                                   n=len(seg.get("raw") or ""))
+                            + '</div>'
                             if raw_trunc else "")
                          if body else "")
             return (
                 f'<div style="margin:6px 0 2px;">'
                 f'<div style="color:{ACCENT};font-size:{f_op}px;">'
-                f'子Agent · {stitle}&nbsp;'
+                + _uif("子Agent · {t}", t=stitle)
+                + f'&nbsp;'
                 f'<span style="color:{TEXT_DIM};font-size:{f_sm}px;">'
-                f'{_link}收起 ▲</a></span>{_pause}'
+                f'{_link}{_ui("收起 ▲")}</a></span>{_pause}'
                 f'<span style="font-size:{f_sm}px;">&nbsp;'
                 f'<a href="sub:pause:{i}" style="color:{TEXT_DIM};'
-                f'text-decoration:none;">暂停</a> '
+                f'text-decoration:none;">{_ui("暂停")}</a> '
                 f'<a href="sub:resume:{i}" style="color:{TEXT_DIM};'
-                f'text-decoration:none;">恢复</a></span></div>'
+                f'text-decoration:none;">{_ui("恢复")}</a></span></div>'
                 f'{steps_html}'
                 f'{body_html}'
                 f'</div>')
@@ -17854,22 +19112,314 @@ class AgentPanel(QDialog):
                 rows.append({"type": "ai", "segs": g})
         return rows
 
+    @staticmethod
+    def _row_fingerprint(r: dict) -> tuple:
+        """会话行的稳定内容指纹（磁盘行与内存行判重，避免同一段被渲染两次）。
+
+        只取可稳定比较的短字段：user 行用文本长度 + 首尾片段，ai 行用段数与各段
+        类型/长度签名。**刻意不做整段深序列化** —— segs 里可能含不可序列化对象，
+        且长文本序列化本身就贵（判重发生在切换/分片合并的关键路径上）。
+        """
+        if not isinstance(r, dict):
+            return ("?", id(r))
+        if r.get("type") == "user":
+            t = str(r.get("text") or "")
+            return ("user", len(t), t[:64], t[-64:])
+        segs = r.get("segs") or []
+        sig = []
+        for s in segs[:24]:
+            if not isinstance(s, dict):
+                sig.append(("?", 0))
+                continue
+            body = s.get("raw") or s.get("html") or s.get("code") or s.get("text") or ""
+            sig.append((s.get("type"), len(str(body))))
+        return ("ai", len(segs), tuple(sig))
+
+    # ---------- 会话消息流视图（每会话一份容器，切换=换挂） ----------
+    _VIEW_CACHE_MAX = 6         # 同时缓存的会话视图数上限（含当前）
+    _VIEW_BUBBLE_MAX = 1600     # 缓存视图内的气泡总数上限（长会话按控件量封顶内存）
+
+    def _new_stream_view(self) -> dict:
+        """新建一个会话的消息流容器（可脱离 msg_area 存活）。
+
+        为什么每会话一份：切换会话原先要「清空消息流 + 逐条重建全部历史气泡」，
+        120 轮实测 5s+（其中布局级联 ~3s、控件构造/测量 ~2s）。容器独立后，
+        切回已渲染过的会话只需 `takeWidget/setWidget` 换挂（毫秒级），历史控件树
+        原样复用；后台会话新产出的内容在切换时按增量补齐（O(新增行数)）。
+        """
+        w = QWidget()
+        w.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(10)
+        lay.addStretch(1)          # 末尾弹性空间，消息自顶向下堆叠
+        return {"w": w, "lay": lay, "bubbles": [], "segs": {}, "nav": [],
+                "sid": "", "rows_ref": None, "rows_n": 0, "last_row": None,
+                "seg_sig": None, "live": None, "theme": _THEME_VERSION}
+
+    def _bind_view(self, view: dict) -> None:
+        """把面板的工作引用指向指定视图（msg_lay / 气泡索引 / 定位器）。"""
+        self._active_view = view
+        self.msg_lay = view["lay"]
+        self.msg_container = view["w"]
+        self._bubble_widgets = view["bubbles"]
+        self._bubble_segs = view["segs"]
+        self._msg_nav = view["nav"]
+        self._ai_bubble = view.get("live")
+
+    def _attach_view(self, view: dict) -> None:
+        """把视图挂进滚动区（切换会话/重建收尾的唯一挂载点）。
+
+        QScrollArea.setWidget 会**销毁**旧容器，而旧容器可能属于另一个会话的缓存
+        视图，必须先 `takeWidget` 摘下来（takeWidget 只转移所有权、不销毁）。
+        """
+        cur = self.msg_area.widget()
+        if cur is not view["w"]:
+            if cur is not None:
+                self.msg_area.takeWidget()
+                try:
+                    cur.hide()          # 摘下的容器隐藏，避免以顶层窗口身份闪现
+                except RuntimeError:
+                    pass
+            self.msg_area.setWidget(view["w"])
+        self._bind_view(view)
+
+    def _remember_view(self, sid: str, view: dict) -> None:
+        """登记视图为该会话的缓存并维护 LRU（超限淘汰最旧的非当前会话视图）。"""
+        view["sid"] = sid
+        st = self._sess.get(sid)
+        if isinstance(st, dict):
+            st["view"] = view
+        self._views[sid] = view
+        try:
+            self._view_order.remove(sid)
+        except ValueError:
+            pass
+        self._view_order.append(sid)
+        # 淘汰：会话数超限或控件总量超预算时，从最旧的**非当前**视图开始销毁
+        # （长会话一屏几百个控件，按气泡总数封顶保证内存可控）
+        while True:
+            over_n = len(self._view_order) > self._VIEW_CACHE_MAX
+            over_b = sum(len((v or {}).get("bubbles") or ())
+                         for v in self._views.values()) > self._VIEW_BUBBLE_MAX
+            if not (over_n or over_b):
+                break
+            victim = next((s for s in self._view_order
+                           if s != sid and s != self.__dict__.get("_session_id")), None)
+            if victim is None:
+                break
+            self._view_order.remove(victim)
+            v = self._views.pop(victim, None)
+            vst = self._sess.get(victim)
+            if isinstance(vst, dict) and vst.get("view") is v:
+                vst["view"] = None
+            if v is not None and v is not self._active_view:
+                self._destroy_view(v)
+
+    @staticmethod
+    def _destroy_view(view: dict) -> None:
+        """销毁一个不再缓存的视图（连同其控件树），彻底释放长会话的控件内存。"""
+        w = view.get("w") if isinstance(view, dict) else None
+        if w is None:
+            return
+        try:
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _live_seg_sig(segs) -> tuple:
+        """未归档当前回复的内容指纹（判断视图里的「活气泡」是否已过期）。
+
+        只取每段类型与文本长度（不含文本哈希）：O(段数) 且流式只会增长，
+        切换判等足够精确。
+        """
+        try:
+            return tuple((s.get("type"),
+                          len(str(s.get("raw") or s.get("html") or "")))
+                         for s in (segs or []) if isinstance(s, dict))
+        except Exception:
+            return ()
+
+    def _view_reusable(self, view: dict, st: dict) -> bool:
+        """视图能否直接复用（不重建）：主题未变、行列表同一对象且只增不减。"""
+        if not isinstance(view, dict) or view.get("theme") != _THEME_VERSION:
+            return False
+        rows = st.get("rows") or []
+        n = int(view.get("rows_n") or 0)
+        if view.get("rows_ref") is not rows:
+            # 行列表对象被换过（读盘合并/重建）：无法确认前缀一致 → 走全量重建
+            return False
+        if n > len(rows):
+            return False
+        if n and (len(rows) < n or rows[n - 1] is not view.get("last_row")):
+            return False
+        return True
+
+    def _sync_view_incremental(self, view: dict, st: dict) -> None:
+        """切回缓存视图后补齐「视图尚未渲染」的新内容（O(新增行数)）。
+
+        覆盖两种后台增量：① 后台会话新归档的对话行；② 后台会话仍在流式的活气泡
+        （st["segments"] 增长）。两者都不重建既有控件，只追加/就地重渲染。
+        """
+        rows = st.get("rows") or []
+        n = int(view.get("rows_n") or 0)
+        for r in rows[n:]:
+            if isinstance(r, dict) and r.get("type") in ("user", "ai"):
+                self._add_row_widget(r)
+        view["rows_ref"] = rows
+        view["rows_n"] = len(rows)
+        view["last_row"] = rows[-1] if rows else None
+        segs = st.get("segments") or []
+        sig = self._live_seg_sig(segs)
+        if sig != view.get("seg_sig"):
+            b = view.get("live")
+            b = b if self._bubble_alive(b) else None
+            self._ai_bubble = b
+            if segs:
+                if b is None:
+                    b = self._add_ai_group_bubble(segs, animate=False)
+                    view["live"] = b
+                else:
+                    # 就地重渲染活气泡（段级缓存命中，只重算增长段）
+                    self._render_ai_frame(b, segs)
+                    self._sync_after_toggle(b)
+            elif b is not None:
+                # 活气泡已归档成正式行（rows 里已有对应 AI 行）：作废，避免同一轮两个气泡
+                self._remove_bubble_widget(b)
+                view["live"] = None
+                self._ai_bubble = None
+            view["seg_sig"] = sig
+
+    def _drop_all_views(self) -> None:
+        """丢弃全部会话视图缓存（面板整体重建前调用：主题切换 / 清空重建）。
+
+        视图内控件的配色是构造期烘进 QSS 的，主题一变必须重建；不丢会留下一堆
+        脱离面板的旧控件（内存占用 + 换回该会话时样式错乱）。活动视图的容器随
+        面板重建一起销毁，这里只清记账（气泡会被 _detach_live_bubbles 先摘进复用池）。
+        """
+        for sid in list(self._views.keys()):
+            v = self._views.get(sid)
+            st = self._sess.get(sid)
+            if isinstance(st, dict) and st.get("view") is not None:
+                st["view"] = None
+            if v is not None and v is not self._active_view:
+                self._destroy_view(v)
+        self._views.clear()
+        self._view_order.clear()
+        av = self._active_view
+        if isinstance(av, dict):
+            av.update({"rows_ref": None, "rows_n": 0, "last_row": None,
+                       "seg_sig": None, "live": None})
+
+    def _remove_bubble_widget(self, b) -> None:
+        """从消息流移除单个气泡（连同行布局与包裹层），供视图增量同步作废过期控件。"""
+        row = getattr(b, "_row_lay", None)
+        if row is not None:
+            try:
+                row.removeWidget(getattr(b, "_wrap", None) or b)
+            except Exception:
+                pass
+            try:
+                self.msg_lay.removeItem(row)
+            except Exception:
+                pass
+            try:
+                row.deleteLater()
+            except Exception:
+                pass
+            try:
+                b._row_lay = None
+            except Exception:
+                pass
+        try:
+            self._bubble_widgets.remove(b)
+        except ValueError:
+            pass
+        self._bubble_segs.pop(id(b), None)
+        for w in (b, getattr(b, "_wrap", None)):
+            if w is None:
+                continue
+            try:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+            except RuntimeError:
+                pass
+
     def _render_history_all(self):
         """全量重建消息流：按持久化交错行渲染（加载会话/全屏缩放时调用），
         用户消息与 AI 回复天然成对，杜绝数量错位导致的顺序错乱。
-        批量插入期间暂停整个滚动区重绘，一次性重建后再统一刷新，
-        避免每条气泡插入都触发整窗重排版导致长对话加载卡顿。"""
+
+        P1 长对话优化（两处，均为「消除主线程长阻塞」）：
+        1. **构造期延迟可见**：重建期间置 `_build_inflight`，气泡挂载前保持隐藏，
+           整批建完再一次性显示。原先每插入一条就 setVisible(True)，Qt 会立刻对
+           整条链做布局激活 + heightForWidth 验证（实测 setVisible 1.79s /
+           activate 0.88s / heightForWidth 1.07s，占首屏约 3/4），改为整批显示后
+           该级联成本从 O(轮数) 降到 O(1)。
+        2. **分片让出事件循环**：rows 较多时按 `_RENDER_CHUNK` 一批一批插入，
+           批间 `processEvents` 让窗口保持响应（重绘/滚动条/输入），而不是
+           一次性阻塞 1~2.5s 表现为「未响应」。首屏仍是最后一条优先可见
+           （见 _render_history_chunk：倒序补齐尾部，再从头顺序建）。
+        """
+        rows = self._rows or self._reconstruct_rows()
+        # 代号自增：任何新的构建都让此前未完成的分片失效（见 _hist_step 的守卫）
+        self._hist_gen = self.__dict__.get("_hist_gen", 0) + 1
+        self._start_fresh_view()
+        # 短会话走原同步路径：分片反而多出事件循环往返，徒增开销
+        if len(rows) <= _RENDER_CHUNK:
+            self._hist_build = None      # 同步路径不留待续分片
+            self._render_history_sync(rows)
+        else:
+            self._render_history_chunk(rows)
+
+    def _start_fresh_view(self) -> dict:
+        """为当前会话换上一块全新消息流容器并挂载（构建期隐藏，收尾整体显示）。
+
+        - 复用「已挂载且为空」的视图（首载路径先挂了空容器，读盘回来后避免再建一块）；
+        - 已有视图（重新渲染：清空对话/重试/主题重建）→ 退场销毁，换新容器；
+        - 别的会话的容器由 `_attach_view` 的 takeWidget 保留在各自缓存里，不受影响。
+        """
+        st = self._sess.get(self._session_id)
+        cur = st.get("view") if isinstance(st, dict) else None
+        reuse_empty = (isinstance(cur, dict) and cur is self._active_view
+                       and not cur["bubbles"] and int(cur.get("rows_n") or 0) == 0)
+        if reuse_empty:
+            view = cur
+        else:
+            view = self._new_stream_view()
+            if isinstance(cur, dict):
+                # 同会话旧容器退场（重新渲染）：从缓存与 LRU 中摘除；实际销毁在换挂之后
+                try:
+                    self._view_order.remove(self._session_id)
+                except ValueError:
+                    pass
+                self._views.pop(self._session_id, None)
+        self._remember_view(self._session_id, view)
+        self._attach_view(view)
+        if isinstance(cur, dict) and cur is not view and cur is not self._active_view:
+            # 同会话旧容器已被 takeWidget 摘下（重新渲染路径）→ 立即销毁，避免悬挂控件堆积
+            self._destroy_view(cur)
+        return view
+
+    def _render_history_sync(self, rows: list):
+        """同步全量重建（短会话路径；亦为分片路径的最终收尾）。"""
         viewport = self.msg_area.viewport()
         viewport.setUpdatesEnabled(False)
+        self._build_inflight = True      # 见 _add_bubble：挂载前不 setVisible
+        self._hide_stream_container()    # 容器整体隐藏：子项可见性变化不再触发布局级联
         try:
             while self.msg_lay.count() > 1:   # 清空消息流（保留末尾 stretch）
                 item = self.msg_lay.takeAt(0)
                 self._free_layout_item(item)
             self._bubble_widgets = []
+            self._inflight_hidden = []
             self._bubble_segs = {}
             self._ai_bubble = None
             self._msg_nav_clear()   # 重建前清空定位圆点（随后按用户消息重新填充）
-            for r in (self._rows or self._reconstruct_rows()):
+            for r in rows:
                 if r.get("type") == "user":
                     self._add_bubble(r.get("text", ""), "user", animate=False)
                 else:
@@ -17878,29 +19428,239 @@ class AgentPanel(QDialog):
             # 未归档的当前回复段（渲染时恒为空，防御保留）
             if self._segments:
                 self._add_ai_group_bubble(self._segments)
+            self._rendered_rows_n = len(rows)   # 视图缓存记账（见 _finish_history_build）
         finally:
+            self._finish_history_build()
+
+    def _render_history_chunk(self, rows: list):
+        """分片重建长会话：按**原顺序**逐片插入，片间让出事件循环。
+
+        为什么顺序而非倒序：会话切换时读盘线程的结果（switch_ready）可能在
+        分片期间抵达并合并 rows；顺序插入时合并进来的新行恰好排在后面，能被
+        后续分片自然覆盖。倒序插入则会让新行插到已建区域之前，位置错乱、
+        且重建期间的数据合并无处安放。
+        首屏代价（要先建完前段才能看到最后一段）由「滚到底」与
+        _finish_history_build 收尾的 _scroll_bottom 兜住：用户在分片跑完前
+        看到的是一个持续增长的消息流，而非卡死。
+        """
+        # 用**会话内存态的同一个列表对象**（不是快照）：分片期间读盘结果会并入
+        # st["rows"]，用户新发的消息也会追加到它 —— 只有共用同一对象才能被后续分片
+        # 自然渲染（快照会把这些新行漏掉，表现为「切换后刚发的消息不显示」）。
+        live = self._sess.get(self._session_id)
+        cur = (live.get("rows") if isinstance(live, dict) else None)
+        self._hist_build = {"rows": cur if isinstance(cur, list) else list(rows),
+                            "i": 0, "n": len(rows),
+                            "cleared": False,
+                            "gen": self.__dict__.get("_hist_gen", 0)}
+        self._hist_step()
+
+    def _hist_step(self):
+        """分片推进一步（单次调用控制在 ~_RENDER_CHUNK_MS 内），完成则收尾。
+
+        代号（gen）守卫：分片让出事件循环期间，**别的渲染入口也可能被触发**
+        （最典型的是面板启动时排队的 switch_ready → _finish_switch → 再次
+        _render_history_all）。没有守卫时两次构建会叠加，气泡数翻倍。
+        故每次新建构建自增代号，后续片与收尾都只认自己那代。
+        """
+        st = self.__dict__.get("_hist_build")
+        if not st:
+            return
+        if st.get("gen") != self.__dict__.get("_hist_gen"):
+            return          # 已被更新的构建取代：丢弃过期分片
+        if not st["cleared"]:
+            self._hist_clear_stream()
+            st["cleared"] = True
+        rows, i = st["rows"], st["i"]
+        budget = _RENDER_CHUNK_MS / 1000.0
+        t0 = time.perf_counter()
+        # 每次都重取列表长度：分片期间 switch_ready 可能把磁盘历史并进 st["rows"]，
+        # 直接沿用切片会把新追加的行漏掉（会话尾部内容缺失）。
+        n = len(rows)
+        while i < n:
+            r0 = time.perf_counter()
+            self._add_row_widget(rows[i])
+            i += 1
+            cost = (time.perf_counter() - r0) * 1000
+            # 行成本滑动平均：用于预测「再插一行会不会超预算」
+            ema = st.get("ema") or _RENDER_ROW_COST_EMA
+            st["ema"] = ema * 0.7 + cost * 0.3
+            spent = (time.perf_counter() - t0) * 1000
+            # 已超预算 → 让出；否则按预测成本预判：下一行预计还会超就先让出，
+            # 避免「插完才发现超了」造成单片明显超预算（实测 12ms 预算跑出 17ms）
+            if spent >= budget or spent + st["ema"] >= budget:
+                break
+        st["i"] = i
+        self._rendered_rows_n = i      # 视图缓存记账：已渲染到第几行（见 _finish_history_build）
+        if i >= len(rows) and not self.__dict__.get("_hist_pending_merge"):
+            self._hist_finish()
+            return
+        QTimer.singleShot(0, self._hist_step)   # 让出事件循环，保持窗口响应
+
+    def _hist_clear_stream(self):
+        """分片路径的首片清理：清空消息流与气泡索引（其余同 _render_history_sync）。"""
+        viewport = self.msg_area.viewport()
+        viewport.setUpdatesEnabled(False)
+        self._build_inflight = True
+        self._hide_stream_container()    # 容器整体隐藏（子项可见性变化不再触发布局级联）
+        while self.msg_lay.count() > 1:
+            item = self.msg_lay.takeAt(0)
+            self._free_layout_item(item)
+        self._bubble_widgets = []
+        self._inflight_hidden = []
+        self._bubble_segs = {}
+        self._ai_bubble = None
+        self._msg_nav_clear()
+
+    def _add_row_widget(self, r: dict):
+        """把一行 rows 渲染成对应气泡（user / ai）。"""
+        if r.get("type") == "user":
+            self._add_bubble(r.get("text", ""), "user", animate=False)
+        else:
+            self._add_ai_group_bubble(r.get("segs") or [], animate=False,
+                                      cost=r.get("cost"), meta=r.get("meta") or "")
+
+    def _hist_finish(self):
+        """分片重建收尾：补建未归档当前段、整批显示并激活布局。"""
+        self.__dict__.pop("_hist_build", None)
+        try:
+            if self._segments:
+                self._add_ai_group_bubble(self._segments)
+        except Exception:
+            pass
+        self._finish_history_build()
+
+    def _finish_history_build(self):
+        """重建收尾：整批挂载可见 → 激活布局 → 收尾自愈（两条路径共用）。"""
+        viewport = self.msg_area.viewport()
+        try:
             # 复用池里没被取回的气泡（会话行数比重建前少）：彻底销毁，避免悬挂控件堆积
             try:
                 self._discard_bubble_pool()
             except Exception:
                 self._bubble_reuse_pool = []
+            # 整批建完，统一挂载可见：一次性 setVisible + 一次布局激活，
+            # 取代原先「每条气泡挂载即触发一次全链布局级联」。
+            # 按 _inflight_hidden 登记表恢复（气泡 + AI 回合包裹层 wrap）。
+            # 【关键】必须恢复 wrap：AI 回合的可见性由父级 wrap 决定，
+            # Qt 中父隐藏时对子控件 setVisible(True) 无效 —— 只恢复 bubble
+            # 会导致整个 AI 回合（含气泡样式）永久不可见，表现为
+            # 「启动恢复上次对话时气泡消失 / 切换对话后只剩打字指示器」。
+            # 逆序恢复（后加的先恢复）保证父级 wrap 先于子级 bubble 可见。
+            try:
+                hidden_list = list(self._inflight_hidden)
+                self._inflight_hidden.clear()
+                for b in reversed(hidden_list):
+                    try:
+                        if not b.isVisible():
+                            b.setVisible(True)
+                    except RuntimeError:
+                        pass          # 控件已被销毁（会话切换/重建），跳过
+            except Exception:
+                self._inflight_hidden = []
+            self._build_inflight = False
+            # 容器整体恢复可见：构建期容器是隐藏的，子项的可见性变化**不会**触发布局
+            # 激活；这一次 show() 才做唯一一次整树布局，级联成本从 O(轮数) 降到 O(1)
+            # （旧实现：容器可见时逐个 setVisible，每次触发一次布局 → 240 回合实测 2.4s）。
+            self._show_stream_container()
+            # 视图缓存记账：本视图已渲染到第几行 / 活气泡是谁。切回该会话时据此
+            # 只补齐增量（O(新增行数)），而不是重建整棵控件树（见 _sync_view_incremental）。
+            v = self._active_view
+            if isinstance(v, dict):
+                rows_now = self._rows or []
+                n = int(self.__dict__.pop("_rendered_rows_n", len(rows_now)) or 0)
+                v["rows_ref"] = rows_now
+                v["rows_n"] = min(n, len(rows_now))
+                v["last_row"] = (rows_now[v["rows_n"] - 1]
+                                 if 0 < v["rows_n"] <= len(rows_now) else None)
+                v["seg_sig"] = self._live_seg_sig(self._segments)
+                v["live"] = (self._ai_bubble
+                             if self._bubble_alive(self._ai_bubble) else None)
+                v["theme"] = _THEME_VERSION
+                self._rebuild_nav_bar(v)   # 定位圆点集合随视图走（换挂后不残留上一会话的圆点）
             viewport.setUpdatesEnabled(True)
             self._relayout_messages()   # 同步完成布局：批次插入期间几何可能停留在陈旧值
             viewport.update()
-        # 历史/会话恢复后（无运行中任务时）标记最后一条 AI 气泡可重试，
-        # 覆盖「重启恢复会话 / 切换回旧对话」等非实时任务结束场景。
-        if not self._task_active and self._user_msgs:
-            self._arm_retry_button()
-        # 延迟自愈：面板隐藏/宽度未就绪时首轮布局用的是瞬时几何，
-        # 事件循环推进（0ms）与布局稳定（200ms）后以真实宽度复核一次高度，
-        # 修复"所有聊天被挤压、需点击气泡才恢复"的陈旧几何问题。
-        QTimer.singleShot(0, self._relayout_messages)
-        QTimer.singleShot(200, self._relayout_messages)
-        # P0 性能优化：批量触发每回合的 updateGeometry，让 Qt 在下一帧统一处理
-        # 布局验证（消除 setFixedHeight 引起的 n 次 heightForWidth 验证）。
-        for b in self._bubble_widgets:
-            if hasattr(b, "_update_layout_geometry"):
-                QTimer.singleShot(300, b._update_layout_geometry)
+        finally:
+            # 历史/会话恢复后（无运行中任务时）标记最后一条 AI 气泡可重试，
+            # 覆盖「重启恢复会话 / 切换回旧对话」等非实时任务结束场景。
+            if not self._task_active and self._user_msgs:
+                self._arm_retry_button()
+            # 延迟自愈：面板隐藏/宽度未就绪时首轮布局用的是瞬时几何，
+            # 事件循环推进（0ms）与布局稳定（200ms）后以真实宽度复核一次高度，
+            # 修复"所有聊天被挤压、需点击气泡才恢复"的陈旧几何问题。
+            QTimer.singleShot(0, self._relayout_messages)
+            QTimer.singleShot(200, self._relayout_messages)
+            # P0 性能优化：批量触发每回合的 updateGeometry，让 Qt 在下一帧统一处理
+            # 布局验证（消除 setFixedHeight 引起的 n 次 heightForWidth 验证）。
+            # 旧实现给**每个**气泡挂一个 singleShot(300)：N 个定时器在同一轮事件循环里
+            # 连续触发 N 次整树布局激活，240 回合时实测单次阻塞 1.8s（流式期间表现为
+            # 明显掉帧）。改为切片批处理：每片只跑到时间预算为止，其余 singleShot(0) 续跑。
+            _gen = self.__dict__.get("_hist_gen", 0)
+            QTimer.singleShot(300, lambda: self._batch_update_geometry(_gen))
+            self._scroll_bottom()
+
+    # 每片几何重算的时间预算（ms）：把「N 个回合的 updateGeometry」切成多片，
+    # 单片主线程占用恒定在预算内（旧实现 N 个 singleShot 在同一轮里跑完 → 长阻塞）。
+    _GEO_BATCH_MS = 8.0
+
+    def _hide_stream_container(self):
+        """批量重建期间整体隐藏消息流容器。
+
+        为什么整体隐藏而不是逐项隐藏：容器可见时，任何子项 `setVisible(True)` 都会让
+        Qt 立刻对该子树做一次布局激活（heightForWidth + minimumSizeHint 全量重测），
+        240 回合实测 setVisible 2.4s / minimumSizeHint 0.5s / heightForWidth 0.44s。
+        容器隐藏时子项的可见性变化只是置标志位，收尾一次 `show()` 完成唯一一次整树布局。
+        """
+        try:
+            w = getattr(self, "msg_container", None)
+            if w is not None:
+                w.setUpdatesEnabled(False)
+                w.hide()
+        except RuntimeError:
+            pass
+
+    def _show_stream_container(self):
+        """重建收尾：容器整体恢复可见（唯一一次整树布局）+ 恢复重绘。"""
+        try:
+            w = getattr(self, "msg_container", None)
+            if w is not None:
+                w.show()
+                w.setUpdatesEnabled(True)
+        except RuntimeError:
+            pass
+
+    def _batch_update_geometry(self, gen: int = 0):
+        """切片触发回合级 updateGeometry（见 _finish_history_build 的调用点）。
+
+        旧实现为每个气泡挂 singleShot(300)：240 个定时器在同一轮事件循环里连续触发
+        240 次整树布局激活，实测单次 processEvents 阻塞 1.8s。这里每片只处理到时间
+        预算（_GEO_BATCH_MS）为止，余下的用 singleShot(0) 续跑 —— 总工作量不变，
+        但单次主线程占用有界，流式输出期间不再出现秒级掉帧。
+        `gen` 为构建代号：期间发生新的重建（会话切换/主题切换）则本批直接作废，
+        避免对已被销毁的控件做几何操作。
+        """
+        if gen and gen != self.__dict__.get("_hist_gen", 0):
+            return
+        start = self.__dict__.pop("_geo_batch_i", 0)
+        bubbles = self._bubble_widgets or []
+        t0 = time.perf_counter()
+        i = start
+        n = len(bubbles)
+        while i < n:
+            b = bubbles[i]
+            i += 1
+            try:
+                if self._bubble_alive(b) and hasattr(b, "_update_layout_geometry"):
+                    b._update_layout_geometry()
+            except RuntimeError:
+                continue
+            if (time.perf_counter() - t0) * 1000 >= self._GEO_BATCH_MS:
+                break
+        if i < n:
+            self._geo_batch_i = i
+            QTimer.singleShot(0, lambda: self._batch_update_geometry(gen))
+        else:
+            self._geo_batch_i = 0
 
     def _relayout_messages(self):
         """强制消息流完成一次布局激活（自愈）：批次重建/隐藏期间容器高度或
@@ -17952,8 +19712,8 @@ class AgentPanel(QDialog):
 
         _set(getattr(self, "title", None),
              f"color: {ACCENT}; font-size: 16px; font-weight: 800;")
-        _set(getattr(self, "session_combo", None), _QCOMBO)
-        _set(getattr(self, "model_combo", None), _QCOMBO)
+        _set(getattr(self, "session_combo", None), _HOME_COMBO)
+        _set(getattr(self, "model_combo", None), _HOME_COMBO)
         _set(getattr(self, "token_label", None),
              f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
         _set(getattr(self, "new_btn", None), _BTN_ICON)
@@ -18185,7 +19945,7 @@ class AgentPanel(QDialog):
         eng = st.get("engine") or self._engine
         if self._task_active or (self._eval_pending is not None
                                  and self._eval_pending[0] == self._session_id):
-            self._notify_blocked("任务进行中，暂无法重试")
+            self._notify_blocked(_ui("任务进行中，暂无法重试"))
             return
         payload = st.get("last_payload") or {}
         if not payload:
@@ -18195,7 +19955,7 @@ class AgentPanel(QDialog):
             # 原消息若带图片/附件/技能，兜底只重发文本（尽力而为）。
             _ums = (st.get("user_msgs") or []) or list(self._user_msgs or [])
             if not _ums:
-                self._notify_blocked("没有可重试的消息")
+                self._notify_blocked(_ui("没有可重试的消息"))
                 return
             payload = {"text": _ums[-1]}
             st["last_payload"] = payload   # 回写，本次重发后按正常路径落盘
@@ -18251,14 +20011,14 @@ class AgentPanel(QDialog):
         segs = self._bubble_segs.get(id(bubble))
         text = self._bubble_read_text(segs)
         menu = QMenu(self)
-        read_act = menu.addAction("朗读这条回复")
+        read_act = menu.addAction(_ui("朗读这条回复"))
         if text:
             menu.addSeparator()
-            copy_act = menu.addAction("复制全文")
+            copy_act = menu.addAction(_ui("复制全文"))
         act = menu.exec(pos)
         if act is read_act:
             if not text:
-                self._notify_blocked("该回复没有可朗读的正文")
+                self._notify_blocked(_ui("该回复没有可朗读的正文"))
                 return
             self._read_aloud(text)
         elif text and act is copy_act:
@@ -18268,7 +20028,7 @@ class AgentPanel(QDialog):
         """后台线程合成并朗读文本（复用 TTS 播放器，避免阻塞 UI）"""
         def work():
             if not agent_tools._tts_play_start():
-                self._notify_blocked("朗读不可用：pygame 未初始化")
+                self._notify_blocked(_ui("朗读不可用：pygame 未初始化"))
                 return
             try:
                 agent_tts.synthesize_stream(
@@ -18570,7 +20330,7 @@ class AgentPanel(QDialog):
             self._spinner_lbl = None
             self._spinner_row = None
         self._spinner = _TypingDots()
-        self._spinner_lbl = QLabel("AI 思考中…")
+        self._spinner_lbl = QLabel(_ui("AI 思考中…"))
         self._spinner_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -18609,7 +20369,7 @@ class AgentPanel(QDialog):
                 return
             self._compact_row = None
         dots = _TypingDots()
-        lbl = QLabel("正在压缩上下文…")
+        lbl = QLabel(_ui("正在压缩上下文…"))
         lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -18641,7 +20401,7 @@ class AgentPanel(QDialog):
         self._think_done = False
         self._think_start = time.time()
         if self._spinner_lbl is not None:
-            self._spinner_lbl.setText("AI 思考中…")
+            self._spinner_lbl.setText(_ui("AI 思考中…"))
         self._ensure_spinner()
 
     def _finish_thinking(self):
@@ -18656,7 +20416,7 @@ class AgentPanel(QDialog):
         self._think_done = True
         if self._spinner_lbl is not None and self._think_start:
             el = int(time.time() - self._think_start)
-            self._spinner_lbl.setText(f"已思考 {el} 秒")
+            self._spinner_lbl.setText(_uif("已思考 {a0} 秒", a0=el))
 
     def _on_reasoning(self, s: str):
         """流式思考过程：追加到当前一轮的思考段（转义为富文本）。
@@ -18733,6 +20493,12 @@ class AgentPanel(QDialog):
                 self._sync_git_win()
             except Exception:
                 pass
+            if getattr(dlg, "_lang_changed", False):
+                # 语言变更：与主题切换相同机制就地重建面板 UI（不关闭面板、
+                # 不停止引擎），会话内存态（对话历史/排队消息/运行中任务）原样保留。
+                # 重建时 build_ui 会重新执行各 _ui(...) 文案，新语言即时生效。
+                self._retheme()
+                return
             if getattr(dlg, "_theme_changed", False):
                 # 主题变更：就地重建面板 UI，点击保存即立即生效。不关闭面板、
                 # 不停止引擎，会话内存态（对话历史/排队消息/运行中任务）原样保留，
@@ -18900,7 +20666,7 @@ class AgentPanel(QDialog):
         providers = cfg.get("providers") or []
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
-        self.model_combo.addItem("自动选择", None)
+        self.model_combo.addItem(_ui("自动选择"), None)
         for p in providers:
             pname = p.get("name", "服务商")
             for x in p.get("models") or []:
@@ -19031,39 +20797,61 @@ class AgentPanel(QDialog):
         return self._cmd_cache
 
     def _cmd_desc(self, cmd: str) -> str:
-        """命令描述（用于命令条 tooltip）"""
+        """命令描述（用于命令条 tooltip）。
+
+        固定文案过 _ui/_uif（UI 语言包），技能/插件/工具描述过提示词语言包
+        （i18n.tp / i18n.tool_desc，与注入 system prompt 时同源）。
+        """
         if cmd.startswith("@"):
             name = cmd[1:]
             if name == "_default":
-                return "切回内置默认 Agent（清空自定义人格）"
+                return _ui("切回内置默认 Agent（清空自定义人格）")
             ag = next((a for a in self._agent_list() if a["name"] == name), None)
             if ag:
                 prompt = (ag.get("system_prompt") or "").replace("\n", " ")
                 desc = prompt[:48] + ("…" if len(prompt) > 48 else "")
                 bound = (ag.get("bound_workflow") or "").strip()
-                return "自定义 Agent: " + desc + \
-                    (f"（工具/技能来自工作流 {bound}）" if bound else "（独立人格，沿用当前工具/技能）")
+                suffix = (_uif("（工具/技能来自工作流 {wfs}）", wfs=bound)
+                          if bound else _ui("（独立人格，沿用当前工具/技能）"))
+                return _ui("自定义 Agent: ") + desc + suffix
             sub = next((s for s in
                         agent_subagent.registered_subagents(self._effective_workflow())
                         if s["name"] == name), None)
             if sub:
                 goal = (sub.get("goal") or "").replace("\n", " ")
-                return "子 Agent（@直接调用，不经主 Agent）: " + \
+                return _ui("子 Agent（@直接调用，不经主 Agent）: ") + \
                     goal[:48] + ("…" if len(goal) > 48 else "")
             wf = next((w for w in self._wf_list() if w["name"] == name), None)
             if wf:
-                return (wf.get("description") or "") + ("（默认/内置工作流）" if wf["is_default"] else "")
+                return (wf.get("description") or "") + \
+                    (_ui("（默认/内置工作流）") if wf["is_default"] else "")
             return ""
         name = cmd.lstrip("/").lower()
         s = self._cmd_skills().get(name)
         if s:
-            return s.get("description", "")
+            try:
+                from zhuzhu_Copilot.core import i18n as _i18n_mod
+                return _i18n_mod.tp(f"skill.{s.get('name', name)}.desc",
+                                    s.get("description", "") or "")
+            except Exception:
+                return s.get("description", "")
         plugin = self._cmd_plugins().get(name)
         if plugin:
-            return "插件：" + (str(plugin.get("description") or "").strip() or "可手动调用该插件")
+            try:
+                from zhuzhu_Copilot.core import i18n as _i18n_mod
+                _pdesc = _i18n_mod.tp(f"plugin.{plugin.get('name', name)}.desc",
+                                      str(plugin.get("description") or "").strip() or "")
+            except Exception:
+                _pdesc = str(plugin.get("description") or "").strip()
+            return _ui("插件：") + (_pdesc or _ui("可手动调用该插件"))
         for t in agent_tools.TOOLS:
             if t["function"]["name"].lower() == name:
-                return t["function"].get("description", "")
+                try:
+                    from zhuzhu_Copilot.core import i18n as _i18n_mod
+                    return _i18n_mod.tool_desc(t["function"]["name"],
+                                               t["function"].get("description", "") or "")
+                except Exception:
+                    return t["function"].get("description", "")
         return ""
 
     def _match_skill(self, text: str):
@@ -19117,11 +20905,11 @@ class AgentPanel(QDialog):
                 props = p.get("properties") or {}
                 req = set(p.get("required") or [])
                 if not props:
-                    return "(无参数)"
+                    return _ui("(无参数)")
                 return ", ".join(
-                    f"{k}({v.get('type', 'any')}{'必填' if k in req else '可选'})"
+                    f"{k}({v.get('type', 'any')}{_ui('必填') if k in req else _ui('可选')})"
                     for k, v in props.items())
-        return "(无参数)"
+        return _ui("(无参数)")
 
     def _update_cmd_suggestions(self, *_):
         # QPlainTextEdit 的 textChanged 无参数，需自行读取当前文本
@@ -19144,32 +20932,8 @@ class AgentPanel(QDialog):
                 self.cmd_list.clear()
                 for c in matches:
                     item = QListWidgetItem(c)
-                    name = c[1:]
-                    ag = next((a for a in self._agent_list() if a["name"] == name), None)
-                    if ag:
-                        prompt = (ag.get("system_prompt") or "").replace("\n", " ")
-                        desc = prompt[:48] + ("…" if len(prompt) > 48 else "")
-                        bound = (ag.get("bound_workflow") or "").strip()
-                        item.setToolTip("自定义 Agent: " + desc +
-                                        (f"（工具/技能来自工作流 {bound}）" if bound
-                                         else "（独立人格，沿用当前工具/技能）"))
-                    elif name == "_default":
-                        item.setToolTip("切回内置默认 Agent（清空自定义人格）")
-                    else:
-                        sub = next((s for s in
-                                    agent_subagent.registered_subagents(
-                                        self._effective_workflow())
-                                    if s["name"] == name), None)
-                        if sub:
-                            goal = (sub.get("goal") or "").replace("\n", " ")
-                            item.setToolTip("子 Agent（@直接调用，不经主 Agent）: " +
-                                            goal[:48] + ("…" if len(goal) > 48 else ""))
-                            self.cmd_list.addItem(item)
-                            continue
-                        wf = next((w for w in wfs if w["name"] == name), None)
-                        if wf:
-                            item.setToolTip((wf.get("description") or "") or
-                                            ("默认（内置）工作流" if wf["is_default"] else ""))
+                    # 与命令条 tooltip 共用同一份描述逻辑，避免两处文案各自演化
+                    item.setToolTip(self._cmd_desc(c))
                     self.cmd_list.addItem(item)
                 self._resize_cmd_list()
                 self.cmd_list.show()
@@ -19334,7 +21098,7 @@ class AgentPanel(QDialog):
         # 引擎线程仍在运行（本会话有任务在跑）时禁止热插拔：重建会摘除运行中引擎并
         # 让 _send 视为空闲直接开新任务，造成在途上下文丢失 + 两任务并发重叠。
         if eng is not None and eng._thread and eng._thread.is_alive():
-            self._notify_blocked("任务运行中，暂不可切换工作流")
+            self._notify_blocked(_ui("任务运行中，暂不可切换工作流"))
             return False
         st["workflow"] = name
         # @工作流 是纯工作流切换：清空会话自定义 Agent 人格，避免上一轮 @agent 的
@@ -19488,8 +21252,13 @@ class AgentPanel(QDialog):
         # 工作强度自动调节（Claude Code/Codex 式）：按模型正确映射 thinking/reasoning_effort，
         # 支持的服务商（DeepSeek V4 / GLM-4.5+ / OpenAI o 系列）自动附加参数，其余不发送；
         # think_mode 由模型接入页手动控制（跟随自动/始终开启/始终关闭，含每次强制思考）
+        # 未命中厂商内置表的模型（如聚合平台新模型 stealth/space-bunny-alpha）走通用兜底：
+        # 优先按上游 /models 声明的可调级别折算，无声明则用 OpenAI 兼容层标准参数，
+        # 保证思考开关与强度滑块对这类模型真正生效（旧实现返回空 dict 导致完全失效）。
         engine.llm.effort_params = agent_llm.build_effort_params(
-            model, effort, self._think_mode_override())
+            model, effort, self._think_mode_override(),
+            declared_levels=agent_llm.declared_effort_levels(
+                (sel or {}).get("model_limits"), model))
         # 视觉能力以用户设置的多模态模型列表为准；agnes 内置视觉模型恒非纯文本
         engine.text_only = (model != agent_llm.DEFAULT_MODEL
                             and not agent_llm.is_vision_model(cfg, model))
@@ -19652,7 +21421,9 @@ class AgentPanel(QDialog):
             model=model,
             protocol=(sel or {}).get("protocol") or "chat")
         llm.effort_params = agent_llm.build_effort_params(
-            model, effort, self._think_mode_override())
+            model, effort, self._think_mode_override(),
+            declared_levels=agent_llm.declared_effort_levels(
+                (sel or {}).get("model_limits"), model))
         try:
             self._commit_sess()
             self._write_ui_json(self._session_id, self._sess.get(self._session_id))
@@ -19800,8 +21571,9 @@ class AgentPanel(QDialog):
                 continue
             if len(body) > 6000:
                 body = body[:6000] + "\n…（记录过长已截断）"
-            note = (f"（主对话中此前通过 @{name} 与子 Agent 的对话记录，属历史上下文，"
-                    "供你延续理解；这不是用户发来的新指令，无需回应）\n" + body)
+            note = (_uim("（主对话中此前通过 @{name} 与子 Agent 的对话记录，属历史上下文，"
+                          "供你延续理解；这不是用户发来的新指令，无需回应）")
+                    .format(name=name) + "\n" + body)
             try:
                 content = agent_llm.build_content(note)
             except Exception:
@@ -19855,7 +21627,7 @@ class AgentPanel(QDialog):
             self._hide_spinner()
             self._set_action_idle()
             try:
-                self._toast("任务启动失败", str(e), warn=True)
+                self._toast(_ui("任务启动失败"), str(e), warn=True)
             except Exception:
                 pass
 
@@ -19907,7 +21679,7 @@ class AgentPanel(QDialog):
             if st and st.get("engine") is eng:
                 st["engine"] = None   # 下次发送时重建全新引擎
             self._engine = None
-            self._notify_blocked("AI 线程无法中断，已强制隔离（后台线程已断开，新任务将自动重建）")
+            self._notify_blocked(_ui("AI 线程无法中断，已强制隔离（后台线程已断开，新任务将自动重建）"))
             self._task_active = False
             self._hide_spinner()
             self._set_action_idle()
@@ -19925,7 +21697,7 @@ class AgentPanel(QDialog):
         if not eng or not eng._messages:
             return
         if eng._thread and eng._thread.is_alive():
-            self._notify_blocked("任务运行中，暂不支持压缩上下文")
+            self._notify_blocked(_ui("任务运行中，暂不支持压缩上下文"))
             return
         self._ensure_compact_row()
         threading.Thread(target=self._compact_worker, daemon=True).start()
@@ -19987,7 +21759,7 @@ class AgentPanel(QDialog):
         name = self.session_combo.itemText(idx.row())
         orig = self.session_combo.currentIndex()   # 记录原索引，防止 popup 关闭误切换对话
         menu = QMenu(self)
-        del_act = menu.addAction(f"删除对话「{name}」")
+        del_act = menu.addAction(_uif("删除对话「{a0}」", a0=name))
         act = menu.exec(view.viewport().mapToGlobal(pos))
         # 菜单/下拉关闭时 QComboBox 会把高亮项同步为当前项，误触发 _on_session_selected：
         # 屏蔽信号恢复原索引，避免右键一下却切进了被点的对话
@@ -20000,7 +21772,7 @@ class AgentPanel(QDialog):
 
     def _remove_session(self, sid: str, name: str):
         """右键删除对话：确认后删除文件；若删除的是当前对话则清理并切到最近对话/新建"""
-        if not self._confirm_box("永久删除对话",
+        if not self._confirm_box(_ui("永久删除对话"),
                                  f"确定永久删除对话「{name}」吗？\n所有记录将无法恢复！"):
             return
         self._delete_session(sid)
@@ -20025,6 +21797,7 @@ class AgentPanel(QDialog):
             self._user_msgs = []
             self._ai_bubble = None
             self._bubble_widgets = []
+            self._inflight_hidden = []
             self._bubble_segs = {}
             self._msg_nav_clear()   # 删除会话清空定位圆点
             self._hide_spinner()
@@ -20053,8 +21826,8 @@ class AgentPanel(QDialog):
         box.setWindowTitle(title)
         box.setText(text)
         box.setIcon(QMessageBox.Icon.Question)
-        yes = box.addButton("是", QMessageBox.ButtonRole.YesRole)
-        box.addButton("否", QMessageBox.ButtonRole.NoRole)
+        yes = box.addButton(_ui("是"), QMessageBox.ButtonRole.YesRole)
+        box.addButton(_ui("否"), QMessageBox.ButtonRole.NoRole)
         # 默认焦点给"否"，防误触删除
         no_btn = box.buttons()[1]
         box.setDefaultButton(no_btn)
@@ -20082,12 +21855,12 @@ class AgentPanel(QDialog):
         if not self._session_id:
             return
         # 第一次确认：清空上下文与聊天记录
-        if not self._confirm_box("清空对话",
-                                 "确定要清空当前对话吗？\n将清空全部上下文与聊天记录。"):
+        if not self._confirm_box(_ui("清空对话"),
+                                 _uim("确定要清空当前对话吗？\n将清空全部上下文与聊天记录。")):
             return
         # 第二次确认：永久删除该对话（不可恢复）
-        if not self._confirm_box("永久删除对话",
-                                 "该对话将连同所有记录被永久删除，无法恢复！\n确定继续吗？"):
+        if not self._confirm_box(_ui("永久删除对话"),
+                                 _uim("该对话将连同所有记录被永久删除，无法恢复！\n确定继续吗？")):
             return
         # ---- 执行：停止该会话引擎 + 清空上下文与气泡 + tokens 归零 ----
         old_id = self._session_id
@@ -20127,6 +21900,7 @@ class AgentPanel(QDialog):
             item = self.msg_lay.takeAt(0)
             self._free_layout_item(item)
         self._bubble_widgets = []   # 清空气泡引用，避免 resizeEvent 处理已删除对象
+        self._inflight_hidden = []
         self._bubble_segs = {}
         self._msg_nav_clear()       # 清空对话定位圆点
         self.token_label.setText("0 tk")
@@ -20436,7 +22210,7 @@ class AgentPanel(QDialog):
             rm = QPushButton("×")
             rm.setFixedSize(18, 18)
             rm.setCursor(Qt.CursorShape.PointingHandCursor)
-            rm.setToolTip("取消上传")
+            rm.setToolTip(_ui("取消上传"))
             rm.setStyleSheet(
                 f"QPushButton {{ background: {PANEL}; color: {TEXT_DIM};"
                 f" border: 1px solid {BORDER};"
@@ -20724,6 +22498,11 @@ class AgentPanel(QDialog):
         pending_images = list(getattr(self, "_pending_images", []) or [])
         # 2.1) 把存活的气泡摘进复用池（连同 AI 回合的包裹层）：稍后 _render_history_all
         #      会优先取回它们而不是重建 —— 省掉「拆掉上百个气泡 + 逐个重建」这一大头。
+        #      先丢弃各会话视图缓存：容器随本面板重建销毁，缓存记账必须同步清空。
+        try:
+            self._drop_all_views()
+        except Exception:
+            pass
         try:
             self._detach_live_bubbles()
         except Exception:
@@ -21069,7 +22848,7 @@ class AgentPanel(QDialog):
             self._task_active = False
             self._hide_spinner()
             self._set_action_idle()
-            self._notify_blocked("任务难度评估超时，已取消本次任务（可重新发送）")
+            self._notify_blocked(_ui("任务难度评估超时，已取消本次任务（可重新发送）"))
             running = False
         if not running and eng is None and self.token_label.text() != "0 tk":
             # 新对话/无引擎会话：轮询兜底复位计数（_new_session 已即时复位，
@@ -21121,7 +22900,7 @@ class AgentPanel(QDialog):
         # 「停止中」或 _user_stopped 残留 → 强制恢复空闲发送态，杜绝“无任务却显示暂停”。
         elif (not running and not self._task_active
               and (self._user_stopped
-                   or getattr(self.action_btn, "toolTip", lambda: "")() == "停止中…")):
+                   or getattr(self.action_btn, "toolTip", lambda: "")() == _ui("停止中…"))):
             self._user_stopped = False
             self._hide_spinner()
             self._set_action_idle()
@@ -21228,13 +23007,13 @@ class AgentPanel(QDialog):
         if self._action_anim.isActive():
             self._action_anim.stop()
             self.action_btn.setIcon(_line_icon("stop", 16, "#FFFFFF"))
-            self.action_btn.setToolTip("停止当前任务")
+            self.action_btn.setToolTip(_ui("停止当前任务"))
 
     def _on_delta(self, s: str):
         self._finish_thinking()   # 开始输出正文即视为思考完成
         # 正文回复状态：转圈行同步切换为「正在回复正文」（覆盖刚设置的「已思考 N 秒」）。
         # _set_spinner_text 内部有「文案未变则不 setText」保护，高频 token 下开销可忽略。
-        self._set_spinner_text(_OP_STATUS_REPLY)
+        self._set_spinner_text(_ui(_OP_STATUS_REPLY))
         self._stop_send_spin()
         self._last_activity = time.time()
         self._ensure_ai_bubble()
@@ -21549,7 +23328,11 @@ class AgentPanel(QDialog):
             self._hide_spinner()   # 用户手动停止/包含“已停止”字样的状态均不输出小字
 
     def _set_spinner_text(self, text: str):
-        """更新转圈行的状态文字（打字指示器文案）；转圈行未创建则先创建"""
+        """更新转圈行的状态文字（打字指示器文案）；转圈行未创建则先创建。
+
+        出口统一翻译：状态文案在调用点均为中文原文，此处一次性过 `_uim`，
+        新增调用点无需再逐个包裹。"""
+        text = _uim(text)
         if self._spinner_lbl is not None:
             if self._spinner_lbl.text() != text:
                 self._spinner_lbl.setText(text)
@@ -21640,7 +23423,7 @@ class AgentPanel(QDialog):
         _ConfirmDialog._current_cmd = (str(args.get("command") or "").strip()
                                        if name == "run_command" else "")
         # 需要确认：右下角通知（适用于所有对话，含前台）
-        self._toast("AI 请求确认", f"对话「{self._session_label(sid)}」需确认：{name}", True)
+        self._toast(_ui("AI 请求确认"), f"对话「{self._session_label(sid)}」需确认：{name}", True)
         dlg = _ConfirmDialog(name, args, risk, self)
         dlg.exec()
         self._confirm_result = dlg.result_ok
@@ -21689,7 +23472,7 @@ class AgentPanel(QDialog):
         except json.JSONDecodeError:
             args = {}
         # 需要用户作答：右下角通知（适用于所有对话，含前台）
-        self._toast("AI 向你提问", f"对话「{self._session_label(sid)}」需作答："
+        self._toast(_ui("AI 向你提问"), f"对话「{self._session_label(sid)}」需作答："
                     f"{str(args.get('question', ''))[:40]}", False)
         # 提问不单独成卡：由 ask_user 工具结果(_on_result)把提问拼到用户回答前
         # 一并渲染成连续问答文本（弹窗内仍完整呈现问题与选项）
@@ -21738,11 +23521,11 @@ class AgentPanel(QDialog):
         state = getattr(self._engine, "end_state", "") if self._engine else ""
         label = self._session_label(self._session_id)
         if self._user_stopped or state == "stopped":
-            self._toast("AI 任务已停止", f"对话「{label}」的任务已被停止", True)
+            self._toast(_ui("AI 任务已停止"), f"对话「{label}」的任务已被停止", True)
         elif state == "done":
-            self._toast("AI 任务完成", f"对话「{label}」的任务已成功完成", False)
+            self._toast(_ui("AI 任务完成"), f"对话「{label}」的任务已成功完成", False)
         else:
-            self._toast("AI 任务出错", f"对话「{label}」的任务执行出错", True)
+            self._toast(_ui("AI 任务出错"), f"对话「{label}」的任务执行出错", True)
 
     def _flush_pending(self, sid: str):
         """前台处理该会话的挂起确认/提问（切到该会话时调用）"""
