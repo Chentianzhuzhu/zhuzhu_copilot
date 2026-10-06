@@ -5,6 +5,7 @@ import com.zhuzhu.update.repo.FeedbackRepo;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -19,12 +20,29 @@ public class FeedbackService {
     /** 反馈内容最大长度 */
     private static final int MAX_CONTENT = 2000;
 
+    /** 查询凭证字节数（32 字节 → 64 位 hex 字符串） */
+    private static final int TOKEN_BYTES = 32;
+
     private static final List<String> ALLOWED_STATUS = List.of("pending", "replied", "resolved");
+
+    /** 加密安全随机数生成器，用于生成查询凭证 */
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final FeedbackRepo repo;
 
     public FeedbackService(FeedbackRepo repo) {
         this.repo = repo;
+    }
+
+    /** 生成 64 位 hex 查询凭证（32 字节随机数，256 位熵，不可遍历） */
+    private String generateToken() {
+        byte[] bytes = new byte[TOKEN_BYTES];
+        SECURE_RANDOM.nextBytes(bytes);
+        StringBuilder sb = new StringBuilder(TOKEN_BYTES * 2);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     /**
@@ -56,6 +74,8 @@ public class FeedbackService {
         }
         f.setStatus("pending");
         f.setCreatedAt(LocalDateTime.now());
+        // 生成查询凭证（64 位 hex，防止数字 ID 被遍历查看他人反馈）
+        f.setQueryToken(generateToken());
         return repo.save(f);
     }
 
@@ -64,12 +84,12 @@ public class FeedbackService {
         return repo.findAllByOrderByCreatedAtDesc();
     }
 
-    /** 按 ID 查找反馈（公开查询用，不暴露 IP / 联系方式） */
-    public Optional<Feedback> findById(Long id) {
-        if (id == null || id <= 0) {
+    /** 凭查询凭证查找反馈（公开查询用，不暴露 IP / 联系方式）。token 为空或不存在返回 empty。 */
+    public Optional<Feedback> findByQueryToken(String token) {
+        if (token == null || token.isBlank()) {
             return Optional.empty();
         }
-        return repo.findById(id);
+        return repo.findByQueryToken(token.trim());
     }
 
     /** 管理员回复：写入回复内容并标记为 replied */

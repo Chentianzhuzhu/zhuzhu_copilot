@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QMessageBox,
 )
+from PyQt6.QtWidgets import QApplication
 
 from zhuzhu_Copilot.ui.styles import PALETTE
 from zhuzhu_Copilot.ui.widgets import add_brand_footer
@@ -146,10 +147,22 @@ class FeedbackDialog(QDialog):
         status = result.get("status")
         if status == "ok":
             info = result.get("info") or {}
-            fid = info.get("id")
-            tip = _uif("反馈已提交！\n反馈编号：#{id}\n感谢你的建议。", id=fid) if fid is not None \
-                else _ui("反馈已提交！\n感谢你的建议。")
-            QMessageBox.information(self, _ui("用户反馈"), tip)
+            token = info.get("token") or ""
+            # 显示查询凭证，支持一键复制（凭证仅显示一次，丢失无法找回）
+            box = QMessageBox(self)
+            box.setWindowTitle(_ui("用户反馈"))
+            box.setIcon(QMessageBox.Icon.Information)
+            if token:
+                box.setText(_ui("反馈已提交！感谢你的建议。\n\n请复制下方查询凭证，用于在官网查询官方回复：\n") + token)
+                copy_btn = box.addButton(_ui("复制凭证"), QMessageBox.ButtonRole.AcceptRole)
+                close_btn = box.addButton(_ui("关闭"), QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() is copy_btn:
+                    QApplication.clipboard().setText(token)
+            else:
+                box.setText(_ui("反馈已提交！感谢你的建议。"))
+                box.addButton(_ui("确定"), QMessageBox.ButtonRole.AcceptRole)
+                box.exec()
             self.accept()   # 成功即关闭对话框
             return
         # 失败：恢复按钮，按类型提示

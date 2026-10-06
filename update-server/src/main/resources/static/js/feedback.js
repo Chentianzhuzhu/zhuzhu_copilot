@@ -18,7 +18,9 @@
   var submitText = document.getElementById('feedbackSubmitText');
 
   var successBox = document.getElementById('feedbackSuccess');
-  var successId = document.getElementById('feedbackSuccessId');
+  var tokenEl = document.getElementById('feedbackToken');
+  var copyBtn = document.getElementById('copyTokenBtn');
+  var copyText = document.getElementById('copyTokenText');
   var limitBox = document.getElementById('feedbackLimit');
   var limitTitle = document.getElementById('feedbackLimitTitle');
   var limitDesc = document.getElementById('feedbackLimitDesc');
@@ -109,7 +111,10 @@
       setBusy(false);
       // 成功
       if (r.status === 200 && r.data && r.data.ok) {
-        successId.textContent = '反馈编号 #' + r.data.id;
+        if (tokenEl && r.data.token) {
+          tokenEl.textContent = r.data.token;
+        }
+        if (copyText) { copyText.textContent = '复制'; }
         successBox.hidden = false;
         form.hidden = true;
         successBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -143,11 +148,44 @@
     });
   }
 
+  /* 一键复制查询凭证 */
+  if (copyBtn && tokenEl) {
+    copyBtn.addEventListener('click', function () {
+      var text = tokenEl.textContent;
+      if (!text) { return; }
+      var done = function () {
+        copyText.textContent = '已复制';
+        copyBtn.classList.add('is-copied');
+        setTimeout(function () {
+          copyText.textContent = '复制';
+          copyBtn.classList.remove('is-copied');
+        }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text, done); });
+      } else {
+        fallbackCopy(text, done);
+      }
+    });
+  }
+
+  function fallbackCopy(text, cb) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+    document.body.removeChild(ta);
+    cb();
+  }
+
   /* ---------- 查询回复 ---------- */
   function setQueryBusy(busy) {
     querySubmit.disabled = busy;
     querySubmit.classList.toggle('is-busy', busy);
-    querySubmitText.textContent = busy ? '查询中…' : '查询';
+    querySubmitText.textContent = busy ? '查询中…' : '查询回复';
   }
 
   function showQueryError(msg) {
@@ -167,15 +205,20 @@
       e.preventDefault();
       queryError.hidden = true;
 
-      var raw = queryIdInput.value.trim().replace(/^#/, '');
-      if (!raw || !/^\d+$/.test(raw)) {
-        showQueryError('请输入有效的反馈编号（纯数字，可带 # 前缀）。');
+      var token = queryIdInput.value.trim();
+      if (!token) {
+        showQueryError('请粘贴提交反馈时获得的查询凭证。');
+        queryIdInput.focus();
+        return;
+      }
+      if (!/^[a-f0-9]{32,128}$/i.test(token)) {
+        showQueryError('凭证格式不正确，应为 32-128 位十六进制字符串，请检查是否复制完整。');
         queryIdInput.focus();
         return;
       }
 
       setQueryBusy(true);
-      fetch('/api/feedback/' + encodeURIComponent(raw), {
+      fetch('/api/feedback/' + encodeURIComponent(token), {
         headers: { 'Accept': 'application/json' }
       }).then(function (res) {
         return res.text().then(function (text) {
@@ -203,7 +246,7 @@
           queryResult.hidden = false;
           queryResult.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else if (r.status === 404) {
-          showQueryError((r.data && r.data.error) ? r.data.error : '反馈不存在，请检查编号是否正确。');
+          showQueryError((r.data && r.data.error) ? r.data.error : '查询凭证无效或反馈不存在。');
         } else {
           showQueryError('查询失败，请稍后再试。');
         }

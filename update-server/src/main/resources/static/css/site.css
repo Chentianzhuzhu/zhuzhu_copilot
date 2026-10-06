@@ -910,6 +910,8 @@ body.nav-open .nav-overlay { opacity: 1; pointer-events: auto; }
   .fb-query-row { flex-direction: column; }
   .fb-query-row .btn { width: 100%; justify-content: center; min-height: 48px; }
   .fb-query-result { padding: 16px; }
+  .fb-token-box { flex-direction: column; align-items: stretch; }
+  .fb-token-box .fb-copy-btn { width: 100%; justify-content: center; }
 
   /* 返回顶部：避开底部快捷栏 */
   .back-top { right: 16px; }
@@ -1015,6 +1017,26 @@ body.nav-open .nav-overlay { opacity: 1; pointer-events: auto; }
 .fb-result-title { font-family: var(--font-display); font-weight: 800; font-size: clamp(1.4rem, 3vw, 1.9rem); }
 .fb-result-desc { color: var(--ink-dim); line-height: 1.8; max-width: 460px; }
 .fb-result-id { font-family: var(--font-mono); font-size: 13px; color: var(--ink-faint); letter-spacing: .1em; }
+
+/* 查询凭证显示框 + 一键复制 */
+.fb-token-box {
+  display: flex; align-items: center; gap: 10px; width: 100%; max-width: 560px;
+  padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: rgba(245, 245, 245, .03);
+}
+.fb-token {
+  flex: 1; font-family: var(--font-mono); font-size: 12px; color: var(--blue-bright);
+  word-break: break-all; line-height: 1.6; user-select: all;
+}
+.fb-copy-btn {
+  flex: none; padding: 8px 16px; font-size: 13px; min-height: 36px;
+  border: 1px solid var(--line-strong);
+}
+.fb-copy-btn.is-copied { color: rgb(34, 197, 94); border-color: rgba(34, 197, 94, .4); }
+.fb-token-hint { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); letter-spacing: .06em; }
+
+/* 凭证输入框（多行，方便粘贴长字符串） */
+.fb-token-input { resize: none; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; min-height: 64px; }
 
 .feedback-faq { margin-top: 40px; }
 .fb-notes { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }

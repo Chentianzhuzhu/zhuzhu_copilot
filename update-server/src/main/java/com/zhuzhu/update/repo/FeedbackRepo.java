@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 public interface FeedbackRepo extends JpaRepository<Feedback, Long> {
 
@@ -20,4 +21,7 @@ public interface FeedbackRepo extends JpaRepository<Feedback, Long> {
      */
     @Query("SELECT COUNT(f) FROM Feedback f WHERE f.ip = :ip AND f.createdAt >= :start")
     long countTodayByIp(@Param("ip") String ip, @Param("start") LocalDateTime start);
+
+    /** 凭查询凭证查找反馈（公开查询用，token 唯一） */
+    Optional<Feedback> findByQueryToken(String queryToken);
 }

@@ -41,6 +41,10 @@ public class Feedback {
     @Column(name = "replied_at")
     private LocalDateTime repliedAt;
 
+    /** 查询凭证：随机 64 位 hex 字符串，提交时生成，用户凭此查询回复（防止 ID 遍历） */
+    @Column(name = "query_token", length = 64, unique = true)
+    private String queryToken;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public String getIp() { return ip; }
@@ -57,4 +61,6 @@ public class Feedback {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getRepliedAt() { return repliedAt; }
     public void setRepliedAt(LocalDateTime repliedAt) { this.repliedAt = repliedAt; }
+    public String getQueryToken() { return queryToken; }
+    public void setQueryToken(String queryToken) { this.queryToken = queryToken; }
 }

@@ -57,8 +57,17 @@
             </svg>
           </span>
           <h2 class="fb-result-title">反馈已提交，感谢你的建议！</h2>
-          <p class="fb-result-desc">我们会认真阅读每一条反馈，通常在 48 小时内处理。请保存下方编号，用于后续查询回复。</p>
-          <p class="fb-result-id" id="feedbackSuccessId"></p>
+          <p class="fb-result-desc">我们会认真阅读每一条反馈，通常在 48 小时内处理。请复制下方查询凭证，用于后续查询官方回复。</p>
+          <div class="fb-token-box">
+            <code class="fb-token" id="feedbackToken"></code>
+            <button type="button" class="btn btn-ghost fb-copy-btn" id="copyTokenBtn" aria-label="复制查询凭证">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span id="copyTokenText">复制</span>
+            </button>
+          </div>
+          <p class="fb-token-hint">凭证仅显示一次，请妥善保存，丢失后无法找回</p>
           <div class="fb-actions" style="justify-content:center;margin-top:18px;">
             <button type="button" class="btn btn-ghost" id="feedbackAgain">再提一条</button>
           </div>
@@ -82,22 +91,22 @@
       <div class="feedback-card sr" id="queryCard">
         <div class="fb-query-head">
           <p class="section-tag">// 查询回复</p>
-          <h2 class="fb-query-title">凭反馈编号查看处理进度</h2>
-          <p class="fb-query-desc">提交反馈时会获得一个编号，输入编号即可查看官方回复与处理状态。</p>
+          <h2 class="fb-query-title">凭查询凭证查看处理进度</h2>
+          <p class="fb-query-desc">提交反馈时会获得一串查询凭证，粘贴凭证即可查看官方回复与处理状态。</p>
         </div>
 
         <form id="queryForm" class="feedback-form" novalidate>
           <div class="fb-field">
-            <label class="fb-label" for="queryId">反馈编号</label>
-            <div class="fb-query-row">
-              <input id="queryId" class="fb-input" type="text" inputmode="numeric"
-                     placeholder="例如：12 或 #12" autocomplete="off">
-              <button type="submit" class="btn btn-primary" id="querySubmit">
-                <span id="querySubmitText">查询</span>
-              </button>
-            </div>
+            <label class="fb-label" for="queryId">查询凭证</label>
+            <textarea id="queryId" class="fb-input fb-token-input" rows="2"
+                      placeholder="粘贴提交反馈时获得的 64 位凭证字符串" autocomplete="off"></textarea>
           </div>
           <p class="fb-error" id="queryError" hidden></p>
+          <div class="fb-actions">
+            <button type="submit" class="btn btn-primary" id="querySubmit">
+              <span id="querySubmitText">查询回复</span>
+            </button>
+          </div>
         </form>
 
         <!-- 查询结果 -->

@@ -41,5 +41,7 @@ CREATE TABLE IF NOT EXISTS feedback (
     reply        TEXT         COMMENT '管理员回复',
     created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '提交时间（服务器端）',
     replied_at   DATETIME     NULL COMMENT '回复时间',
-    KEY idx_feedback_ip_time (ip, created_at)
+    query_token  VARCHAR(64)  NULL COMMENT '查询凭证（随机64位hex，防止ID遍历）',
+    KEY idx_feedback_ip_time (ip, created_at),
+    UNIQUE KEY uk_feedback_query_token (query_token)
 ) ENGINE = InnoDB COMMENT ='用户反馈';

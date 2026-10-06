@@ -24,7 +24,7 @@ public class FeedbackController {
         this.feedbackService = feedbackService;
     }
 
-    /** 公开提交反馈：body {"content": "...", "contact": "..."} */
+    /** 公开提交反馈：body {"content": "...", "contact": "..."}。返回查询凭证 token（64位hex）。 */
     @PostMapping("/api/feedback")
     public ResponseEntity<Map<String, Object>> submit(@RequestBody Map<String, String> body,
                                                      HttpServletRequest request) {
@@ -34,6 +34,7 @@ public class FeedbackController {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("ok", true);
             out.put("id", f.getId());
+            out.put("token", f.getQueryToken());
             return ResponseEntity.ok(out);
         } catch (FeedbackService.RateLimitException e) {
             // 当日提交超限：429 Too Many Requests
@@ -47,12 +48,13 @@ public class FeedbackController {
     }
 
     /**
-     * 公开查询反馈及回复：用户凭提交时获得的反馈编号查看处理进度与官方回复。
+     * 公开查询反馈及回复：用户凭提交时获得的查询凭证（64位hex）查看处理进度与官方回复。
+     * 使用随机长字符串凭证而非数字 ID，防止遍历查看他人反馈。
      * 仅返回内容/状态/回复/时间，不暴露 IP 与联系方式（隐私保护）。
      */
-    @GetMapping("/api/feedback/{id}")
-    public ResponseEntity<Map<String, Object>> get(@PathVariable Long id) {
-        return feedbackService.findById(id).map(f -> {
+    @GetMapping("/api/feedback/{token}")
+    public ResponseEntity<Map<String, Object>> get(@PathVariable String token) {
+        return feedbackService.findByQueryToken(token).map(f -> {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("ok", true);
             out.put("id", f.getId());
@@ -62,10 +64,10 @@ public class FeedbackController {
             out.put("createdAt", f.getCreatedAt() == null ? "" : f.getCreatedAt().format(FMT));
             out.put("repliedAt", f.getRepliedAt() == null ? "" : f.getRepliedAt().format(FMT));
             return ResponseEntity.ok(out);
-        }).orElseGet(() -> ResponseEntity.status(404).body(Map.of("error", "反馈不存在，请检查编号是否正确")));
+        }).orElseGet(() -> ResponseEntity.status(404).body(Map.of("error", "查询凭证无效或反馈不存在，请检查凭证是否正确")));
     }
 
-    /** 管理端反馈列表（按时间倒序） */
+    /** 管理端反馈列表（按时间倒序），含查询凭证便于管理员告知用户 */
     @GetMapping("/admin/api/feedbacks")
     public Map<String, Object> list() {
         List<Map<String, Object>> items = new ArrayList<>();
@@ -77,6 +79,7 @@ public class FeedbackController {
             m.put("contact", f.getContact());
             m.put("status", f.getStatus());
             m.put("reply", f.getReply());
+            m.put("queryToken", f.getQueryToken());
             m.put("createdAt", f.getCreatedAt() == null ? "" : f.getCreatedAt().format(FMT));
             m.put("repliedAt", f.getRepliedAt() == null ? "" : f.getRepliedAt().format(FMT));
             items.add(m);
