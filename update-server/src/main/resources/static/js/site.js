@@ -115,8 +115,8 @@
     if (!glow || REDUCED || TOUCH) { return; }
     var tx = 0, ty = 0, cx = 0, cy = 0, raf = 0;
     function loop() {
-      cx += (tx - cx) * 0.12;
-      cy += (ty - cy) * 0.12;
+      cx += (tx - cx) * 0.08;
+      cy += (ty - cy) * 0.08;
       glow.style.transform = 'translate3d(' + cx.toFixed(1) + 'px,' + cy.toFixed(1) + 'px,0)';
       raf = requestAnimationFrame(loop);
     }
@@ -319,6 +319,24 @@
     if (!btn) { return; }
     btn.addEventListener('click', function () {
       window.scrollTo({ top: 0, behavior: REDUCED ? 'auto' : 'smooth' });
+    });
+  }
+
+  /* 按钮涟漪：从点击位置扩散圆形波纹，播完即移除 */
+  function initRipple() {
+    if (REDUCED || TOUCH) { return; }
+    $$('.btn').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        var rect = btn.getBoundingClientRect();
+        var d = Math.max(rect.width, rect.height) * 1.1;
+        var s = document.createElement('span');
+        s.className = 'ripple';
+        s.style.width = s.style.height = d + 'px';
+        s.style.left = (e.clientX - rect.left - d / 2) + 'px';
+        s.style.top = (e.clientY - rect.top - d / 2) + 'px';
+        btn.appendChild(s);
+        setTimeout(function () { if (s.parentNode) { s.parentNode.removeChild(s); } }, 650);
+      });
     });
   }
 
@@ -637,6 +655,7 @@
     safe('parallax', initParallax);
     safe('magnetic', initMagnetic);
     safe('backTop', initBackTop);
+    safe('ripple', initRipple);
     safe('lightbox', initLightbox);
     safe('videoModal', initVideoModal);
     safe('faq', initFaq);
