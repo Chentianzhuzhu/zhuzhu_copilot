@@ -43,7 +43,7 @@
 
 /* ---------- 基础 ---------- */
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; overflow-x: hidden; }
 
 /* hidden 属性必须始终生效：作者样式里的 display 会盖掉浏览器默认的 [hidden]{display:none}。
    灯箱与视频弹层这类铺满全屏的元素一旦被误显示，就会变成一层关不掉的黑色遮罩。 */
@@ -173,7 +173,6 @@ body.has-cursor .cursor-glow { opacity: 1; }
 .nav {
   position: fixed; top: 0; left: 0; right: 0; z-index: 50; height: var(--nav-h);
   border-bottom: 1px solid transparent; transition: background .3s, border-color .3s, backdrop-filter .3s;
-  overflow: hidden;
 }
 .nav.scrolled {
   background: rgba(0, 0, 0, .78);
@@ -194,7 +193,7 @@ body.has-cursor .cursor-glow { opacity: 1; }
 }
 .menu a:hover, .menu a.active { color: var(--white); }
 .menu a:hover::after, .menu a.active::after { transform: scaleX(1); transform-origin: left; }
-.nav-right { display: flex; align-items: center; gap: 14px; }
+.nav-right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .nav-cta {
   font-family: var(--font-mono); font-size: 13px; color: #fff; background: var(--blue);
   padding: 10px 22px;
@@ -207,7 +206,7 @@ body.has-cursor .cursor-glow { opacity: 1; }
   align-items: center; justify-content: center; flex-direction: column; gap: 6px;
   flex: none;
 }
-.nav-burger span { display: block; width: 20px; height: 2px; background: var(--white); transition: transform .3s var(--ease); border-radius: 1px; }
+.nav-burger span { display: block; width: 20px; height: 2px; background: var(--white); transition: transform .3s var(--ease); border-radius: 1px; box-shadow: 0 0 6px rgba(245, 245, 245, .4); }
 .nav-burger[aria-expanded="true"] span:nth-child(1) { transform: translateY(4px) rotate(45deg); }
 .nav-burger[aria-expanded="true"] span:nth-child(2) { transform: translateY(-4px) rotate(-45deg); }
 .nav-drawer {
