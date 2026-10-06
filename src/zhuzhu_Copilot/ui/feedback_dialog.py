@@ -179,4 +179,4 @@ class FeedbackDialog(QDialog):
         else:
             QMessageBox.warning(
                 self, _ui("用户反馈"),
-                _uif("提交失败：{a0}", a0=result.get("error") or "未知错误"))
+                _uif("提交失败：{a0}", a0=result.get("error") or _ui("未知错误")))

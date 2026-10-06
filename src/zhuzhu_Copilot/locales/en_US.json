@@ -994,6 +994,22 @@
     "[后台派发失败] 提交后台任务时出错: {err}\n请检查参数是否正确，或改为前台同步执行。": "[Background dispatch failed] Error submitting background task: {err}\nPlease check parameters, or run in foreground instead.",
     "[已后台派发] 子Agent已转入后台并发执行（任务ID: {tid}），不阻塞当前对话。各子Agent输出流式回传，完成后自动汇总。\n可用 background_task_status(task_id=\"{tid}\") 查询进度。": "[Background dispatch] Sub-agents moved to background concurrent execution (Task ID: {tid}), does not block current conversation. Each sub-agent output streams back, results are auto-aggregated on completion.\nUse background_task_status(task_id=\"{tid}\") to check progress.",
     "（当前工作目录不是 Git 仓库）": "(Current working directory is not a Git repository)",
-    "（读取失败：{err}）": "(Read failed: {err})"
+    "（读取失败：{err}）": "(Read failed: {err})",
+    "用户反馈": "Feedback",
+    "提交反馈": "Submit Feedback",
+    "告诉我们你的想法和建议，每一条反馈都会被认真阅读。": "Tell us your thoughts and suggestions — every piece of feedback is read carefully.",
+    "请描述你遇到的问题或建议（5-2000字）...": "Describe the issue or your suggestion (5-2000 characters)...",
+    "邮箱 / QQ / 微信（选填，方便我们回复你）": "Email / QQ / WeChat (optional, so we can reply to you)",
+    "提交中...": "Submitting...",
+    "反馈已提交！感谢你的建议。": "Feedback submitted! Thank you for your suggestion.",
+    "反馈已提交！感谢你的建议。\n\n请复制下方查询凭证，用于在官网查询官方回复：\n": "Feedback submitted! Thank you for your suggestion.\n\nCopy the query token below to check for official replies on the website:\n",
+    "复制凭证": "Copy Token",
+    "今日反馈次数已达上限（3次/天）\n明天再来吧～": "Daily feedback limit reached (3 per day)\nPlease try again tomorrow～",
+    "网络连接失败，请检查网络后重试": "Network connection failed. Check your connection and retry",
+    "提交失败：{a0}": "Submit failed: {a0}",
+    "反馈内容需 {a0}-{a1} 字（当前 {a2} 字）": "Feedback must be {a0}-{a1} characters (currently {a2})",
+    "服务器错误（HTTP {a0}）": "Server error (HTTP {a0})",
+    "服务器返回异常": "Server returned an invalid response",
+    "未知错误": "Unknown error"
   }
 }

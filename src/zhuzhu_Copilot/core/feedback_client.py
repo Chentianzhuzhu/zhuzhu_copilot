@@ -7,6 +7,7 @@
 """
 from zhuzhu_Copilot import app_identity
 from zhuzhu_Copilot.update_check import DEFAULT_SERVER
+from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 import json
 import os
 import threading
@@ -44,7 +45,7 @@ class FeedbackClient(QObject):
         if n < MIN_LEN or n > MAX_LEN:
             self.feedback_result.emit({
                 "status": "error", "info": None,
-                "error": f"反馈内容需 {MIN_LEN}-{MAX_LEN} 字（当前 {n} 字）",
+                "error": _uif("反馈内容需 {a0}-{a1} 字（当前 {a2} 字）", a0=MIN_LEN, a1=MAX_LEN, a2=n),
             })
             return
         threading.Thread(
@@ -91,7 +92,7 @@ class FeedbackClient(QObject):
                 else:
                     self.feedback_result.emit({
                         "status": "error", "info": None,
-                        "error": data.get("error") or f"服务器错误（HTTP {e.code}）",
+                        "error": data.get("error") or _uif("服务器错误（HTTP {a0}）", a0=e.code),
                     })
                 return
             if isinstance(data, dict) and data.get("ok"):
@@ -100,7 +101,7 @@ class FeedbackClient(QObject):
                 self.feedback_result.emit({
                     "status": "error", "info": None,
                     "error": (data.get("error") if isinstance(data, dict) else None)
-                             or "服务器返回异常",
+                             or _ui("服务器返回异常"),
                 })
         except Exception as e:
             # 断网 / DNS / 超时等：统一按网络错误反馈
