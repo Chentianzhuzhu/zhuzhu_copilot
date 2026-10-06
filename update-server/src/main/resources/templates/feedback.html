@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/head :: head}"></head>
+<body th:attr="data-page=${pagePath}">
+
+<a class="skip-link" href="#main">跳到主要内容</a>
+<canvas id="starfield" aria-hidden="true"></canvas>
+<div class="noise" aria-hidden="true"></div>
+<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+
+<header th:replace="~{fragments/nav :: nav}"></header>
+
+<main id="main">
+  <div th:replace="~{fragments/blocks :: pageHero()}"></div>
+
+  <section class="section feedback-section" id="feedback">
+    <div class="wrap">
+      <div class="feedback-card sr">
+
+        <!-- 提交表单 -->
+        <form id="feedbackForm" class="feedback-form" novalidate>
+          <div class="fb-field">
+            <label class="fb-label" for="feedbackContent">反馈内容 <span class="fb-req" aria-hidden="true">*</span></label>
+            <textarea id="feedbackContent" class="fb-textarea" rows="7"
+                      maxlength="2000" minlength="5" required
+                      placeholder="遇到了什么问题？有什么想改进的地方？越具体越好（例如：在哪个界面、做了什么操作、出现了什么现象）"></textarea>
+            <div class="fb-meta">
+              <span class="fb-count"><span id="fbCount">0</span> / 2000 字</span>
+              <span class="fb-hint" id="fbHint">至少 5 个字</span>
+            </div>
+          </div>
+
+          <div class="fb-field">
+            <label class="fb-label" for="feedbackContact">联系方式 <span class="fb-opt">选填</span></label>
+            <input id="feedbackContact" class="fb-input" type="text" maxlength="120"
+                   placeholder="邮箱 / QQ / 微信（选填，方便我们回复你）">
+          </div>
+
+          <p class="fb-error" id="feedbackError" hidden></p>
+
+          <div class="fb-actions">
+            <button type="submit" class="btn btn-primary" id="feedbackSubmit">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>
+              </svg>
+              <span id="feedbackSubmitText">提交反馈</span>
+            </button>
+          </div>
+        </form>
+
+        <!-- 提交成功 -->
+        <div class="feedback-result feedback-success" id="feedbackSuccess" hidden>
+          <span class="fb-result-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5"/>
+            </svg>
+          </span>
+          <h2 class="fb-result-title">反馈已提交，感谢你的建议！</h2>
+          <p class="fb-result-desc">我们会认真阅读每一条反馈，通常在 48 小时内处理。</p>
+          <p class="fb-result-id" id="feedbackSuccessId"></p>
+        </div>
+
+        <!-- 限流提示 -->
+        <div class="feedback-result feedback-limit" id="feedbackLimit" hidden>
+          <span class="fb-result-icon fb-warn" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 9v4"/><path d="M12 17h.01"/>
+              <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>
+            </svg>
+          </span>
+          <h2 class="fb-result-title" id="feedbackLimitTitle">提交过于频繁</h2>
+          <p class="fb-result-desc" id="feedbackLimitDesc">今天的反馈次数已达上限，明天再来吧。</p>
+        </div>
+
+      </div>
+
+      <div class="feedback-faq sr">
+        <p class="section-tag">// 提交须知</p>
+        <ul class="fb-notes">
+          <li>每条反馈至少 5 个字，最多 2000 字，描述越具体越有助于我们定位问题。</li>
+          <li>每天最多提交 3 条反馈；填写联系方式后，我们可能会就细节与你沟通。</li>
+          <li>提交即表示同意我们在产品改进范围内使用你反馈的内容，不会公开你的联系方式。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer th:replace="~{fragments/blocks :: footer}"></footer>
+<div th:replace="~{fragments/blocks :: videoModal}"></div>
+
+<button class="back-top" id="backTop" type="button" aria-label="返回顶部" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</button>
+
+<script th:src="'/js/site.js?v=' + ${assetJs}" defer></script>
+<script th:src="'/js/feedback.js?v=' + ${assetJs}" defer></script>
+</body>
+</html>

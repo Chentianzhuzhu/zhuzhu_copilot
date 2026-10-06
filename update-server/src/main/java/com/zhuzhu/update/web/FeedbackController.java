@@ -1,0 +1,97 @@
+package com.zhuzhu.update.web;
+
+import com.zhuzhu.update.entity.Feedback;
+import com.zhuzhu.update.service.FeedbackService;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/** 用户反馈：公开提交接口 + 管理端查看/回复/状态（/admin/api/** 自动走 AdminAuthInterceptor） */
+@RestController
+public class FeedbackController {
+
+    private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    private final FeedbackService feedbackService;
+
+    public FeedbackController(FeedbackService feedbackService) {
+        this.feedbackService = feedbackService;
+    }
+
+    /** 公开提交反馈：body {"content": "...", "contact": "..."} */
+    @PostMapping("/api/feedback")
+    public ResponseEntity<Map<String, Object>> submit(@RequestBody Map<String, String> body,
+                                                     HttpServletRequest request) {
+        String ip = clientIp(request);
+        try {
+            Feedback f = feedbackService.submit(ip, body.get("content"), body.get("contact"));
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("ok", true);
+            out.put("id", f.getId());
+            return ResponseEntity.ok(out);
+        } catch (FeedbackService.RateLimitException e) {
+            // 当日提交超限：429 Too Many Requests
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("error", e.getMessage());
+            out.put("limit", FeedbackService.DAILY_LIMIT);
+            return ResponseEntity.status(429).body(out);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** 管理端反馈列表（按时间倒序） */
+    @GetMapping("/admin/api/feedbacks")
+    public Map<String, Object> list() {
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Feedback f : feedbackService.list()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", f.getId());
+            m.put("ip", f.getIp());
+            m.put("content", f.getContent());
+            m.put("contact", f.getContact());
+            m.put("status", f.getStatus());
+            m.put("reply", f.getReply());
+            m.put("createdAt", f.getCreatedAt() == null ? "" : f.getCreatedAt().format(FMT));
+            m.put("repliedAt", f.getRepliedAt() == null ? "" : f.getRepliedAt().format(FMT));
+            items.add(m);
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("items", items);
+        return out;
+    }
+
+    /** 管理端回复反馈：body {"reply": "..."} */
+    @PostMapping("/admin/api/feedback/{id}/reply")
+    public Map<String, Object> reply(@PathVariable Long id, @RequestBody Map<String, String> body) {
+        try {
+            feedbackService.reply(id, body.get("reply"));
+        } catch (IllegalArgumentException e) {
+            return Map.of("error", e.getMessage());
+        }
+        return Map.of("ok", true);
+    }
+
+    /** 管理端标记反馈状态：body {"status": "resolved"} */
+    @PostMapping("/admin/api/feedback/{id}/status")
+    public Map<String, Object> status(@PathVariable Long id, @RequestBody Map<String, String> body) {
+        try {
+            feedbackService.setStatus(id, body.get("status"));
+        } catch (IllegalArgumentException e) {
+            return Map.of("error", e.getMessage());
+        }
+        return Map.of("ok", true);
+    }
+
+    /** 客户端 IP：X-Real-IP 头优先（nginx 反代），否则取 remoteAddr */
+    private String clientIp(HttpServletRequest request) {
+        String real = request.getHeader("X-Real-IP");
+        return real != null && !real.isBlank() ? real : request.getRemoteAddr();
+    }
+}

@@ -7,7 +7,7 @@
 <head th:fragment="head">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" th:attr="content=${site.style.themeColor} ?: '#000000'">
   <meta name="color-scheme" content="dark">
 
   <title th:text="${pageTitle}">WinAppMigrator</title>
@@ -55,6 +55,27 @@
   -->
   <link rel="preload" as="style" th:href="'/css/site.css?v=' + ${assetCss}">
   <link rel="stylesheet" th:href="'/css/site.css?v=' + ${assetCss}">
+
+  <!--
+    后台自定义视觉样式：主题色 / 背景色 / 文字色 / 圆角等 CSS 变量。
+    取值来自库内内容 style 块（defaults 已兜底），未配置时使用下面的默认值。
+  -->
+  <style th:inline="css">
+    :root {
+      --theme-color: [[${site.style.themeColor} ?: '#4f8cff']];
+      --theme-color-dark: [[${site.style.themeColorDark} ?: '#3a6fd4']];
+      --accent-color: [[${site.style.accentColor} ?: '#00d4aa']];
+      --bg-color: [[${site.style.bgColor} ?: '#0a0a0f']];
+      --card-bg: [[${site.style.cardBgColor} ?: '#141420']];
+      --text-color: [[${site.style.textColor} ?: '#e8e8f0']];
+      --text-muted: [[${site.style.textMuted} ?: '#8888a0']];
+      --corner-radius: [[${site.style.cornerRadius} ?: '12']]px;
+    }
+  </style>
+  <!-- 后台注入的自定义 CSS 代码（原样输出） -->
+  <style th:if="${site.style.customCss != null and !site.style.customCss.isEmpty()}" th:utext="${site.style.customCss}"></style>
+  <!-- 自定义 favicon：后台配置后覆盖默认图标 -->
+  <link rel="icon" th:if="${!#strings.isEmpty(site.style.faviconUrl)}" th:attr="href=${site.style.faviconUrl}">
 
   <!--
     标记 JS 可用：滚动揭示动画只在 JS 可用时才隐藏初始内容。

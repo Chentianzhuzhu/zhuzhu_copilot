@@ -20,6 +20,18 @@
       <a th:each="l : ${site.footer.links}" th:href="${l.href}" th:text="${l.label}">功能特性</a>
     </nav>
 
+    <!-- 社交链接（后台「视觉样式」里配置，留空则整块隐藏） -->
+    <nav class="footer-social" aria-label="社交媒体"
+         th:if="${site.style != null and site.style.socialLinks != null and !site.style.socialLinks.isEmpty()}">
+      <a th:each="s : ${site.style.socialLinks}" th:href="${s.href}" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+        <span th:text="${s.label}">社交链接</span>
+      </a>
+    </nav>
+
     <div class="footer-meta">
       <span>© <span id="year">2026</span> <span th:text="${site.title}">WinAppMigrator</span></span>
       <span th:if="${!#strings.isEmpty(site.footer.icp)}" th:text="${site.footer.icp}">备案号</span>

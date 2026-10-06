@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhuzhu.update.entity.AppVersion;
 import com.zhuzhu.update.service.AssetVersionService;
 import com.zhuzhu.update.service.ContentService;
+import com.zhuzhu.update.service.DownloadTokenService;
 import com.zhuzhu.update.service.SiteTimestampService;
 import com.zhuzhu.update.service.StatsService;
 import com.zhuzhu.update.service.UpdateService;
@@ -53,6 +54,7 @@ public class SitePageController {
             new SitePage("/gallery", "界面实拍", "各功能界面的真实截图与说明"),
             new SitePage("/download", "下载安装", "最新安装包下载与历史版本更新日志"),
             new SitePage("/faq", "常见问题", "安装、使用与安全相关的问答"),
+            new SitePage("/feedback", "用户反馈", "提交反馈与建议，与开发团队直接沟通"),
             new SitePage("/about", "关于我们", "团队介绍与联系方式"));
 
     private final ContentService contentService;
@@ -61,16 +63,19 @@ public class SitePageController {
     private final AssetVersionService assets;
     private final SiteTimestampService timestamps;
     private final ObjectMapper mapper;
+    private final DownloadTokenService downloadTokens;
 
     public SitePageController(ContentService contentService, StatsService statsService,
                               UpdateService updateService, AssetVersionService assets,
-                              SiteTimestampService timestamps, ObjectMapper mapper) {
+                              SiteTimestampService timestamps, ObjectMapper mapper,
+                              DownloadTokenService downloadTokens) {
         this.contentService = contentService;
         this.statsService = statsService;
         this.updateService = updateService;
         this.assets = assets;
         this.timestamps = timestamps;
         this.mapper = mapper;
+        this.downloadTokens = downloadTokens;
     }
 
     /* ---------------- 页面 ---------------- */
@@ -117,6 +122,19 @@ public class SitePageController {
                 "团队介绍与联系方式");
     }
 
+    @GetMapping("/feedback")
+    public String feedback(HttpServletRequest req, Model model) {
+        Map<String, Object> site = contentService.get();
+        String view = render(req, model, "feedback", "/feedback", "用户反馈", "feedback",
+                joinTitle("用户反馈", str(site.get("title"), "")),
+                "告诉我们你的想法，每一条反馈都会被认真阅读");
+        // 反馈页标题文案固定，不依赖后台 sections 配置（默认内容里没有该区块）
+        model.addAttribute("pageTag", "// 用户反馈");
+        model.addAttribute("pageSection", "告诉我们你的想法");
+        model.addAttribute("pageDesc", "每一条反馈都会被认真阅读，通常在 48 小时内回复");
+        return view;
+    }
+
     /* ---------------- SEO 文件 ---------------- */
 
     /**
@@ -154,6 +172,7 @@ public class SitePageController {
                 new SeoSupport.Entry("/gallery", lastmod, "weekly", 0.8),
                 new SeoSupport.Entry("/download", lastmod, "daily", 0.9),
                 new SeoSupport.Entry("/faq", lastmod, "monthly", 0.6),
+                new SeoSupport.Entry("/feedback", lastmod, "weekly", 0.6),
                 new SeoSupport.Entry("/about", lastmod, "monthly", 0.5));
         return SeoSupport.sitemap(base, entries);
     }
@@ -228,7 +247,7 @@ public class SitePageController {
         model.addAttribute("iconPaths", iconPaths());
         model.addAttribute("navItems", navItems(path));
         model.addAttribute("features", normalizeIcons(site.get("features")));
-        model.addAttribute("latest", latest == null ? null : SiteController.versionView(latest));
+        model.addAttribute("latest", latest == null ? null : SiteController.versionView(latest, downloadTokens));
         model.addAttribute("versions", versionList());
         // 首页只展示前若干条，避免长页；完整内容在各自子页面
         model.addAttribute("galleryPreview", preview(site.get("gallery"), 6));
@@ -292,7 +311,8 @@ public class SitePageController {
             m.put("force", v.isForceUpdate());
             m.put("date", v.getCreatedAt() == null ? "" : v.getCreatedAt().toLocalDate().toString());
             m.put("notes", noteLines(v.getNotes()));
-            m.put("url", "/api/update/download/" + v.getId());
+            // 下载地址用 1 小时有效的签名令牌，不暴露明文版本 id
+            m.put("url", "/api/download/" + downloadTokens.generateToken(v.getId()));
             out.add(m);
         }
         return out;
@@ -335,6 +355,7 @@ public class SitePageController {
         items.add(nav("界面实拍", "/gallery", "", "", activePath));
         items.add(nav("下载安装", "/download", "", "", activePath));
         items.add(nav("常见问题", "/faq", "", "", activePath));
+        items.add(nav("用户反馈", "/feedback", "", "", activePath));
         items.add(nav("关于我们", "/about", "", "", activePath));
         return items;
     }

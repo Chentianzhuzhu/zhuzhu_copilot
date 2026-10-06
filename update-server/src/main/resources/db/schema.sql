@@ -31,3 +31,15 @@ CREATE TABLE IF NOT EXISTS site_content (
     content_json TEXT        NOT NULL COMMENT '官网内容 JSON',
     updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE = InnoDB COMMENT ='官网内容（后台可编辑）';
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ip           VARCHAR(64)  COMMENT '提交者 IP（限流依据）',
+    content      TEXT         NOT NULL COMMENT '反馈内容（≤2000 字）',
+    contact      VARCHAR(255) COMMENT '联系方式（邮箱/QQ/微信等，可选）',
+    status       VARCHAR(16)  NOT NULL DEFAULT 'pending' COMMENT '状态 pending/replied/resolved',
+    reply        TEXT         COMMENT '管理员回复',
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '提交时间（服务器端）',
+    replied_at   DATETIME     NULL COMMENT '回复时间',
+    KEY idx_feedback_ip_time (ip, created_at)
+) ENGINE = InnoDB COMMENT ='用户反馈';

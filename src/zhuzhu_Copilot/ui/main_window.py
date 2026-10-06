@@ -352,6 +352,9 @@ _ICON_LINK = ('<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www
 _ICON_SETTINGS = ('<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'
                   '<circle cx="12" cy="12" r="3" stroke="{C}" stroke-width="2" fill="none"/>'
                   '<path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" stroke="{C}" stroke-width="2" stroke-linecap="round"/></svg>')
+_ICON_FEEDBACK = ('<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'
+                  '<path d="M21 12a8 8 0 0 1-8 8H4l2-3.2A8 8 0 1 1 21 12z" stroke="{C}" stroke-width="2" fill="none" stroke-linejoin="round"/>'
+                  '<path d="M8.5 11h7M8.5 14h4" stroke="{C}" stroke-width="2" stroke-linecap="round"/></svg>')
 
 # ---------- 统一控件样式（颜色取自 PALETTE，无硬编码；随主题就地重建） ----------
 def _regen_qss():
@@ -1390,9 +1393,12 @@ class CopilotPanel(QFrame):
         about_btn.clicked.connect(self._show_about)
         website_btn = _icon_button(_ui("访问官网"), _ICON_LINK, kind="tool", height=32)
         website_btn.clicked.connect(self._open_website)
+        feedback_btn = _icon_button(_ui("提交反馈"), _ICON_FEEDBACK, kind="tool", height=32)
+        feedback_btn.clicked.connect(self._open_feedback_dialog)
         ab = QHBoxLayout()
         ab.addWidget(about_btn)
         ab.addWidget(website_btn)
+        ab.addWidget(feedback_btn)
         ab.addStretch(1)
         cl.addLayout(ab)
 
@@ -2194,6 +2200,12 @@ class CopilotPanel(QFrame):
     def _open_website(self, *_):
         """打开默认浏览器访问官网关于我们页"""
         webbrowser.open("https://chentian.dpdns.org/about")
+
+    def _open_feedback_dialog(self, *_):
+        """打开用户反馈对话框（模态，parent=主窗口以保证居中与模态归属）"""
+        from zhuzhu_Copilot.ui.feedback_dialog import FeedbackDialog
+        dlg = FeedbackDialog(self)
+        dlg.exec()
 
     # ---------- 自动更新检查（30s 轮询更新服务器） ----------
     def _init_update_check(self):

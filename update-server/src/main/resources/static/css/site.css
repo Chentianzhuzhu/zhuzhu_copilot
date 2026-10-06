@@ -6,16 +6,27 @@
    ============================================================ */
 
 :root {
-  /* 四色体系 */
-  --black: #000000;
-  --black-soft: #141414;
-  --white: #F5F5F5;
-  --blue: #1E40AF;
-  --blue-bright: #5B7BE8;          /* 深蓝提亮（同色系） */
-  --blue-deep: #0F1D5E;            /* 深蓝压暗（同色系） */
+  /* ---- 语义变量：运行时由 head.html 用后台 content.style 覆盖；
+         这里的值只是离线渲染 / 接口不可用时的兜底，全部取自四色体系白名单 ---- */
+  --theme-color: #1E40AF;
+  --theme-color-dark: #0F1D5E;
+  --accent-color: #5B7BE8;
+  --bg-color: #000000;
+  --card-bg: #141414;
+  --text-color: #F5F5F5;
+  --text-muted: rgba(245, 245, 245, .62);
+  --corner-radius: 12px;
+
+  /* ---- 旧四色变量映射到语义变量：全站组件改主题后自动跟随后台配色 ---- */
+  --black: var(--bg-color);
+  --black-soft: var(--card-bg);
+  --white: var(--text-color);
+  --blue: var(--theme-color);
+  --blue-bright: var(--accent-color);
+  --blue-deep: var(--theme-color-dark);
   --blue-glow: rgba(30, 64, 175, .55);
 
-  --ink-dim: rgba(245, 245, 245, .62);
+  --ink-dim: var(--text-muted);
   --ink-faint: rgba(245, 245, 245, .34);
   --line: rgba(245, 245, 245, .09);
   --line-strong: rgba(245, 245, 245, .18);
@@ -27,7 +38,7 @@
 
   --ease: cubic-bezier(.22, .61, .36, 1);
   --nav-h: 72px;
-  --radius: 12px;
+  --radius: var(--corner-radius);
 }
 
 /* ---------- 基础 ---------- */
@@ -717,3 +728,114 @@ body.has-cursor .cursor-glow { opacity: 1; }
   .js .sr { opacity: 1 !important; transform: none !important; }
   .cursor-glow { display: none; }
 }
+
+/* ============================================================
+   用户反馈页
+   ============================================================ */
+.feedback-section { padding-top: clamp(40px, 6vw, 80px); }
+.feedback-card {
+  position: relative; padding: clamp(26px, 4vw, 48px);
+  border: 1px solid var(--line-strong);
+  background: linear-gradient(160deg, var(--card-bg), #0a0a0a);
+  transition: border-color .35s;
+}
+.feedback-card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: linear-gradient(var(--blue-bright), var(--blue-deep));
+}
+
+.feedback-form { display: flex; flex-direction: column; gap: 22px; }
+.fb-field { display: flex; flex-direction: column; gap: 10px; }
+.fb-label {
+  font-family: var(--font-display); font-weight: 700; font-size: 15px;
+  display: flex; align-items: center; gap: 10px;
+}
+.fb-req { color: var(--blue-bright); }
+.fb-opt {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em;
+  color: var(--ink-faint); border: 1px solid var(--line-strong); padding: 2px 8px;
+}
+.fb-textarea, .fb-input {
+  width: 100%; background: rgba(245, 245, 245, .03);
+  border: 1px solid var(--line-strong); color: var(--white);
+  padding: 14px 16px; font: inherit; font-size: 15px; line-height: 1.7;
+  transition: border-color .25s, background .25s, box-shadow .25s;
+  resize: vertical;
+}
+.fb-textarea { min-height: 140px; font-family: var(--font-body); }
+.fb-textarea:focus, .fb-input:focus {
+  outline: none; border-color: var(--blue-bright);
+  background: rgba(245, 245, 245, .05);
+  box-shadow: 0 0 0 3px rgba(91, 123, 232, .15);
+}
+.fb-textarea::placeholder, .fb-input::placeholder { color: var(--ink-faint); }
+
+.fb-meta { display: flex; justify-content: space-between; gap: 16px; font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; }
+.fb-count { color: var(--ink-faint); }
+.fb-hint { color: var(--ink-faint); transition: color .25s; }
+.fb-hint.is-warn { color: rgb(245, 158, 11); }
+.fb-hint.is-ok { color: var(--blue-bright); }
+
+.fb-error {
+  border: 1px solid rgba(245, 158, 11, .45); background: rgba(245, 158, 11, .1);
+  color: rgb(245, 158, 11); padding: 12px 16px; font-size: 14px; line-height: 1.6;
+}
+
+.fb-actions { display: flex; }
+.btn.is-busy { opacity: .6; pointer-events: none; }
+
+/* 提交结果卡片（成功 / 限流） */
+.feedback-result {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 12px; padding: clamp(30px, 5vw, 52px) 20px;
+  border: 1px solid var(--line-strong);
+}
+.fb-result-icon {
+  width: 60px; height: 60px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; margin-bottom: 6px;
+}
+.fb-result-icon svg { width: 30px; height: 30px; }
+.feedback-success { border-color: rgba(34, 197, 94, .5); background: rgba(34, 197, 94, .08); }
+.feedback-success .fb-result-icon { color: rgb(34, 197, 94); border: 1px solid rgba(34, 197, 94, .5); background: rgba(34, 197, 94, .12); }
+.feedback-limit { border-color: rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .08); }
+.feedback-limit .fb-result-icon { color: rgb(245, 158, 11); border: 1px solid rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .12); }
+.fb-result-title { font-family: var(--font-display); font-weight: 800; font-size: clamp(1.4rem, 3vw, 1.9rem); }
+.fb-result-desc { color: var(--ink-dim); line-height: 1.8; max-width: 460px; }
+.fb-result-id { font-family: var(--font-mono); font-size: 13px; color: var(--ink-faint); letter-spacing: .1em; }
+
+.feedback-faq { margin-top: 40px; }
+.fb-notes { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+.fb-notes li { position: relative; padding-left: 20px; color: var(--ink-dim); font-size: 14px; line-height: 1.8; }
+.fb-notes li::before { content: "▸"; position: absolute; left: 0; color: var(--blue-bright); }
+
+/* ---------- 页脚社交链接 ---------- */
+.footer-social { display: flex; align-items: center; gap: 14px; width: 100%; }
+.footer-social a {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 13px; color: var(--ink-dim);
+  transition: color .2s, transform .25s var(--ease);
+}
+.footer-social a:hover { color: var(--white); transform: translateY(-2px); }
+.footer-social svg { width: 16px; height: 16px; }
+
+/* ---------- Hero 动态渐变光斑（缓慢漂移，GPU 友好的 transform/opacity 动画） ---------- */
+.hero::before {
+  content: ""; position: absolute; left: 50%; top: -10%; z-index: 0;
+  width: 120vmax; height: 120vmax; margin-left: -60vmax; pointer-events: none;
+  background:
+    radial-gradient(closest-side, rgba(91, 123, 232, .10), transparent 70%),
+    radial-gradient(closest-side, rgba(0, 212, 170, .06), transparent 60%);
+  background-size: 60% 60%, 70% 70%;
+  background-position: 30% 30%, 70% 60%;
+  background-repeat: no-repeat;
+  animation: gradientShift 22s ease-in-out infinite alternate;
+}
+@keyframes gradientShift {
+  0%   { background-position: 28% 32%, 72% 58%; transform: translate3d(-2%, -1%, 0) scale(1); }
+  100% { background-position: 68% 60%, 26% 30%; transform: translate3d(2%, 2%, 0) scale(1.08); }
+}
+.hero-inner, .hero-deco, .marquee { position: relative; z-index: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .hero::before { animation: none; }
+}
+

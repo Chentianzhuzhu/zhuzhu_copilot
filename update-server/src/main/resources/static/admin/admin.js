@@ -21,7 +21,10 @@
     site: "/admin/api/site",
     siteMedia: "/admin/api/site/media",
     version: "/admin/api/version",
-    stats: "/admin/api/stats"
+    stats: "/admin/api/stats",
+    feedbacks: "/admin/api/feedbacks",
+    feedbackReply: "/admin/api/feedback/",
+    feedbackStatus: "/admin/api/feedback/"
   };
 
   var TOKEN_KEY = "wm_admin_token";
@@ -102,6 +105,11 @@
       f("tag", "标签 / 序号"),
       f("title", "标题"),
       f("sub", "副标题")
+    ],
+    socialLinks: [
+      f("label", "名称"),
+      f("href", "链接"),
+      f("icon", "图标名（可空）")
     ]
   };
 
@@ -113,7 +121,7 @@
   };
 
   /* 列表编辑器渲染顺序（sections 固定行、不可增删） */
-  var EDITOR_ORDER = ["sections", "features", "gallery", "videos", "advantages", "faq", "stats", "requirements", "footerLinks", "aboutContacts", "aboutMembers"];
+  var EDITOR_ORDER = ["sections", "features", "gallery", "videos", "advantages", "faq", "stats", "requirements", "footerLinks", "aboutContacts", "aboutMembers", "socialLinks"];
 
   /* ============================================================
      fetch 统一封装
@@ -246,6 +254,72 @@
     $("seoKeywords").value = seo.keywords || "";
     $("seoAlternateNames").value = seo.alternateNames || "";
     setMediaValue("seoOgImage", seo.ogImage || "");
+
+    fillStyleFields();
+  }
+
+  /* ============================================================
+     视觉样式（content.style）：颜色 / 图片 / 字体 / 自定义 CSS
+     ============================================================ */
+
+  /** 颜色字段：取色器与 hex 文本框双向联动 */
+  function isHexColor(v) { return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(v || "").trim()); }
+
+  function fillStyleFields() {
+    var s = (state.content && state.content.style) || {};
+    $$("[data-style]").forEach(function (input) {
+      var key = input.getAttribute("data-style");
+      input.value = s[key] == null ? "" : String(s[key]);
+    });
+    // 取色器与文本框同步
+    $$("[data-style-color]").forEach(function (picker) {
+      var key = picker.getAttribute("data-style-color");
+      var text = document.querySelector('[data-style="' + key + '"]');
+      if (text) { syncPicker(picker, text.value); }
+    });
+    // 媒体字段（logo / favicon / hero 背景图）
+    setMediaValue("styleLogo", s.logoUrl || "");
+    setMediaValue("styleFavicon", s.faviconUrl || "");
+    setMediaValue("styleHeroBg", s.heroBgImage || "");
+  }
+
+  function syncPicker(picker, hex) {
+    // <input type=color> 只接受 #rrggbb；三位简写先补全
+    var v = String(hex || "").trim();
+    if (isHexColor(v)) {
+      picker.value = v.length === 4
+        ? "#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3]
+        : v;
+    }
+  }
+
+  /** 绑定取色器 ↔ hex 文本框双向联动 */
+  function bindStyleFields() {
+    $$("[data-style-color]").forEach(function (picker) {
+      var key = picker.getAttribute("data-style-color");
+      var text = document.querySelector('[data-style="' + key + '"]');
+      if (!text) { return; }
+      picker.addEventListener("input", function () { text.value = picker.value; });
+      text.addEventListener("input", function () {
+        if (isHexColor(text.value)) { syncPicker(picker, text.value); }
+      });
+    });
+  }
+
+  /** 收集视觉样式表单；媒体字段单独取值后并入 */
+  function collectStyle() {
+    var s = (state.content && state.content.style) || {};
+    var out = {};
+    // 保留未在表单中暴露的字段（如后端可能后续新增的键）
+    Object.keys(s).forEach(function (k) { out[k] = s[k]; });
+    $$("[data-style]").forEach(function (input) {
+      out[input.getAttribute("data-style")] = input.value.trim();
+    });
+    out.logoUrl = mediaValue("styleLogo");
+    out.faviconUrl = mediaValue("styleFavicon");
+    out.heroBgImage = mediaValue("styleHeroBg");
+    out.socialLinks = collectRows("socialLinks", ["label", "href", "icon"]);
+    return out;
   }
 
   /* ============================================================
@@ -279,6 +353,7 @@
     if (kind === "footerLinks") { return (c.footer && c.footer.links) || []; }
     if (kind === "aboutContacts") { return (c.about && c.about.contacts) || []; }
     if (kind === "aboutMembers") { return (c.about && c.about.members) || []; }
+    if (kind === "socialLinks") { return (c.style && c.style.socialLinks) || []; }
     return Array.isArray(c[kind]) ? c[kind] : [];
   }
 
@@ -603,7 +678,8 @@
         sectionSub: prevAbout.sectionSub || "团队介绍与联系方式",
         contacts: collectRows("aboutContacts", ["label", "href"]),
         members: collectRows("aboutMembers", ["role", "name", "avatar"])
-      }
+      },
+      style: collectStyle()
     };
   }
 
@@ -1053,6 +1129,151 @@
   }
 
   /* ============================================================
+     用户反馈
+     ============================================================ */
+
+  var FEEDBACK_STATUS_LABEL = { pending: "待处理", replied: "已回复", resolved: "已解决" };
+
+  function loadFeedbacks() {
+    return apiFetch(API.feedbacks)
+      .then(function (data) {
+        renderFeedbacks((data && data.items) || []);
+      })
+      .catch(function (err) { toast("加载反馈列表失败：" + err.message, "err"); });
+  }
+
+  function renderFeedbacks(items) {
+    $("feedbackCount").textContent = String(items.length);
+    var tbody = $("feedbackTbody");
+    if (!items.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">暂无反馈</td></tr>';
+      return;
+    }
+    tbody.innerHTML = "";
+    items.forEach(function (f) { tbody.appendChild(buildFeedbackRow(f)); });
+  }
+
+  function buildFeedbackRow(f) {
+    var tr = document.createElement("tr");
+
+    var tdId = document.createElement("td");
+    tdId.className = "fb-mono";
+    tdId.textContent = f.id;
+    tr.appendChild(tdId);
+
+    // 内容（截断 + 展开）
+    var tdContent = document.createElement("td");
+    tdContent.className = "fb-content-cell";
+    var content = document.createElement("div");
+    content.className = "fb-content is-collapsed";
+    content.textContent = f.content || "";
+    tdContent.appendChild(content);
+    if ((f.content || "").length > 120) {
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "fb-toggle";
+      toggle.textContent = "展开";
+      toggle.addEventListener("click", function () {
+        var collapsed = content.classList.toggle("is-collapsed");
+        toggle.textContent = collapsed ? "展开" : "收起";
+      });
+      tdContent.appendChild(toggle);
+    }
+    // 已有回复
+    if (f.reply) {
+      var reply = document.createElement("div");
+      reply.className = "fb-reply";
+      reply.textContent = "官方回复：" + f.reply;
+      tdContent.appendChild(reply);
+    }
+    // 回复输入框（默认隐藏，点「回复」展开）
+    var replyBox = document.createElement("div");
+    replyBox.className = "fb-reply-box";
+    replyBox.hidden = true;
+    var ta = document.createElement("textarea");
+    ta.className = "input textarea";
+    ta.rows = 2;
+    ta.placeholder = "输入回复内容…";
+    ta.value = f.reply || "";
+    var actions = document.createElement("div");
+    actions.className = "fb-reply-actions";
+    var sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.className = "btn btn-primary btn-sm";
+    sendBtn.textContent = "发送回复";
+    var cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn btn-ghost btn-sm";
+    cancelBtn.textContent = "取消";
+    actions.appendChild(sendBtn);
+    actions.appendChild(cancelBtn);
+    replyBox.appendChild(ta);
+    replyBox.appendChild(actions);
+    tdContent.appendChild(replyBox);
+    tr.appendChild(tdContent);
+
+    var tdContact = document.createElement("td");
+    tdContact.className = "fb-mono";
+    tdContact.textContent = f.contact || "—";
+    tr.appendChild(tdContact);
+
+    // 状态标签 + 切换下拉
+    var tdStatus = document.createElement("td");
+    var statusTag = document.createElement("span");
+    statusTag.className = "fb-status " + (f.status || "pending");
+    statusTag.textContent = FEEDBACK_STATUS_LABEL[f.status] || f.status || "待处理";
+    tdStatus.appendChild(statusTag);
+    tr.appendChild(tdStatus);
+
+    var tdTime = document.createElement("td");
+    tdTime.className = "fb-mono";
+    tdTime.textContent = formatDate(f.createdAt);
+    tr.appendChild(tdTime);
+
+    // 操作：回复 / 标记已解决
+    var tdOps = document.createElement("td");
+    tdOps.className = "td-right";
+    var replyBtn = document.createElement("button");
+    replyBtn.type = "button";
+    replyBtn.className = "btn btn-secondary btn-sm";
+    replyBtn.textContent = "回复";
+    var resolveBtn = document.createElement("button");
+    resolveBtn.type = "button";
+    resolveBtn.className = "btn btn-ghost btn-sm";
+    resolveBtn.textContent = (f.status === "resolved") ? "已解决" : "标记解决";
+    resolveBtn.disabled = f.status === "resolved";
+
+    replyBtn.addEventListener("click", function () {
+      replyBox.hidden = !replyBox.hidden;
+      if (!replyBox.hidden) { ta.focus(); }
+    });
+    cancelBtn.addEventListener("click", function () { replyBox.hidden = true; });
+    sendBtn.addEventListener("click", function () {
+      var text = ta.value.trim();
+      if (!text) { toast("回复内容不能为空", "err"); return; }
+      setBtnBusy(sendBtn, true, "发送中…");
+      apiFetch(API.feedbackReply + f.id + "/reply", { method: "POST", body: { reply: text } })
+        .then(function () {
+          toast("回复已发送", "ok");
+          loadFeedbacks();
+        })
+        .catch(function (err) { toast("回复失败：" + err.message, "err"); })
+        .finally(function () { setBtnBusy(sendBtn, false, "发送回复"); });
+    });
+    resolveBtn.addEventListener("click", function () {
+      apiFetch(API.feedbackStatus + f.id + "/status", { method: "POST", body: { status: "resolved" } })
+        .then(function () { toast("已标记为已解决", "ok"); loadFeedbacks(); })
+        .catch(function (err) { toast("状态更新失败：" + err.message, "err"); });
+    });
+
+    tdOps.appendChild(replyBtn);
+    tdOps.appendChild(document.createTextNode(" "));
+    tdOps.appendChild(resolveBtn);
+    tr.appendChild(tdOps);
+    return tr;
+  }
+
+  /* ============================================================
      统计图表
      ============================================================ */
 
@@ -1284,6 +1505,7 @@
     if (name === "content") { loadSite(); }
     else if (name === "media") { loadMedia(); }
     else if (name === "release") { loadVersions(); }
+    else if (name === "feedback") { loadFeedbacks(); }
     else if (name === "stats") { loadStats(); }
   }
 
@@ -1301,6 +1523,9 @@
 
     // 内容管理
     $("saveSiteBtn").addEventListener("click", saveSite);
+
+    // 反馈管理
+    $("refreshFeedbackBtn").addEventListener("click", loadFeedbacks);
     $$("[data-add]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var kind = btn.dataset.add;
@@ -1410,6 +1635,7 @@
   function init() {
     bindEvents();
     initStaticMediaFields();
+    bindStyleFields();
     if (token) { showMain(); } else { showLogin(); }
     $("password").focus();
   }

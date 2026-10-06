@@ -80,6 +80,7 @@ public class ContentService {
         c.put("seo", seo());
         c.put("footer", footer());
         c.put("about", about());
+        c.put("style", style());
         return c;
     }
 
@@ -197,6 +198,28 @@ public class ContentService {
         return m;
     }
 
+    /** 官网视觉自定义：主题色 / 背景 / Logo / 自定义 CSS 等，后台可逐项覆盖 */
+    private static Map<String, Object> style() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("themeColor", "#4f8cff");
+        m.put("themeColorDark", "#3a6fd4");
+        m.put("accentColor", "#00d4aa");
+        m.put("bgColor", "#0a0a0f");
+        m.put("cardBgColor", "#141420");
+        m.put("textColor", "#e8e8f0");
+        m.put("textMuted", "#8888a0");
+        m.put("logoUrl", "");
+        m.put("faviconUrl", "");
+        m.put("heroBgImage", "");
+        m.put("heroGradient", "linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #0a0a0f 100%)");
+        m.put("fontFamily", "");
+        m.put("customCss", "");
+        m.put("navStyle", "glass");
+        m.put("cornerRadius", "12");
+        m.put("socialLinks", new ArrayList<>());
+        return m;
+    }
+
     private static Map<String, Object> footer() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("icp", "");
@@ -207,6 +230,7 @@ public class ContentService {
         links.add(link("下载安装", "/download"));
         links.add(link("常见问题", "/faq"));
         links.add(link("关于我们", "/about"));
+        links.add(link("用户反馈", "/feedback"));
         m.put("links", links);
         return m;
     }

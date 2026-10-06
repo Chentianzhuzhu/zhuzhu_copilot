@@ -83,6 +83,7 @@
       <button class="tab active" data-tab="content" role="tab">内容管理</button>
       <button class="tab" data-tab="media" role="tab">媒体库</button>
       <button class="tab" data-tab="release" role="tab">版本发布</button>
+      <button class="tab" data-tab="feedback" role="tab">反馈管理</button>
       <button class="tab" data-tab="stats" role="tab">统计图表</button>
     </nav>
     <div class="topbar-right">
@@ -255,6 +256,118 @@
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">视觉样式 style</h3>
+          <span class="count-badge">主题定制</span>
+        </div>
+        <p class="field-hint">改色后点右上角「保存修改」，官网全站配色即时跟随；留空则用默认深色科技风。</p>
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="field-label" for="styleThemeColor">主题色 themeColor</label>
+            <div class="color-field">
+              <input type="color" class="color-picker" data-style-color="themeColor" aria-label="主题色取色器">
+              <input type="text" class="input" data-style="themeColor" placeholder="#4f8cff">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleThemeColorDark">深色主题色 themeColorDark</label>
+            <div class="color-field">
+              <input type="color" class="color-picker" data-style-color="themeColorDark" aria-label="深色主题色取色器">
+              <input type="text" class="input" data-style="themeColorDark" placeholder="#3a6fd4">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleAccent">辅助色 accentColor</label>
+            <div class="color-field">
+              <input type="color" class="color-picker" data-style-color="accentColor" aria-label="辅助色取色器">
+              <input type="text" class="input" data-style="accentColor" placeholder="#00d4aa">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleRadius">圆角大小 cornerRadius（px）</label>
+            <input type="number" class="input" data-style="cornerRadius" min="0" max="32" placeholder="12">
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleBg">背景色 bgColor</label>
+            <div class="color-field">
+              <input type="color" class="color-picker" data-style-color="bgColor" aria-label="背景色取色器">
+              <input type="text" class="input" data-style="bgColor" placeholder="#0a0a0f">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleCardBg">卡片背景 cardBgColor</label>
+            <div class="color-field">
+              <input type="color" class="color-picker" data-style-color="cardBgColor" aria-label="卡片背景取色器">
+              <input type="text" class="input" data-style="cardBgColor" placeholder="#141420">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleText">文字色 textColor</label>
+            <div class="color-field">
+              <input type="color" class="color-picker" data-style-color="textColor" aria-label="文字色取色器">
+              <input type="text" class="input" data-style="textColor" placeholder="#e8e8f0">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleTextMuted">次要文字 textMuted</label>
+            <div class="color-field">
+              <input type="color" class="color-picker" data-style-color="textMuted" aria-label="次要文字取色器">
+              <input type="text" class="input" data-style="textMuted" placeholder="#8888a0">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label">导航栏样式 navStyle</label>
+            <select class="input select" data-style="navStyle">
+              <option value="glass">glass（毛玻璃）</option>
+              <option value="solid">solid（实心）</option>
+              <option value="transparent">transparent（透明）</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="styleFontFamily">字体族 fontFamily</label>
+            <input type="text" class="input" data-style="fontFamily" placeholder='留空默认，如 "Microsoft YaHei", sans-serif'>
+          </div>
+          <div class="form-field span-2">
+            <label class="field-label" for="styleHeroGradient">Hero 渐变 heroGradient</label>
+            <input type="text" class="input" data-style="heroGradient" placeholder="CSS gradient 字符串，如 linear-gradient(135deg, #0a0a0f, #1a1a2e)">
+          </div>
+          <div class="form-field">
+            <label class="field-label">Logo URL logoUrl</label>
+            <div class="media-field" data-media-field="styleLogo" data-kind="image">
+              <input type="text" class="input" data-key="logoUrl" placeholder="留空用默认品牌图标">
+            </div>
+          </div>
+          <div class="form-field">
+            <label class="field-label">favicon URL faviconUrl</label>
+            <div class="media-field" data-media-field="styleFavicon" data-kind="image">
+              <input type="text" class="input" data-key="faviconUrl" placeholder="留空用默认 favicon">
+            </div>
+          </div>
+          <div class="form-field span-2">
+            <label class="field-label">Hero 背景图 heroBgImage</label>
+            <div class="media-field" data-media-field="styleHeroBg" data-kind="image">
+              <input type="text" class="input" data-key="heroBgImage" placeholder="留空只用渐变背景">
+            </div>
+          </div>
+          <div class="form-field span-2">
+            <label class="field-label" for="styleCustomCss">自定义 CSS customCss</label>
+            <textarea class="input textarea code-area" rows="4" data-style="customCss"
+                      placeholder="/* 这里写任意 CSS，会原样注入官网 <head> */"></textarea>
+            <p class="field-hint">等宽字体代码区；仅管理员可编辑，保存后全站生效。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">社交链接 style.socialLinks</h3>
+          <button type="button" class="btn btn-secondary btn-sm" data-add="socialLinks">添加链接</button>
+        </div>
+        <p class="field-hint">展示在官网页脚；icon 填图标名（可留空）。</p>
+        <div class="list-editor" data-editor="socialLinks"></div>
+      </div>
     </section>
 
     <!-- ==================== 媒体库 ==================== -->
@@ -360,6 +473,41 @@
             </thead>
             <tbody id="versionTbody">
               <tr class="empty-row"><td colspan="7">暂无已发布版本</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 反馈管理 ==================== -->
+    <section id="panel-feedback" class="panel" role="tabpanel">
+      <div class="panel-head">
+        <div>
+          <h2 class="panel-title">反馈管理</h2>
+          <p class="panel-desc">访客在 /feedback 提交的反馈，可回复并切换处理状态（每日每 IP 限 3 条）</p>
+        </div>
+        <button type="button" id="refreshFeedbackBtn" class="btn btn-ghost">刷新</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">反馈列表</h3>
+          <span class="count-badge" id="feedbackCount">0</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th style="width:60px">ID</th>
+                <th>内容</th>
+                <th style="width:150px">联系方式</th>
+                <th style="width:110px">状态</th>
+                <th style="width:150px">提交时间</th>
+                <th class="th-right" style="width:180px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="feedbackTbody">
+              <tr class="empty-row"><td colspan="6">暂无反馈</td></tr>
             </tbody>
           </table>
         </div>
