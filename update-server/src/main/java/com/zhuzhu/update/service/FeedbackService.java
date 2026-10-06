@@ -3,6 +3,7 @@ package com.zhuzhu.update.service;
 import com.zhuzhu.update.entity.Feedback;
 import com.zhuzhu.update.repo.FeedbackRepo;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -30,7 +31,9 @@ public class FeedbackService {
      *
      * <p>限流一律以服务器端 {@link LocalDateTime#now()} 为准（当天 0 点起计数），
      * 不信任客户端传来的任何时间；同一 IP 当日提交达到 {@link #DAILY_LIMIT} 次即拒绝。
+     * 使用 @Transactional 保证计数与保存处于同一事务，避免并发下计数漂移。
      */
+    @Transactional
     public Feedback submit(String ip, String content, String contact) {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("反馈内容不能为空");
@@ -38,12 +41,14 @@ public class FeedbackService {
         if (content.length() > MAX_CONTENT) {
             throw new IllegalArgumentException("反馈内容不能超过 2000 字");
         }
+        // 统一 trim IP，避免代理头空白导致同一用户被计为不同 IP
+        String cleanIp = ip == null ? "" : ip.trim();
         LocalDateTime todayStart = LocalDateTime.now().toLocalDate().atStartOfDay();
-        if (repo.countByIpAndCreatedAtAfter(ip, todayStart) >= DAILY_LIMIT) {
+        if (repo.countTodayByIp(cleanIp, todayStart) >= DAILY_LIMIT) {
             throw new RateLimitException("今日反馈次数已达上限（3次/天）");
         }
         Feedback f = new Feedback();
-        f.setIp(ip);
+        f.setIp(cleanIp);
         f.setContent(content.trim());
         if (contact != null && !contact.isBlank()) {
             f.setContact(contact.trim());
