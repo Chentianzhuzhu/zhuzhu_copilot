@@ -32,6 +32,11 @@ SetupIconFile=..\assets\icon.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; 禁用 Inno 内置的「选择安装语言」对话框：该对话框在多语言下会出现重复条目
+; （三个「简体中文」）且确认后触发 RuntimeError（WizardForm 尚未创建即被访问）。
+; 程序界面语言由向导内的自定义页（InitializeWizard 里的简体中文/English 单选）
+; 负责选择，安装结束写入 app_lang.ini，无需再走内置对话框。
+ShowLanguageDialog=no
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 ; 安装包自身的文件属性版本号（资源管理器/属性页的文件版本字段）：
@@ -156,22 +161,23 @@ begin
 end;
 
 function InitializeSetup(): Boolean;
+begin
+  Result := True;
+end;
+
+procedure InitializeWizard();
 var
   DefaultEn: Boolean;
 begin
-  Result := True;
   DefaultEn := ActiveLanguage = 'english';
 
-  { 安装前挑界面语言：置于「选择安装位置」之后、「选择组件」之前，
-    即"装什么"之前先定"用什么语言装"，与主流安装包一致。 }
+  { 语言选择页：必须放在 InitializeWizard() 里，因为 CreateCustomPage 依赖
+    WizardForm（在 InitializeSetup 阶段尚未创建，调用会报 RuntimeError）。 }
   LangPage := CreateCustomPage(
     wpSelectDir,
     '界面语言',
     '所选语言将作为 zhuzhu Copilot 的默认界面语言，安装后可在「设置」中随时更改。');
 
-  { 控件用 TNewXxx.Create + .Parent（Inno 7 官方示例 CodeClasses.iss 的写法），
-    不能用 CreateRadioButton —— 那是 TNewWizardPage 的方法，不适用于
-    CreateCustomPage 返回的 TWizardPage。 }
   LangZhRadio := TNewRadioButton.Create(LangPage.Surface);
   LangZhRadio.Caption := '简体中文';
   LangZhRadio.Checked := not DefaultEn;

@@ -1422,7 +1422,9 @@ class _FoldMixin:
         btn = getattr(self, "_fold_btn", None)
         if btn is not None:
             btn.restyle(style)
-            btn.setIcon(self._fold_chev(180 if self._fold_open else 0))
+            icon = self._fold_chev(180 if self._fold_open else 0)
+            if icon is not None:          # 无 icon_provider 时为纯文字开关，setIcon(None) 会 TypeError
+                btn.setIcon(icon)
         mask = getattr(self, "_fold_mask", None)
         if mask is not None:
             mask.set_color(fill)
@@ -1490,7 +1492,9 @@ class _FoldMixin:
         self._fold_open = None
         if self._fold_btn is not None and self._fold_btn.text() != self._fold_open_text:
             self._fold_btn.setText(self._fold_open_text)
-            self._fold_btn.setIcon(self._fold_chev())
+            icon = self._fold_chev()
+            if icon is not None:
+                self._fold_btn.setIcon(icon)
 
     def _line_height(self) -> int:
         """单行行高（px）：折叠上限按它折算"""
@@ -1758,7 +1762,9 @@ class _FoldMixin:
         opened = self._fold_open is not True
         self._fold_open = opened
         self._fold_btn.setText(_ui(FOLD_CLOSED_TEXT) if opened else self._fold_open_text)
-        self._fold_btn.setIcon(self._fold_chev(180 if opened else 0))
+        icon = self._fold_chev(180 if opened else 0)
+        if icon is not None:
+            self._fold_btn.setIcon(icon)
         self._fold_apply_text()      # 展开铺全文 / 收起回到前缀
         self._bump_content()         # 折叠态影响高度 → 测量缓存失效
         self._fold_apply()
@@ -2395,18 +2401,19 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._bar_label.setStyleSheet(
             f"color: {style.text_dim}; font-size: {FONT_CAPTION}px;"
             f" font-family: {style.font_mono}; background: transparent;")
-        # 换肤重设 QSS（不含 padding），随后补一次直接 margins，防止 repolish 把留白重置
-        self._cmd.setContentsMargins(
-            CMD_PAD_H, CMD_PAD_V + 4, CMD_PAD_H, CMD_PAD_V + 4)
+        # 换肤重设 QSS（不含 padding），再补直接 margins：必须在 setStyleSheet 之后，
+        # 否则 repolish 可能把显式 margins 重置为 0，命令/输出区留白丢失。
         self._cmd.setStyleSheet(
             f"background: transparent;"
             f" color: {style.cmd_fg}; font-size: {FONT_BODY}px;"
             f" font-family: {style.font_mono};")
-        self._body.setContentsMargins(CMD_PAD_H, 0, CMD_PAD_H, CMD_PAD_V + 4)
+        self._cmd.setContentsMargins(
+            CMD_PAD_H, CMD_PAD_V + 4, CMD_PAD_H, CMD_PAD_V + 4)
         self._body.setStyleSheet(
             f"background: transparent;"
             f" color: {style.ok_fg}; font-size: {FONT_SMALL}px;"
             f" font-family: {style.font_mono};")
+        self._body.setContentsMargins(CMD_PAD_H, 0, CMD_PAD_H, CMD_PAD_V + 4)
         self._fold_restyle(style, style.panel)
         self._emerge_fill(style.band or style.panel)
         self._bump_content()

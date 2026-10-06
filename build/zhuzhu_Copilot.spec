@@ -54,6 +54,10 @@ a = Analysis(
     datas=[(_os.path.join(_root, 'assets'), 'assets'),
            (_os.path.join(_root, 'src/zhuzhu_Copilot/skills'), 'skills'),
            (_os.path.join(_root, 'src/zhuzhu_Copilot/plugins'), 'plugins'),
+           # 语言包（i18n）：不打包则英文界面在发布版里全部回退成中文。
+           # core/i18n.py 的 _locales_dir() 会同时探测 <root>/locales 与
+           # _MEIPASS/locales，故按 skills/plugins 同款平铺方式注入即可。
+           (_os.path.join(_root, 'src/zhuzhu_Copilot/locales'), 'locales'),
            (_os.path.join(_root, 'src/zhuzhu_Copilot/core/workflow_templates'), 'workflow_templates'),
            # 安全引擎数据文件（config/security.json、security_rules.json、yara/ 规则库）：
            # 引擎在打包态按 _MEIPASS/config 解析，缺失则回退内置默认导致规则库/特征库不生效

@@ -1050,7 +1050,8 @@ def _title_sys() -> str:
         return ("你是会话命名助手。用一句简洁的话概括用户意图，作为该对话的标题；"
                 "长度不限但要写完整，不要中途截断成半句话。"
                 "只输出标题本身：不要解释、不要标点、不要引号、不要 markdown 标记、不要代码块。")
-    return ("You are a conversation titling assistant. Summarize the user's intent in one "
+    return ("always reply in English.\n"
+            "You are a conversation titling assistant. Summarize the user's intent in one "
             "concise phrase to serve as the title of this conversation. No length limit, "
             "but write it out completely - never cut off mid-sentence.\n"
             "The title must be written in English, even if the conversation is in Chinese "
