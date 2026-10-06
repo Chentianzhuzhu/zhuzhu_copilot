@@ -907,6 +907,9 @@ body.nav-open .nav-overlay { opacity: 1; pointer-events: auto; }
   .fb-meta { font-size: 12px; }
   .fb-actions { flex-direction: column; }
   .fb-actions .btn { width: 100%; justify-content: center; min-height: 48px; font-size: 16px; }
+  .fb-query-row { flex-direction: column; }
+  .fb-query-row .btn { width: 100%; justify-content: center; min-height: 48px; }
+  .fb-query-result { padding: 16px; }
 
   /* 返回顶部：避开底部快捷栏 */
   .back-top { right: 16px; }
@@ -1017,6 +1020,45 @@ body.nav-open .nav-overlay { opacity: 1; pointer-events: auto; }
 .fb-notes { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
 .fb-notes li { position: relative; padding-left: 20px; color: var(--ink-dim); font-size: 14px; line-height: 1.8; }
 .fb-notes li::before { content: "▸"; position: absolute; left: 0; color: var(--blue-bright); }
+
+/* ---------- 查询回复进度 ---------- */
+#queryCard { margin-top: 28px; }
+.fb-query-head { margin-bottom: 24px; }
+.fb-query-title { font-family: var(--font-display); font-weight: 800; font-size: clamp(1.3rem, 3vw, 1.7rem); margin: 10px 0 8px; }
+.fb-query-desc { color: var(--ink-dim); font-size: 14px; line-height: 1.8; }
+.fb-query-row { display: flex; gap: 12px; }
+.fb-query-row .fb-input { flex: 1; }
+.fb-query-row .btn { flex: none; padding: 0 28px; }
+
+.fb-query-result {
+  margin-top: 22px; padding: 22px; border: 1px solid var(--line-strong);
+  background: rgba(245, 245, 245, .02); display: flex; flex-direction: column; gap: 18px;
+}
+.fb-query-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fb-query-id { font-family: var(--font-mono); font-size: 14px; color: var(--ink-dim); letter-spacing: .06em; }
+.fb-status-badge {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em;
+  padding: 4px 12px; border: 1px solid var(--line-strong); border-radius: 999px;
+}
+.fb-status-badge.is-pending { color: rgb(245, 158, 11); border-color: rgba(245, 158, 11, .4); background: rgba(245, 158, 11, .08); }
+.fb-status-badge.is-replied { color: var(--blue-bright); border-color: rgba(91, 123, 232, .4); background: rgba(91, 123, 232, .1); }
+.fb-status-badge.is-resolved { color: rgb(34, 197, 94); border-color: rgba(34, 197, 94, .4); background: rgba(34, 197, 94, .08); }
+
+.fb-query-block { display: flex; flex-direction: column; gap: 8px; }
+.fb-query-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: .16em; color: var(--ink-faint); text-transform: uppercase; }
+.fb-query-content { color: var(--white); font-size: 15px; line-height: 1.8; white-space: pre-wrap; word-break: break-word; }
+.fb-query-time { font-family: var(--font-mono); font-size: 12px; color: var(--ink-faint); }
+
+.fb-query-reply {
+  padding: 16px 18px; border-left: 3px solid var(--blue-bright);
+  background: rgba(91, 123, 232, .06); border-radius: 0 8px 8px 0;
+}
+.fb-query-pending {
+  display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+  border: 1px dashed var(--line-strong); border-radius: 8px;
+  color: var(--ink-dim); font-size: 14px;
+}
+.fb-query-pending svg { width: 18px; height: 18px; flex: none; color: rgb(245, 158, 11); }
 
 /* ---------- 页脚社交链接 ---------- */
 .footer-social { display: flex; align-items: center; gap: 14px; width: 100%; }

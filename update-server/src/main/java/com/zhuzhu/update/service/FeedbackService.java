@@ -7,6 +7,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 /** 用户反馈：提交（含 IP 当日限流）、列表、回复与状态流转 */
 @Service
@@ -61,6 +62,14 @@ public class FeedbackService {
     /** 全部反馈按提交时间倒序 */
     public List<Feedback> list() {
         return repo.findAllByOrderByCreatedAtDesc();
+    }
+
+    /** 按 ID 查找反馈（公开查询用，不暴露 IP / 联系方式） */
+    public Optional<Feedback> findById(Long id) {
+        if (id == null || id <= 0) {
+            return Optional.empty();
+        }
+        return repo.findById(id);
     }
 
     /** 管理员回复：写入回复内容并标记为 replied */

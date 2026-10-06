@@ -22,6 +22,25 @@
   var limitBox = document.getElementById('feedbackLimit');
   var limitTitle = document.getElementById('feedbackLimitTitle');
   var limitDesc = document.getElementById('feedbackLimitDesc');
+  var againBtn = document.getElementById('feedbackAgain');
+
+  /* ---------- 查询回复 ---------- */
+  var queryForm = document.getElementById('queryForm');
+  var queryIdInput = document.getElementById('queryId');
+  var querySubmit = document.getElementById('querySubmit');
+  var querySubmitText = document.getElementById('querySubmitText');
+  var queryError = document.getElementById('queryError');
+  var queryResult = document.getElementById('queryResult');
+  var qrId = document.getElementById('qrId');
+  var qrStatus = document.getElementById('qrStatus');
+  var qrContent = document.getElementById('qrContent');
+  var qrCreated = document.getElementById('qrCreated');
+  var qrReplyBlock = document.getElementById('qrReplyBlock');
+  var qrReply = document.getElementById('qrReply');
+  var qrReplied = document.getElementById('qrReplied');
+  var qrPending = document.getElementById('qrPending');
+
+  var STATUS_LABEL = { pending: '待处理', replied: '已回复', resolved: '已解决' };
 
   var MIN = 5, MAX = 2000;
 
@@ -111,6 +130,89 @@
       showError('网络异常，反馈未提交成功，请检查网络后重试。');
     });
   });
+
+  /* "再提一条"：回到表单 */
+  if (againBtn) {
+    againBtn.addEventListener('click', function () {
+      successBox.hidden = true;
+      form.hidden = false;
+      content.value = '';
+      contact.value = '';
+      syncCount();
+      content.focus();
+    });
+  }
+
+  /* ---------- 查询回复 ---------- */
+  function setQueryBusy(busy) {
+    querySubmit.disabled = busy;
+    querySubmit.classList.toggle('is-busy', busy);
+    querySubmitText.textContent = busy ? '查询中…' : '查询';
+  }
+
+  function showQueryError(msg) {
+    queryError.textContent = msg;
+    queryError.hidden = false;
+    queryResult.hidden = true;
+  }
+
+  function statusBadge(status) {
+    var label = STATUS_LABEL[status] || status;
+    qrStatus.textContent = label;
+    qrStatus.className = 'fb-status-badge is-' + (status || 'pending');
+  }
+
+  if (queryForm) {
+    queryForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      queryError.hidden = true;
+
+      var raw = queryIdInput.value.trim().replace(/^#/, '');
+      if (!raw || !/^\d+$/.test(raw)) {
+        showQueryError('请输入有效的反馈编号（纯数字，可带 # 前缀）。');
+        queryIdInput.focus();
+        return;
+      }
+
+      setQueryBusy(true);
+      fetch('/api/feedback/' + encodeURIComponent(raw), {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (res) {
+        return res.text().then(function (text) {
+          var data = null;
+          if (text) { try { data = JSON.parse(text); } catch (err) { data = null; } }
+          return { status: res.status, data: data };
+        });
+      }).then(function (r) {
+        setQueryBusy(false);
+        if (r.status === 200 && r.data && r.data.ok) {
+          var d = r.data;
+          qrId.textContent = '反馈 #' + d.id;
+          statusBadge(d.status);
+          qrContent.textContent = d.content;
+          qrCreated.textContent = '提交于 ' + (d.createdAt || '未知时间');
+          if (d.reply) {
+            qrReply.textContent = d.reply;
+            qrReplied.textContent = '回复于 ' + (d.repliedAt || '');
+            qrReplyBlock.hidden = false;
+            qrPending.hidden = true;
+          } else {
+            qrReplyBlock.hidden = true;
+            qrPending.hidden = false;
+          }
+          queryResult.hidden = false;
+          queryResult.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else if (r.status === 404) {
+          showQueryError((r.data && r.data.error) ? r.data.error : '反馈不存在，请检查编号是否正确。');
+        } else {
+          showQueryError('查询失败，请稍后再试。');
+        }
+      }).catch(function () {
+        setQueryBusy(false);
+        showQueryError('网络异常，查询失败，请检查网络后重试。');
+      });
+    });
+  }
 
   syncCount();
 })();

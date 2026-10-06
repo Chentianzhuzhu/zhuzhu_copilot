@@ -46,6 +46,25 @@ public class FeedbackController {
         }
     }
 
+    /**
+     * 公开查询反馈及回复：用户凭提交时获得的反馈编号查看处理进度与官方回复。
+     * 仅返回内容/状态/回复/时间，不暴露 IP 与联系方式（隐私保护）。
+     */
+    @GetMapping("/api/feedback/{id}")
+    public ResponseEntity<Map<String, Object>> get(@PathVariable Long id) {
+        return feedbackService.findById(id).map(f -> {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("ok", true);
+            out.put("id", f.getId());
+            out.put("content", f.getContent());
+            out.put("status", f.getStatus());
+            out.put("reply", f.getReply());
+            out.put("createdAt", f.getCreatedAt() == null ? "" : f.getCreatedAt().format(FMT));
+            out.put("repliedAt", f.getRepliedAt() == null ? "" : f.getRepliedAt().format(FMT));
+            return ResponseEntity.ok(out);
+        }).orElseGet(() -> ResponseEntity.status(404).body(Map.of("error", "反馈不存在，请检查编号是否正确")));
+    }
+
     /** 管理端反馈列表（按时间倒序） */
     @GetMapping("/admin/api/feedbacks")
     public Map<String, Object> list() {

@@ -57,8 +57,11 @@
             </svg>
           </span>
           <h2 class="fb-result-title">反馈已提交，感谢你的建议！</h2>
-          <p class="fb-result-desc">我们会认真阅读每一条反馈，通常在 48 小时内处理。</p>
+          <p class="fb-result-desc">我们会认真阅读每一条反馈，通常在 48 小时内处理。请保存下方编号，用于后续查询回复。</p>
           <p class="fb-result-id" id="feedbackSuccessId"></p>
+          <div class="fb-actions" style="justify-content:center;margin-top:18px;">
+            <button type="button" class="btn btn-ghost" id="feedbackAgain">再提一条</button>
+          </div>
         </div>
 
         <!-- 限流提示 -->
@@ -73,6 +76,53 @@
           <p class="fb-result-desc" id="feedbackLimitDesc">今天的反馈次数已达上限，明天再来吧。</p>
         </div>
 
+      </div>
+
+      <!-- 查询回复进度 -->
+      <div class="feedback-card sr" id="queryCard">
+        <div class="fb-query-head">
+          <p class="section-tag">// 查询回复</p>
+          <h2 class="fb-query-title">凭反馈编号查看处理进度</h2>
+          <p class="fb-query-desc">提交反馈时会获得一个编号，输入编号即可查看官方回复与处理状态。</p>
+        </div>
+
+        <form id="queryForm" class="feedback-form" novalidate>
+          <div class="fb-field">
+            <label class="fb-label" for="queryId">反馈编号</label>
+            <div class="fb-query-row">
+              <input id="queryId" class="fb-input" type="text" inputmode="numeric"
+                     placeholder="例如：12 或 #12" autocomplete="off">
+              <button type="submit" class="btn btn-primary" id="querySubmit">
+                <span id="querySubmitText">查询</span>
+              </button>
+            </div>
+          </div>
+          <p class="fb-error" id="queryError" hidden></p>
+        </form>
+
+        <!-- 查询结果 -->
+        <div class="fb-query-result" id="queryResult" hidden>
+          <div class="fb-query-meta">
+            <span class="fb-query-id" id="qrId"></span>
+            <span class="fb-status-badge" id="qrStatus"></span>
+          </div>
+          <div class="fb-query-block">
+            <span class="fb-query-label">你的反馈</span>
+            <p class="fb-query-content" id="qrContent"></p>
+            <span class="fb-query-time" id="qrCreated"></span>
+          </div>
+          <div class="fb-query-block fb-query-reply" id="qrReplyBlock" hidden>
+            <span class="fb-query-label">官方回复</span>
+            <p class="fb-query-content" id="qrReply"></p>
+            <span class="fb-query-time" id="qrReplied"></span>
+          </div>
+          <div class="fb-query-pending" id="qrPending" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+            </svg>
+            <span>官方尚未回复，我们会尽快处理，请耐心等待。</span>
+          </div>
+        </div>
       </div>
 
       <div class="feedback-faq sr">
