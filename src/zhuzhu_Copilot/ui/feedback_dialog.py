@@ -79,6 +79,12 @@ class FeedbackDialog(QDialog):
         self.contact_edit = QLineEdit()
         self.contact_edit.setPlaceholderText(_ui("邮箱 / QQ / 微信（选填，方便我们回复你）"))
         self.contact_edit.setMinimumHeight(34)
+        self.contact_edit.setStyleSheet(
+            f"QLineEdit {{ background-color: {PALETTE['card']}; color: {PALETTE['text']};"
+            f" border: 1px solid {PALETTE['border']}; border-radius: 8px; padding: 0 10px;"
+            f" selection-background-color: {PALETTE['primary']}; selection-color: #FFFFFF; }}"
+            f"QLineEdit:focus {{ border: 1px solid {PALETTE['primary_hover']}; }}"
+        )
         lay.addWidget(self.contact_edit)
 
         # 按钮区：提交（主题色，内容不足 5 字时禁用）+ 取消
