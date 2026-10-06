@@ -202,11 +202,12 @@ body.has-cursor .cursor-glow { opacity: 1; }
 }
 .nav-cta:hover { box-shadow: 0 10px 28px -8px var(--blue-glow); transform: translateY(-1px); }
 .nav-burger {
-  display: none; width: 42px; height: 42px; border: 1px solid var(--line-strong);
+  display: none; width: 42px; height: 42px; border: 1px solid #ffffff;
+  background: #ffffff; border-radius: 8px;
   align-items: center; justify-content: center; flex-direction: column; gap: 6px;
   flex: none;
 }
-.nav-burger span { display: block; width: 20px; height: 2px; background: var(--white); transition: transform .3s var(--ease); border-radius: 1px; box-shadow: 0 0 6px rgba(245, 245, 245, .4); }
+.nav-burger span { display: block; width: 20px; height: 2px; background: #1a1a1a; transition: transform .3s var(--ease); border-radius: 1px; }
 .nav-burger[aria-expanded="true"] span:nth-child(1) { transform: translateY(4px) rotate(45deg); }
 .nav-burger[aria-expanded="true"] span:nth-child(2) { transform: translateY(-4px) rotate(-45deg); }
 .nav-drawer {
