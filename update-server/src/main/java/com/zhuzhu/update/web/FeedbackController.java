@@ -18,6 +18,14 @@ public class FeedbackController {
 
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    /**
+     * 提交锁：必须在 Controller 层（事务之外）获取，包裹整个 submit 调用。
+     * 原因：@Transactional 由 Spring 代理在方法外开启/提交，若只在 Service 方法上加 synchronized，
+     * 两个线程可在「退出 synchronized 块」与「事务提交」之间交错，第二个事务仍读到旧 count → 超限。
+     * Controller 层锁保证「事务开启 → count 查询 → insert → 事务提交」全程原子化。
+     */
+    private static final Object SUBMIT_LOCK = new Object();
+
     private final FeedbackService feedbackService;
 
     public FeedbackController(FeedbackService feedbackService) {
@@ -30,7 +38,10 @@ public class FeedbackController {
                                                      HttpServletRequest request) {
         String ip = clientIp(request);
         try {
-            Feedback f = feedbackService.submit(ip, body.get("content"), body.get("contact"));
+            Feedback f;
+            synchronized (SUBMIT_LOCK) {
+                f = feedbackService.submit(ip, body.get("content"), body.get("contact"));
+            }
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("ok", true);
             out.put("id", f.getId());

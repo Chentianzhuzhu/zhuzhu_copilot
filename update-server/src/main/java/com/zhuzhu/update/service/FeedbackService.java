@@ -50,11 +50,12 @@ public class FeedbackService {
      *
      * <p>限流一律以服务器端 {@link LocalDateTime#now()} 为准（当天 0 点起计数），
      * 不信任客户端传来的任何时间；同一 IP 当日提交达到 {@link #DAILY_LIMIT} 次即拒绝。
-     * 使用 synchronized 保证「计数 → 保存」原子化，消除并发下两个请求同时读到
-     * count<limit 而都插入的竞态（单实例部署下足够；多实例需换 Redis 分布式锁）。
+     * <p><b>并发安全由 Controller 层的 {@code SUBMIT_LOCK} 保证</b>：必须在事务之外获取锁，
+     * 包裹整个 submit 调用（含事务开启与提交），否则两个线程可在「退出方法」与「事务提交」
+     * 之间交错，第二个事务读到旧 count 而超限。单实例部署下此方案足够；多实例需换 Redis 分布式锁。
      */
     @Transactional
-    public synchronized Feedback submit(String ip, String content, String contact) {
+    public Feedback submit(String ip, String content, String contact) {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("反馈内容不能为空");
         }
