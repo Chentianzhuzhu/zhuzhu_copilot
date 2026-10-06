@@ -50,10 +50,11 @@ public class FeedbackService {
      *
      * <p>限流一律以服务器端 {@link LocalDateTime#now()} 为准（当天 0 点起计数），
      * 不信任客户端传来的任何时间；同一 IP 当日提交达到 {@link #DAILY_LIMIT} 次即拒绝。
-     * 使用 @Transactional 保证计数与保存处于同一事务，避免并发下计数漂移。
+     * 使用 synchronized 保证「计数 → 保存」原子化，消除并发下两个请求同时读到
+     * count<limit 而都插入的竞态（单实例部署下足够；多实例需换 Redis 分布式锁）。
      */
     @Transactional
-    public Feedback submit(String ip, String content, String contact) {
+    public synchronized Feedback submit(String ip, String content, String contact) {
         if (content == null || content.isBlank()) {
             throw new IllegalArgumentException("反馈内容不能为空");
         }
@@ -114,6 +115,14 @@ public class FeedbackService {
         }
         f.setStatus(status);
         return repo.save(f);
+    }
+
+    /** 一键清空全部反馈（管理后台用，不可恢复） */
+    @Transactional
+    public int clearAll() {
+        long count = repo.count();
+        repo.deleteAll();
+        return (int) count;
     }
 
     /** 当日限流异常：Web 层据此返回 HTTP 429 */

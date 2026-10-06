@@ -24,7 +24,8 @@
     stats: "/admin/api/stats",
     feedbacks: "/admin/api/feedbacks",
     feedbackReply: "/admin/api/feedback/",
-    feedbackStatus: "/admin/api/feedback/"
+    feedbackStatus: "/admin/api/feedback/",
+    feedbackClear: "/admin/api/feedbacks"
   };
 
   var TOKEN_KEY = "wm_admin_token";
@@ -1142,6 +1143,21 @@
       .catch(function (err) { toast("加载反馈列表失败：" + err.message, "err"); });
   }
 
+  /** 一键清空全部反馈（不可恢复，需二次确认） */
+  function clearFeedbacks() {
+    confirmDialog("清空全部反馈", "确定要清空全部反馈吗？此操作不可恢复，所有反馈记录将被永久删除。")
+      .then(function (ok) {
+        if (!ok) { return; }
+        apiFetch(API.feedbackClear, { method: "DELETE" })
+          .then(function (data) {
+            var n = (data && data.deleted) || 0;
+            toast("已清空 " + n + " 条反馈", "ok");
+            loadFeedbacks();
+          })
+          .catch(function (err) { toast("清空失败：" + err.message, "err"); });
+      });
+  }
+
   function renderFeedbacks(items) {
     $("feedbackCount").textContent = String(items.length);
     var tbody = $("feedbackTbody");
@@ -1526,6 +1542,7 @@
 
     // 反馈管理
     $("refreshFeedbackBtn").addEventListener("click", loadFeedbacks);
+    $("clearFeedbackBtn").addEventListener("click", clearFeedbacks);
     $$("[data-add]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var kind = btn.dataset.add;

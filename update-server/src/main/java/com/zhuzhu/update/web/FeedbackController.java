@@ -111,6 +111,13 @@ public class FeedbackController {
         return Map.of("ok", true);
     }
 
+    /** 管理端一键清空全部反馈（不可恢复） */
+    @DeleteMapping("/admin/api/feedbacks")
+    public Map<String, Object> clearAll() {
+        int deleted = feedbackService.clearAll();
+        return Map.of("ok", true, "deleted", deleted);
+    }
+
     /** 客户端 IP：X-Real-IP 头优先（nginx 反代），否则取 remoteAddr */
     private String clientIp(HttpServletRequest request) {
         String real = request.getHeader("X-Real-IP");

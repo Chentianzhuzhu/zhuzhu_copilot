@@ -486,7 +486,10 @@
           <h2 class="panel-title">反馈管理</h2>
           <p class="panel-desc">访客在 /feedback 提交的反馈，可回复并切换处理状态（每日每 IP 限 3 条）</p>
         </div>
-        <button type="button" id="refreshFeedbackBtn" class="btn btn-ghost">刷新</button>
+        <div style="display:flex;gap:8px">
+          <button type="button" id="clearFeedbackBtn" class="btn btn-danger">清空全部</button>
+          <button type="button" id="refreshFeedbackBtn" class="btn btn-ghost">刷新</button>
+        </div>
       </div>
 
       <div class="card">
