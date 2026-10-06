@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 from zhuzhu_Copilot.core import agent_context, agent_llm, agent_tools
+from zhuzhu_Copilot.core import agent_background
 from zhuzhu_Copilot.core.agent_json import parse_tool_args
 
 # 子 Agent 注册表缓存 {注册文件路径: ((mtime_ns, size), [子 Agent])}：引擎每轮组装
@@ -251,6 +252,7 @@ def run_sub_agent(llm, goal, allowed=None, stop=None, on_status=None,
                   history: list = None, on_history=None,
                   shared_context: bool = False, space: str = "",
                   source: str = "", agent_id: str = "",
+                  background: bool = False,
                   conversation: str = None) -> str:
     """运行一个子 Agent，返回其最终文本总结。
 
@@ -292,6 +294,14 @@ def run_sub_agent(llm, goal, allowed=None, stop=None, on_status=None,
     goal = (goal or "").strip()
     if not goal:
         return "（空任务）"
+    if background:
+        return _run_sub_agent_background(
+            llm, goal, allowed=allowed, stop=stop, on_status=on_status,
+            on_sub_event=on_sub_event, workflow=workflow, context=context,
+            persona=persona, custom=custom, history=history,
+            on_history=on_history, shared_context=shared_context,
+            space=space, source=source, agent_id=agent_id,
+            conversation=conversation)
     # 主 Agent 决策的共享上下文：绑定空间（线程局部）+ 注入空间快照，结束回写并复位
     prev_space = agent_context.thread_local_space()
     prev_source = agent_context.thread_local_source()
@@ -460,10 +470,45 @@ def run_sub_agent(llm, goal, allowed=None, stop=None, on_status=None,
                 pass
 
 
+def _run_sub_agent_background(llm, goal, allowed=None, stop=None,
+                               on_status=None, on_sub_event=None,
+                               workflow=None, context: str = "",
+                               persona: str = "", custom: bool = False,
+                               history: list = None, on_history=None,
+                               shared_context: bool = False, space: str = "",
+                               source: str = "", agent_id: str = "",
+                               conversation: str = None) -> str:
+    """后台运行单个子Agent：提交到 BackgroundTaskManager，立即返回任务ID。"""
+    def _fn(bg_task):
+        result = run_sub_agent(
+            llm, goal, allowed=allowed, stop=stop, on_status=on_status,
+            on_sub_event=(lambda kind, text: (bg_task.append_output(text), on_sub_event(kind, text))[1])
+            if on_sub_event else (lambda kind, text: bg_task.append_output(text)),
+            workflow=workflow, context=context, persona=persona, custom=custom,
+            history=history, on_history=on_history,
+            shared_context=shared_context, space=space, source=source,
+            agent_id=agent_id, conversation=conversation)
+        bg_task.set_output(result)
+        return result
+
+    bg = agent_background.bg_manager().submit(
+        task_type=agent_background.TYPE_SUBAGENT,
+        title=f"后台子Agent: {str(goal or '')[:40]}",
+        description=str(goal or "")[:200],
+        fn=_fn,
+        metadata={"allowed": str(allowed or "")[:100], "workflow": workflow or ""},
+    )
+    return (f"[已后台执行] 子Agent已转入后台（任务ID: {bg.task_id}），"
+            f"不阻塞当前对话。输出流式回传，完成后自动汇总。"
+            f"\n可用 background_task_status(task_id=\"{bg.task_id}\") 查询进度。")
+
+
 def dispatch_sub_agents(llm, tasks, stop=None, on_status=None,
                         on_sub_event=None, max_workers=None, workflow=None,
                         collect: list = None, shared_context: bool = True,
-                        space: str = "", conversation: str = None) -> str:
+                        space: str = "",
+                        background: bool = False,
+                        conversation: str = None) -> str:
     """并发派发多个子 Agent 并汇总（按任务原始顺序输出）。
 
     max_workers：并发度；None 取 SUB_AGENT_MAX_WORKERS，0 = 不限制（任务数即并发数）。
@@ -488,6 +533,13 @@ def dispatch_sub_agents(llm, tasks, stop=None, on_status=None,
              if isinstance(t, dict) and str(t.get("goal") or "").strip()]
     if not tasks:
         return "（没有可派发的子任务）"
+    if background:
+        return _dispatch_sub_agents_background(
+            llm, tasks, stop=stop, on_status=on_status,
+            on_sub_event=on_sub_event, max_workers=max_workers,
+            workflow=workflow, collect=collect,
+            shared_context=shared_context, space=space,
+            conversation=conversation)
     cap = SUB_AGENT_MAX_WORKERS if max_workers is None else int(max_workers or 0)
     n = len(tasks) if not cap else min(max(int(cap), 1), len(tasks))
     # 对话作用域在派发线程（父线程）解析一次，下传给每个工作线程
@@ -535,6 +587,46 @@ def dispatch_sub_agents(llm, tasks, stop=None, on_status=None,
         title = str(t.get("title") or f"子任务 {i + 1}")
         parts.append(f"【子任务 {i + 1}】{title}\n{results.get(i, '（无结果）')}")
     return "\n\n".join(parts)
+
+
+def _dispatch_sub_agents_background(llm, tasks, stop=None, on_status=None,
+                                   on_sub_event=None, max_workers=None,
+                                   workflow=None, collect: list = None,
+                                   shared_context: bool = True, space: str = "",
+                                   conversation: str = None) -> str:
+    """后台并发派发子Agent：提交到 BackgroundTaskManager，立即返回任务ID。
+    各子Agent在后台线程池中并发执行，输出通过 on_sub_event 流式回传，
+    完成后汇总结果写入 BackgroundTask.result。
+    """
+    tasks = [t for t in (tasks or [])
+             if isinstance(t, dict) and str(t.get("goal") or "").strip()]
+    if not tasks:
+        return "（没有可派发的子任务）"
+    n_tasks = len(tasks)
+    titles = [str(t.get("title") or f"子任务 {i+1}") for i, t in enumerate(tasks)]
+
+    def _fn(bg_task):
+        # 后台线程中同步执行派发（内部 ThreadPoolExecutor 并发各子Agent）
+        result_text = dispatch_sub_agents(
+            llm, tasks, stop=stop, on_status=on_status,
+            on_sub_event=on_sub_event, max_workers=max_workers,
+            workflow=workflow, collect=collect,
+            shared_context=shared_context, space=space,
+            conversation=conversation)
+        bg_task.set_output(result_text)
+        return result_text
+
+    bg = agent_background.bg_manager().submit(
+        task_type=agent_background.TYPE_BATCH,
+        title=f"后台派发 {n_tasks} 个子Agent",
+        description=" / ".join(titles[:3]) + ("..." if len(titles) > 3 else ""),
+        fn=_fn,
+        metadata={"n_tasks": n_tasks, "workflow": workflow or ""},
+    )
+    return (f"[已后台派发] {n_tasks} 个子Agent已转入后台并发执行"
+            f"（任务ID: {bg.task_id}），不阻塞当前对话。"
+            f"各子Agent输出流式回传，完成后自动汇总。"
+            f"\n可用 background_task_status(task_id=\"{bg.task_id}\") 查询进度。")
 
 
 # ------------------------------------------------------------
@@ -788,8 +880,15 @@ def _call_llm_stream(client, messages, tools, stop, on_sub_event) -> dict:
 def dispatch_agent_llm(llm, agent_wf: str, goal: str, stop=None,
                         on_sub_event=None, title: str = "", context: str = "",
                         shared_context: bool = True, space: str = "",
+                        background: bool = False,
                         conversation: str = None) -> str:
     """把目标「派发到其他工作流主 Agent 执行并汇报」。返回该主 Agent 的最终文本总结。"""
+    if background:
+        return _dispatch_agent_llm_background(
+            llm, agent_wf, goal, stop=stop,
+            on_sub_event=on_sub_event, title=title, context=context,
+            shared_context=shared_context, space=space,
+            conversation=conversation)
     # 控制 id 与 run_agent_llm 内注册的一致（wf:<目标工作流>）：随事件送到 UI，
     # 子块上的「暂停/恢复」才能直接命中注册句柄
     _aid = "wf:" + str(agent_wf or "")
@@ -805,6 +904,33 @@ def dispatch_agent_llm(llm, agent_wf: str, goal: str, stop=None,
                              conversation=conversation)
     except Exception as e:
         return f"工作流 Agent 派发异常: {e}"
+
+
+def _dispatch_agent_llm_background(llm, agent_wf: str, goal: str, stop=None,
+                                    on_sub_event=None,
+                                    title: str = "", context: str = "",
+                                    shared_context: bool = False, space: str = "",
+                                    conversation: str = None) -> str:
+    """后台派发跨工作流主Agent：提交到 BackgroundTaskManager，立即返回任务ID。"""
+    def _fn(bg_task):
+        result = dispatch_agent_llm(
+            llm, agent_wf, goal, stop=stop,
+            on_sub_event=on_sub_event, title=title, context=context,
+            shared_context=shared_context, space=space,
+            conversation=conversation)
+        bg_task.set_output(result)
+        return result
+
+    bg = agent_background.bg_manager().submit(
+        task_type=agent_background.TYPE_CROSS_WORKFLOW,
+        title=f"跨工作流Agent: {agent_wf}",
+        description=str(goal or "")[:200],
+        fn=_fn,
+        metadata={"workflow": agent_wf, "conversation": conversation or ""},
+    )
+    return (f"[已后台派发] 跨工作流主Agent「{agent_wf}」已转入后台执行"
+            f"（任务ID: {bg.task_id}），不阻塞当前对话。"
+            f"\n可用 background_task_status(task_id=\"{bg.task_id}\") 查询进度。")
 
 
 def explore_goal(directory: str) -> str:
@@ -948,6 +1074,7 @@ def registered_subagents(workflow: str = "") -> list:
                 "shared_context": True if sc is None else sc,
                 "allow_chat": bool(it.get("allow_chat", True)),
                 "share_context": bool(it.get("share_context", True)),
+                "background_capable": True,
             })
     out.sort(key=lambda x: x["name"])
     _SUB_CACHE[key] = (fp, out)
@@ -1100,7 +1227,9 @@ def subagent_schemas(workflow: str = None) -> list:
         if it.get("share_context"):
             desc += "。已开启上下文共享：领导者可 look_context 查看其工作轨迹"
         desc += "。调用时可传 context 把已读取的文件内容/结论交给它（其上下文独立于主对话）；" \
-                "shared_context 由主 Agent 逐次分配决定本次是否加入共同上下文空间。"
+                "shared_context 由主 Agent 逐次分配决定本次是否加入共同上下文空间。" \
+                "★支持后台执行（background_capable）：run_in_background=true 时子Agent转入后台" \
+                "执行并立即返回任务ID，不阻塞当前对话，输出流式回传、完成后汇总。"
         props = {
             "goal": {"type": "string",
                      "description": "本次任务目标（留空使用注册的 goal 模板）"},
@@ -1114,10 +1243,15 @@ def subagent_schemas(workflow: str = None) -> list:
                                               + ("（开）" if default is True else "（关）")},
             "space": {"type": "string",
                       "description": "共同上下文空间 id（缺省用当前活跃空间；shared_context=true 时有效）"},
+            "run_in_background": {"type": "boolean",
+                                   "description": "true=该子Agent转入后台执行，立即返回任务ID，"
+                                                  "不阻塞当前对话；输出流式回传，完成后汇总。"
+                                                  "false=同步等待完成（默认）。"},
         }
         out.append({"type": "function",
                     "function": {"name": n if n.startswith("sub_") else "sub_" + n,
                                  "description": desc,
+                                 "background_capable": True,
                                  "parameters": {"type": "object",
                                                 "properties": props,
                                                 "required": []}}})

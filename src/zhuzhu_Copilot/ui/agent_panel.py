@@ -110,6 +110,7 @@ from PyQt6.QtWidgets import (
     QStyleOptionViewItem,
     QTabWidget,
     QTextBrowser,
+    QTextEdit,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -120,6 +121,7 @@ from PyQt6.QtWidgets import (
 
 from zhuzhu_Copilot.core import (
     agent_agents,
+    agent_background,
     agent_engine,
     agent_llm,
     agent_panels,
@@ -198,26 +200,20 @@ _FOCUS_GLOW_ALPHA_ON_WALLPAPER = 255
 # 可见性应靠「适度宽度 + 纯黑」保证（输入框底自 2026-10-06 起透明，见 _input_bg），
 # 不是靠加快闪烁。
 _CURSOR_FLASH_MS = 1000
-# 输入光标宽度（px）：Qt 默认 1px 在自定义背景上太细，几乎看不见，故取 2px。
-# **自定义背景下不要再加粗**：曾放大到 4px（约 14px 字号行高的 1/4），实测是一根
+# 输入光标宽度（px）：Qt 默认 1px 在自定义背景上太细，几乎看不见。
+# 非壁纸模式 2px；壁纸模式 3px（比 2px 粗 50%，在花背景上更易辨认）。
+# **不要加到 4px**：曾放大到 4px（约 14px 字号行高的 1/4），实测是一根
 # 实心黑柱、压在文字上像删除线，还把光标前后的字符挤开 —— 用户反馈「光标太大」。
 # 注意**不能**靠自绘静态竖线来「始终可见」——那会盖住原生光标、表现为
 # 「光标一直在但不闪烁」。加宽原生光标是 Qt 支持的做法，也保留原生闪烁。
 _CURSOR_WIDTH = 2
-_CURSOR_WIDTH_ON_WALLPAPER = 2
+_CURSOR_WIDTH_ON_WALLPAPER = 3
 
-# 输入光标颜色：自定义背景下固定纯黑（不走 _wallpaper_foreground 的黑白二选一）。
-# 旧实现让光标色跟随 QSS `color`，而后者在壁纸模式下按壁纸亮度取黑/白：
-# 壁纸偏亮时返回纯黑（正常），**偏暗时返回纯白** —— 亮壁纸→黑、暗壁纸→白
-# 这套「对比度最优」的推导对**文字**成立，但对光标不成立：白色光标压在
-# 当时的固定浅底托上几乎不可见（该底托 2026-10-06 起透明，见 _input_bg），
-# 用户反馈「光标颜色不是纯黑色」。
-# Qt 无独立 caret-color API，光标色只能跟随 QSS `color`，故在壁纸模式下把
-# 光标所在控件的 `color` 钉成纯黑。
+# 输入光标颜色：自定义背景下按壁纸实际亮度取纯黑/纯白（亮壁纸→黑，暗壁纸→白）。
+# Qt 无独立 caret-color API，光标色只能跟随 QSS `color`，故在壁纸模式下
+# 光标所在控件的 `color` 由 _input_fg() 按 app_wallpaper.rendered_luminance() 取对应常量。
 _CURSOR_COLOR_ON_WALLPAPER = "#000000"
-# 上述光标底色的**反色**（即历史底托色）：光标钉纯黑 → 底托恒为白。
-# 2026-10-06 起输入框底色透明（见 _input_bg），这两个常量不再参与运行时取色，
-# 仅作为「70% 白底托」回退方案的参数保留。
+# 暗壁纸下的光标色（纯白），与亮壁纸的纯黑成对使用。
 _CURSOR_COLOR_ON_WALLPAPER_INVERTED = "#FFFFFF"
 # 历史底托色的不透明度：实测 70% 时纯黑光标在**任意**壁纸上对比度 ≥9.9:1
 # （纯黑壁纸 9.9:1、深灰 12.0:1、纯白 21:1）。
@@ -304,10 +300,10 @@ def apply_cursor_flash() -> None:
 
 
 def apply_input_caret(widget) -> None:
-    """设定输入框光标宽度：壁纸下**保持常规宽度**（2px）。
+    """设定输入框光标宽度：壁纸下 3px，非壁纸 2px。
 
-    曾按背景状态放大到 4px，实测是一根实心黑柱、压在文字上像删除线，还会把光标
-    前后的字符挤开 —— 用户反馈「光标太大」。2px 在自定义背景上已足够辨认。
+    壁纸下 3px 比默认 2px 粗 50%，在花背景上更易辨认；不要加到 4px——实测是
+    一根实心黑柱、压在文字上像删除线，还会把光标前后的字符挤开。
 
     **必须保留原生光标**：Qt 没有 caret-color API，光标色只能跟随 QSS `color`，
     而闪烁由 Qt 的闪烁计时器驱动 —— 自绘静态竖线既不闪、又会盖住原生光标。
@@ -479,38 +475,28 @@ def _panel_stroke(key: str = "BORDER") -> str:
     return "transparent" if _feedback_boosted() else _base_color(key)
 
 
+def _input_fg_dark() -> bool:
+    """输入框前景是否应为深色（纯黑）：壁纸模式下按实际亮度，无图时按主题深浅。"""
+    if not _feedback_boosted():
+        return False
+    lum = app_wallpaper.rendered_luminance(scrim=_base_color("BG"))
+    if lum is not None:
+        return lum >= app_wallpaper.FOREGROUND_SWITCH_LUM
+    return _resolve_theme() != "dark"
+
+
 def _input_bg() -> str:
-    """输入框底色：壁纸透出模式下**完全透明**，与其他容器一致地让壁纸透出。
-
-    历史方案（70%白底托）的意义是给光标一个**确定的对比底** —— 自定义背景的局部明暗不可控
-    （同一张壁纸里输入框位置可能是深色区），光标若直接落在壁上，任一配色都只在
-    「另一半壁纸」上成立。历史实测（黑字压在白底合成底上的对比度）：
-
-        白底不透明度   纯白壁纸   深灰壁纸   纯黑壁纸
-             10%       21:1       2.6:11.2:1   ← 光标基本看不见
-             45%21:1       6.8:1      4.4:1
-             70%       21:1      12.0:1      9.9:1   ← 全壁纸 ≥9.9:1
-
-    70% 白底在**任意**壁纸上都能保证纯黑前景清晰（最差 9.9:1，远高于
-    4.5:1 正文可读阈值），但叠在花背景上仍是一块显眼的「白片」。
-
-    2026-10-06 起按用户要求改为透明（对齐 tests/test_app_wallpaper.py 的
-    test_input_bg_transparent_and_caret_boost_on_wallpaper）：输入框融入壁纸，
-    边界仅由描边（_input_border）承担；代价是暗壁纸上纯黑前景对比度无保证。
-    """
-    if _feedback_boosted():
-        return "transparent"
-        # 旧 QColor 70% 白底托取值（2026-10-06 起透明，回退方案见本函数文档）
-        # 原 QColor 70% 白底托取值已移除，回退方案见本函数文档
-    return PANEL
+    """输入框底色：自定义背景模式下透明，非壁纸模式用主题面板色。"""
+    return "transparent" if _feedback_boosted() else PANEL
 
 
 # ---------------------------------------------------------------------------
 # 输入框在自定义背景（壁纸）下的配色，三者必须**成组**看，改一个要同时看另外两个：
 #
-#   底色 _input_bg()      透明 —— 与其他容器一致整体让位壁纸（2026-10-06 起；历史 70% 白底托 → 实测合成底 ≥9.9:1）
-#   前景 _input_fg()       纯黑 —— 文字 + 光标同源（Qt 无独立 caret-color API）
-#   描边 _input_border()   淡灰 —— 在花背景上立住边界，又不与纯黑前景粘连
+#   底色 _input_bg()      透明 —— 与其他容器一致整体让位壁纸
+#   前景 _input_fg()       按壁纸实际亮度取纯黑/纯白 —— 文字 + 光标同源（Qt 无独立 caret-color API），亮壁纸黑、暗壁纸白
+#   描边 _input_border()   淡灰 —— 在花背景上立住边界，又不与前景色粘连
+#   光标宽度               壁纸下 3px（比默认 2px 粗 50%，在花背景上更易辨认；非壁纸保持 2px）
 #
 # 设计要点：光标在 Qt 里没有独立颜色/样式接口，只能跟随 QSS `color`、宽度只能
 # `setCursorWidth`、闪烁只能靠全局 `setCursorFlashTime`。因此可见性只能从
@@ -524,32 +510,17 @@ def _input_bg() -> str:
 
 
 def _input_border() -> str:
-    """输入框描边色：自定义背景下取淡灰（与纯黑文字/光标形成边界）。
-
-    浅灰描边（#E3E8F0）压在花背景上会糊成「透明」，输入框边界立不住 —— 这是取淡灰
-    而不是主题描边色的原因。但**不能**再取 `_wallpaper_foreground()`：那是按壁纸
-    亮度在黑/白间切换的「对比度最优色」，暗壁纸下返回纯黑，会与同为纯黑的文字/光标
-    粘在一起、输入框边界消失（且与「前景纯黑」的设计自相矛盾）。
-    非壁纸场景维持主题边框色。
-    """
-    if _feedback_boosted():
-        return _INPUT_CARET_BORDER
-    return BORDER
+    """输入框描边色：自定义背景下取淡灰，非壁纸模式用主题边框色。"""
+    return _INPUT_CARET_BORDER if _feedback_boosted() else BORDER
 
 
 def _input_fg() -> str:
-    """输入框前景色（文字 + **光标**）：自定义背景下钉成纯黑。
+    """输入框前景色（文字 + **光标**）：自定义背景下固定纯黑，非壁纸模式用主题文字色。
 
     Qt 没有独立的 caret-color API —— 光标色与文字色共用 QSS 的 `color`，二者
-    无法分开设置。因此要让光标纯黑，`color` 就必须是纯黑。
-
-    注意：输入框底色自 2026-10-06 起透明（见 `_input_bg`），暗壁纸上纯黑
-    文字/光标的对比度不再由底托保证，取决于壁纸局部明暗；历史上曾用
-    70% 白底托兜底（实测合成底 ≥9.9:1 对比度）。
-
-    旧实现让 `color` 跟随 `_wallpaper_foreground()`（亮壁纸黑、暗壁纸白），
-    本意是「文字取对比度最优色」，但实测暗壁纸下光标变白、压在浅底托上几乎不可见，
-    且与用户要求的纯黑不符。
+    无法分开设置。壁纸亮度由 app_wallpaper.rendered_luminance() 实测（含压暗纱），
+    低于 FOREGROUND_SWITCH_LUM 取纯白、高于取纯黑，保证在任意壁纸上对比度最优。
+    壁纸不可用时回退到按主题深浅取色。
     """
     if _feedback_boosted():
         return _CURSOR_COLOR_ON_WALLPAPER
@@ -3955,7 +3926,7 @@ class _AgentSettingsDialog(QDialog):
             _line_icon("pause" if playing and not mp.is_paused() else "play",
                        18, "#06281B" if playing else "#06281B"))
         self.music_toggle.setToolTip(_ui("暂停") if playing and not mp.is_paused() else _ui("播放"))
-        self.music_mode.setText(f" {mp.mode_label()}")
+        self.music_mode.setText(_ui(" " + mp.mode_label()))
         self.music_mode.setIcon(
             _line_icon("shuffle" if mp.mode() == "random"
                        else "repeat", 16, self._TEXT))
@@ -8425,6 +8396,389 @@ def _usage_palette() -> dict:
     }
 
 
+class _BackgroundTaskWidget(QFrame):
+    """单个后台任务的状态卡片：显示标题、状态、可展开查看完整输出与元数据、可取消、可复制。
+
+    布局为 QVBoxLayout：
+    - 第一行：状态行（指示灯 + 标题/状态文本 + 展开 + 复制 + 取消）
+    - 第二行：元数据栏（任务类型 / ID / 开始时间 / 耗时，展开时显示）
+    - 第三行：输出区（展开时显示，从 BackgroundTaskManager 拉取完整输出）"""
+    cancel_clicked = pyqtSignal(str)  # task_id
+
+    def __init__(self, task_id: str, title: str, parent=None):
+        super().__init__(parent)
+        self.task_id = task_id
+        self._expanded = False
+        self._start_time = ""
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet("""
+            _BackgroundTaskWidget {
+                background: rgba(120, 180, 255, 0.08);
+                border: 1px solid rgba(120, 180, 255, 0.25);
+                border-radius: 8px;
+                padding: 6px;
+            }
+        """)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(4)
+
+        # —— 第一行：状态行 ——
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+
+        # 状态指示灯
+        self.status_dot = QLabel("●")
+        self.status_dot.setStyleSheet("color: #4a9eff; font-size: 14px;")
+        row.addWidget(self.status_dot)
+
+        # 标题 + 状态文本
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(2)
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-size: 12px; font-weight: 600;")
+        self.title_label.setWordWrap(True)
+        info_layout.addWidget(self.title_label)
+        self.status_label = QLabel(_ui("运行中…"))
+        self.status_label.setStyleSheet("font-size: 11px; color: #888;")
+        info_layout.addWidget(self.status_label)
+        row.addLayout(info_layout, 1)
+
+        # 展开/收起按钮
+        self.expand_btn = QPushButton(_ui("详情"))
+        self.expand_btn.setFixedHeight(24)
+        self.expand_btn.setStyleSheet("""
+            QPushButton { font-size: 11px; padding: 2px 10px; border-radius: 4px;
+                          background: rgba(120,180,255,0.15); color: #4a9eff;
+                          border: 1px solid rgba(120,180,255,0.3); }
+            QPushButton:hover { background: rgba(120,180,255,0.25); }
+        """)
+        self.expand_btn.clicked.connect(self._toggle_expand)
+        row.addWidget(self.expand_btn)
+
+        # 复制输出按钮（展开时才显示）
+        self.copy_btn = QPushButton(_ui("复制"))
+        self.copy_btn.setFixedHeight(24)
+        self.copy_btn.setStyleSheet("""
+            QPushButton { font-size: 11px; padding: 2px 10px; border-radius: 4px;
+                          background: rgba(255,255,255,0.08); color: #aaa;
+                          border: 1px solid rgba(255,255,255,0.15); }
+            QPushButton:hover { background: rgba(255,255,255,0.15); }
+        """)
+        self.copy_btn.clicked.connect(self._copy_output)
+        self.copy_btn.hide()
+        row.addWidget(self.copy_btn)
+
+        # 取消按钮
+        self.cancel_btn = QPushButton(_ui("取消"))
+        self.cancel_btn.setFixedHeight(24)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton { font-size: 11px; padding: 2px 8px; border-radius: 4px;
+                          background: rgba(255,100,100,0.15); color: #e55; border: 1px solid rgba(255,100,100,0.3); }
+            QPushButton:hover { background: rgba(255,100,100,0.25); }
+        """)
+        self.cancel_btn.clicked.connect(lambda: self.cancel_clicked.emit(self.task_id))
+        row.addWidget(self.cancel_btn)
+
+        root.addLayout(row)
+
+        # —— 第二行：元数据栏（展开时显示）——
+        self.meta_label = QLabel("")
+        self.meta_label.setStyleSheet("font-size: 10px; color: #777; padding: 2px 4px;")
+        self.meta_label.setWordWrap(True)
+        self.meta_label.hide()
+        root.addWidget(self.meta_label)
+
+        # —— 第三行：输出区域（展开时显示）——
+        self.output_area = QTextEdit()
+        self.output_area.setReadOnly(True)
+        self.output_area.setMinimumHeight(180)
+        self.output_area.setMaximumHeight(400)
+        self.output_area.setStyleSheet("""
+            QTextEdit { font-size: 11px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1);
+                        border-radius: 4px; padding: 4px; }
+        """)
+        self.output_area.hide()
+        root.addWidget(self.output_area)
+        self._full_text = ""  # 累积的完整输出文本（用于Markdown渲染）
+        # 渲染节流：高频流式输出时批量重绘，避免每次append都setMarkdown导致卡顿
+        self._render_dirty = False
+        self._render_timer = None  # 延迟创建（避免未展开时无谓开销）
+
+    def set_start_time(self, ts: str):
+        self._start_time = ts
+
+    def update_status(self, status: str, duration: float = 0):
+        """更新状态显示。status: running/done/failed/cancelled"""
+        if status == "running":
+            self.status_dot.setStyleSheet("color: #4a9eff; font-size: 14px;")
+            self.status_label.setText(_uif("运行中… ({a0}s)", a0=f"{duration:.0f}"))
+            self.cancel_btn.show()
+        elif status == "done":
+            self.status_dot.setStyleSheet("color: #4caf50; font-size: 14px;")
+            self.status_label.setText(_uif("完成 ({a0}s)", a0=f"{duration:.1f}"))
+            self.cancel_btn.hide()
+        elif status == "failed":
+            self.status_dot.setStyleSheet("color: #e55; font-size: 14px;")
+            self.status_label.setText(_ui("失败"))
+            self.cancel_btn.hide()
+        elif status == "cancelled":
+            self.status_dot.setStyleSheet("color: #999; font-size: 14px;")
+            self.status_label.setText(_ui("已取消"))
+            self.cancel_btn.hide()
+        # 状态变更后若已展开，刷新元数据
+        if self._expanded:
+            self._refresh_meta_and_output()
+
+    def append_output(self, text: str):
+        """累积输出文本；仅在展开可见时调度批量渲染（节流，避免高频setMarkdown卡顿）。"""
+        if text:
+            self._full_text += str(text)
+            # 未展开时不渲染（节省CPU），展开时会从管理器拉取完整输出
+            if self._expanded and self.output_area.isVisible():
+                self._schedule_render()
+
+    def _schedule_render(self):
+        """调度一次延迟渲染（100ms内多次调用合并为一次）。"""
+        self._render_dirty = True
+        if self._render_timer is None:
+            from PyQt6.QtCore import QTimer
+            self._render_timer = QTimer(self)
+            self._render_timer.setSingleShot(True)
+            self._render_timer.timeout.connect(self._do_render)
+        if not self._render_timer.isActive():
+            self._render_timer.start(100)  # 100ms批量窗口
+
+    def _do_render(self):
+        """实际执行渲染（由定时器触发）。"""
+        self._render_dirty = False
+        self._render_output()
+
+    def _render_output(self):
+        """将 _full_text 渲染为Markdown富文本，并滚动到底部。"""
+        # 停止待处理的节流定时器，避免重复渲染
+        if self._render_timer is not None and self._render_timer.isActive():
+            self._render_timer.stop()
+        self._render_dirty = False
+        try:
+            if not self._full_text.strip():
+                return
+            # QTextEdit.setMarkdown 支持标题/粗体/代码块/列表等基础Markdown
+            self.output_area.setMarkdown(self._full_text)
+            # 自动滚动到底部
+            sb = self.output_area.verticalScrollBar()
+            sb.setValue(sb.maximum())
+        except Exception:
+            # Markdown渲染失败时降级为纯文本
+            try:
+                self.output_area.setPlainText(self._full_text)
+            except Exception:
+                pass
+
+    def cleanup(self):
+        """widget 移除前调用：停止定时器，避免回调已删除对象导致崩溃。"""
+        try:
+            if self._render_timer is not None:
+                if self._render_timer.isActive():
+                    self._render_timer.stop()
+                self._render_timer = None
+        except Exception:
+            pass
+
+    def refresh_full_output(self):
+        """从 BackgroundTaskManager 拉取该任务的完整输出与元数据（展开时调用）。"""
+        self._refresh_meta_and_output()
+
+    def _refresh_meta_and_output(self):
+        try:
+            t = agent_background.bg_manager().get(self.task_id)
+            if t is None:
+                self.meta_label.setText(_ui("（任务数据已清理）"))
+                self._full_text = _ui("（任务数据已清理，无法查看详细内容）")
+                self._render_output()
+                return
+            # 元数据
+            type_map = {
+                "command": _ui("后台命令"),
+                "subagent": _ui("后台子Agent"),
+                "cross_workflow": _ui("跨工作流Agent"),
+                "batch": _ui("后台批量派发"),
+            }
+            status_map = {
+                "running": _ui("运行中"),
+                "done": _ui("完成"),
+                "failed": _ui("失败"),
+                "cancelled": _ui("已取消"),
+                "pending": _ui("等待中"),
+            }
+            type_text = type_map.get(t.task_type, t.task_type)
+            status_text = status_map.get(t.status, t.status)
+            started = ""
+            if t.started_at:
+                import time as _time
+                started = _time.strftime("%H:%M:%S", _time.localtime(t.started_at))
+            meta_parts = [
+                _uif("类型: {a0}", a0=type_text),
+                _uif("状态: {a0}", a0=status_text),
+                _uif("ID: {a0}", a0=t.task_id),
+            ]
+            if started:
+                meta_parts.append(_uif("开始: {a0}", a0=started))
+            meta_parts.append(_uif("耗时: {a0}s", a0=f"{t.duration:.1f}"))
+            if t.description:
+                meta_parts.append(_uif("描述: {a0}", a0=t.description[:120]))
+            self.meta_label.setText("  |  ".join(meta_parts))
+            # 完整输出：从管理器拉取，若比当前累积更多则替换
+            full = t.output or ""
+            if full and len(full) > len(self._full_text):
+                self._full_text = full
+            # 错误信息始终追加（无论是否有输出）
+            if t.error:
+                err_block = f"\n\n--- {_ui('错误')} ---\n{t.error}"
+                if err_block not in self._full_text:
+                    self._full_text += err_block
+            # 空输出兜底：提示用户当前无输出
+            if not self._full_text.strip():
+                if t.status == "running":
+                    self._full_text = _ui("（任务运行中，暂无输出…）")
+                elif t.status == "pending":
+                    self._full_text = _ui("（任务等待执行…）")
+                else:
+                    self._full_text = _ui("（该任务无输出内容）")
+            self._render_output()
+        except Exception:
+            pass
+
+    def _toggle_expand(self):
+        self._expanded = not self._expanded
+        if self._expanded:
+            self.expand_btn.setText(_ui("收起"))
+            self.meta_label.show()
+            self.output_area.show()
+            self.copy_btn.show()
+            self._refresh_meta_and_output()
+        else:
+            self.expand_btn.setText(_ui("详情"))
+            self.meta_label.hide()
+            self.output_area.hide()
+            self.copy_btn.hide()
+
+    def _copy_output(self):
+        try:
+            text = self._full_text
+            if text:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.clipboard().setText(text)
+                self.copy_btn.setText(_ui("已复制"))
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1500, lambda: self.copy_btn.setText(_ui("复制")))
+        except Exception:
+            pass
+
+
+class _BackgroundTaskPanel(QWidget):
+    """后台任务列表面板：显示所有活跃/最近的后台任务，支持刷新和取消。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._widgets: dict = {}  # task_id -> _BackgroundTaskWidget
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # 标题栏
+        header = QHBoxLayout()
+        self.title_label = QLabel(_ui("后台任务"))
+        self.title_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #888;")
+        header.addWidget(self.title_label)
+        header.addStretch()
+        self.count_label = QLabel(_ui("0 个运行中"))
+        self.count_label.setStyleSheet("font-size: 11px; color: #666;")
+        header.addWidget(self.count_label)
+        layout.addLayout(header)
+
+        # 任务列表容器
+        self.tasks_container = QWidget()
+        self.tasks_layout = QVBoxLayout(self.tasks_container)
+        self.tasks_layout.setContentsMargins(0, 0, 0, 0)
+        self.tasks_layout.setSpacing(4)
+        self.tasks_layout.addStretch()
+        layout.addWidget(self.tasks_container)
+
+        # 空状态提示
+        self.empty_label = QLabel(_ui("暂无后台任务"))
+        self.empty_label.setStyleSheet("font-size: 11px; color: #666; padding: 8px;")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tasks_layout.insertWidget(0, self.empty_label)
+
+        self.hide()  # 默认隐藏，有后台任务时显示
+
+    def add_task(self, task_id: str, title: str):
+        if task_id in self._widgets:
+            return
+        w = _BackgroundTaskWidget(task_id, title)
+        w.cancel_clicked.connect(self._on_cancel)
+        # 插入到 stretch 之前
+        self.tasks_layout.insertWidget(self.tasks_layout.count() - 1, w)
+        self._widgets[task_id] = w
+        self.empty_label.hide()
+        self.show()
+        self._update_count()
+
+    def update_task(self, task_id: str, status: str, duration: float = 0, output: str = ""):
+        w = self._widgets.get(task_id)
+        if w:
+            w.update_status(status, duration)
+            if output:
+                w.append_output(output)
+        self._update_count()
+
+    def remove_task(self, task_id: str, delay_ms: int = 5000):
+        """完成/失败的任务延迟移除（默认5秒后自动消失）。"""
+        if task_id in self._widgets:
+            QTimer.singleShot(delay_ms, lambda: self._do_remove(task_id))
+
+    def _do_remove(self, task_id: str):
+        w = self._widgets.pop(task_id, None)
+        if w:
+            try:
+                w.cleanup()   # 停止定时器，防止回调已删除对象
+            except Exception:
+                pass
+            w.setParent(None)
+            w.deleteLater()
+        self._update_count()
+        if not self._widgets:
+            self.empty_label.show()
+            QTimer.singleShot(300, self.hide)
+
+    def _on_cancel(self, task_id: str):
+        """用户点击取消：无论底层任务是否能真正停止，UI 侧立即标记为已取消并移除。
+        （底层任务可能卡在模型请求中不响应取消事件，不能因此让用户无法关闭面板。）"""
+        w = self._widgets.get(task_id)
+        # 1. 通知管理器取消（尽力而为，不保证底层线程立即停止）
+        try:
+            agent_background.bg_manager().cancel(task_id)
+        except Exception:
+            pass
+        # 2. UI 侧立即生效：标记为已取消，隐藏取消按钮，调度移除
+        if w:
+            try:
+                w.update_status("cancelled")
+            except Exception:
+                pass
+            self.remove_task(task_id, 3000)
+        self._update_count()
+
+    def _update_count(self):
+        running = sum(1 for w in self._widgets.values()
+                       if w.status_label.text().startswith(_ui("运行中")))
+        total = len(self._widgets)
+        self.count_label.setText(_uif("{a0} 运行中 / {a1} 总计", a0=str(running), a1=str(total)))
+        self.title_label.setText(_uif("后台任务 ({a0})", a0=str(total)))
+
+
 class _StatBar(QWidget):
     """分段进度条（自绘）：圆角轨道 + 多段填充 + 阈值刻线标记。
 
@@ -11795,13 +12149,13 @@ class GitLogWindow(_RoundedFloatWindow):
                 payload["workdir"] = ""
             try:
                 if not agent_git.is_git_repo():
-                    payload["error"] = "（当前工作目录不是 Git 仓库）"
+                    payload["error"] = _ui("（当前工作目录不是 Git 仓库）")
                 elif view == "commit":
                     payload["rows"] = agent_git.list_commits()
                 else:
                     payload["rows"] = agent_git.list_branches()
             except Exception as e:
-                payload["error"] = f"（读取失败：{e}）"
+                payload["error"] = _uif("（读取失败：{err}）", err=str(e))
             try:
                 self.data_ready.emit(payload)
             except RuntimeError:
@@ -13240,6 +13594,7 @@ class AgentPanel(QDialog):
         self._admin_dnd = False
         self._admin_drop_filter = None
         self._scroll_pending = False   # 滚动调度去重标志
+        self._auto_scroll = True       # 流式输出时是否自动滚到底部（用户上滚后变 False）
         # P1 长对话优化：批量重建消息流期间为 True —— 新气泡挂载前保持隐藏，
         # 由 _render_history_all 收尾时整批一次性显示（消除逐条 setVisible 的布局级联）
         self._build_inflight = False
@@ -13820,6 +14175,24 @@ class AgentPanel(QDialog):
         self.msg_lay.addStretch(1)   # 末尾弹性空间，消息自顶向下堆叠
         self.msg_area.setWidget(container)
         self.msg_container = container   # 消息流容器：批量重建期整体隐藏（见 _hist_clear_stream）
+        # 一键回底按钮：流式输出时用户上滚查看历史后出现，圆形悬浮于聊天区底部正中
+        # （输入框上沿）。点击后滚回底部并恢复自动滚动。仅当内容可滚动且不在底部时显示。
+        self._scroll_bottom_btn = QPushButton(_line_icon("chev", 18, "#FFFFFF"), "", self.msg_area)
+        self._scroll_bottom_btn.setFixedSize(40, 40)
+        self._scroll_bottom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._scroll_bottom_btn.setAutoDefault(False)
+        self._scroll_bottom_btn.setIconSize(QSize(18, 18))
+        self._scroll_bottom_btn.setToolTip(_ui("回到底部"))
+        self._scroll_bottom_btn.setStyleSheet(
+            "QPushButton { background: rgba(47,82,216,0.92); border: 1px solid rgba(255,255,255,0.15);"
+            " border-radius: 20px; }"
+            "QPushButton:hover { background: rgba(47,82,216,1.0); }"
+            "QPushButton:pressed { background: rgba(37,67,184,1.0); }")
+        self._scroll_bottom_btn.clicked.connect(self._on_scroll_bottom_btn)
+        self._scroll_bottom_btn.hide()
+        self._scroll_bottom_btn.raise_()
+        self.msg_area.installEventFilter(self)       # 尺寸变化时重定位按钮
+        self.msg_area.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
         # 初始视图登记为面板活动视图（后续每个会话各自持有，见 _new_stream_view）
         self._active_view = {"w": container, "lay": self.msg_lay,
                              "bubbles": self._bubble_widgets, "segs": self._bubble_segs,
@@ -13872,6 +14245,11 @@ class AgentPanel(QDialog):
         self.queue_panel.edit_clicked.connect(self._on_queue_edit)
         self.queue_panel.delete_clicked.connect(self._on_queue_delete)
         self.queue_panel.clear_clicked.connect(self._on_queue_clear)
+
+        # 后台任务状态面板：默认隐藏，检测到后台任务启动时才显示；
+        # 完成/失败的任务延迟自动移除，不常驻占用布局空间。
+        self.bg_task_panel = _BackgroundTaskPanel(self)
+        self.bg_task_panel.hide()
 
         # 输入栏
         bottom = QHBoxLayout()
@@ -13940,6 +14318,8 @@ class AgentPanel(QDialog):
         bottom.addWidget(self.action_btn)
         # 排队面板：内容自适应高度（消息行数决定），紧贴输入行上方，无底部留白
         right.addWidget(self.queue_panel)
+        # 后台任务状态区：紧贴输入行上方，有任务时才占位显示
+        right.addWidget(self.bg_task_panel)
         # 工作目录提示条：当前对话未设置专属工作目录时显示「去设置」按钮，点击跳转
         # 对话流设置页对应行并闪烁边框提醒位置（紧贴输入行上方，见 _update_wd_hint）
         self.wd_hint = QWidget()
@@ -14483,7 +14863,8 @@ class AgentPanel(QDialog):
             mcp_manager=self._mcp,
             on_delta=lambda s, _sid=sid: self.evt_signal.emit(_sid, "delta", s),
             on_status=lambda s, _sid=sid: self.evt_signal.emit(_sid, "status", s),
-            on_result=lambda n, t, im, _sid=sid: self.evt_signal.emit(_sid, "result", (n, t, im)),
+            on_result=lambda n, t, im, _sid=sid:
+                self.evt_signal.emit(_sid, "result", (n, t, im)),
             on_reasoning=lambda s, _sid=sid: self.evt_signal.emit(_sid, "reasoning", s),
             # 第 5 项 AgentControl id 必须一起转发：子块「暂停/恢复」要用它命中注册句柄
             on_sub_event=lambda k, i, t, s, a="", _sid=sid:
@@ -14919,6 +15300,7 @@ class AgentPanel(QDialog):
 
     def _do_send(self, p: dict):
         """按已解析的 payload 发送消息（前台：渲染用户气泡 + 启动任务）"""
+        self._auto_scroll = True    # 用户主动发消息：恢复自动滚动并回底
         text = p.get("text") or ""
         ai_text = p.get("ai_text") or text
         skill_names = p.get("skill_names") or []
@@ -15164,6 +15546,7 @@ class AgentPanel(QDialog):
     def _switch_to(self, sid: str):
         """切换会话（多对话并发）：当前会话后台任务不中断；目标会话若已有内存态
         （可能仍在后台生成）直接恢复渲染，首次进入则后台读盘后一次性渲染。"""
+        self._auto_scroll = True    # 切换会话：恢复自动滚动
         self._commit_sess()
         self._persist_current()
         self._session_id = sid
@@ -18588,9 +18971,11 @@ class AgentPanel(QDialog):
             if self._fun_bubble is not None:
                 self._fun_bubble.hide()
 
-    def _scroll_bottom(self):
+    def _scroll_bottom(self, force: bool = False):
         # 流式高频调用时合并：40ms 批量滚动一次（≈刷新节拍，跟手不跳）+ 400ms 兜底
         # （气泡高度与布局异步稳定后确保滚到最底部），避免每个 token 触发滚动重排
+        if force:
+            self._auto_scroll = True       # 强制回底：用户发送消息 / 点击回底按钮等
         if self._scroll_pending:
             return
         self._scroll_pending = True
@@ -18599,8 +18984,50 @@ class AgentPanel(QDialog):
 
     def _do_scroll_bottom(self):
         self._scroll_pending = False
+        # 用户上滚查看历史时不强制回底：保持用户当前阅读位置，回底按钮负责手动回底
+        if not self._auto_scroll:
+            self._update_scroll_bottom_btn()
+            return
         bar = self.msg_area.verticalScrollBar()
         bar.setValue(bar.maximum())
+        self._update_scroll_bottom_btn()
+
+    def _on_scroll_value_changed(self):
+        """滚动条位置变化：在底部则恢复自动滚动并隐藏回底按钮，否则显示按钮。"""
+        bar = self.msg_area.verticalScrollBar()
+        at_bottom = bar.maximum() <= 0 or bar.value() >= bar.maximum() - 2
+        if at_bottom:
+            self._auto_scroll = True
+        else:
+            # 用户主动离开底部（滚轮/拖动）：暂停自动滚动，流式输出不再把视图拽回底部
+            self._auto_scroll = False
+        self._update_scroll_bottom_btn()
+
+    def _update_scroll_bottom_btn(self):
+        """回底按钮显隐：内容可滚动且不在底部时才显示。"""
+        btn = getattr(self, "_scroll_bottom_btn", None)
+        if btn is None:
+            return
+        bar = self.msg_area.verticalScrollBar()
+        show = bar.maximum() > 0 and bar.value() < bar.maximum() - 2
+        if btn.isVisible() != show:
+            btn.setVisible(show)
+            if show:
+                btn.raise_()
+
+    def _position_scroll_bottom_btn(self):
+        """把回底按钮定位到聊天区底部正中（输入框上沿）。"""
+        btn = getattr(self, "_scroll_bottom_btn", None)
+        if btn is None or not self.msg_area:
+            return
+        area = self.msg_area
+        x = (area.width() - btn.width()) // 2
+        y = area.height() - btn.height() - 12
+        btn.move(max(0, x), max(0, y))
+
+    def _on_scroll_bottom_btn(self):
+        """点击回底按钮：滚到底部并恢复自动滚动。"""
+        self._scroll_bottom(force=True)
 
     # ---------- AI 气泡内容（思考 / 操作 / 正文 一体化） ----------
     def _ensure_ai_bubble(self):
@@ -21822,7 +22249,7 @@ class AgentPanel(QDialog):
     def _remove_session(self, sid: str, name: str):
         """右键删除对话：确认后删除文件；若删除的是当前对话则清理并切到最近对话/新建"""
         if not self._confirm_box(_ui("永久删除对话"),
-                                 f"确定永久删除对话「{name}」吗？\n所有记录将无法恢复！"):
+                                 _uif("确定永久删除对话「{a0}」吗？\n所有记录将无法恢复！", a0=name)):
             return
         self._delete_session(sid)
         # 停止并清理该会话的独立引擎与内存态
@@ -22150,6 +22577,9 @@ class AgentPanel(QDialog):
         _inp = getattr(self, "input", None)
         if _inp is None:
             return super().eventFilter(obj, event)
+        # 聊天区尺寸变化：重定位悬浮回底按钮
+        if obj is getattr(self, "msg_area", None) and event.type() == QEvent.Type.Resize:
+            self._position_scroll_bottom_btn()
         if obj is _inp and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Tab and self.cmd_list.isVisible():
                 return self._complete_cmd()
@@ -22195,7 +22625,7 @@ class AgentPanel(QDialog):
 
     def _pick_attachments(self, *_):
         """「+」上传按钮：文件选择器多选，图片/文件均可（纯文本模型自动过滤图片）"""
-        paths, _ = QFileDialog.getOpenFileNames(self, "选择文件/图片发送给 AI")
+        paths, _ = QFileDialog.getOpenFileNames(self, _ui("选择文件/图片发送给 AI"))
         for p in paths or []:
             self._add_attachment(p)
 
@@ -23078,6 +23508,10 @@ class AgentPanel(QDialog):
         命令执行结果先输出（默认展开可见），短暂展示后自动折叠为一行，可点击展开/收起。"""
         self._stop_send_spin()
         self._last_activity = time.time()
+        # 后台任务流式输出：仅更新底部面板，不渲染进 AI 气泡（在主线程处理，避免跨线程UI操作）
+        if name and name.startswith("[bg:") and name.endswith("]"):
+            self._handle_bg_result(name, text)
+            return
         self._ensure_ai_bubble()
         # AI 使用任务清单工具时，同步独立 todos 窗口（常显，实时刷新进度）
         if name in ("update_todo", "list_todo"):
@@ -23271,9 +23705,66 @@ class AgentPanel(QDialog):
             pass
         return seg
 
+    # ---------- 后台任务状态区 ----------
+    def _handle_bg_status(self, s: str):
+        """解析后台任务状态通知并更新底部状态面板（在主线程经 _on_status 调用）。
+        仅更新底部面板，不在对话流中插入提示。"""
+        try:
+            # 格式1: "后台任务已启动「标题」(ID: bg_xxx)，你可以继续发送其他消息"
+            m = re.search(r"后台任务已启动「(.+?)」\(ID:\s*(bg_\w+)\)", s)
+            if m:
+                title, tid = m.group(1), m.group(2)
+                # 校验：任务必须真实存在于 BackgroundTaskManager，防止误匹配
+                if agent_background.bg_manager().get(tid) is not None:
+                    self.bg_task_panel.add_task(tid, title)
+                return
+            # 格式2: "后台任务完成「标题」(ID: bg_xxx)，耗时 Xs"
+            m = re.search(r"后台任务完成「(.+?)」\(ID:\s*(bg_\w+)\)，耗时\s*([\d.]+)s", s)
+            if m:
+                title, tid, dur = m.group(1), m.group(2), float(m.group(3))
+                self.bg_task_panel.update_task(tid, "done", dur)
+                self.bg_task_panel.remove_task(tid, 8000)
+                return
+            # 格式3: "后台任务失败「标题」: ..."
+            m = re.search(r"后台任务失败「(.+?)」", s)
+            if m:
+                title = m.group(1)
+                m2 = re.search(r"ID:\s*(bg_\w+)", s)
+                tid = m2.group(1) if m2 else ""
+                if tid:
+                    self.bg_task_panel.update_task(tid, "failed")
+                    self.bg_task_panel.remove_task(tid, 10000)
+                return
+            # 格式4: "后台任务已取消「标题」(ID: bg_xxx)"
+            m = re.search(r"后台任务已取消「(.+?)」\(ID:\s*(bg_\w+)\)", s)
+            if m:
+                title, tid = m.group(1), m.group(2)
+                self.bg_task_panel.update_task(tid, "cancelled")
+                self.bg_task_panel.remove_task(tid, 6000)
+        except Exception:
+            pass
+
+    def _handle_bg_result(self, name: str, text: str):
+        """处理后台任务流式输出：on_result 的 name 为 [bg:task_id] 格式。"""
+        try:
+            if name and name.startswith("[bg:") and name.endswith("]"):
+                tid = name[4:-1]
+                panel = getattr(self, "bg_task_panel", None)
+                if panel is not None and tid in panel._widgets:
+                    panel.update_task(tid, "running", output=text)
+        except Exception:
+            pass
+
     def _on_status(self, s: str):
         self._stop_send_spin()
         self._last_activity = time.time()
+        # 后台任务通知识别（仅匹配"后台任务"前缀的状态文本，避免工具返回值误触发；
+        # 不阻断下方正常状态文本渲染）
+        if s and s.startswith("后台任务"):
+            try:
+                self._handle_bg_status(s)
+            except Exception:
+                pass
         if s == "正在思考…":
             self._start_think()
         elif s.startswith("待执行工具:"):

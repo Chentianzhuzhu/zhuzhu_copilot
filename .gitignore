@@ -85,3 +85,7 @@ build/smoke_result.txt
 
 # 本地仓库历史备份快照（体积大，且与源码重复；勿入库）
 .git_broken_backup/
+
+# 第三方 npm 包本地解压与 tarball（不入库）
+package/
+*.tgz

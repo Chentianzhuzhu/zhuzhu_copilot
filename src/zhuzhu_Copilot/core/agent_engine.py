@@ -24,6 +24,8 @@ from PyQt6.QtGui import QImage
 from zhuzhu_Copilot.core import agent_llm, agent_tools, agent_skills, agent_subagent, agent_tts
 from zhuzhu_Copilot.core import agent_workflow
 from zhuzhu_Copilot.core import agent_sandbox
+from zhuzhu_Copilot.core import agent_background
+from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 from zhuzhu_Copilot.core.agent_json import parse_tool_args
 # agent_screen.virtual_desktop 惰性导入：其模块导入链约 500ms，仅任务实际
 # 需要切虚拟桌面时（auto_vd 开启）才加载，加快 AI 面板打开与首任务启动
@@ -85,7 +87,7 @@ _TTS_MAX_SEG = 60
 # 默认上下文窗口：按模型实际窗口动态计算阈值。中文模型实际 token 密度约 0.5-0.7/字，
 # 阈值设高避免频繁压缩打断缓存前缀。窗口来源优先级由 agent_llm.resolve_context 决定：
 # 1M 开关 > 上游服务商声明 > 服务商配置手填 > 内置已知表 > 模型名推断。
-_DEFAULT_CTX_WINDOW = 131072
+_DEFAULT_CTX_WINDOW = 262144
 
 # 预留输出（token）：上游声明 max_output_tokens 时优先，否则按此值预留。
 # 所有上下文阈值都基于「可用输入预算 = 窗口 − 预留输出」计算（主流 agent 应用口径：
@@ -553,6 +555,12 @@ class AgentEngine:
         self._tts_stop = threading.Event()  # 立即停止朗读（用户手动停止时置位）
         self._tts_thread = None         # 朗读工作线程
         self._control = None            # 工作团控制句柄（start/run 时注册，结束注销；复用 _stop）
+        # 后台任务：本轮启动的后台任务ID列表（用于完成后通知/清理）
+        self._bg_tasks_this_turn: list = []
+        # 后台任务输出去重：避免同一段输出被重复推送
+        self._bg_output_seen: dict = {}
+        # 复杂任务自动后台标记（_run_inner 入口按 assess_task_complexity 设置）
+        self._auto_background: bool = False
 
     # ---------- 控制 ----------
     def stop(self):
@@ -1179,6 +1187,30 @@ class AgentEngine:
         with lock(key):
             return _call()
 
+    def _should_run_in_background(self, name: str, args: dict) -> bool:
+        """判断本次工具调用是否应后台执行：
+        1. 显式传了 run_in_background=true → 任何 background_capable 工具均后台；
+        2. 复杂任务自动后台模式下，仅 run_command 自动后台（子Agent派发工具内部
+           已是线程池并发，不需要再套后台层；前台同步派发不显示在底部后台任务栏）。
+        """
+        args = args or {}
+        raw = args.get("run_in_background")
+        # 健壮布尔解析：LLM 可能传 True/"true"/"True"/1/"1"，也可能传 "false"/0/None
+        if isinstance(raw, bool):
+            explicit = raw
+        elif isinstance(raw, (int, float)):
+            explicit = raw != 0
+        elif isinstance(raw, str):
+            explicit = raw.strip().lower() in ("true", "1", "yes", "y", "on")
+        else:
+            explicit = False
+        if explicit:
+            return True
+        # 复杂任务自动后台：仅对 run_command 生效，子Agent派发保持前台并发
+        if getattr(self, "_auto_background", False) and name == "run_command":
+            return True
+        return False
+
     def _execute(self, name: str, args: dict, allow_dangerous: bool = False) -> dict:
         """执行内置或 MCP 工具，返回 {"text", "images"}"""
         # 系统层面（sandbox 级）硬拦截：禁用工具/禁用全部 —— schema 已不外露，
@@ -1233,6 +1265,9 @@ class AgentEngine:
                 self._skills_read.add(mp.group(1))
         if name in agent_tools.SUB_AGENT_TOOLS or \
                 agent_subagent.subagent_tool(name, self.workflow) is not None:
+            # 后台执行：立即返回任务ID，不阻塞
+            if self._should_run_in_background(name, args):
+                return self._exec_subagent_background(name, args)
             # 子 Agent 工具：并发派发子任务（可读写项目文件）；不做轮数与时间上限，
             # 长任务持续到完成或被用户停止（stop），与主 Agent 无轮数上限一致。
             # 含工作流自定义子 Agent（sub_<name>，注册进现有工作流）。
@@ -1246,6 +1281,9 @@ class AgentEngine:
             except Exception as e:
                 return {"text": f"[子Agent错误] {name}: {e}", "images": []}
         if name in self._builtin_names:
+            # 后台命令执行
+            if name == "run_command" and self._should_run_in_background(name, args):
+                return self._exec_command_background(args)
             # 内置工具（run_command 等）同样可能长时间阻塞 → 用带超时/可中断封装
             try:
                 timeout = _tool_wait_timeout(name)
@@ -1339,14 +1377,225 @@ class AgentEngine:
                 return {"text": f"[MCP 错误] {e}", "images": []}
         return {"text": f"[未知工具] {name}", "images": []}
 
+    # ---------- 后台执行（命令 / 子 Agent） ----------
+    def _exec_command_background(self, args: dict) -> dict:
+        """后台执行命令：提交到 BackgroundTaskManager，立即返回任务ID。
+        命令实际执行复用 agent_tools._run_command，但在后台线程中运行，
+        输出通过 task.append_output 流式累积，并触发 on_status 回调通知UI。"""
+        from zhuzhu_Copilot.core import agent_background as _ab
+        cmd = str((args or {}).get("command") or "").strip()
+        title = cmd[:60] + ("..." if len(cmd) > 60 else "")
+        wait = int((args or {}).get("wait") or 5)
+        force_quit = bool((args or {}).get("force_quit"))
+        cwd = str((args or {}).get("cwd") or "")
+        stdin_text = str((args or {}).get("stdin") or "")
+        max_output = (args or {}).get("max_output")
+
+        def _fn(task):
+            # 在后台线程中执行命令，wait 设为较大值让它持续运行直到完成
+            res = agent_tools._run_command(
+                command=cmd, wait=max(wait, 300), force_quit=False,
+                cwd=cwd, stdin_text=stdin_text,
+                max_output=max_output,
+                status_cb=lambda s: task.append_output(s + "\n"))
+            text = res.get("text", "") if isinstance(res, dict) else str(res)
+            task.append_output(text)
+            return res
+
+        try:
+            task = _ab.bg_manager().submit(
+                task_type=_ab.TYPE_COMMAND,
+                title=_uif("命令: {cmd}", cmd=title),
+                description=cmd,
+                fn=_fn,
+                on_start=lambda t: self._bg_notify_start(t),
+                on_output=lambda t, delta: self._bg_notify_output(t, delta),
+                on_done=lambda t: self._bg_notify_done(t),
+                on_failed=lambda t, err: self._bg_notify_failed(t, err),
+                metadata={"command": cmd, "wait": wait, "force_quit": force_quit},
+            )
+        except Exception as e:
+            return {"text": _uif("[后台执行失败] 提交后台命令时出错: {err}\n请检查命令参数，或改为前台同步执行。", err=str(e)), "images": []}
+        self._bg_tasks_this_turn.append(task.task_id)
+        return {"text": _uif("[已后台执行] 命令已转入后台（任务ID: {tid}），不阻塞当前对话。可用 background_task_status(task_id=\"{tid}\") 查询进度，或 cancel_background_task(task_id=\"{tid}\") 取消。\n命令: {cmd}",
+                              tid=task.task_id, cmd=cmd[:100]), "images": []}
+
+    def _exec_subagent_background(self, name: str, args: dict) -> dict:
+        """后台派发子Agent：注册式/临时/跨工作流均支持。
+        复用 _run_subagent_tool 的任务构建逻辑，但在后台线程中执行 _dispatch_tasks，
+        输出流式回传，完成后汇总。"""
+        from zhuzhu_Copilot.core import agent_background as _ab
+        task_title = _ui("后台子Agent派发")
+        if name == "explore_project":
+            task_title = _uif("探索: {dir}", dir=str((args or {}).get('directory', ''))[:40])
+        elif name == "search_large":
+            task_title = _uif("搜索: {q}", q=str((args or {}).get('query', ''))[:40])
+        elif name.startswith("sub_"):
+            # 注册式子 agent：用注册名作为标题
+            reg_name = name[4:]
+            goal = str((args or {}).get("goal") or (args or {}).get("prompt") or "")
+            task_title = _uif("子Agent: {name}", name=reg_name) + (f" - {goal[:30]}" if goal else "")
+        else:
+            # dispatch_sub_agents 等批量派发：安全计算任务数
+            tasks_raw = (args or {}).get("tasks")
+            if isinstance(tasks_raw, list):
+                n_tasks = len(tasks_raw)
+            elif isinstance(tasks_raw, str):
+                # LLM 误传 JSON 字符串：尝试解析，失败则标记为1个
+                try:
+                    import json as _json
+                    parsed = _json.loads(tasks_raw)
+                    n_tasks = len(parsed) if isinstance(parsed, list) else 1
+                except Exception:
+                    n_tasks = 1
+            else:
+                n_tasks = 1
+            # 显示上限：超过50个显示 "50+"，避免离谱数字
+            display_n = f"{n_tasks}+" if n_tasks > 50 else str(n_tasks)
+            task_title = _uif("派发 {n} 个子Agent", n=display_n)
+
+        # 在主线程解析当前工作流名（self.workflow 为 None 时用 active_workflow()，
+        # 必须在主线程解析，因为 active_workflow() 依赖线程局部状态）。
+        from zhuzhu_Copilot.core import agent_workflow as _awf
+        _wf_name = (self.workflow if isinstance(self.workflow, str) and self.workflow.strip()
+                    else _awf.active_workflow())
+
+        def _fn(task):
+            # 后台线程中执行子Agent派发（同步等待全部完成）
+            # 必须在后台线程重新绑定：1) 编辑桶（子Agent写文件依赖）
+            # 2) conversation 作用域（共同上下文空间按对话隔离）；
+            # 3) 线程局部工作流（注册子Agent查找依赖 _WF_LOCAL，后台线程默认为空）。
+            # 注意：不修改 self.on_sub_event（多后台任务并发时会竞态），而是创建
+            # 独立 wrapper 作为参数传给 _run_subagent_tool，每个任务各自捕获输出。
+            import time as _time
+            from zhuzhu_Copilot.core import agent_context
+            agent_tools.bind_edit_bucket(self._edit_bucket)
+            prev_conv = agent_context.thread_local_conversation()
+            agent_context.set_conversation(self.conversation)
+            _awf.set_current_workflow(_wf_name)
+            _orig_sub = self.on_sub_event  # 仅读取引用，不修改
+
+            # —— 输出缓冲：按子agent标题分组，批量flush ——
+            _buf = []                 # 累积的文本片段
+            _titles_seen = set()     # 已输出过标题头的子agent
+            _last_flush = [_time.time()]
+            _FLUSH_INTERVAL = 0.4    # 最多每400ms flush一次
+
+            def _flush(force=False):
+                if not _buf:
+                    return
+                now = _time.time()
+                if not force and (now - _last_flush[0]) < _FLUSH_INTERVAL:
+                    return
+                chunk = "".join(_buf)
+                _buf.clear()
+                _last_flush[0] = now
+                task.append_output(chunk)
+
+            def _bg_sub_wrapper(kind, idx, title, text, aid):
+                # 捕获所有子agent事件：delta(流式文本)、tool(工具调用)、output(工具输出)
+                # 之前只捕获 delta，导致以工具调用为主的子agent(explore_project/search_large等)
+                # 完全没有输出可见。
+                if not text and kind != "start":
+                    pass  # 空文本不写入，但仍透传给原始回调
+                elif title and title not in _titles_seen:
+                    _titles_seen.add(title)
+                    _buf.append(f"\n### {title}\n\n")
+                if kind == "delta" and text:
+                    _buf.append(text)
+                    _flush()
+                elif kind == "tool" and text:
+                    _buf.append(f"\n> 调用工具: {text}\n")
+                    _flush()
+                elif kind == "output" and text:
+                    _buf.append(f"\n```\n{text}\n```\n")
+                    _flush()
+                if _orig_sub:
+                    try:
+                        _orig_sub(kind, idx, title, text, aid)
+                    except Exception:
+                        pass  # UI回调异常不影响后台任务执行
+
+            try:
+                # wrapper 作为参数传入，不修改 self.on_sub_event → 无竞态
+                res = self._run_subagent_tool(name, args, on_sub_event=_bg_sub_wrapper)
+                _flush(force=True)  # 收尾：flush剩余缓冲
+                text = res.get("text", "") if isinstance(res, dict) else str(res)
+                # 最终汇总追加到输出末尾（不覆盖已累积的流式输出），
+                # 并标记分隔线，方便区分流式过程与最终结论
+                if text:
+                    task.append_output(f"\n\n---\n**最终结果:**\n\n{text}")
+                return res
+            finally:
+                agent_context.set_conversation(prev_conv or "")
+                _awf.set_current_workflow("")
+
+        try:
+            task = _ab.bg_manager().submit(
+                task_type=_ab.TYPE_SUBAGENT if name != "dispatch_sub_agents" else _ab.TYPE_BATCH,
+                title=task_title,
+                description=f"后台派发: {name}",
+                fn=_fn,
+                on_start=lambda t: self._bg_notify_start(t),
+                on_output=lambda t, delta: self._bg_notify_output(t, delta),
+                on_done=lambda t: self._bg_notify_done(t),
+                on_failed=lambda t, err: self._bg_notify_failed(t, err),
+                metadata={"tool": name, "args_count": len(str(args or {}))},
+            )
+        except Exception as e:
+            return {"text": _uif("[后台派发失败] 提交后台任务时出错: {err}\n请检查参数是否正确，或改为前台同步执行。", err=str(e)), "images": []}
+        self._bg_tasks_this_turn.append(task.task_id)
+        return {"text": _uif("[已后台派发] 子Agent已转入后台并发执行（任务ID: {tid}），不阻塞当前对话。各子Agent输出流式回传，完成后自动汇总。\n可用 background_task_status(task_id=\"{tid}\") 查询进度。",
+                              tid=task.task_id),
+                "images": []}
+
+    def _bg_notify_start(self, task):
+        """后台任务启动：通知UI底部面板更新状态。"""
+        try:
+            if self.on_status:
+                self.on_status(f"后台任务已启动「{task.title}」(ID: {task.task_id})，"
+                               f"你可以继续发送其他消息")
+        except Exception:
+            pass  # UI回调异常不影响任务执行
+
+    def _bg_notify_output(self, task, delta):
+        """后台任务输出增量：通过 on_result 推送到UI（不与主对话流式输出冲突，
+        因为标记为后台任务输出）。"""
+        try:
+            if self.on_result and delta:
+                # 用特殊前缀标记后台输出，UI可区分展示
+                # 注意：on_result 实际签名为 (name, text, images) 三参数，与主循环一致
+                self.on_result(f"[bg:{task.task_id}]", delta, [])
+        except Exception:
+            pass  # UI回调异常不影响任务执行
+
+    def _bg_notify_done(self, task):
+        """后台任务完成：通知UI底部面板更新状态。"""
+        try:
+            if self.on_status:
+                self.on_status(f"后台任务完成「{task.title}」(ID: {task.task_id})，"
+                               f"耗时 {task.duration:.1f}s")
+        except Exception:
+            pass
+
+    def _bg_notify_failed(self, task, error):
+        """后台任务失败：通知UI底部面板更新状态。"""
+        try:
+            if self.on_status:
+                err_text = str(error or "")[:100]
+                self.on_status(f"后台任务失败「{task.title}」(ID: {task.task_id})，错误: {err_text}")
+        except Exception:
+            pass
+
     # ---------- 子 Agent 工具（explorer / 搜索 / 通用并发分发） ----------
-    def _run_subagent_tool(self, name: str, args: dict) -> dict:
+    def _run_subagent_tool(self, name: str, args: dict, on_sub_event=None) -> dict:
         """子 Agent 工具执行：复用同一 LLM 客户端，派发子任务（可读写项目文件）并汇总结果。
         dispatch_sub_agents 的任务项支持：
           - agent="<工作流名>"：把该子任务派发到「其他工作流的主 Agent」执行（目标工作流
             agent.py 人格 + tools.py 工具集 + llm.py 客户端），由主 Agent 引领/监督并汇总；
           - subagents={<名>: {...}}：为自定义子 Agent（sub_<名>）按任务覆盖
-            description/goal/allowed/persona，未覆盖部分沿用注册配置。"""
+            description/goal/allowed/persona，未覆盖部分沿用注册配置。
+        on_sub_event：可选回调覆盖（后台任务用，避免修改 self.on_sub_event 引发多线程竞态）。"""
         args = args or {}
         # 主 Agent 决策的共同上下文空间：顶层 shared_context/space 为整批默认
         # （共享全开：缺省开启，显式传 false 可关闭整批），任务项可覆盖
@@ -1446,11 +1695,12 @@ class AgentEngine:
                                f"（含 {n_agent} 个跨工作流主 Agent）并发执行…")
             else:
                 self.on_status(f"正在派发 {len(tasks)} 个子 Agent 并发执行…")
-        text = self._dispatch_tasks(tasks)
+        text = self._dispatch_tasks(tasks, on_sub_event=on_sub_event)
         return {"text": text, "images": []}
 
-    def _dispatch_tasks(self, tasks: list) -> str:
+    def _dispatch_tasks(self, tasks: list, on_sub_event=None) -> str:
         """把任务清单派发执行并汇总（按任务原始顺序输出）。
+        on_sub_event：可选回调覆盖（后台任务用，避免修改 self.on_sub_event 引发竞态）。
 
         并发策略（子 Agent 可重复派发同名 / 多点并行处理不同文件）：
         - 普通子任务与自定义子 Agent（sub=）任务合并为「一批」经 dispatch_sub_agents
@@ -1463,6 +1713,7 @@ class AgentEngine:
         parts = []
         batch = []          # 并入并发批的普通/自定义子任务（保持原始顺序）
         batch_origin = {}   # 原任务序号(1基, 批内序号+1) -> 批内序号(0基)
+        _warnings = {}      # 原任务序号 -> 回退警告文本（sub未注册时回退临时agent）
         for i, t in enumerate(tasks, 1):
             if not (t.get("context") or "").strip():
                 if missing_bg is None:
@@ -1516,38 +1767,43 @@ class AgentEngine:
                                                     if not t["sub"].startswith("sub_")
                                                     else t["sub"], self.workflow)
                 if conf is None:
-                    parts.append(f"【子任务 {i}】{t['title']}\n"
-                                 f"[派发失败] 子 Agent「{t['sub']}」未在当前工作流注册"
-                                 f"（register_sub_agent 注册，或 list_sub_agents 查看）")
-                    continue
-                ov = (t.get("overrides") or {}).get(conf["name"], {})
-                ov = ov if isinstance(ov, dict) else {}
-                goal = str(ov.get("goal") or t["goal"] or conf["goal"]).strip()
-                allowed = ov.get("allowed")
-                # 已注册自定义子 Agent：人格 = 显式 persona，否则用注册 goal 的自述
-                # （goal 通常内含「你是一位…」式人格，不能被通用子 Agent 身份文本覆盖）
-                persona = str(ov.get("persona") or conf.get("persona")
-                              or conf.get("goal") or "").strip()
-                entry["goal"] = goal
-                if isinstance(allowed, (list, tuple)) and allowed:
-                    entry["allowed"] = tuple(allowed)
-                if persona:
-                    entry["persona"] = persona
-                entry["custom"] = True
+                    # sub 未注册：不中断任务，回退为通用临时子 Agent 并记录警告
+                    # （LLM 常混淆临时/注册子agent：临时agent应不传sub参数）
+                    _warnings[i] = (f"[警告] 子 Agent「{t['sub']}」未在当前工作流注册，"
+                                    f"已回退为通用临时子 Agent 执行。"
+                                    f"临时子 Agent 请勿传 sub 参数；"
+                                    f"注册子 Agent 请先用 list_sub_agents 查看可用名称。")
+                else:
+                    ov = (t.get("overrides") or {}).get(conf["name"], {})
+                    ov = ov if isinstance(ov, dict) else {}
+                    goal = str(ov.get("goal") or t["goal"] or conf["goal"]).strip()
+                    allowed = ov.get("allowed")
+                    # 已注册自定义子 Agent：人格 = 显式 persona，否则用注册 goal 的自述
+                    # （goal 通常内含「你是一位…」式人格，不能被通用子 Agent 身份文本覆盖）
+                    persona = str(ov.get("persona") or conf.get("persona")
+                                  or conf.get("goal") or "").strip()
+                    entry["goal"] = goal
+                    if isinstance(allowed, (list, tuple)) and allowed:
+                        entry["allowed"] = tuple(allowed)
+                    if persona:
+                        entry["persona"] = persona
+                    entry["custom"] = True
             batch.append(entry)
             batch_origin[i] = len(batch) - 1
         if batch:
             collect = []
             agent_subagent.dispatch_sub_agents(
                 self.llm, batch, stop=lambda: self._stop.is_set(),
-                on_status=self.on_status, on_sub_event=self.on_sub_event,
+                on_status=self.on_status, on_sub_event=on_sub_event or self.on_sub_event,
                 workflow=self.workflow, collect=collect,
                 conversation=self.conversation)
             out_by = {bi: txt for (bi, _title, txt) in collect}
             for i in sorted(batch_origin):
                 bi = batch_origin[i]
                 title = str(tasks[i - 1].get("title") or f"子任务 {i}")
-                parts.append(f"【子任务 {i}】{title}\n{out_by.get(bi, '（无结果）')}")
+                warn = _warnings.get(i, "")
+                result = out_by.get(bi, "（无结果）")
+                parts.append(f"【子任务 {i}】{title}\n{warn}{result}")
         return "\n\n".join(parts)
 
     def _auto_sub_context(self, limit: int = 2000) -> str:
@@ -1997,6 +2253,14 @@ class AgentEngine:
                     agent_team_run.team_stop_all(conversation=self.conversation)
                 except Exception:
                     pass
+            # 用户主动停止主任务 → 取消本轮启动的后台任务
+            if self._stop.is_set() and self._bg_tasks_this_turn:
+                try:
+                    from zhuzhu_Copilot.core import agent_background as _ab
+                    for tid in self._bg_tasks_this_turn:
+                        _ab.bg_manager().cancel(tid)
+                except Exception:
+                    pass
             agent_skills.set_current_workflow("")
             agent_workflow.set_current_workflow("")
             # 对话作用域复位（线程可能被复用：下次任务入口会重新落地）
@@ -2007,6 +2271,17 @@ class AgentEngine:
         self.end_state = ""
         self._rules_confirmed = False   # 每个新任务重新强制规则确认
         self._empty_retries = 0         # 每任务重置上游空响应纠正重试计数
+        # 每任务重置后台任务列表与自动后台标记
+        self._bg_tasks_this_turn = []
+        self._auto_background = False
+        # 复杂任务判定：评估是否应自动后台执行
+        try:
+            complexity = agent_background.assess_task_complexity(user_input)
+            if complexity["should_background"]:
+                # 仅置位自动后台标记，不硬编码提示用户——由引导 Agent 在回复中自然告知
+                self._auto_background = True
+        except Exception:
+            pass  # 判定失败不影响正常执行
         # 任务开始时的技能集快照：中途生成/导入的技能由 reload_extensions 与它做差集找出
         try:
             self._skills_at_start = {s.get("name") for s in

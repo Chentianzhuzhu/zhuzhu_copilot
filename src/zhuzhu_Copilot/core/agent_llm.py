@@ -388,12 +388,12 @@ def detect_vision_models(models: list) -> list:
 
 def infer_context_window(model: str) -> int:
     """按模型名推断上下文窗口（token）：长上下文标记（1m/256k/long-context）放宽到
-    256k，其余默认 128k。模型配置中服务商显式声明 context_window 时优先于本推断。
+    256k，其余默认 256k。模型配置中服务商显式声明 context_window 时优先于本推断。
     这是最后一级兜底，优先级低于上游声明与内置已知表（见 resolve_context）。"""
     m = (model or "").lower()
     if any(k in m for k in ("1m", "256k", "long-context", "long_context", "longcontext")):
         return 262144
-    return 131072
+    return 262144
 
 
 # ---------- 上下文能力声明（provider declaration） ----------
@@ -412,21 +412,21 @@ ONE_M_CONTEXT = 1048576
 # (接口地址关键词, 模型名关键词, 窗口 token, 最大输出 token)
 # 值为公开文档的近似值，仅作兜底；上游在线声明与用户手填优先于本表，随时可更新。
 _KNOWN_DECLARATIONS = (
-    ("deepseek", "deepseek-v4", 131072, 65536),
-    ("deepseek", "deepseek", 131072, 8192),
+    ("deepseek", "deepseek-v4", 262144, 65536),
+    ("deepseek", "deepseek", 262144, 8192),
     ("anthropic", "claude", 200000, 64000),
-    ("moonshot", "kimi", 131072, 16384),
-    ("moonshot", "moonshot", 131072, 16384),
+    ("moonshot", "kimi", 262144, 16384),
+    ("moonshot", "moonshot", 262144, 16384),
     ("dashscope", "qwen-long", 1048576, 8192),
-    ("dashscope", "qwen", 131072, 8192),
-    ("bigmodel", "glm-4", 131072, 4096),
-    ("volces", "doubao", 131072, 4096),
+    ("dashscope", "qwen", 262144, 8192),
+    ("bigmodel", "glm-4", 262144, 4096),
+    ("volces", "doubao", 262144, 4096),
     ("openai", "gpt-4o", 128000, 16384),
     ("openai", "o1", 200000, 100000),
     ("openai", "o3", 200000, 100000),
     ("openai", "gpt-4.1", 1047576, 32768),
     ("generativelanguage", "gemini", 1048576, 8192),
-    ("openrouter", "", 131072, 8192),
+    ("openrouter", "", 262144, 8192),
 )
 
 

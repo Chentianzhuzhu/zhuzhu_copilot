@@ -32,11 +32,11 @@ SetupIconFile=..\assets\icon.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-; 禁用 Inno 内置的「选择安装语言」对话框：该对话框在多语言下会出现重复条目
-; （三个「简体中文」）且确认后触发 RuntimeError（WizardForm 尚未创建即被访问）。
-; 程序界面语言由向导内的自定义页（InitializeWizard 里的简体中文/English 单选）
-; 负责选择，安装结束写入 app_lang.ini，无需再走内置对话框。
-ShowLanguageDialog=no
+; 启用 Inno 内置的「选择安装语言」对话框：用户在安装前选择语言后，
+; 整个向导（欢迎/选目录/选任务/安装中/完成）与所有自定义消息自动切换为对应语言。
+; 之前禁用是因为旧代码在 InitializeSetup 阶段访问 WizardForm 导致 RuntimeError，
+; 现已修复（相关代码移至 InitializeWizard / CurStepChanged）。
+ShowLanguageDialog=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 ; 安装包自身的文件属性版本号（资源管理器/属性页的文件版本字段）：
@@ -73,11 +73,33 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; 否则编译报 "Unknown language name"。
 chinesesimplified.TWizardLanguagePrompt=选择 %(app)s 的界面语言：
 chinesesimplified.TWizardLanguageSubPrompt=所选语言将作为 %(app)s 的界面语言，之后可在「设置」中随时更改。
+chinesesimplified.TWizardLanguageTitle=界面语言
+chinesesimplified.TLangZh=简体中文
+chinesesimplified.TLangEn=English
+chinesesimplified.TDesktopIcon=在桌面创建快捷方式
+chinesesimplified.TAdditionalIcons=附加图标：
+chinesesimplified.TInstallRootCert=正在安装受信任根证书...
+chinesesimplified.TInstallTrustedPublisher=正在安装受信任发布者...
+chinesesimplified.TInstallVCx64=正在安装 VC++ 运行库 (x64)...
+chinesesimplified.TInstallVCx86=正在安装 VC++ 运行库 (x86)...
+chinesesimplified.TInstallD3D=正在补装 d3dcompiler_47.dll...
+chinesesimplified.TLaunchApp=立即启动 %(app)s
 english.TWizardLanguagePrompt=Select the interface language for %(app)s:
 english.TWizardLanguageSubPrompt=The chosen language is used for the %(app)s interface. You can change it later in Settings.
+english.TWizardLanguageTitle=Interface Language
+english.TLangZh=简体中文
+english.TLangEn=English
+english.TDesktopIcon=Create a desktop shortcut
+english.TAdditionalIcons=Additional icons:
+english.TInstallRootCert=Installing trusted root certificate...
+english.TInstallTrustedPublisher=Installing trusted publisher certificate...
+english.TInstallVCx64=Installing VC++ runtime (x64)...
+english.TInstallVCx86=Installing VC++ runtime (x86)...
+english.TInstallD3D=Installing d3dcompiler_47.dll...
+english.TLaunchApp=Launch %(app)s now
 
 [Tasks]
-Name: "desktopicon"; Description: "在桌面创建快捷方式"; GroupDescription: "附加图标："
+Name: "desktopicon"; Description: "{cm:TDesktopIcon}"; GroupDescription: "{cm:TAdditionalIcons}"
 
 [Files]
 Source: "..\dist\zhuzhu Copilot\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -113,14 +135,14 @@ Root: HKCU; Subkey: "Software\{#MyLegacySlug}"; Flags: uninsdeletekey
 ;    由 zhutianliang 签名的程序。注意必须用 -machine（LocalMachine 存储）：
 ;    UAC 弹窗（consent.exe 提升上下文）验证签名时只读取 LocalMachine 信任，
 ;    certutil 默认装入 CurrentUser，UAC 读不到 → 弹窗显示"签名失效/发布者未知"。
-Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore Root ""{tmp}\zhutianliang.cer"""; StatusMsg: "正在安装受信任根证书..."; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer')
-Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore TrustedPublisher ""{tmp}\zhutianliang.cer"""; StatusMsg: "正在安装受信任发布者..."; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer')
+Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore Root ""{tmp}\zhutianliang.cer"""; StatusMsg: "{cm:TInstallRootCert}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer')
+Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore TrustedPublisher ""{tmp}\zhutianliang.cer"""; StatusMsg: "{cm:TInstallTrustedPublisher}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer')
 ; 2. 系统缺 VC++ 运行库时自动静默安装，保证主程序/卸载器正常加载（x64 + x86）
-Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "正在安装 VC++ 运行库 (x64)..."; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x64.exe'); Check: not VCInstalled64
-Filename: "{tmp}\vc_redist.x86.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "正在安装 VC++ 运行库 (x86)..."; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x86.exe'); Check: not VCInstalled32
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx64}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x64.exe'); Check: not VCInstalled64
+Filename: "{tmp}\vc_redist.x86.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx86}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x86.exe'); Check: not VCInstalled32
 ; 3. 系统缺 d3dcompiler_47.dll 时补装到 System32（QtWebEngine 渲染必需）
-Filename: "{sys}\cmd.exe"; Parameters: "/c copy /y ""{tmp}\d3dcompiler_47.dll"" ""{sysnative}\d3dcompiler_47.dll"""; StatusMsg: "正在补装 d3dcompiler_47.dll..."; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('d3dcompiler_47.dll'); Check: not D3DCompilerInstalled
-Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent runascurrentuser
+Filename: "{sys}\cmd.exe"; Parameters: "/c copy /y ""{tmp}\d3dcompiler_47.dll"" ""{sysnative}\d3dcompiler_47.dll"""; StatusMsg: "{cm:TInstallD3D}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('d3dcompiler_47.dll'); Check: not D3DCompilerInstalled
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:TLaunchApp}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 ; 卸载时先结束主程序进程，避免安装目录文件被占用
 ;（旧版进程名一并结束：卸载发生在运行中的旧版程序上时，文件同样会被占用）
@@ -134,13 +156,12 @@ Type: filesandordirs; Name: "{app}"
 
 [Code]
 { ---- 语言选择（安装前确定界面语言） -------------------------------- }
-{ 安装结束时把用户所选语言写入程序目录下的 app_lang.ini。主程序启动按
+{ 内置语言对话框（ShowLanguageDialog=yes）在安装前弹出，用户选择后整个向导
+  与所有自定义消息自动切换为对应语言。安装结束时把 ActiveLanguage 映射为
+  界面语言码写入 app_lang.ini，主程序启动按
   「--lang 参数 > 环境变量 ZHUZHU_LANG > 注册表设置 > app_lang.ini > 系统区域」
   解析语言（见 core/i18n.py::_installed_lang），故装完即生效，
   用户之后仍可在「设置 → 通用与记忆 → 界面语言」里改。 }
-var
-  LangPage: TWizardPage;
-  LangZhRadio, LangEnRadio: TNewRadioButton;
 
 { 安装向导语言（english / chinesesimplified）-> 界面语言码 }
 function LangCodeOf(ALang: String): String;
@@ -151,57 +172,14 @@ begin
     Result := 'zh_CN';
 end;
 
-procedure LangPageChanged(Sender: TObject);
-begin
-  { 标题随选择切换，用户在英文安装向导里也能一眼看懂当前选项含义 }
-  if LangEnRadio.Checked then
-    LangPage.Caption := 'Interface Language'
-  else
-    LangPage.Caption := '界面语言';
-end;
-
 function InitializeSetup(): Boolean;
 begin
   Result := True;
 end;
 
 procedure InitializeWizard();
-var
-  DefaultEn: Boolean;
 begin
-  DefaultEn := ActiveLanguage = 'english';
-
-  { 语言选择页：必须放在 InitializeWizard() 里，因为 CreateCustomPage 依赖
-    WizardForm（在 InitializeSetup 阶段尚未创建，调用会报 RuntimeError）。 }
-  LangPage := CreateCustomPage(
-    wpSelectDir,
-    '界面语言',
-    '所选语言将作为 zhuzhu Copilot 的默认界面语言，安装后可在「设置」中随时更改。');
-
-  LangZhRadio := TNewRadioButton.Create(LangPage.Surface);
-  LangZhRadio.Caption := '简体中文';
-  LangZhRadio.Checked := not DefaultEn;
-  LangZhRadio.Parent := LangPage.Surface;
-
-  LangEnRadio := TNewRadioButton.Create(LangPage.Surface);
-  LangEnRadio.Caption := 'English';
-  LangEnRadio.Checked := DefaultEn;
-  LangEnRadio.Parent := LangPage.Surface;
-  LangEnRadio.OnClick := @LangPageChanged;
-end;
-
-procedure CurPageChanged(CurPageID: Integer);
-begin
-  { 进入「选择组件」页时同步语言页标题，避免用户回看时仍是旧语言。
-    注：Inno 7 没有 wpPreparingToInstall 之类的 pageId（可用的是
-    wpSelectDir / wpSelectTasks / wpFinished 等），故只能用存在的常量。 }
-  if CurPageID = wpSelectTasks then
-  begin
-    if LangEnRadio.Checked then
-      LangPage.Caption := 'Interface Language'
-    else
-      LangPage.Caption := '界面语言';
-  end;
+  { 语言选择由内置对话框处理，无需自定义页。此处保留空过程以维持事件钩子。 }
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -210,21 +188,19 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    if LangEnRadio.Checked then
-      LangCode := 'en_US'
-    else
-      LangCode := 'zh_CN';
+    { 以安装前内置语言对话框的选择为准，写入 app_lang.ini }
+    LangCode := LangCodeOf(ActiveLanguage);
     LangFile := ExpandConstant('{app}\app_lang.ini');
-    { 覆盖写：语言选择页每次安装都会带默认勾选，重装即恢复向导默认语言。
+    { 覆盖写：每次安装都以本次语言选择为准。
       写失败不阻断安装 —— 主程序在读不到该文件时会退回按系统区域判定。 }
     try
       if SaveStringToFile(LangFile,
-          '# 由安装向导写入：zhuzhu Copilot 首次启动的默认界面语言' + #13#10 +
-          '# 可在「设置 → 通用与记忆 → 界面语言」中随时更改（改后以设置为准）' + #13#10 +
+          '# Written by setup: default interface language for zhuzhu Copilot first launch' + #13#10 +
+          '# Can be changed later in Settings → General & Memory → Interface Language' + #13#10 +
           'Lang=' + LangCode + #13#10, False) then
-        Log('界面语言已写入: ' + LangFile + ' (Lang=' + LangCode + ')');
+        Log('Interface language written: ' + LangFile + ' (Lang=' + LangCode + ')');
     except
-      Log('写入 app_lang.ini 失败（已忽略，主程序将按系统区域判定）: ' + LangFile);
+      Log('Failed to write app_lang.ini (ignored, app will fall back to system locale): ' + LangFile);
     end;
   end;
 end;

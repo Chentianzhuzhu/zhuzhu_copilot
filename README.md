@@ -15,7 +15,8 @@
 
 - **多轮工具调用循环**：`src/zhuzhu_Copilot/core/agent_engine.py`。循环「观察 → 调用工具 → 验证结果」，LLM 逐 token 流式回调给 UI；每个工具执行前可回调确认，沙箱判定为危险的工具即使被批准也由 `agent_tools` 硬拒绝。
 - **并发工具执行**：同一轮返回多个可并发工具时会批量并行（写类按解析后路径加锁串行、只读类直接并行，线程数上限 4）；结果回调仍按原始调用顺序触发，保证对话展示与上下文落库顺序不乱。可通过设置项 `concurrent_edits=false` 整体关闭。
-- **模型接入**：`src/zhuzhu_Copilot/core/agent_llm.py`，OpenAI 兼容 `/v1/chat/completions`，支持 SSE 流式、`tools`/`tool_choice` 工具调用、图像输入（data URL / http(s)），发送前启发式估算 token、响应后累计上游 `usage`。失败按 429/5xx/网络自动重试（指数退避）。
+- **后台并发执行**：`src/zhuzhu_Copilot/core/agent_background.py`。复杂任务（多步骤、长时间运行、多工具调用）自动判定并转入后台线程池执行，不阻塞当前对话，用户可继续发送其他消息。支持后台并发执行命令、后台并发派发注册式子 Agent 与临时子 Agent、跨工作流主 Agent 协调；后台任务状态（运行中/完成/失败）、进度、输出实时回传 UI，可取消。工具描述标记 `background_capable`，新增 `background_task_status` / `cancel_background_task` 工具。
+- **模型接入**：`src/zhuzhu_Copilot/core/agent_llm.py`，OpenAI 兼容 `/v1/chat/completions`，支持 SSE 流式、`tools`/`tool_choice` 工具调用、图像输入（data URL / http(s)），发送前启发式估算 token、响应后累计上游 `usage`。失败按 429/5xx/网络自动重试（指数退避）。默认上下文窗口 256k tokens（输入+输出），开启 1M 模式后为 1048576 tokens。
 - **HTTP 连接复用**：`src/zhuzhu_Copilot/core/agent_http.py`，按 (scheme, host, port) 复用 keep-alive 连接，配置了代理或关闭能力开关时回退 urllib。
 - **上下文管理与压缩**：`src/zhuzhu_Copilot/core/agent_engine.py`。分层阈值触发摘要压缩 + 发送前硬裁剪兜底，带压缩冷却与「最近窗口保留预算」；超长工具返回文本（read_file / web_fetch / extract_text）自动压缩，LLM 不可用时回退启发式压缩。
 - **Token 统计**：同一文件内维护全程累计用量 `tokens` 与最近一次请求的上游 `last_usage`，供上下文占用面板展示。
@@ -59,6 +60,8 @@
 ### 1.6 子 Agent 与团队协作
 
 - 子 Agent 独立上下文 + 工具白名单；`dispatch_sub_agents` 线程池并发派发。
+- **后台并发派发**：注册式子 Agent 与临时子 Agent 均支持 `background` 参数，转入后台线程池执行，不阻塞当前对话；输出流式回传，完成后汇总。
+- **跨工作流主 Agent**：主 Agent 可在后台协调多个工作流中的注册子 Agent，统一调度与结果汇总。
 - 团队模式 `@product_manager`，共同上下文空间（`agent_bus.py`），领导者可监督/纠偏/派活。
 - 注册子 Agent：`register_sub_agent`，支持 `persona` / `allowed` / `shared_context`。
 - 通讯：`chat_with` / `look_context` / `pause_agent` / `resume_agent` / `warn_agent`。
@@ -110,16 +113,27 @@ Cordis 式「一切皆可替换」，目录 `~/.zhuzhu_Copilot/workflows/`。核
 
 - **Agent 面板**：对话气泡、工具调用日志、上下文占用、记忆管理。
 - **事件流**：流式渲染 LLM 输出，支持 Markdown 高亮。
+- **流式自由滚动**：Agent 执行任务时用户可随意用鼠标滚轮滑动历史会话，不再强制回底；输入框下方居中悬浮圆形一键返回底部按钮（仅当内容可滚动且不在底部时显示）。
+- **后台任务面板**：后台执行的命令/子 Agent 以任务卡片形式展示，含状态灯（运行中/完成/失败）、可展开输出、取消按钮；启动时提示「已在后台执行，你可以继续发送其他消息」，完成时自动通知。
 - **Copilot 浮层**：半透明覆盖层，显示当前任务状态。
 - **桌宠**：透明 GIF 动画，右键菜单快捷操作。
 - **内置浏览器**：WebView 多标签页，与系统浏览器隔离。
 - **全屏放映**：HTML 预览全屏模式。
 - **自定义面板**：`register_feature_panel` 挂载浮动窗口。
 - **本地 Web 服务**：`127.0.0.1:8765`，提供预览/调试接口。
+- **多语言**：简体中文 / English 双语界面，安装时选择，运行中可在设置切换；English 模式无中文硬编码残留。
 
 ### 1.13 自动更新
 
 每 30 秒轮询更新服务器 `/api/update/check`，首次启动立即检查。新版本下载 → 校验签名 → 替换 → 重启。旧版数据自动迁移。
+
+- **下载 URL 加密**：更新接口不再暴露明文版本 ID（如 `/api/update/24`），改为 HMAC-SHA256 签名的临时 token URL（`/api/download/{token}`），token 内含 version_id + 过期时间（1 小时），篡改或过期返回 404，防止枚举与爬取。
+
+### 1.14 用户反馈
+
+- 客户端「关于」页与官网均提供反馈入口，提交后同步至更新服务器与管理后台。
+- **IP 限流**：每个 IP 每天最多提交 3 次反馈，以服务器端时间为准，超限返回 429。
+- 管理后台可查看反馈列表、回复、标记已解决；反馈内容含 IP、时间、内容、联系方式、状态、回复。
 
 ---
 
@@ -132,7 +146,8 @@ zhuzhu Copilot/
 │   └── zhuzhu_Copilot/
 │       ├── core/
 │       │   ├── agent_engine.py          # Agent 核心循环（观察→调用→验证）
-│       │   ├── agent_llm.py             # LLM 接入（SSE / 图像输入 / 重试）
+│       │   ├── agent_background.py      # 后台并发任务管理器（命令/子Agent/跨工作流）
+│       │   ├── agent_llm.py             # LLM 接入（SSE / 图像输入 / 重试 / 256k上下文）
 │       │   ├── agent_http.py            # HTTP 连接复用
 │       │   ├── agent_tools.py           # 工具注册与执行
 │       │   ├── agent_agents.py          # 人设与 Agent 切换
@@ -252,6 +267,10 @@ python src/main.py
 - 技术栈：Spring Boot 3 + MySQL 8 + Redis 6 + nginx。
 - 一键部署：`python update-server/tools/deploy.py`。
 - 公开接口 `/api/site` 返回站点文案、最新版本、时间戳。
+- **用户反馈 API**：`POST /api/feedback` 公开提交（每 IP 每天 3 次限流）；`GET /api/admin/feedbacks` 管理端查看；`POST /api/admin/feedback/{id}/reply` 回复。
+- **下载 URL 加密**：`/api/download/{token}`，HMAC-SHA256 签名 + 1 小时过期，不再暴露明文版本 ID。
+- **官网视觉自定义**：管理后台「视觉样式」配置页支持主题色、背景图、Logo、标题、副标题、页脚、字体、圆角、导航样式、社交链接等 15 项配置，保存后官网 `:root` CSS 变量动态注入即时生效。
+- **官网美化**：CSS 变量驱动全站配色，Hero 区动态渐变光斑动画，卡片 hover 上浮，毛玻璃导航栏，滚动揭示动画，countUp 数字动画，完整响应式。
 - nginx 反代，后台仅 SSH 隧道访问。
 
 ### 6.3 部署脚本

@@ -420,7 +420,9 @@ TOOLS = [
                            "npm install、pip install requests。"
                            "默认等待 wait 秒（默认 5）：期间持续收集输出；若 wait 秒内未完成，"
                            "force_quit=true 则强制结束进程树，false 则转入后台运行，返回命令 ID，"
-                           "之后用 check_command 轮询进度。启动 GUI 应用建议 wait=1。",
+                           "之后用 check_command 轮询进度。启动 GUI 应用建议 wait=1。"
+                           "★支持后台执行（background_capable）：run_in_background=true 时立即返回任务ID，不阻塞对话。",
+            "background_capable": True,
             "parameters": {"type": "object",
                            "properties": {
                                "command": {"type": "string", "description": "要执行的命令"},
@@ -429,6 +431,11 @@ TOOLS = [
                                "force_quit": {"type": "boolean",
                                               "description": "是否开启超时强制退出：wait 秒内未完成则强制结束进程树。"
                                                              "默认 false（转入后台运行，可轮询）。预计会长时间挂起/无输出的命令建议开启"},
+                               "run_in_background": {"type": "boolean",
+                                                     "description": "true=立即转入后台执行并返回任务ID，不阻塞当前对话；"
+                                                                    "输出通过 background_task_status 轮询或UI流式推送。"
+                                                                    "适合构建/编译/下载/安装等长时间运行命令。"
+                                                                    "false=按 wait 秒同步等待（默认）。"},
                                "cwd": {"type": "string",
                                        "description": "命令执行的工作目录（可选，默认工作目录）"},
                                "stdin": {"type": "string",
@@ -449,6 +456,37 @@ TOOLS = [
                            "properties": {
                                "cmd_id": {"type": "integer",
                                           "description": "后台命令 ID（run_command 返回的 id），不传则列出全部"}},
+                           "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "background_task_status",
+            "description": "查询后台任务状态与输出。不传 task_id 时列出全部后台任务（含运行中/已完成/失败）。"
+                           "指定 task_id 时返回该任务的详细状态、累积输出预览、耗时。"
+                           "后台任务包括：run_command(run_in_background=true) 的后台命令、"
+                           "dispatch_sub_agents(run_in_background=true) 的后台子Agent、跨工作流主Agent。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "task_id": {"type": "string",
+                                           "description": "后台任务ID（启动时返回的 bg_xxx），不传则列出全部"},
+                               "type": {"type": "string",
+                                        "enum": ["", "command", "subagent", "cross_workflow", "batch"],
+                                        "description": "可选：按任务类型过滤"}},
+                           "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_background_task",
+            "description": "取消正在运行的后台任务。指定 task_id 取消单个；不传 task_id 时取消全部活跃后台任务。"
+                           "取消后任务状态变为 cancelled，正在执行的工作线程会尽快退出。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "task_id": {"type": "string",
+                                           "description": "要取消的后台任务ID；不传则取消全部活跃任务"}},
                            "required": []},
         },
     },
@@ -1633,10 +1671,13 @@ TOOLS = [
                            "派发前对尚未读取而子任务需要的内容，先用 read_file 等工具取到再打包进 context。"
                            "任务项可选 agent=\"<工作流名>\"：把该子任务派发到「其他工作流的主 Agent」执行"
                            "（目标工作流 agent.py 人格 + tools.py 工具 + llm.py），由主 Agent 引领/监督；"
-                           "可选 sub=\"<子Agent名>\"：指定当前工作流已注册的自定义子 Agent 执行"
-                           "（同名子 Agent 可多任务重复派发，各任务独立并行）；"
+                           "任务项可选 sub=\"<已注册子Agent名>\"：★仅接受 list_sub_agents 列出的已注册子 Agent 名！"
+                           "临时/即时子 Agent 不要传 sub 参数——不传 sub 即为通用临时子 Agent（可用 tools 白名单和 persona 定制能力）。"
+                           "传入未注册的 sub 名会导致该子任务派发失败；"
                            "顶层可选 agents={\"<工作流名>\":\"<能力描述>\"}（预登记可派发的工作流主 Agent 清单）；"
-                           "顶层可选 subagents={\"<名>\":{goal,description,allowed}}（按任务覆盖子 Agent 配置）。",
+                           "顶层可选 subagents={\"<名>\":{goal,description,allowed}}（按任务覆盖已注册子 Agent 配置）。"
+                           "★支持后台执行（background_capable）：run_in_background=true 时立即返回任务ID，不阻塞对话。",
+            "background_capable": True,
             "parameters": {"type": "object",
                            "properties": {
                                "shared_context": {"type": "boolean",
@@ -1654,7 +1695,8 @@ TOOLS = [
                                                         "（已读取的文件内容/关键代码片段/搜索结果/约束要求）传给"
                                                         "子 Agent——其上下文独立于主对话，缺 context 会盲猜或重复读取；"
                                                         "可选 agent 派发到其他工作流主 Agent；"
-                                                        "可选 sub 指定注册子 Agent）",
+                                                        "可选 sub 指定【已注册】子 Agent（不传 sub 则为通用临时子 Agent，"
+                                                        "可用 tools 白名单+persona 定制））",
                                          "items": {"type": "object",
                                                    "properties": {
                                                        "title": {"type": "string",
@@ -1671,8 +1713,9 @@ TOOLS = [
                                                                  "description": "可选：派发到的目标工作流名"
                                                                                 "（list_workflow_agents 查看可用）"},
                                                        "sub": {"type": "string",
-                                                               "description": "可选：当前工作流已注册子 Agent 名"
-                                                                              "（list_sub_agents 查看）"},
+                                                               "description": "★仅接受已注册子 Agent 名（list_sub_agents 查看）！"
+                                                                              "临时/即时子 Agent 请勿传此字段——不传 sub 即为通用临时子 Agent"
+                                                                              "（可用 tools 白名单+persona 定制能力）。传入未注册名会导致该任务失败。"},
                                                        "tools": {"type": "string",
                                                                  "description": "可选：子任务可用工具白名单"
                                                                                 "（逗号分隔，默认全部子 Agent 白名单）"},
@@ -1693,7 +1736,12 @@ TOOLS = [
                                "subagents": {"type": "object",
                                              "description": "可选：按任务覆盖自定义子 Agent 配置 "
                                                             "{名: {goal, description, allowed}}",
-                                             "additionalProperties": {"type": "object"}}},
+                                             "additionalProperties": {"type": "object"}},
+                               "run_in_background": {"type": "boolean",
+                                                     "description": "true=子Agent们在后台并发执行，立即返回任务ID；"
+                                                                    "各子Agent输出流式回传，完成后汇总。"
+                                                                    "当前对话可继续执行其他任务。"
+                                                                    "false=同步等待全部完成（默认）。"}},
                            "required": ["tasks"]},
         },
     },
@@ -1702,7 +1750,9 @@ TOOLS = [
         "function": {
             "name": "explore_project",
             "description": "探索并理解一个项目/目录（Explorer 子 Agent）：生成目录结构、读取 README 与关键入口文件，"
-                           "输出项目概览（用途、技术栈、模块结构、入口、构建/运行方式）。接手新项目时先用它快速了解。",
+                           "输出项目概览（用途、技术栈、模块结构、入口、构建/运行方式）。接手新项目时先用它快速了解。"
+                           "★支持后台执行（background_capable）：run_in_background=true 时该子 Agent 在后台执行，立即返回任务ID，不阻塞对话。",
+            "background_capable": True,
             "parameters": {"type": "object",
                            "properties": {
                                "directory": {"type": "string",
@@ -1715,7 +1765,11 @@ TOOLS = [
                                                                  "（true=与主 Agent/其他成员共用统一上下文并可写回结论；"
                                                                  "缺省 false=独立上下文）"},
                                "space": {"type": "string",
-                                         "description": "可选：目标共同上下文空间 id（缺省用活跃空间）"}},
+                                         "description": "可选：目标共同上下文空间 id（缺省用活跃空间）"},
+                               "run_in_background": {"type": "boolean",
+                                                     "description": "true=该子 Agent 在后台执行，立即返回任务ID；"
+                                                                    "输出流式回传，完成后汇总。当前对话可继续执行其他任务。"
+                                                                    "false=同步等待完成（默认）。"}},
                            "required": ["directory"]},
         },
     },
@@ -1724,7 +1778,9 @@ TOOLS = [
         "function": {
             "name": "search_large",
             "description": "大规模搜索（Search 子 Agent）：在多个目录范围内搜索关键词并汇总命中（跨目录、多轮搜索、"
-                           "重要命中读取上下文确认）。比 search_files 更适合范围大、文件多的搜索。",
+                           "重要命中读取上下文确认）。比 search_files 更适合范围大、文件多的搜索。"
+                           "★支持后台执行（background_capable）：run_in_background=true 时该子 Agent 在后台执行，立即返回任务ID，不阻塞对话。",
+            "background_capable": True,
             "parameters": {"type": "object",
                            "properties": {
                                "query": {"type": "string", "description": "搜索关键词"},
@@ -1740,7 +1796,11 @@ TOOLS = [
                                                                  "（true=与主 Agent/其他成员共用统一上下文并可写回结论；"
                                                                  "缺省 false=独立上下文）"},
                                "space": {"type": "string",
-                                         "description": "可选：目标共同上下文空间 id（缺省用活跃空间）"}},
+                                         "description": "可选：目标共同上下文空间 id（缺省用活跃空间）"},
+                               "run_in_background": {"type": "boolean",
+                                                     "description": "true=该子 Agent 在后台执行，立即返回任务ID；"
+                                                                    "输出流式回传，完成后汇总。当前对话可继续执行其他任务。"
+                                                                    "false=同步等待完成（默认）。"}},
                            "required": ["query"]},
         },
     },
@@ -2054,6 +2114,7 @@ TOOLS = [
                            "allow_chat：是否允许该子 Agent 参与 Agent 间聊天（chat_with 讨论）；"
                            "share_context：是否允许领导者用 look_context 查看其完整上下文（消息/命令/"
                            "文件/工具轨迹）。共享全开策略：缺省全开，显式传 false 可关闭。",
+            "background_capable": True,
             "parameters": {"type": "object",
                            "properties": {
                                "op": {"type": "string",
@@ -2976,6 +3037,51 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
                                 status_cb)
         if name == "check_command":
             return _check_command(_sub("agent_sandbox").to_int(args.get("cmd_id", 0)) or None)
+        if name == "background_task_status":
+            from zhuzhu_Copilot.core import agent_background
+            mgr = agent_background.bg_manager()
+            tid = str(args.get("task_id", "") or "").strip()
+            ttype = str(args.get("type", "") or "").strip()
+            if tid:
+                task = mgr.get(tid)
+                if task is None:
+                    return {"text": f"[后台任务] 未找到任务：{tid}", "images": []}
+                d = task.to_dict()
+                lines = [
+                    f"任务ID: {d.get('task_id')}",
+                    f"类型: {d.get('type')}  状态: {d.get('status')}  进度: {d.get('progress')}",
+                    f"标题: {d.get('title')}",
+                    f"耗时: {d.get('duration')}s",
+                ]
+                if d.get("error"):
+                    lines.append(f"错误: {d.get('error')}")
+                preview = d.get("output_preview") or ""
+                if preview:
+                    lines.append("--- 输出预览 ---")
+                    lines.append(preview)
+                return {"text": "\n".join(lines), "images": []}
+            tasks = mgr.list_tasks(task_type=ttype or None)
+            if not tasks:
+                return {"text": "[后台任务] 当前没有任何后台任务。", "images": []}
+            lines = [f"[后台任务] 共 {len(tasks)} 个（按创建时间倒序）："]
+            for t in tasks:
+                d = t.to_dict()
+                lines.append(
+                    f"• {d.get('task_id')} | {d.get('type')} | {d.get('status')} | "
+                    f"{d.get('duration')}s | {d.get('title') or ''}")
+            return {"text": "\n".join(lines), "images": []}
+        if name == "cancel_background_task":
+            from zhuzhu_Copilot.core import agent_background
+            mgr = agent_background.bg_manager()
+            tid = str(args.get("task_id", "") or "").strip()
+            if tid:
+                ok = mgr.cancel(tid)
+                if ok:
+                    return {"text": f"[后台任务] 已请求取消任务：{tid}", "images": []}
+                return {"text": f"[后台任务] 未找到可取消的任务：{tid}（可能已结束）", "images": []}
+            n = mgr.cancel_all()
+            return {"text": f"[后台任务] 已请求取消 {n} 个活跃后台任务。" if n > 0
+                    else "[后台任务] 当前没有活跃的后台任务。", "images": []}
         if name == "read_file":
             return _read_file(str(args.get("path", "")),
                               _sub("agent_sandbox").to_int(args.get("offset", 0)) or None,
