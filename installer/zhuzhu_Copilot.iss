@@ -63,9 +63,10 @@ SignTool={#SIGNTOOL}
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
-; 英文安装向导：新增第二种语言。用户在向导里选 English 后，
+; 英文安装向导：使用本地 English.isl（本 Inno Setup 7 beta 的 Default.isl 被本地化为中文，
+; compiler:Default.isl 会显示为"简体中文"而非 English）。用户选 English 后，
 ; 安装结束会写 {app}\app_lang.ini，主程序据此默认英文界面。
-Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "english"; MessagesFile: "English.isl"
 
 [CustomMessages]
 ; 语言选择页（安装前挑界面语言，决定主程序默认语言）
