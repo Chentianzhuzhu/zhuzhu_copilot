@@ -2,12 +2,15 @@
 
 - 反馈内容必填（5-2000 字），实时字数计数（接近上限变橙、超限变红并禁止提交）
 - 联系方式选填；提交中按钮 loading，按服务器结果分别提示成功 / 限流 / 参数错误 / 网络错误
+- 客户端本地每日提交计数（QSettings）：达到 3 次/天即禁用提交按钮，服务器 429 时同步锁定
 """
 import sys
+from datetime import date
 from pathlib import Path
 
 from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 from zhuzhu_Copilot.core.feedback_client import FeedbackClient, MIN_LEN, MAX_LEN
+from zhuzhu_Copilot.core import app_identity
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
@@ -22,6 +25,8 @@ from zhuzhu_Copilot.ui.widgets import add_brand_footer
 
 # 接近上限的阈值（字数进入此区间时计数变橙，提醒用户即将达上限）
 _WARN_NEAR_LIMIT = 1900
+# 每日反馈提交上限（与服务器 DAILY_LIMIT 保持一致）
+DAILY_LIMIT = 3
 
 
 def _app_icon_path() -> str:
@@ -43,8 +48,46 @@ class FeedbackDialog(QDialog):
         self.setModal(True)
         self._client: FeedbackClient | None = None   # 提交中保持引用，避免线程未结束即被回收
         self._submitting = False                     # 请求进行中：拦截重复提交并锁定按钮
+        self._local_locked = False                   # 本地/服务器确认今日已达上限：永久禁用提交
         self._build_ui()
-        self._on_content_changed()   # 初始化按钮/计数状态
+        self._apply_local_rate_limit()   # 检查本地每日计数，可能直接禁用按钮
+        self._on_content_changed()       # 初始化按钮/计数状态
+
+    # ---------- 本地每日提交计数（QSettings 持久化，防无限提交） ----------
+    def _today_key(self) -> str:
+        return date.today().isoformat()
+
+    def _local_count(self) -> int:
+        q = app_identity.qsettings()
+        if q.value("feedback/date", "") != self._today_key():
+            return 0
+        return int(q.value("feedback/count", 0) or 0)
+
+    def _increment_local_count(self):
+        q = app_identity.qsettings()
+        today = self._today_key()
+        if q.value("feedback/date", "") != today:
+            q.setValue("feedback/date", today)
+            q.setValue("feedback/count", 1)
+        else:
+            q.setValue("feedback/count", int(q.value("feedback/count", 0) or 0) + 1)
+        q.sync()
+
+    def _lock_local(self):
+        """服务器返回 429 或本地计数达上限：标记今日已用尽，永久禁用本次会话的提交按钮"""
+        q = app_identity.qsettings()
+        q.setValue("feedback/date", self._today_key())
+        q.setValue("feedback/count", DAILY_LIMIT)
+        q.sync()
+        self._local_locked = True
+
+    def _apply_local_rate_limit(self):
+        """对话框打开时检查本地计数：达上限则禁用按钮并显示提示"""
+        if self._local_count() >= DAILY_LIMIT:
+            self._local_locked = True
+            self.submit_btn.setText(_ui("今日已达上限"))
+            self.submit_btn.setEnabled(False)
+            self.submit_btn.setToolTip(_ui("今日反馈次数已达上限（3次/天），明天再来吧～"))
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
@@ -133,12 +176,12 @@ class FeedbackDialog(QDialog):
             self.count_label.setStyleSheet(f"font-size: 12px; color: {PALETTE['warning']};")
         else:
             self.count_label.setStyleSheet(f"font-size: 12px; color: {PALETTE['text_secondary']};")
-        self.submit_btn.setEnabled(MIN_LEN <= n <= MAX_LEN and not self._submitting)
+        self.submit_btn.setEnabled(MIN_LEN <= n <= MAX_LEN and not self._submitting and not self._local_locked)
 
     # ---------- 提交 ----------
     def _on_submit(self, *_):
         content = self.content_edit.toPlainText().strip()
-        if self._submitting or not (MIN_LEN <= len(content) <= MAX_LEN):
+        if self._local_locked or self._submitting or not (MIN_LEN <= len(content) <= MAX_LEN):
             return   # 按钮状态已拦截，双保险
         self._submitting = True
         self.submit_btn.setText(_ui("提交中..."))
@@ -152,6 +195,7 @@ class FeedbackDialog(QDialog):
         self._submitting = False
         status = result.get("status")
         if status == "ok":
+            self._increment_local_count()   # 本地计数 +1
             info = result.get("info") or {}
             token = info.get("token") or ""
             # 显示查询凭证，支持一键复制（凭证仅显示一次，丢失无法找回）
@@ -171,18 +215,27 @@ class FeedbackDialog(QDialog):
                 box.exec()
             self.accept()   # 成功即关闭对话框
             return
-        # 失败：恢复按钮，按类型提示
-        self.submit_btn.setText(_ui("提交"))
-        self.submit_btn.setEnabled(True)
+        # 失败：按类型处理
         if status == "rate_limited":
+            # 服务器确认今日超限：本地锁定，永久禁用本次会话提交按钮
+            self._lock_local()
+            self.submit_btn.setText(_ui("今日已达上限"))
+            self.submit_btn.setEnabled(False)
+            self.submit_btn.setToolTip(_ui("今日反馈次数已达上限（3次/天），明天再来吧～"))
             QMessageBox.warning(
                 self, _ui("用户反馈"),
                 _ui("今日反馈次数已达上限（3次/天）\n明天再来吧～"))
         elif status == "network_error":
+            # 网络错误：恢复按钮允许重试
+            self.submit_btn.setText(_ui("提交"))
+            self.submit_btn.setEnabled(not self._local_locked)
             QMessageBox.warning(
                 self, _ui("用户反馈"),
                 _ui("网络连接失败，请检查网络后重试"))
         else:
+            # 参数错误/服务器错误：恢复按钮允许重试
+            self.submit_btn.setText(_ui("提交"))
+            self.submit_btn.setEnabled(not self._local_locked)
             QMessageBox.warning(
                 self, _ui("用户反馈"),
                 _uif("提交失败：{a0}", a0=result.get("error") or _ui("未知错误")))

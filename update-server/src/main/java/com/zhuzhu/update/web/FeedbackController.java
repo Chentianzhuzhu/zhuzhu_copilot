@@ -129,9 +129,22 @@ public class FeedbackController {
         return Map.of("ok", true, "deleted", deleted);
     }
 
-    /** 客户端 IP：X-Real-IP 头优先（nginx 反代），否则取 remoteAddr */
+    /**
+     * 客户端真实 IP：依次尝试 X-Real-IP → X-Forwarded-For 首个 IP → remoteAddr。
+     * 多级反代/CDN 下 X-Real-IP 可能缺失，X-Forwarded-For 为逗号分隔列表，取最左侧即原始客户端 IP。
+     */
     private String clientIp(HttpServletRequest request) {
         String real = request.getHeader("X-Real-IP");
-        return real != null && !real.isBlank() ? real : request.getRemoteAddr();
+        if (real != null && !real.isBlank()) {
+            return real.trim();
+        }
+        String xff = request.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) {
+            String first = xff.split(",")[0].trim();
+            if (!first.isEmpty()) {
+                return first;
+            }
+        }
+        return request.getRemoteAddr();
     }
 }
