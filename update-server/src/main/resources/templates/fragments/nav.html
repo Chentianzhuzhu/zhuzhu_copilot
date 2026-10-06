@@ -36,9 +36,18 @@
 
   <div class="nav-drawer" id="navDrawer" hidden>
     <nav aria-label="移动端导航">
-      <a th:each="n : ${navItems}" th:href="${n.href}" th:text="${n.label}">功能特性</a>
-      <a th:href="${latest != null ? latest.url : '/download'}">下载安装包</a>
+      <a th:each="n : ${navItems}"
+         th:href="${n.href}"
+         th:text="${n.label}"
+         th:classappend="${n.active}">功能特性</a>
     </nav>
+    <a class="drawer-download" id="drawerDownload"
+       th:href="${latest != null ? latest.url : '/download'}">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>
+      </svg>
+      <span>下载</span>
+    </a>
   </div>
 </header>
 </body>

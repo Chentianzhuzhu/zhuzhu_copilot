@@ -56,7 +56,7 @@
       spawn();
     }
     function spawn() {
-      var count = W < 768 ? 45 : 90;
+      var count = W < 768 ? 30 : 90;
       stars = [];
       for (var i = 0; i < count; i++) {
         stars.push({
@@ -110,6 +110,13 @@
     if (REDUCED) { frame(0); } else { requestAnimationFrame(frame); }
   }
 
+  /* 触摸设备标记：CSS 据此禁用光标辉光与 hover 上浮效果 */
+  function initTouchClass() {
+    if (TOUCH || ('ontouchstart' in window)) {
+      document.documentElement.classList.add('touch');
+    }
+  }
+
   function initCursorGlow() {
     var glow = $('#cursorGlow');
     if (!glow || REDUCED || TOUCH) { return; }
@@ -160,16 +167,30 @@
     update();
 
     if (burger && drawer) {
+      /* 动态创建半透明遮罩：点击关闭抽屉，不写入模板以免破坏标签配平 */
+      var overlay = document.createElement('div');
+      overlay.className = 'nav-overlay';
+      overlay.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(overlay);
+
+      function setNav(open) {
+        burger.setAttribute('aria-expanded', String(open));
+        burger.setAttribute('aria-label', open ? '关闭导航菜单' : '打开导航菜单');
+        drawer.hidden = !open;
+        document.body.classList.toggle('nav-open', open);
+      }
+      function closeNav() { setNav(false); }
+
       burger.addEventListener('click', function () {
-        var open = burger.getAttribute('aria-expanded') === 'true';
-        burger.setAttribute('aria-expanded', open ? 'false' : 'true');
-        drawer.hidden = open;
+        var open = burger.getAttribute('aria-expanded') !== 'true';
+        setNav(open);
+      });
+      overlay.addEventListener('click', closeNav);
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && document.body.classList.contains('nav-open')) { closeNav(); }
       });
       $$('a', drawer).forEach(function (a) {
-        a.addEventListener('click', function () {
-          burger.setAttribute('aria-expanded', 'false');
-          drawer.hidden = true;
-        });
+        a.addEventListener('click', closeNav);
       });
     }
   }
@@ -585,7 +606,7 @@
 
     var url = safeUrl(latest.url);
     if (url) {
-      ['#navDownload', '#downloadBtn', '#clDownload'].forEach(function (sel) {
+      ['#navDownload', '#downloadBtn', '#clDownload', '#drawerDownload', '#mobileDownload'].forEach(function (sel) {
         var el = $(sel);
         if (el && el.tagName === 'A') {
           el.setAttribute('href', url);
@@ -645,6 +666,7 @@
 
   function init() {
     setText('#year', new Date().getFullYear());
+    safe('touchClass', initTouchClass);
     safe('stars', initStars);
     safe('cursorGlow', initCursorGlow);
     safe('nav', initNav);
