@@ -10,7 +10,7 @@ from pathlib import Path
 
 from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 from zhuzhu_Copilot.core.feedback_client import FeedbackClient, MIN_LEN, MAX_LEN
-from zhuzhu_Copilot.core import app_identity
+from zhuzhu_Copilot import app_identity
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
