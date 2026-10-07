@@ -1109,6 +1109,15 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
     # 微信 ClawBot：消息气泡 —— 手机微信扫码绑定，局域网通信
     "wechat": _lucide(
         '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
+    # 会员与积分：皇冠 —— 账号会员订阅与积分充值
+    "membership": _lucide(
+        '<path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.5a1 1 0 0 1-.879 1.5H10.49a1 1 0 0 1-.879-1.5l1.95-5.234z"/>'
+        '<path d="M11.18 10.563l-1.957-5.244a1 1 0 0 0-1.815 0L3.41 10.5a1 1 0 0 0 .868 1.5h2.61c1.045 0 1.866.816 1.716 1.95'
+        '-1.045.125-1.733.784-1.733 1.75V20a1 1 0 0 0 1 1h5.289a1 1 0 0 0 1-1v-1.703c0-.966-.688-1.624-1.733-1.75'
+        '-.15-1.133.67-1.95 1.715-1.95h2.611a1 1 0 0 0 .868-1.5L16.59 5.319a1 1 0 0 0-1.815 0l-1.955 5.244a1 1 0 0 0 .879 1.5h2.591'
+        'a1 1 0 0 1 .868 1.5L19 9.878l.596-.319a1.147 1.147 0 0 1 1.337 2.85l-2.22 1.767a1 1 0 0 0-.362 1.056l.731 2.46'
+        'a1 1 0 0 1-1.687.96L16.7 16.65a1 1 0 0 0-1 0l-1.694 1.75a1 1 0 0 1-1.686-.958l.726-2.438a1 1 0 0 0-.363-1.06l-2.22-1.767'
+        'a1.147 1.147 0 0 1 1.337-2.85l.596.32.146.078"/>'),
 }
 
 # 设置页导航项（展示顺序 = 左侧导航顺序，与 _page_builders 的下标一一对应）
@@ -1128,6 +1137,7 @@ _NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("工作流", "workflow"),
     ("背景", "wallpaper"),
     ("微信 ClawBot", "wechat"),
+    ("会员与积分", "membership"),
 )
 
 # 插件类型 -> 列表里的中文标注。值是 i18n key，展示时统一过 _uim，
@@ -2745,6 +2755,7 @@ class _AgentSettingsDialog(QDialog):
             self._build_workflow_page,
             self._build_wallpaper_page,
             self._build_wechat_page,
+            self._build_membership_page,
         ]
         self.stack.addWidget(self._page_builders[0]())
         # 页面栈显式透明背景：QStackedWidget 在样式表环境下会被风格系统置为
@@ -5283,6 +5294,472 @@ class _AgentSettingsDialog(QDialog):
 
         lay.addStretch(1)
         return w
+
+    # ---------- 会员与积分 ----------
+    # 商品表（与 API_SPEC /api/shop/products 契约一致）：服务端拉取失败时用此兜底。
+    # desc 里的签到积分数与 checkin_service.DEFAULT_CHECKIN_REWARDS 保持一致；
+    # 等级定义只在服务端 order_service.MEMBERSHIP_TIERS 一处维护。
+    _MEMBERSHIP_PRODUCTS = (
+        {"id": "pro_monthly", "name": "Pro 版", "price": 7, "points": 1000,
+         "desc": "每月 1000 积分，每日签到 +100"},
+        {"id": "max_monthly", "name": "Max 版", "price": 14, "points": 2000,
+         "desc": "每月 2000 积分，每日签到 +200"},
+    )
+    _POINTPACK_PRODUCTS = (
+        {"id": "points_150", "name": "150 积分", "price": 1, "points": 150,
+         "desc": "轻量补充"},
+        {"id": "points_750", "name": "750 积分", "price": 5, "points": 750,
+         "desc": "热门推荐"},
+        {"id": "points_1500", "name": "1500 积分", "price": 10, "points": 1500,
+         "desc": "最划算"},
+    )
+
+    def _build_membership_page(self) -> QWidget:
+        """会员与积分页：当前积分/会员状态、每日签到、订阅与积分包购买、支付流程。"""
+        from zhuzhu_Copilot.core.auth_client import get_auth_client
+        auth = get_auth_client()
+        w = self._page(_ui("会员与积分"))
+        lay = self._page_body(w)
+
+        tip = QLabel(_ui("登录账号后可使用内置模型（agnes）；内置模型按 token 消耗积分，"
+                         "下方可订阅会员或购买积分包。"))
+        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        # ---- 每日签到宣传（签到按钮在个人信息面板用户名右侧）----
+        self._memb_checkin_banner = QLabel("")
+        self._memb_checkin_banner.setObjectName("membCheckinBanner")
+        self._memb_checkin_banner.setStyleSheet(
+            f"#membCheckinBanner {{ background: {self._PANEL2}; border: none;"
+            "border-radius: 10px; padding: 10px 14px; }"
+            f"#membCheckinBanner QLabel {{ color: {self._TEXT}; font-size: 12px; }}"
+            f"#membCheckinBanner QLabel#membCheckinDim {{ color: {self._DIM};"
+            "font-size: 11px; }")
+        cbox = QVBoxLayout(self._memb_checkin_banner)
+        cbox.setContentsMargins(14, 10, 14, 10)
+        cbox.setSpacing(3)
+        c_title = QLabel(_ui("每日签到领积分"))
+        c_title.setObjectName("membCheckinTitle")
+        c_sub = QLabel(_ui("每日凌晨 00:00 刷新：免费版 +50 / Pro +100 / Max +200 积分。"
+                           "点击个人信息面板中用户名右侧的「签到」按钮即可领取。"))
+        c_sub.setObjectName("membCheckinDim")
+        c_sub.setWordWrap(True)
+        cbox.addWidget(c_title)
+        cbox.addWidget(c_sub)
+        lay.addWidget(self._memb_checkin_banner)
+
+        # ---- 当前状态：积分大数字 + 会员类型标签 ----
+        status_row = QHBoxLayout()
+        self._memb_points_label = QLabel("--")
+        self._memb_points_label.setStyleSheet(
+            f"color: {self._ACCENT_HOVER}; font-size: 32px; font-weight: 800;")
+        status_row.addWidget(self._memb_points_label)
+        unit = QLabel(_ui("积分"))
+        unit.setStyleSheet(f"color: {self._DIM}; font-size: 13px;")
+        status_row.addWidget(unit)
+        status_row.addSpacing(24)
+        self._memb_type_label = QLabel("")
+        self._memb_type_label.setStyleSheet(
+            f"color: {self._PANEL}; background: {self._DIM};"
+            "border-radius: 8px; padding: 3px 12px; font-size: 12px; font-weight: 700;")
+        status_row.addWidget(self._memb_type_label)
+        status_row.addStretch(1)
+        lay.addLayout(status_row)
+
+        self._memb_login_hint = QLabel("")
+        self._memb_login_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        lay.addWidget(self._memb_login_hint)
+        self._memb_login_btn = QPushButton(_ui("立即登录"))
+        self._memb_login_btn.setAutoDefault(False)
+        self._memb_login_btn.setStyleSheet(
+            f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
+            "border-radius: 8px; padding: 6px 18px; font-weight: 700;")
+        self._memb_login_btn.clicked.connect(lambda: auth.login_with_browser())
+        lay.addWidget(self._memb_login_btn)
+
+        # ---- 会员订阅卡片 ----
+        lay.addWidget(self._section_label(_ui("会员订阅")))
+        sub_row = QHBoxLayout()
+        self._memb_card_widgets = {}       # product_id -> (card, buy_btn)
+        for p in self._MEMBERSHIP_PRODUCTS:
+            card = self._memb_product_card(p)
+            sub_row.addWidget(card)
+            btn = getattr(card, "_buy_btn", None)
+            if btn is not None:
+                self._memb_card_widgets[p["id"]] = (card, btn)
+        sub_row.addStretch(1)
+        # 保留行容器引用：服务端商品数据回来后在原位重建，避免整页重排
+        self._memb_sub_row = sub_row
+        lay.addLayout(sub_row)
+
+        # ---- 积分包卡片 ----
+        lay.addWidget(self._section_label(_ui("积分包")))
+        pack_row = QHBoxLayout()
+        for p in self._POINTPACK_PRODUCTS:
+            pack_row.addWidget(self._memb_product_card(p))
+        pack_row.addStretch(1)
+        lay.addLayout(pack_row)
+
+        lay.addStretch(1)
+
+        # 刷新状态显示；WS 推送积分/会员/订单到账时实时更新
+        self._memb_auth = auth
+        # 会员卡片数据源：优先服务端 /api/shop/products（含可购性与续费语义），
+        # 拉取失败时回退到类内置兜底表，保证离线/接口异常时页面仍可用。
+        self._memb_membership_products = [dict(p) for p in self._MEMBERSHIP_PRODUCTS]
+        self._memb_refresh_status()
+        self._memb_load_products()
+        try:
+            auth.points_updated.connect(lambda *_: self._memb_refresh_status())
+            auth.membership_updated.connect(lambda *_: self._memb_refresh_status())
+            auth.order_paid.connect(lambda *_: self._memb_refresh_status())
+            auth.login_success.connect(lambda *_: self._memb_refresh_status())
+            auth.logged_out.connect(self._memb_refresh_status)
+        except Exception:
+            pass
+        return w
+
+    def _memb_load_products(self):
+        """后台线程拉取服务端商品列表（含购买资格），回来后重建会员卡片。"""
+        from zhuzhu_Copilot.core.auth_client import _http_get_json, get_auth_client
+        auth = get_auth_client()
+
+        def _work():
+            ok, data, _ = _http_get_json(
+                f"{auth.server}/api/shop/products",
+                token=auth.token, timeout=10)
+            if not ok or not isinstance(data, dict) or data.get("code") != 0:
+                return
+            payload = data.get("data") or {}
+            items = payload.get("memberships") or []
+            if not items:
+                return
+            merged = []
+            for it in items:
+                # 服务端不返回 desc：沿用本地兜底表的描述文案
+                local = next((x for x in self._MEMBERSHIP_PRODUCTS
+                              if x["id"] == it.get("id")), None)
+                item = dict(it)
+                if local and local.get("desc"):
+                    item["desc"] = local["desc"]
+                merged.append(item)
+            self._memb_membership_products = merged
+            try:
+                self._memb_rebuild_membership_cards()
+            except Exception:
+                pass
+
+        try:
+            import threading
+            threading.Thread(target=_work, daemon=True).start()
+        except Exception:
+            pass
+
+    def _memb_rebuild_membership_cards(self):
+        """按最新商品数据重建会员卡片行（可购性/续费文案可能已变化）。"""
+        holder = self.__dict__.get("_memb_sub_row")
+        if holder is None:
+            return
+        while holder.count():
+            item = holder.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        self._memb_card_widgets = {}
+        for p in self._memb_membership_products:
+            card = self._memb_product_card(p)
+            holder.addWidget(card)
+            btn = getattr(card, "_buy_btn", None)
+            if btn is not None:
+                self._memb_card_widgets[p["id"]] = (card, btn)
+        holder.addStretch(1)
+        self._memb_apply_purchase_state()
+
+    def _memb_apply_purchase_state(self):
+        """按服务端下发的 purchasable/action 刷新按钮：续费 / 置灰不可购。"""
+        for pid, (_card, btn) in (self.__dict__.get("_memb_card_widgets") or {}).items():
+            prod = next((p for p in self._memb_membership_products if p["id"] == pid), None)
+            if prod is None:
+                continue
+            try:
+                action = prod.get("action") or "purchase"
+                if prod.get("purchasable", True) is False:
+                    btn.setEnabled(False)
+                    btn.setText(_ui("不可购买"))
+                    btn.setToolTip(prod.get("reason") or "")
+                else:
+                    btn.setEnabled(True)
+                    btn.setText(_ui("续费") if action == "renew" else _ui("购买"))
+                    btn.setToolTip(_ui("续费将在当前到期日上叠加 30 天")
+                                   if action == "renew" else "")
+            except Exception:
+                pass
+
+    def _section_label(self, text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setStyleSheet(f"color: {self._TEXT}; font-size: 14px; font-weight: 700;")
+        return lab
+
+    def _memb_product_card(self, p: dict) -> QFrame:
+        card = QFrame()
+        # 卡片不描边（用户要求去掉会员价位/内容卡片的边框），仅保留底色 + 圆角。
+        # 显式写 border: none：给了 background 后若不定 border，部分 Qt 样式后端会补出默认边框。
+        card.setObjectName("membCard")
+        card.setStyleSheet(
+            f"#membCard {{background: {self._PANEL2}; border: none;"
+            "border-radius: 10px;}}")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(14, 12, 14, 12)
+        cl.setSpacing(6)
+        name = QLabel(_ui(p["name"]))
+        name.setStyleSheet(f"color: {self._TEXT}; font-size: 14px; font-weight: 700;")
+        cl.addWidget(name)
+        desc = QLabel(_ui(p.get("desc") or ""))
+        desc.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
+        desc.setWordWrap(True)
+        cl.addWidget(desc)
+        price = QLabel(_uif("{price} 元 / 月 · 送 {pts} 积分",
+                            price=p["price"], pts=p["points"])
+                       if "monthly" in p["id"] else
+                       _uif("{price} 元 = {pts} 积分", price=p["price"], pts=p["points"]))
+        price.setStyleSheet(f"color: {self._ACCENT_HOVER}; font-size: 13px; font-weight: 700;")
+        cl.addWidget(price)
+        buy = QPushButton(_ui("续费") if p.get("action") == "renew" else _ui("购买"))
+        buy.setAutoDefault(False)
+        buy.setStyleSheet(
+            f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
+            "border-radius: 6px; padding: 6px 0px; font-weight: 700;")
+        # 不可购时（如 Max 有效期内购买 Pro）按钮置灰
+        if p.get("purchasable", True) is False:
+            buy.setEnabled(False)
+            buy.setText(_ui("不可购买"))
+            buy.setToolTip(p.get("reason") or "")
+        prod = dict(p)
+        buy.clicked.connect(lambda _checked=False, pr=prod: self._memb_buy(pr))
+        cl.addWidget(buy)
+        card._buy_btn = buy      # 供 _memb_apply_purchase_state 后续重绘
+        return card
+
+    def _memb_refresh_status(self, *_args):
+        """根据登录状态刷新积分大数字 / 会员类型 / 登录提示。"""
+        auth = getattr(self, "_memb_auth", None)
+        if auth is None:
+            return
+        u = auth.current_user()
+        logged = auth.is_logged_in()
+        self._memb_points_label.setText(str(auth.get_points()) if logged else "--")
+        self._memb_points_label.setVisible(logged)
+        mt = {"free": _ui("免费版"), "pro": _ui("Pro 会员"), "max": _ui("Max 会员")}
+        self._memb_type_label.setText(mt.get((u or {}).get("membership_type") or "free",
+                                             (u or {}).get("membership_type") or ""))
+        self._memb_type_label.setVisible(logged)
+        self._memb_login_hint.setVisible(not logged)
+        self._memb_login_btn.setVisible(not logged)
+        if not logged:
+            self._memb_login_hint.setText(_ui("未登录：内置模型需登录后使用，购买前请先登录。"))
+        # 会员等级变化会影响购买资格（Max 不能再买 Pro）→ 按钮态与卡片数据一起刷新
+        try:
+            if logged:
+                self._memb_load_products()
+            else:
+                # 未登录：全部可购（真实可购性以下单接口为准）
+                for _pid, (_c, btn) in (self.__dict__.get("_memb_card_widgets") or {}).items():
+                    btn.setEnabled(True)
+                    btn.setText(_ui("购买"))
+        except Exception:
+            pass
+
+    def _memb_buy(self, product: dict):
+        """购买流程：未登录先提示登录 → 用户协议确认 → 支付对话框（收款码）。"""
+        auth = getattr(self, "_memb_auth", None)
+        if auth is None:
+            return
+        if not auth.is_logged_in():
+            QMessageBox.information(
+                self, _ui("需要登录"),
+                _ui("购买前请先登录账号：点击「立即登录」在浏览器中完成登录后再来购买。"))
+            auth.login_with_browser()
+            return
+        # ---- 用户协议确认对话框 ----
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_ui("用户协议与使用条款"))
+        dlg.setMinimumWidth(520)
+        dlg.setStyleSheet(self._dialog_qss())
+        dl = QVBoxLayout(dlg)
+        dl.setContentsMargins(16, 16, 16, 12)
+        dl.setSpacing(10)
+        agree_text = QLabel(_ui("请阅读用户协议：") + "\n"
+                            + self._memb_fetch_agreement(auth))
+        agree_text.setWordWrap(True)
+        agree_text.setStyleSheet(f"color: {self._TEXT}; font-size: 12px;")
+        agree_scroll = QScrollArea()
+        agree_scroll.setWidgetResizable(True)
+        agree_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        agree_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        agree_scroll.setWidget(agree_text)
+        agree_scroll.setMinimumHeight(220)
+        dl.addWidget(agree_scroll)
+        chk = QCheckBox(_ui("我已阅读并同意用户协议和使用条款"))
+        chk.setStyleSheet(f"color: {self._TEXT}; font-size: 12px;")
+        dl.addWidget(chk)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton(_ui("取消"))
+        cancel.setAutoDefault(False)
+        cancel.setStyleSheet(
+            f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid "
+            f"{self._BORDER}; border-radius: 6px; padding: 6px 18px;")
+        cont = QPushButton(_ui("同意并继续支付"))
+        cont.setAutoDefault(False)
+        cont.setEnabled(False)
+        cont.setStyleSheet(
+            f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
+            "border-radius: 6px; padding: 6px 18px; font-weight: 700;")
+        chk.toggled.connect(cont.setEnabled)
+        cancel.clicked.connect(dlg.reject)
+        cont.clicked.connect(dlg.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(cont)
+        dl.addLayout(btns)
+        if not dlg.exec():
+            return
+        self._memb_show_pay_dialog(auth, product)
+
+    def _memb_fetch_agreement(self, auth) -> str:
+        """拉取用户协议文本（服务端不可用时用内置兜底文本）。
+
+        服务端返回形如 {"code":0,"data":{"content":"..."}}；需取出 data.content，
+        切勿直接 str(dict)，否则会把字典 repr 连同转义符一起显示出来。
+        """
+        try:
+            from zhuzhu_Copilot.core.auth_client import _http_get_json
+            ok, data, _ = _http_get_json(f"{auth.server}/api/agreement", timeout=8)
+            if ok and isinstance(data, dict):
+                payload = data.get("data")
+                txt = ""
+                if isinstance(payload, dict):
+                    txt = (payload.get("content") or payload.get("text")
+                           or payload.get("agreement") or "")
+                elif isinstance(payload, str):
+                    txt = payload
+                if not txt:
+                    txt = data.get("content") or data.get("agreement") or data.get("text") or ""
+                if txt:
+                    return str(txt)
+        except Exception:
+            pass
+        return (_ui("用户协议：使用本软件及内置模型服务即表示您同意合理使用条款；"
+                    "积分用于内置模型 token 消耗，充值后不支持退款；"
+                    "管理员确认到账后积分/会员方发放。"))
+
+    def _memb_show_pay_dialog(self, auth, product: dict):
+        """支付对话框：选择支付方式 → 创建订单 → 显示收款码；等待管理员确认到账。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_ui("支付订单"))
+        dlg.setMinimumWidth(380)
+        dlg.setStyleSheet(self._dialog_qss())
+        dl = QVBoxLayout(dlg)
+        dl.setContentsMargins(16, 16, 16, 12)
+        dl.setSpacing(10)
+
+        info = QLabel(_uif("商品：{name}\n金额：{price} 元",
+                            name=_ui(product["name"]), price=product["price"]))
+        info.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
+        dl.addWidget(info)
+
+        method_row = QHBoxLayout()
+        method_row.addWidget(QLabel(_ui("支付方式：")))
+        pay_combo = QComboBox()
+        pay_combo.addItems([_ui("支付宝"), _ui("微信")])
+        pay_combo.setStyleSheet(
+            f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid "
+            f"{self._BORDER}; border-radius: 6px; padding: 4px 8px;")
+        method_row.addWidget(pay_combo)
+        method_row.addStretch(1)
+        dl.addLayout(method_row)
+
+        qr_label = QLabel(_ui("正在加载收款码..."))
+        qr_label.setFixedSize(220, 220)
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_label.setStyleSheet(
+            f"background: {self._PANEL}; border: 1px solid {self._BORDER};"
+            "border-radius: 8px; color: " + self._DIM + ";")
+        qr_row = QHBoxLayout()
+        qr_row.addStretch(1)
+        qr_row.addWidget(qr_label)
+        qr_row.addStretch(1)
+        dl.addLayout(qr_row)
+
+        order_lab = QLabel("")
+        order_lab.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
+        order_lab.setWordWrap(True)
+        dl.addWidget(order_lab)
+        tip = QLabel(_ui("请使用支付宝/微信扫码完成支付，支付完成后请等待管理员确认到账。"))
+        tip.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
+        tip.setWordWrap(True)
+        dl.addWidget(tip)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton(_ui("取消"))
+        cancel.setAutoDefault(False)
+        cancel.setStyleSheet(
+            f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid "
+            f"{self._BORDER}; border-radius: 6px; padding: 6px 18px;")
+        done = QPushButton(_ui("我已完成支付"))
+        done.setAutoDefault(False)
+        done.setStyleSheet(
+            f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
+            "border-radius: 6px; padding: 6px 18px; font-weight: 700;")
+        cancel.clicked.connect(dlg.reject)
+        done.clicked.connect(dlg.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(done)
+        dl.addLayout(btns)
+
+        def _load_order():
+            pay_method = "alipay" if pay_combo.currentIndex() == 0 else "wechat"
+            from zhuzhu_Copilot.core.auth_client import _http_post_json, _http_get_json
+            ok, data, _ = _http_post_json(
+                f"{auth.server}/api/shop/order",
+                {"product_id": product["id"], "pay_method": pay_method},
+                token=auth.token, timeout=10)
+            if not ok or not isinstance(data, dict) or data.get("code") != 0:
+                qr_label.setText(_ui("订单创建失败，请重试"))
+                return
+            od = data.get("data") or {}
+            order_lab.setText(_uif("订单号：{oid}（金额 {amt} 元）",
+                                   oid=od.get("order_id", ""), amt=od.get("amount", "")))
+            qrcode_url = od.get("qrcode_url") or ""
+            if not qrcode_url:
+                ok2, qd, _ = _http_get_json(f"{auth.server}/api/shop/qrcodes",
+                                            token=auth.token, timeout=10)
+                if ok2 and isinstance(qd, dict):
+                    qrcode_url = (qd.get("data") or {}).get(pay_method) or ""
+            if qrcode_url:
+                if qrcode_url.startswith("/"):
+                    qrcode_url = f"{auth.server}{qrcode_url}"
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(qrcode_url,
+                                                 headers={"User-Agent": "Mozilla/5.0"})
+                    img_bytes = urllib.request.urlopen(req, timeout=15).read()
+                    pm = QPixmap()
+                    if pm.loadFromData(img_bytes):
+                        qr_label.setPixmap(pm.scaled(
+                            210, 210, Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation))
+                        return
+                except Exception:
+                    pass
+            qr_label.setText(_ui("收款码加载失败，请联系管理员配置"))
+
+        threading.Thread(target=_load_order, daemon=True).start()
+        if dlg.exec():
+            QMessageBox.information(
+                self, _ui("已提交"),
+                _ui("已提交支付确认，管理员确认到账后积分/会员将自动入账。"))
 
     def _wechat_start_binding(self):
         """获取二维码并启动状态轮询。"""
@@ -8841,6 +9318,47 @@ class _StatBar(QWidget):
                 pass
 
 
+class _AnchorQMenu(QMenu):
+    """带「显示即快照」能力的 QMenu：``aboutToShow`` 时记录自身最终全局几何。
+
+    背景：``QMenu.exec(pos)`` 是阻塞调用，菜单在 exec 期间才随平台/光标最终定位；
+    exec 返回时菜单已隐藏，``mapToGlobal`` 得到的是过期值。个人信息面板需要紧贴
+    「个人信息」菜单项右侧固定弹出，必须在菜单可见时就取几何，故单独封装。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._snapshot = None   # (item_global_QRect, menu_global_QRect)
+        self._target = None     # 需要快照的菜单项（默认为首项）
+
+    def snapshot_of(self, action):
+        """返回该菜单项的显示时快照 ``(item_global, menu_global)``；无则 (None, None)。"""
+        s = self.__dict__.get("_snapshot")
+        if not s or s[0] is None:
+            return None, None
+        return s
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._capture()
+
+    def _capture(self):
+        """在菜单可见后抓取首项与整菜单的全局几何（供面板锚定）。"""
+        try:
+            acts = self.actions()
+            if not acts:
+                return
+            target = self.__dict__.get("_target") or acts[0]
+            r = self.actionGeometry(target)
+            if r.isNull():
+                return
+            item_g = QRect(self.mapToGlobal(r.topLeft()), r.size())
+            menu_g = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
+            self._snapshot = (item_g, menu_g)
+        except Exception:
+            pass
+
+
 class _PopoverDismissFilter(QObject):
     """浮层展示期间的全局失焦守卫：点击浮层与触发按钮之外、或按 Esc → 收起浮层。
 
@@ -9390,6 +9908,443 @@ class _TokenStatsPopover(QFrame):
     def _after_close(self):
         self._closing = False
         self.hide()
+
+
+class _ProfilePanel(QFrame):
+    """个人信息侧边面板：自右侧丝滑滑出（非对话框），展示账号各项信息。
+
+    - 由 `set_profile()` 注入数据，控件只读不访问网络，便于单测；
+    - 积分由 WebSocket `points_update` 实时推送刷新（见 AgentPanel 的信号连接）；
+    - 自右侧滑入/滑出，点击面板外或 Esc 收起（由 _PopoverDismissFilter 守卫）。
+    """
+
+    PREFERRED_WIDTH = 232   # 紧凑宽度（用户要求缩小面板）
+    SLIDE = 16          # 水平滑入位移（px）
+    IN_MS = 180
+    OUT_MS = 130
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("profilePanel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._eff = None
+        self._anims: list = []
+        self._closing = False
+        self._build()
+        self.apply_theme()
+        self.resize(int(self.PREFERRED_WIDTH), max(1, self.sizeHint().height()))
+
+    # ---------- 构建 ----------
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(SPACING_SM + 2, SPACING_SM, SPACING_SM + 2, SPACING_SM)
+        lay.setSpacing(6)
+
+        # 标题行：标题 + 关闭按钮
+        head = QHBoxLayout()
+        head.setSpacing(SPACING_SM)
+        self._title = QLabel(_ui("个人信息"))
+        self._title.setObjectName("pfTitle")
+        head.addWidget(self._title)
+        head.addStretch(1)
+        self._close_btn = QPushButton("✕")
+        self._close_btn.setObjectName("pfClose")
+        self._close_btn.setAutoDefault(False)
+        self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_btn.setFixedSize(24, 24)
+        self._close_btn.clicked.connect(self._request_close)
+        head.addWidget(self._close_btn)
+        lay.addLayout(head)
+
+        # 头像 + 用户名（用户名右侧为每日签到按钮）
+        top = QHBoxLayout()
+        top.setSpacing(SPACING_SM)
+        self._avatar = QLabel("")
+        self._avatar.setObjectName("pfAvatar")
+        self._avatar.setFixedSize(44, 44)
+        self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top.addWidget(self._avatar)
+        name_col = QVBoxLayout()
+        name_col.setContentsMargins(0, 0, 0, 0)
+        name_col.setSpacing(2)
+        # 第一行：用户名 + 签到按钮（横向紧邻）
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(4)
+        self._username = QLabel("-")
+        self._username.setObjectName("pfUsername")
+        name_row.addWidget(self._username)
+        self._checkin_btn = QPushButton(_ui("签到"))
+        self._checkin_btn.setObjectName("pfCheckinBtn")
+        self._checkin_btn.setAutoDefault(False)
+        self._checkin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._checkin_btn.setFixedHeight(20)
+        name_row.addWidget(self._checkin_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        name_row.addStretch(1)
+        name_col.addLayout(name_row)
+        self._member = QLabel("")
+        self._member.setObjectName("pfMemberChip")
+        name_col.addWidget(self._member, 0, Qt.AlignmentFlag.AlignLeft)
+        name_col.addStretch(1)
+        top.addLayout(name_col, 1)
+        lay.addLayout(top)
+
+        lay.addWidget(self._divider())
+
+        # 积分（大数字 + 实时指示）
+        pts_head = QHBoxLayout()
+        pts_head.setSpacing(SPACING_SM)
+        pts_label = QLabel(_ui("积分余额"))
+        pts_label.setObjectName("pfKey")
+        pts_head.addWidget(pts_label)
+        pts_head.addStretch(1)
+        self._live = QLabel("● " + _ui("实时"))
+        self._live.setObjectName("pfLive")
+        pts_head.addWidget(self._live)
+        lay.addLayout(pts_head)
+
+        self._points = QLabel("--")
+        self._points.setObjectName("pfPoints")
+        lay.addWidget(self._points)
+
+        lay.addWidget(self._divider())
+
+        # 明细信息区（服务器信息已按用户要求移除）
+        self._rows = {}
+        for key, label in (("id", _ui("用户ID")),
+                           ("membership_type", _ui("会员类型")),
+                           ("membership_expire", _ui("会员到期"))):
+            row = QHBoxLayout()
+            row.setSpacing(SPACING_SM)
+            k = QLabel(label)
+            k.setObjectName("pfKey")
+            row.addWidget(k)
+            row.addStretch(1)
+            v = QLabel("-")
+            v.setObjectName("pfVal")
+            v.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            v.setWordWrap(False)
+            row.addWidget(v)
+            self._rows[key] = v
+            lay.addLayout(row)
+
+        lay.addStretch(1)
+
+        # 底部操作
+        act_row = QHBoxLayout()
+        act_row.setSpacing(SPACING_SM)
+        self._switch_btn = QPushButton(_ui("切换账号"))
+        self._switch_btn.setObjectName("pfBtn")
+        self._switch_btn.setAutoDefault(False)
+        self._switch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._logout_btn = QPushButton(_ui("退出登录"))
+        self._logout_btn.setObjectName("pfBtnDanger")
+        self._logout_btn.setAutoDefault(False)
+        self._logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        act_row.addWidget(self._switch_btn)
+        act_row.addWidget(self._logout_btn)
+        lay.addLayout(act_row)
+
+    @staticmethod
+    def _divider() -> QFrame:
+        line = QFrame()
+        line.setObjectName("pfDivider")
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFixedHeight(1)
+        return line
+
+    # ---------- 主题 ----------
+    def apply_theme(self):
+        """按当前主题色板重建样式（主题切换/首次显示时调用）。"""
+        card_bg = _base_color("PANEL")
+        chip_bg = _base_color("HOVER")
+        border = _base_color("BORDER_SOFT")
+        self.setStyleSheet(
+            f"#profilePanel {{ background: {card_bg};"
+            f" border: 1px solid {border}; border-radius: {RADIUS_MD}px; }}"
+            f"#profilePanel QLabel#pfTitle {{ color: {TEXT}; font-size: {FONT_SMALL}px;"
+            " font-weight: 700; }"
+            f"#profilePanel QLabel#pfUsername {{ color: {TEXT}; font-size: {FONT_SMALL}px;"
+            " font-weight: 700; }"
+            f"#profilePanel QLabel#pfMemberChip {{ color: {TEXT}; background: {chip_bg};"
+            f" border: 1px solid {border}; border-radius: {RADIUS_SM}px;"
+            f" padding: 0px 6px; font-size: {FONT_CAPTION}px; }}"
+            f"#profilePanel QLabel#pfKey {{ color: {TEXT_DIM}; font-size: {FONT_CAPTION}px; }}"
+            f"#profilePanel QLabel#pfVal {{ color: {TEXT}; font-size: {FONT_CAPTION}px;"
+            " font-weight: 600; }"
+            f"#profilePanel QLabel#pfPoints {{ color: {ACCENT}; font-size: {FONT_BODY}px;"
+            " font-weight: 800; }"
+            f"#profilePanel QLabel#pfLive {{ color: {ACCENT};"
+            f" font-size: {FONT_CAPTION}px; }}"
+            f"#profilePanel QLabel#pfAvatar {{ background: {chip_bg}; border: 1px solid {border};"
+            f" border-radius: 22px; color: {TEXT_DIM}; font-size: {FONT_SMALL}px; }}"
+            f"#profilePanel QFrame#pfDivider {{ background: {border}; border: none; }}"
+            f"#profilePanel QPushButton#pfClose {{ background: transparent; color: {TEXT_DIM};"
+            " border: none; font-size: 13px; }"
+            f"#profilePanel QPushButton#pfClose:hover {{ color: {TEXT}; }}"
+            f"#profilePanel QPushButton#pfBtn {{ background: {chip_bg}; color: {TEXT};"
+            f" border: 1px solid {border}; border-radius: {RADIUS_SM}px;"
+            f" padding: 5px {SPACING_SM}px; font-size: {FONT_CAPTION}px; }}"
+            f"#profilePanel QPushButton#pfBtn:hover {{ background: {_base_color('HOVER')}; }}"
+            f"#profilePanel QPushButton#pfBtnDanger {{ background: transparent; color: {ACCENT};"
+            f" border: 1px solid {ACCENT}; border-radius: {RADIUS_SM}px;"
+            f" padding: 5px {SPACING_SM}px; font-size: {FONT_CAPTION}px; }}"
+            # 签到按钮：默认可签（强调色描边）；已签到为不可点状态（灰字、禁用）
+            f"#profilePanel QPushButton#pfCheckinBtn {{ background: transparent;"
+            f" color: {ACCENT}; border: 1px solid {ACCENT}; border-radius: {RADIUS_SM}px;"
+            f" padding: 0px 8px; font-size: {FONT_CAPTION}px; }}"
+            f"#profilePanel QPushButton#pfCheckinBtn:hover {{ background: {ACCENT};"
+            f" color: {_base_color('PANEL')}; }}"
+            f"#profilePanel QPushButton#pfCheckinBtn:checked {{ background: {chip_bg};"
+            f" color: {TEXT_DIM}; border: 1px solid {border}; }}"
+            f"#profilePanel QPushButton#pfCheckinBtn:disabled {{ color: {TEXT_DIM};"
+            f" border: 1px solid {border}; background: transparent; }}")
+
+    # ---------- 数据注入 ----------
+    def set_profile(self, info: dict = None):
+        """注入个人信息快照；控件只读展示。
+
+        info: {username, nickname, avatar_pixmap, points, membership_type,
+               membership_expire, user_id}
+        """
+        info = info or {}
+        self._username.setText(str(info.get("username") or "-"))
+        mt = {"free": _ui("免费版"), "pro": _ui("Pro 会员"), "max": _ui("Max 会员")}
+        self._member.setText(mt.get(info.get("membership_type") or "free",
+                                    info.get("membership_type") or _ui("免费版")))
+        self.set_points(info.get("points"))
+        self._rows["id"].setText(str(info.get("user_id") if info.get("user_id") is not None else "-"))
+        self._rows["membership_type"].setText(
+            mt.get(info.get("membership_type") or "free",
+                   info.get("membership_type") or "-"))
+        self._rows["membership_expire"].setText(str(info.get("membership_expire") or "-"))
+
+        self.set_checkin_state(info.get("checkin") or {})
+
+        pm = info.get("avatar_pixmap")
+        if pm is not None and not pm.isNull():
+            self._avatar.setPixmap(pm.scaled(
+                44, 44, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation))
+            self._avatar.setText("")
+        else:
+            # 无头像：用用户名首字占位
+            first = (str(info.get("username") or "?").strip() or "?")[:1].upper()
+            self._avatar.setPixmap(QPixmap())
+            self._avatar.setText(first)
+
+    def set_points(self, points):
+        """仅刷新积分数字（WS points_update 高频调用，避免整面板重排）。"""
+        if points is None:
+            self._points.setText("--")
+        else:
+            try:
+                self._points.setText(f"{int(points):,}")
+            except Exception:
+                self._points.setText(str(points))
+
+    def set_membership(self, membership_type, membership_expire=""):
+        """仅刷新会员类型/到期日（WS membership_update 实时调用，避免整面板重排）。"""
+        mt = {"free": _ui("免费版"), "pro": _ui("Pro 会员"), "max": _ui("Max 会员")}
+        key = membership_type or "free"
+        label = mt.get(key, key or _ui("免费版"))
+        try:
+            self._member.setText(label)
+        except Exception:
+            pass
+        try:
+            self._rows["membership_type"].setText(label)
+        except Exception:
+            pass
+        try:
+            self._rows["membership_expire"].setText(str(membership_expire or "-"))
+        except Exception:
+            pass
+
+    # ---------- 每日签到 ----------
+    def set_checkin_state(self, state: dict = None):
+        """渲染签到按钮状态（数据来自 /me、/api/checkin/status 或 WS 推送）。
+
+        state: {can_checkin, checked, reward, tier, total_days}
+        空state 时按钮置灰不可点（未登录 / 服务端未返回）。
+        """
+        btn = getattr(self, "_checkin_btn", None)
+        if btn is None:
+            return
+        s = state or {}
+        if not s:
+            # 无任何状态数据（未登录 / 服务端未返回）：保持禁用，
+            # 避免用户点了才知道没登录或接口不可用。
+            try:
+                btn.setText(_ui("签到"))
+                btn.setEnabled(False)
+                btn.setToolTip("")
+            except Exception:
+                pass
+            return
+        checked = bool(s.get("checked"))
+        can = bool(s.get("can_checkin", not checked))
+        reward = s.get("reward")
+        try:
+            if checked:
+                btn.setText(_ui("已签到"))
+                btn.setEnabled(False)
+                btn.setToolTip(_ui("今日已签到，凌晨 00:00 后可再次签到"))
+            elif can:
+                # 按钮上直接展示本次可得积分，减少一次查询动作
+                btn.setText(_uif("签到 +{n}", n=reward) if reward else _ui("签到"))
+                btn.setEnabled(True)
+                btn.setToolTip(_ui("每日 00:00 刷新，可领取今日积分"))
+            else:
+                btn.setText(_ui("签到"))
+                btn.setEnabled(False)
+                btn.setToolTip("")
+        except Exception:
+            pass
+
+    def set_checkin_pending(self, pending: bool):
+        """签到请求进行中：按钮临时禁用并显示「签到中」，防重复点击。"""
+        btn = getattr(self, "_checkin_btn", None)
+        if btn is None:
+            return
+        try:
+            if pending:
+                btn.setEnabled(False)
+                btn.setText(_ui("签到中"))
+            else:
+                # 结束后由 set_checkin_state 依据最新状态重绘
+                btn.setEnabled(True)
+        except Exception:
+            pass
+
+    # ---------- 动画 ----------
+    def _ensure_effect(self):
+        if self._eff is None:
+            self._eff = QGraphicsOpacityEffect(self)
+            self._eff.setOpacity(1.0)
+            self.setGraphicsEffect(self._eff)
+        return self._eff
+
+    def _stop_anims(self):
+        """立即停止所有在途动画（开合互相打断时防串位/防卡死）。"""
+        for a in list(self.__dict__.get("_anims") or []):
+            try:
+                a.stop()
+            except Exception:
+                pass
+        self._anims = []
+
+    def _run(self, anim):
+        anim.finished.connect(lambda a=anim: self._anims.remove(a) if a in self._anims else None)
+        self._anims.append(anim)
+        anim.start()
+
+    def _arm_close_guard(self):
+        """兜底：无论动画是否正常结束，OUT_MS 后强制收尾，避免 _closing 卡死。"""
+        try:
+            from PyQt6.QtCore import QTimer
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._after_close)
+            self._close_guard = t
+            t.start(self.OUT_MS + 60)
+        except Exception:
+            pass
+
+    def slide_in(self, rect: QRect):
+        """自右侧滑入：透明度 0→1 且自右侧 SLIDE 处左移到目标位置。"""
+        self._stop_anims()
+        self._closing = False
+        try:
+            g = self.__dict__.get("_close_guard")
+            if g is not None:
+                g.stop()
+        except Exception:
+            pass
+        eff = self._ensure_effect()
+        eff.setOpacity(0.0)
+        start = QRect(rect.x() + self.SLIDE, rect.y(), rect.width(), rect.height())
+        self.setGeometry(start)
+        self.show()
+        self.raise_()
+        a_op = QPropertyAnimation(eff, b"opacity", self)
+        a_op.setDuration(self.IN_MS)
+        a_op.setStartValue(0.0)
+        a_op.setEndValue(1.0)
+        a_op.setEasingCurve(QEasingCurve.Type.OutCubic)
+        a_geo = QPropertyAnimation(self, b"geometry", self)
+        a_geo.setDuration(self.IN_MS)
+        a_geo.setStartValue(start)
+        a_geo.setEndValue(rect)
+        a_geo.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._run(a_op)
+        self._run(a_geo)
+
+    def slide_out(self):
+        """自右侧滑出：透明度 1→0 且右移 SLIDE，动画结束后隐藏（幂等、可复用）。
+
+        幂等性保障：已在收起中时直接忽略；若面板本就不可见则仅同步状态位，
+        绝不把 ``_closing`` 永久置位（否则关闭按钮会失效——历史 bug）。
+        """
+        if self._closing:
+            return
+        if not self.isVisible():
+            self._closing = False
+            return
+        self._closing = True
+        self._stop_anims()
+        eff = self._ensure_effect()
+        cur = self.geometry()
+        a_op = QPropertyAnimation(eff, b"opacity", self)
+        a_op.setDuration(self.OUT_MS)
+        a_op.setStartValue(eff.opacity())
+        a_op.setEndValue(0.0)
+        a_op.setEasingCurve(QEasingCurve.Type.InCubic)
+        a_geo = QPropertyAnimation(self, b"geometry", self)
+        a_geo.setDuration(self.OUT_MS)
+        a_geo.setStartValue(cur)
+        a_geo.setEndValue(QRect(cur.x() + self.SLIDE, cur.y(),
+                                cur.width(), cur.height()))
+        a_geo.setEasingCurve(QEasingCurve.Type.InCubic)
+        a_op.finished.connect(self._after_close)
+        self._run(a_op)
+        self._run(a_geo)
+        self._arm_close_guard()
+
+    def _after_close(self):
+        self._closing = False
+        try:
+            g = self.__dict__.get("_close_guard")
+            if g is not None:
+                g.stop()
+        except Exception:
+            pass
+        self.hide()
+
+    def force_hide(self):
+        """同步隐藏（不走动画）：用于登出/强退等需要立即消失的场景。"""
+        self._stop_anims()
+        self._closing = False
+        try:
+            g = self.__dict__.get("_close_guard")
+            if g is not None:
+                g.stop()
+        except Exception:
+            pass
+        eff = self.__dict__.get("_eff")
+        if eff is not None:
+            try:
+                eff.setOpacity(1.0)
+            except Exception:
+                pass
+        self.hide()
+
+    # 关闭请求：由 AgentPanel 接管（卸载失焦守卫等），子类不直接关闭
+    def _request_close(self):
+        handler = getattr(self, "_on_close_request", None)
+        if callable(handler):
+            handler()
 
 
 class _PanelDragHandle(QWidget):
@@ -13240,6 +14195,7 @@ class AgentPanel(QDialog):
     _init_done = pyqtSignal()   # 后台初始化完成 → 主线程继续 UI 就绪
     file_diff_signal = pyqtSignal(str, str, str)  # AI 写/改文件差异(工作线程→主线程): path, old, new
     git_probe_signal = pyqtSignal(str, float)     # git 仓库根/时间戳后台探测完成（→ 主线程更新已知值）
+    auth_avatar_bytes = pyqtSignal(bytes)          # 头像下载完成（后台线程 → 主线程设置 QPixmap）
 
     # ---------- 微信 ClawBot（主面板：消息接收与回复推送） ----------
     def _wechat_start_polling(self):
@@ -14056,6 +15012,23 @@ class AgentPanel(QDialog):
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
 
+        # 账号系统：顶栏用户区域（未登录=登录按钮；已登录=圆形头像+用户名，点击弹菜单）
+        self._build_auth_user_bar(top)
+
+        # 系统公告位：位于用户名/头像右侧、CPU 状态左侧的顶栏中间；无修饰、无公告时隐藏。
+        # 两侧各一个 stretch，使其始终居中于顶栏。
+        top.addStretch(1)
+        self._announce_label = QLabel("")
+        self._announce_label.setObjectName("announceLabel")
+        self._announce_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._announce_label.setWordWrap(False)
+        self._announce_label.setVisible(False)
+        self._announce_label.setMaximumWidth(420)
+        # 纯文本、无修饰：只给一个与主题一致的前景色（无边框/无背景/无描边）
+        self._announce_label.setStyleSheet(
+            f"QLabel#announceLabel {{ color: {TEXT}; background: transparent;"
+            f" border: none; font-size: {FONT_SMALL}px; font-weight: 600; }}")
+        top.addWidget(self._announce_label)
         top.addStretch(1)
 
         # tokens / 工作流 / 模型统一并入「上下文统计」浮层（顶栏只留一个图表入口，
@@ -20930,6 +21903,637 @@ class AgentPanel(QDialog):
         """主题切换：就地重建本面板 UI，立即生效（会话与运行中任务原样保留）。"""
         self._retheme()
 
+    # ---------- 账号系统：顶栏用户区域 ----------
+    def _build_auth_user_bar(self, top):
+        """顶栏齿轮右侧用户区域：未登录=登录按钮；已登录=头像+用户名，点击弹菜单。"""
+        from zhuzhu_Copilot.core.auth_client import get_auth_client
+        auth = get_auth_client()
+        self._auth = auth
+        bar = QWidget()
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(4, 0, 0, 0)
+        bl.setSpacing(6)
+        # 未登录：登录按钮
+        self._auth_login_btn = QPushButton(_ui("登录"))
+        self._auth_login_btn.setAutoDefault(False)
+        self._auth_login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._auth_login_btn.setStyleSheet(_BTN_GHOST)
+        self._auth_login_btn.clicked.connect(auth.login_with_browser)
+        bl.addWidget(self._auth_login_btn)
+        # 已登录：头像图标 + 用户名的扁平按钮（点击弹菜单）
+        self._auth_user_btn = QPushButton()
+        self._auth_user_btn.setFlat(True)
+        self._auth_user_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._auth_user_btn.setAutoDefault(False)
+        self._auth_user_btn.setStyleSheet(
+            f"QPushButton {{ color: {TEXT}; padding: 4px 12px; border-radius: 18px; }}"
+            f"QPushButton:hover {{ background: {HOVER}; }}")
+        self._auth_user_btn.clicked.connect(self._auth_user_menu)
+        bl.addWidget(self._auth_user_btn)
+        top.addWidget(bar)
+        # 信号连接（UniqueConnection 防重复）
+        try:
+            auth.login_success.connect(self._refresh_auth_user_widget,
+                                       Qt.ConnectionType.UniqueConnection)
+            auth.logged_out.connect(self._refresh_auth_user_widget,
+                                    Qt.ConnectionType.UniqueConnection)
+            auth.login_timeout.connect(
+                lambda: QMessageBox.information(self, _ui("登录"), _ui("登录超时，请重试")),
+                Qt.ConnectionType.UniqueConnection)
+            auth.login_rejected.connect(
+                lambda reason: QMessageBox.warning(self, _ui("登录"), reason),
+                Qt.ConnectionType.UniqueConnection)
+            auth.session_expired.connect(self._on_session_expired,
+                                         Qt.ConnectionType.UniqueConnection)
+            auth.force_logout.connect(self._on_force_logout,
+                                      Qt.ConnectionType.UniqueConnection)
+            self.auth_avatar_bytes.connect(self._set_auth_avatar,
+                                           Qt.ConnectionType.UniqueConnection)
+            # 积分实时推送：同步刷新个人信息面板（面板打开时仅更新数字）
+            auth.points_updated.connect(self.refresh_profile_panel_points,
+                                        Qt.ConnectionType.UniqueConnection)
+            # 会员类型/到期日实时推送：刷新个人信息面板 + 会员页状态
+            auth.membership_updated.connect(self.refresh_profile_panel_membership,
+                                            Qt.ConnectionType.UniqueConnection)
+            # 系统公告实时推送：更新顶栏公告位
+            auth.announcement_updated.connect(self._set_announcement,
+                                              Qt.ConnectionType.UniqueConnection)
+            auth.logged_out.connect(lambda *_: self.close_profile_panel(True),
+                                    Qt.ConnectionType.UniqueConnection)
+            auth.force_logout.connect(lambda *_: self.close_profile_panel(True),
+                                      Qt.ConnectionType.UniqueConnection)
+        except Exception:
+            pass
+        self._refresh_auth_user_widget()
+        # 启动账号相关后台任务：WS 推送 + token 巡检 + 系统公告轮询（30s，立即首拉）。
+        # 注意：必须直接调用，不能依赖 _set_announcement —— 后者在 _announce_label
+        # 尚未创建时会提前 return（公告标签在本方法之后才构建），导致轮询永不启动。
+        try:
+            auth.start_ws_if_logged_in()
+        except Exception:
+            pass
+        # 公告位就绪后应用一次当前缓存（启动时可能已在 /me 或首拉拿到）
+        try:
+            self._set_announcement({"content": auth.announcement()})
+        except Exception:
+            pass
+
+    def _set_announcement(self, data=None):
+        """更新顶栏公告位：纯文本、无任何修饰；无内容时整块隐藏不占位。
+
+        data: {content: str, enabled: bool}；content 为空 → 隐藏。
+        """
+        lbl = self.__dict__.get("_announce_label")
+        if lbl is None:
+            return
+        d = data or {}
+        auth = getattr(self, "_auth", None)
+        content = str(d.get("content") or "")
+        if not content and auth is not None:
+            content = auth.announcement() or ""
+        content = content.strip()
+        # 单行展示，过长截断（顶栏空间有限，避免挤压 CPU/状态区）
+        if len(content) > 60:
+            content = content[:60] + "…"
+        try:
+            lbl.setText(content)
+            lbl.setVisible(bool(content))
+            lbl.setToolTip(content)
+        except Exception:
+            pass
+
+    def _auth_avatar_cache_path(self) -> str:
+        from PyQt6.QtCore import QStandardPaths
+        d = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+        return os.path.join(d, "zhuzhu_auth", "avatar.png")
+
+    def _refresh_auth_user_widget(self, *_a):
+        """按登录状态切换 登录按钮 / 头像+用户名，并尝试加载头像。"""
+        auth = getattr(self, "_auth", None)
+        if auth is None:
+            return
+        u = auth.current_user()
+        logged = bool(u)
+        self._auth_login_btn.setVisible(not logged)
+        self._auth_user_btn.setVisible(logged)
+        if not logged:
+            return
+        self._auth_user_btn.setText(u.get("username") or "")
+        pm = QPixmap(self._auth_avatar_cache_path())
+        if not pm.isNull():
+            self._apply_auth_avatar(pm)
+        elif u.get("avatar"):
+            threading.Thread(target=self._download_auth_avatar,
+                             args=(auth.server, u["avatar"]), daemon=True).start()
+
+    def _download_auth_avatar(self, server: str, avatar_path: str):
+        """后台下载头像：存本地缓存目录后发信号回主线程显示。"""
+        try:
+            import urllib.request
+            url = avatar_path if avatar_path.startswith("http") else \
+                server.rstrip("/") + avatar_path
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = urllib.request.urlopen(req, timeout=10).read()
+            p = self._auth_avatar_cache_path()
+            try:
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "wb") as f:
+                    f.write(data)
+            except Exception:
+                pass
+            self.auth_avatar_bytes.emit(data)
+        except Exception:
+            pass
+
+    def _set_auth_avatar(self, data: bytes):
+        pm = QPixmap()
+        if pm.loadFromData(data):
+            self._apply_auth_avatar(pm)
+
+    def _apply_auth_avatar(self, pm: QPixmap):
+        pm = pm.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                       Qt.TransformationMode.SmoothTransformation)
+        self._auth_user_btn.setIcon(QIcon(pm))
+        self._auth_user_btn.setIconSize(QSize(32, 32))
+
+    def _auth_user_menu(self):
+        """点击用户区域弹出：个人信息 / 切换账号 / 退出登录。"""
+        auth = getattr(self, "_auth", None)
+        if auth is None:
+            return
+        m = _AnchorQMenu(self)
+        m.setMinimumWidth(132)   # 固定菜单宽：右缘恒定 → 个人信息面板 x 恒定不漂移
+        act_info = m.addAction(_ui("个人信息"))
+        m.addSeparator()
+        act_switch = m.addAction(_ui("切换账号"))
+        act_out = m.addAction(_ui("退出登录"))
+        m._target = act_info
+        # 锚点：面板固定紧贴「个人信息」菜单项右侧（水平取菜单右缘、垂直对齐该项）。
+        # 关键一：菜单弹出位置固定在用户按钮下方（而非 ``QCursor.pos()``），这样面板的
+        # 绝对位置不随鼠标点击位置漂移——同一按钮点开两次落在完全相同的位置。
+        # 关键二：菜单在 ``exec`` 期间才最终定位，必须在菜单**显示时**就快照一次全局
+        # 几何；exec 返回后菜单已隐藏，此时再算会得到过期/错位的值（历史 bug）。
+        menu_pos = self._auth_menu_anchor_pos()
+        act = m.exec(menu_pos)
+        if act == act_info:
+            item_g, menu_g = m.snapshot_of(act_info)
+            anchor = None
+            if item_g is not None and not item_g.isNull():
+                anchor = {"item": item_g, "menu": menu_g}
+            else:
+                # 极端兜底（菜单未能显示/无快照）：按按钮右侧固定落位
+                try:
+                    br = QRect(self._auth_user_btn.mapToGlobal(QPoint(0, 0)),
+                               self._auth_user_btn.size())
+                    pseudo_menu = QRect(br.right() + 1, br.bottom() + 1, 120, 95)
+                    item_g = QRect(pseudo_menu.x() + 5, pseudo_menu.y() + 5,
+                                   pseudo_menu.width() - 10, 24)
+                    anchor = {"item": item_g, "menu": pseudo_menu}
+                except Exception:
+                    anchor = None
+            self.toggle_profile_panel(anchor)
+        elif act == act_switch:
+            auth.switch_account()
+        elif act == act_out:
+            auth.logout()
+
+    def _auth_menu_anchor_pos(self) -> QPoint:
+        """用户菜单的固定弹出点：按钮左下角（不跟随鼠标，保证面板位置稳定）。"""
+        try:
+            btn = self._auth_user_btn
+            br = QRect(btn.mapToGlobal(QPoint(0, 0)), btn.size())
+            return QPoint(br.left(), br.bottom() + 2)
+        except Exception:
+            return QCursor.pos()
+
+    # ---------- 个人信息侧边面板 ----------
+    def _ensure_profile_panel(self):
+        """惰性创建个人信息侧边面板（自由子控件，不进布局：位置由 _profile_panel_geometry 计算）。"""
+        from PyQt6 import sip
+        panel = self.__dict__.get("_profile_panel")
+        if panel is not None and not sip.isdeleted(panel):
+            return panel
+        panel = _ProfilePanel(self)
+        panel.hide()
+        panel._on_close_request = self.close_profile_panel
+        panel._switch_btn.clicked.connect(self._profile_panel_switch)
+        panel._logout_btn.clicked.connect(self._profile_panel_logout)
+        panel._checkin_btn.clicked.connect(self._profile_panel_checkin)
+        # 签到状态变化（WS /me / 主动拉取）→ 仅重绘按钮，不重排整个面板
+        try:
+            auth = getattr(self, "_auth", None)
+            if auth is not None:
+                auth.checkin_status_updated.connect(
+                    self.refresh_profile_panel_checkin,
+                    Qt.ConnectionType.UniqueConnection)
+                auth.checkin_done.connect(
+                    self._on_checkin_done,
+                    Qt.ConnectionType.UniqueConnection)
+                auth.checkin_failed.connect(
+                    self._on_checkin_failed,
+                    Qt.ConnectionType.UniqueConnection)
+                auth.points_updated.connect(
+                    self.refresh_profile_panel_checkin,
+                    Qt.ConnectionType.UniqueConnection)
+                auth.login_success.connect(
+                    lambda *_: auth.fetch_checkin_status_async(),
+                    Qt.ConnectionType.UniqueConnection)
+        except Exception:
+            pass
+        self._profile_panel = panel
+        self._profile_dismiss = _PopoverDismissFilter(
+            panel, self.__dict__.get("_auth_user_btn"), self,
+            on_dismiss=self.close_profile_panel)
+        return panel
+
+    def _profile_panel_size(self, panel) -> tuple:
+        """面板尺寸（宽, 高）：宽度取首选宽与可用宽取小；高度用布局 heightForWidth 或上限。"""
+        margin = SPACING_SM
+        try:
+            avail = max(200, int(self.width()) - 2 * margin)
+        except Exception:
+            avail = int(panel.PREFERRED_WIDTH)
+        w = max(180, min(int(panel.PREFERRED_WIDTH), avail))
+        h = 0
+        lay = panel.layout()
+        try:
+            if lay is not None and lay.hasHeightForWidth():
+                h = int(lay.heightForWidth(w))
+        except Exception:
+            h = 0
+        if h <= 0:
+            h = int(panel.sizeHint().height())
+        # 高度不超过面板可用高
+        try:
+            h = min(h, max(200, int(self.height()) - 2 * margin))
+        except Exception:
+            pass
+        return int(w), max(1, int(h))
+
+    def _profile_panel_geometry(self, panel, anchor_global=None) -> QRect:
+        """面板位置：紧贴「个人信息」弹出菜单的右侧、与该项垂直对齐。
+
+        anchor_global 由 _auth_user_menu 传入，形如
+        ``{"item": <个人信息项的全局 QRect>, "menu": <整个菜单的全局 QRect>}``
+        （也兼容旧的单个 QRect：此时按该项右侧定位并留 6px 间距）。
+
+        定位规则：面板左边缘 = 菜单右边缘（紧贴、无间距），
+        顶边与「个人信息」菜单项对齐，从而观感就是「紧挨着弹出菜单右侧的固定位置」。
+        未提供锚点时退化为贴主面板右侧竖排。
+        面板是主面板的子控件（会被父边界裁剪），横/纵方向都夹在主面板可视区内。
+        """
+        w, h = self._profile_panel_size(panel)
+        margin = SPACING_SM
+
+        item_g = menu_g = None
+        if isinstance(anchor_global, dict):
+            item_g = anchor_global.get("item")
+            menu_g = anchor_global.get("menu")
+        elif isinstance(anchor_global, QRect):
+            item_g = anchor_global
+
+        if item_g is not None and not item_g.isNull():
+            try:
+                item_tl = self.mapFromGlobal(item_g.topLeft())
+                # 水平：紧贴菜单右边缘（无间距）；有菜单矩形时用它，否则用菜单项右缘
+                if menu_g is not None and not menu_g.isNull():
+                    menu_tl = self.mapFromGlobal(menu_g.topLeft())
+                    x = int(menu_tl.x() + menu_g.width())   # 紧贴菜单右侧，间距 0
+                else:
+                    x = int(item_tl.x() + item_g.width() + 6)
+                y = int(item_tl.y())
+            except Exception:
+                x, y = margin, margin
+            # 右侧空间不足时：改贴到菜单/菜单项左侧（同样紧贴）
+            if x + w > self.width() - margin:
+                try:
+                    if menu_g is not None and not menu_g.isNull():
+                        x = int(menu_tl.x() - w)
+                    else:
+                        x = int(item_tl.x() - w - 6)
+                except Exception:
+                    pass
+            # 最终夹回面板可视区
+            x = max(margin, min(x, max(margin, self.width() - w - margin)))
+            y = max(margin, min(y, max(margin, self.height() - h - margin)))
+            return QRect(int(x), int(y), w, h)
+
+        # 退化：贴主面板右侧竖排、垂直居中（固定位置）
+        x = max(margin, self.width() - w - margin)
+        y = max(margin, (self.height() - h) // 2)
+        return QRect(int(x), int(y), w, h)
+
+    def _profile_panel_attach(self, on: bool):
+        """挂载/卸载失焦守卫（点击面板外或 Esc → 收起面板），幂等。"""
+        f = self.__dict__.get("_profile_dismiss")
+        app = QApplication.instance()
+        if f is None or app is None:
+            return
+        if bool(self.__dict__.get("_profile_dismiss_on")) == bool(on):
+            return
+        try:
+            if on:
+                app.installEventFilter(f)
+            else:
+                app.removeEventFilter(f)
+        except Exception:
+            return
+        self._profile_dismiss_on = bool(on)
+
+    def _profile_panel_data(self) -> dict:
+        """汇总个人信息快照（登录态 / 头像 / 会员 / 服务器）。"""
+        auth = getattr(self, "_auth", None)
+        if auth is None:
+            return {}
+        u = auth.current_user() or {}
+        pm = None
+        try:
+            icon = self._auth_user_btn.icon()
+            if icon is not None and not icon.isNull():
+                pm = icon.pixmap(QSize(56, 56))
+        except Exception:
+            pm = None
+        return {
+            "username": u.get("username") or "",
+            "avatar_pixmap": pm,
+            "points": auth.get_points(),
+            "membership_type": u.get("membership_type") or "free",
+            "membership_expire": u.get("membership_expire") or "",
+            "user_id": u.get("id"),
+            "checkin": auth.checkin_state(),
+        }
+
+    def open_profile_panel(self, anchor_global=None):
+        """打开个人信息侧边面板（先注入最新数据再算位置，避免首帧跳变）。
+
+        anchor_global：可选，「个人信息」菜单项的全局矩形；传入时面板贴其右侧弹出。
+        """
+        try:
+            panel = self._ensure_profile_panel()
+            self._profile_anchor = anchor_global
+            panel.set_profile(self._profile_panel_data())
+            panel.apply_theme()
+            _w, _h = self._profile_panel_size(panel)
+            panel.resize(_w, _h)
+            panel.slide_in(self._profile_panel_geometry(panel, anchor_global))
+            self._profile_panel_open = True
+            self._profile_panel_attach(True)
+        except Exception as e:
+            import logging
+            logging.getLogger(app_identity.APP_SLUG).warning("个人信息面板打开失败: %s", e)
+
+    def close_profile_panel(self, immediate: bool = False):
+        """收起个人信息侧边面板（默认带滑出动画；immediate=True 立即隐藏）。
+
+        未打开时静默返回。``immediate`` 供登出/强退等场景使用：需要面板瞬时消失，
+        不走动画（避免退出瞬间面板还在滑出的观感）。
+        """
+        panel = self.__dict__.get("_profile_panel")
+        self._profile_panel_open = False
+        self._profile_panel_attach(False)
+        if panel is None:
+            return
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(panel):
+                return
+            if immediate:
+                panel.force_hide()
+            else:
+                panel.slide_out()
+        except Exception:
+            pass
+
+    def toggle_profile_panel(self, anchor_global=None):
+        """个人信息面板开合（菜单项 / 自定义 UI 包均可调用）。
+
+        anchor_global：可选，点击来源的全局矩形；传入时面板贴其右侧弹出。
+        """
+        if self.__dict__.get("_profile_panel_open"):
+            self.close_profile_panel()
+        else:
+            self.open_profile_panel(anchor_global)
+
+    def refresh_profile_panel_points(self, points=None):
+        """WS points_update 实时刷新：面板打开时仅更新积分数字（不整面板重排）。"""
+        panel = self.__dict__.get("_profile_panel")
+        if panel is None or not self.__dict__.get("_profile_panel_open"):
+            return
+        try:
+            panel.set_points(points if points is not None else
+                             (getattr(self, "_auth", None).get_points()
+                              if getattr(self, "_auth", None) else 0))
+        except Exception:
+            pass
+
+    def refresh_profile_panel_membership(self, info=None):
+        """WS membership_update 实时刷新：刷新个人信息面板 + 会员页的会员状态。"""
+        auth = getattr(self, "_auth", None)
+        u = (info if isinstance(info, dict) and info else
+             (auth.current_user() if auth is not None else {})) or {}
+        mtype = u.get("membership_type") or "free"
+        mexpire = u.get("membership_expire") or ""
+        # 1) 个人信息面板（打开时仅更新两处文本）
+        panel = self.__dict__.get("_profile_panel")
+        if panel is not None and self.__dict__.get("_profile_panel_open"):
+            try:
+                panel.set_membership(mtype, mexpire)
+            except Exception:
+                pass
+        # 2) 会员与积分页的会员类型标签
+        try:
+            lbl = getattr(self, "_memb_type_label", None)
+            if lbl is not None:
+                mt = {"free": _ui("免费版"), "pro": _ui("Pro 会员"), "max": _ui("Max 会员")}
+                lbl.setText(mt.get(mtype, mtype or ""))
+        except Exception:
+            pass
+        # 3) 会员等级变化会改变签到可得积分 → 重新拉一次状态
+        if auth is not None:
+            try:
+                auth.fetch_checkin_status_async()
+            except Exception:
+                pass
+
+    # ---------- 每日签到（个人信息面板） ----------
+    def refresh_profile_panel_checkin(self, *_args):
+        """签到状态/积分变化：仅重绘签到按钮（面板未打开时跳过，避免无谓开销）。"""
+        auth = getattr(self, "_auth", None)
+        panel = self.__dict__.get("_profile_panel")
+        if panel is None or auth is None:
+            return
+        try:
+            state = dict(auth.checkin_state() or {})
+            if not state:
+                return
+            # 积分已变但签到状态未回填时，保留按钮可用性判断（reward 由服务端给）
+            panel.set_checkin_state(state)
+        except Exception:
+            pass
+
+    def _on_checkin_done(self, data=None):
+        """签到成功：更新按钮态并弹出页面内提示（不用原生 MessageBox）。"""
+        d = data or {}
+        panel = self.__dict__.get("_profile_panel")
+        if panel is not None:
+            try:
+                panel.set_checkin_pending(False)
+                panel.set_checkin_state({
+                    "checked": True,
+                    "can_checkin": False,
+                    "reward": d.get("points_added"),
+                    "total_days": d.get("total_days"),
+                })
+            except Exception:
+                pass
+        try:
+            self._toast(_ui("签到成功"),
+                        _uif("积分 +{n}", n=d.get("points_added", 0)))
+        except Exception:
+            pass
+
+    def _on_checkin_failed(self, reason=""):
+        """签到失败：恢复按钮可用性并提示原因（如「今日已签到」）。"""
+        panel = self.__dict__.get("_profile_panel")
+        if panel is not None:
+            try:
+                panel.set_checkin_pending(False)
+            except Exception:
+                pass
+        try:
+            self._toast(_ui("签到失败"), str(reason) or _ui("请稍后重试"))
+        except Exception:
+            pass
+
+    def _profile_panel_checkin(self):
+        """签到按钮点击：后台线程执行网络请求，UI 不阻塞。"""
+        from zhuzhu_Copilot.core.auth_client import get_auth_client
+        auth = get_auth_client()
+        if not auth.is_logged_in():
+            self._toast(_ui("需要登录"), _ui("请先登录后再签到"))
+            return
+        panel = self.__dict__.get("_profile_panel")
+        if panel is not None:
+            try:
+                panel.set_checkin_pending(True)
+            except Exception:
+                pass
+        try:
+            import threading
+            threading.Thread(target=auth.do_checkin, daemon=True).start()
+        except Exception:
+            if panel is not None:
+                try:
+                    panel.set_checkin_pending(False)
+                except Exception:
+                    pass
+
+    def _profile_panel_switch(self):
+        """面板内「切换账号」：收起面板后走切换流程。"""
+        self.close_profile_panel()
+        auth = getattr(self, "_auth", None)
+        if auth is not None:
+            auth.switch_account()
+
+    def _profile_panel_logout(self):
+        """面板内「退出登录」：收起面板后登出。"""
+        self.close_profile_panel()
+        auth = getattr(self, "_auth", None)
+        if auth is not None:
+            auth.logout()
+
+    def _prompt_login_required(self):
+        """未登录使用内置模型时弹窗：提示登录，「立即登录」打开浏览器登录页。"""
+        auth = getattr(self, "_auth", None)
+        box = QMessageBox(self)
+        box.setWindowTitle(_ui("需要登录"))
+        box.setText(_ui("请先登录账号后使用内置模型（agnes）。"))
+        login_btn = box.addButton(_ui("立即登录"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_ui("取消"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() == login_btn and auth is not None:
+            auth.login_with_browser()
+
+    def _on_session_expired(self, reason: str):
+        """登录态失效（过期/被禁用）且自动续期失败：刷新顶栏并中断内置模型任务。"""
+        self._refresh_auth_user_widget()
+        # 登录态失效后内置模型已不可用：中断在途任务，避免继续无凭证调用
+        try:
+            self._interrupt_all_tasks()
+        except Exception:
+            pass
+        box = QMessageBox(self)
+        box.setWindowTitle(_ui("登录已失效"))
+        box.setText(reason or _ui("登录已失效，请重新登录"))
+        login_btn = box.addButton(_ui("立即登录"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_ui("稍后"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() == login_btn:
+            auth = getattr(self, "_auth", None)
+            if auth is not None:
+                auth.login_with_browser()
+
+    def _on_force_logout(self, reason: str):
+        """服务端强制下线（禁用/删除）：清凭证 + 中断所有内置模型任务 + 模态弹窗。
+
+        - 立即中断当前会话引擎与子 Agent 任务；
+        - 一并中断其它会话中仍在运行的引擎（禁用后所有内置模型调用都应停）；
+        - 弹窗无「稍后」选项，仅提供「我知道了」，确保用户明确感知已下线。
+        """
+        auth = getattr(self, "_auth", None)
+        if auth is not None:
+            try:
+                auth.clear_credentials()
+            except Exception:
+                pass
+        self._refresh_auth_user_widget()
+
+        # 中断所有正在运行的内置模型任务（当前会话 + 其它会话独立引擎）
+        self._interrupt_all_tasks()
+
+        QMessageBox.warning(self, _ui("强制下线"),
+                            _uif("强制下线\n\n{reason}\n\n"
+                                 "当前使用内置模型的任务已中断，"
+                                 "如需继续请重新登录。",
+                                 reason=reason))
+
+    def _interrupt_all_tasks(self):
+        """强制中止所有会话的内置模型任务（强制下线时调用）。"""
+        # 打断 @子Agent 独立任务
+        try:
+            if getattr(self, "_sub_stop", None) is not None:
+                self._sub_stop.set()
+        except Exception:
+            pass
+        # 当前会话引擎
+        try:
+            self._user_stopped = True
+            self._task_active = False
+        except Exception:
+            pass
+        engines = []
+        cur = getattr(self, "_engine", None)
+        if cur is not None:
+            engines.append(cur)
+        try:
+            for st in (self._sess or {}).values():
+                e = st.get("engine") if isinstance(st, dict) else None
+                if e is not None and e not in engines:
+                    engines.append(e)
+        except Exception:
+            pass
+        for eng in engines:
+            try:
+                eng.stop()
+            except Exception:
+                pass
+        # 兜底：5 秒后仍卡死则强制隔离当前引擎
+        try:
+            self._stop_engine = cur
+            QTimer.singleShot(5000, self._force_stop_if_stuck)
+        except Exception:
+            pass
+
     def _open_settings(self, *_args, highlight_sid: str = None):
         """打开 AI 设置；保存后应用（刷新纯文本/记忆状态，空闲时重建引擎）。
         highlight_sid：打开后定位到「对话流」页该会话行并闪烁边框（工作目录提示条跳转用）"""
@@ -21716,6 +23320,17 @@ class AgentPanel(QDialog):
         engine.llm.api_key = api_key
         engine.llm.protocol = protocol
         engine.llm.model = model
+        # 账号系统：内置默认模型（agnes）必须登录后使用；未登录弹窗引导登录并阻止发送。
+        # 用户自定义 API 模型（非内置服务商）不受此限制。
+        try:
+            from zhuzhu_Copilot.core.auth_client import get_auth_client
+            _auth = get_auth_client()
+            if (engine.llm.base_url or "").startswith(agent_llm.DEFAULT_BASE_URL.rstrip("/")) \
+                    and not _auth.is_logged_in():
+                self._prompt_login_required()
+                return
+        except Exception:
+            pass
         # 上下文上限按「本轮实际路由到的模型」对齐（同一会话内切换模型/服务商时，
         # 声明的窗口可能不同；1M 开关同样在此生效），统计面板与阈值随之下一次轮询更新
         self._apply_context_budget(engine, cfg, model=model, provider=sel)
