@@ -359,7 +359,12 @@ html.js [data-parallax="-0.06"].is-parallax { transform: translate3d(0, calc(var
 
 /* ---- 13. 视图过渡：子页面切换时的淡入 ------------------------------------ */
 @keyframes pageIn { from { opacity: 0; transform: translate3d(0, 8px, 0); } to { opacity: 1; transform: none; } }
-html.js body { animation: pageIn var(--dur-3) var(--ease) both; }
+/* 页面进入动画挂在 #main 上，绝不挂在 body 上。
+   元素一旦有 transform / 正在播放的动画，就会成为 position:fixed 后代的
+   containing block —— 挂在 body 上会让顶部导航栏（.nav 是 fixed）在动画期间
+   相对 body 而不是视口定位，表现为「导航栏没固定住」。
+   挂 #main 则导航、页脚、弹层都在其外，固定定位不受任何影响。 */
+html.js #main { animation: pageIn var(--dur-3) var(--ease) both; }
 /* 「减少动态效果」的完整降级统一放在文件末尾的 @media 块里（见那里），
    此处不重复声明，避免两处规则互相覆盖后出现「关不掉的动画」。 */
 .btn, .nav-cta, .drawer-download {

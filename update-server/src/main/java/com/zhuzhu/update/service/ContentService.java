@@ -229,12 +229,15 @@ public class ContentService {
     /**
      * 页脚内容：备案号 / 联系文字 / 导航链接，以及「底部角标」。
      *
-     * <p>角标（badge）是页脚最底部独立成行的一条品牌署名，形如
-     * {@code zhuzhu Copilot powered by xiaozhu · 开源免费}，可在后台逐字自定义，
-     * 用于放置版权归属、开源许可、赞助方等对外声明；可选配跳转地址与是否显示。
+     * <p>角标（badge）是页脚底部独立成行的一条署名，用于放置版权归属、开源许可、
+     * 赞助方等对外声明，可在后台逐字自定义，并可选配跳转地址与状态灯。
+     * 默认留空 —— 页脚已有品牌名与自动生成的版权行，角标再重复一遍站名与
+     * 「开源免费」属于赘述，仅在确有必要时由后台填写。
      */
     private static Map<String, Object> footer() {
         Map<String, Object> m = new LinkedHashMap<>();
+        // icp：备案号。留空即不渲染。注意不要拿它放版权声明 ——
+        // 页脚已有一行自动生成的「© 年份 站名」，重复声明版权只会造成信息冗余。
         m.put("icp", "");
         m.put("contactLabel", "联系我们");
         List<Object> links = new ArrayList<>();
@@ -247,8 +250,8 @@ public class ContentService {
         m.put("links", links);
 
         // ---- 底部角标（后台可自定义） ----
-        // badge：角标正文，留空即整块不渲染
-        m.put("badge", "zhuzhu Copilot powered by xiaozhu · 开源免费");
+        // badge：角标正文，留空即整块不渲染（默认留空，避免与版权行重复）
+        m.put("badge", "");
         // badgeHref：角标点击跳转地址（可留空，此时角标为纯文本不可点击）
         m.put("badgeHref", "");
         // badgeVisible：角标总开关，关闭时即使有文案也不显示

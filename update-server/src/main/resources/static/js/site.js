@@ -155,11 +155,12 @@
      元素进入视口后立即 unobserve —— 观察器不常驻，回调不重复触发。
      没有 IntersectionObserver 的旧浏览器直接给终态，绝不留下不可见内容。 */
   function initReveal() {
-    var sel = '.section-head.sr, .stats-lead.sr, .dl-block.sr, .cta-card.sr, ' +
-      '.features-grid.sr, .gallery-grid.sr, .adv-grid.sr, .video-wall.sr, ' +
-      '.stats-grid.sr, .changelog-card.sr, .empty-state.sr, .faq-list.sr, ' +
-      '.reveal, .footer';
-    var els = $$(sel);
+    /* 只认类名，不逐个枚举具体选择器。
+       曾经的写法是白名单：'.section-head.sr, .dl-block.sr, ...' 逐个列出来。
+       那样每新增一处 .sr 就得同步改这里，漏改的那块会永远停在 opacity:0 ——
+       反馈页的 .feedback-card / .feedback-faq 就这样整页空白且无法交互。
+       现在按类名统一匹配，新增元素自动生效，不会再漏。 */
+    var els = $$('.sr, .reveal, .footer');
     if (!els.length) { return; }
     if (REDUCED || !('IntersectionObserver' in window)) {
       els.forEach(function (el) { el.classList.add('in'); });
@@ -171,8 +172,23 @@
         en.target.classList.add('in');
         io.unobserve(en.target);
       });
-    }, { threshold: .12, rootMargin: '0px 0px -8% 0px' });
+    /* threshold 必须是 0（只要有一角进入视口就触发）。
+       用比例阈值（如 .12）有个隐蔽陷阱：元素若高于「视口高 ÷ 阈值」，
+       intersectionRatio 永远达不到该值，那块内容就永远不会显示。
+       改判定「边缘是否进入」+ 底部留 10% 余量，元素多高都能触发。 */
+    }, { threshold: 0, rootMargin: '0px 0px -10% 0px' });
     els.forEach(function (el) { io.observe(el); });
+    /* 最后一道兜底：2.5 秒后，凡已进入视口却仍未揭示的元素，直接放行。
+       观察器是唯一的内容显示开关，一旦它失效（回调异常、被浏览器节流、
+       元素经历过 display 切换），整块内容就是永久空白 —— 用户看到的是
+       「页面坏了」，代价远高于少一次入场动画。 */
+    window.setTimeout(function () {
+      els.forEach(function (el) {
+        if (el.classList.contains('in')) { return; }
+        var r = el.getBoundingClientRect();
+        if (r.top < window.innerHeight && r.bottom > 0) { el.classList.add('in'); }
+      });
+    }, 2500);
   }
 
   /* 数字递增：进入视口后逐帧改 textContent。

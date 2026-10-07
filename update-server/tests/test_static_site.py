@@ -277,6 +277,25 @@ class TestProductRedesign(unittest.TestCase):
                        "transition: width", "transition: all"):
             self.assertNotIn(banned, motion, f"动效体系里出现会触发重排的声明：{banned}")
 
+    def test_fixed_nav_not_broken_by_body_animation(self) -> None:
+        """顶部导航是 position:fixed；body 上不能有 animation / transform。
+
+        元素只要带 transform，或正在播放含 transform 的动画，就会成为
+        position:fixed 后代的 containing block。挂在 body 上会让导航栏改为
+        相对 body 定位、随页面滚走，表现为「导航栏没固定住」。
+        页面进入动画必须挂在 #main（导航、页脚、弹层都在其外）。
+        """
+        css = read(STATIC / "css/site.css")
+        # 导航栏本身必须是固定定位
+        self.assertIn(".nav { position: fixed", css, "导航栏必须是固定定位")
+        # 页面进入动画必须挂 #main。挂在 body 上会让 fixed 导航栏改以 body 为参照物
+        self.assertIn("#main { animation: pageIn", css, "页面进入动画应挂在 #main")
+        self.assertNotIn("html.js body { animation", css, "页面进入动画不得挂在 body 上")
+        # body 自身不得带 transform（同样会改变 fixed 后代的参照物）
+        # 行首锚定 + 排除花括号，避免匹配到 var(--font-body) 这类同名字符串
+        for rule in re.findall(r"(?m)^body[^{}]*\{([^{}]*)\}", css):
+            self.assertNotIn("transform", rule, "body 上有 transform，会让固定导航栏失效")
+
     def test_ripple_respects_reduced_motion_and_cleans_up(self) -> None:
         """按压涟漪必须响应「减少动效」，且不留下常驻 DOM 节点。"""
         js = read(STATIC / "js/site.js")
@@ -332,6 +351,29 @@ class TestProductRedesign(unittest.TestCase):
         self.assertIn("animation: none !important", tail, "reduced-motion 下未关闭动画")
         js = read(STATIC / "js/site.js")
         self.assertIn("prefers-reduced-motion", js, "JS 侧未响应减少动态效果偏好")
+
+    def test_reveal_never_leaves_content_hidden(self) -> None:
+        """入场揭示不得让任何内容永久不可见。
+
+        历史故障：选择器写成白名单（逐个列 .xxx.sr），新增的 .feedback-card.sr 等
+        不在名单里，那块内容永远停在 opacity:0 —— 用户看到的是「整页空白且点不动」。
+        这里锁死三件防御：按类名统一匹配、阈值必须为 0、必须有超时兜底。
+        """
+        js = read(STATIC / "js/site.js")
+        body = js[js.index("function initReveal"):]
+        body = body[:body.index("\n  function ")]
+        # 注释里会举例说明旧写法，断言前必须先剥掉注释，否则自己把自己判失败
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        # 1) 必须按类名匹配；出现 ".某个类.sr" 这种拼接式白名单即视为回归
+        for bad in (".section-head.sr", ".feedback-card.sr", ".dl-block.sr", ".cta-card.sr"):
+            self.assertNotIn(bad, body, f"揭示选择器又变回白名单枚举（{bad}），漏改即整块空白")
+        self.assertRegex(body, r"\$\$\(\'\.sr", "揭示未按 .sr 类名统一匹配")
+        # 2) 比例阈值有「元素高于 视口÷阈值 就永不触发」的陷阱，必须用边缘判定
+        self.assertIn("threshold: 0", body, "揭示阈值必须是 0，否则高元素永不触发")
+        self.assertNotRegex(body, r"threshold: \.\d", "又用了比例阈值")
+        # 3) 必须有超时兜底
+        self.assertIn("getBoundingClientRect", body, "缺少观察器失效后的兜底判定")
+        self.assertIn("setTimeout", body, "缺少超时兜底，观察器失效会让内容永久空白")
 
     def test_reveal_observer_unobserves_after_trigger(self) -> None:
         """揭示观察器触发一次后必须 unobserve，否则回调常驻滚动路径。"""
