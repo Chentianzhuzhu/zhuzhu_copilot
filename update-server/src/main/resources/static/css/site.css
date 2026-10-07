@@ -571,17 +571,24 @@ body[data-page="/faq"] #faq > .wrap { display: block; max-width: 880px; }
 .empty-hint { margin-top: 10px; font-size: var(--text-sm); color: var(--ink-faint); }
 /* 联系、团队与站点索引 */
 .about-contacts-grid, .about-team-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); gap: 24px; }
+/* 团队网格单独加宽列数：竖版照片卡比联系方式卡窄一号更协调。 */
+.about-team-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); align-items: start; }
 .contact-card { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 30px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); transition: border-color .18s; }
 .contact-card:hover { border-color: var(--blue-bright); }
 .contact-icon { width: 44px; height: 44px; display: grid; place-items: center; color: var(--blue-bright); }
 .contact-icon svg { width: 24px; height: 24px; }
 .contact-label { font-size: var(--text-lg); font-weight: 600; }
 .contact-value { font-size: var(--text-sm); color: var(--ink-dim); overflow-wrap: anywhere; }
-.member-card { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 22px; padding: 30px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
-.member-avatar { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; overflow: hidden; background: var(--surface-3); }
-.member-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.member-avatar-fallback { font-size: 26px; color: var(--blue-bright); }
-.member-name { font-size: var(--text-lg); font-weight: 600; }
+/* 团队卡片：竖版照片卡。
+   此前头像是 64×64 的正方形圆形框 + object-fit:cover 居中取景：竖幅半身照在正方形里
+   先被纵向裁掉约 1/4，再被圆形四角切掉，人像只剩头部。改为 4:5 竖版取景框、取景点上移到
+   15%（人像头部通常在上部），照片可完整呈现头部到上半身；无头像时的首字母占位也一并居中放大。 */
+.member-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 16px 26px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); text-align: center; }
+.member-card:hover { border-color: var(--blue-bright); }
+.member-avatar { width: 100%; aspect-ratio: 4 / 5; border-radius: calc(var(--radius) - 4px); display: grid; place-items: center; overflow: hidden; background: var(--surface-3); }
+.member-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: center 15%; }
+.member-avatar-fallback { font-size: 44px; color: var(--blue-bright); }
+.member-name { margin-top: 16px; font-size: var(--text-lg); font-weight: 600; }
 .member-role { font-size: var(--text-sm); color: var(--ink-dim); }
 .sitemap-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; }
 .sitemap-card { display: flex; flex-direction: column; gap: 8px; position: relative; padding: 30px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); transition: border-color .18s; }
@@ -753,6 +760,9 @@ body[data-page="/faq"] #faq > .wrap { display: block; max-width: 880px; }
   .feature-title { font-size: var(--text-lg); }
   .feature-desc { font-size: var(--text-sm); }
   .gallery-grid, .adv-grid, .req-grid, .sitemap-grid, .dl-hero, .footer-inner { grid-template-columns: 1fr; }
+  /* 团队照片卡单列时限制宽度：4:5 取景框铺满窄屏会把照片拉得过高。 */
+  .about-team-grid { justify-items: center; }
+  .about-team-grid .member-card { width: 100%; max-width: 320px; }
   .gallery-item.wide { grid-column: auto; }
   .gallery-item.wide .gallery-link { aspect-ratio: 16 / 10; }
   .adv-grid { gap: 26px; }
@@ -851,7 +861,7 @@ body[data-page="/faq"] #faq > .wrap { display: block; max-width: 880px; }
   transition: transform var(--dur-2) var(--ease);
 }
 .gallery-link:hover img, .video-thumb:hover img { transform: scale(1.04); }
-.member-avatar:hover img { transform: scale(1.06); }
+.member-avatar:hover img { transform: scale(1.04); }
 
 /* =========================================================================
    唯一的「减少动态效果」降级入口
