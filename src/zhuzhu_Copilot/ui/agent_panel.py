@@ -21949,6 +21949,9 @@ class AgentPanel(QDialog):
                                       Qt.ConnectionType.UniqueConnection)
             self.auth_avatar_bytes.connect(self._set_auth_avatar,
                                            Qt.ConnectionType.UniqueConnection)
+            # 头像地址变更（WS 推送或 /me 轮询发现）：重拉图片并刷新顶栏/个人信息面板
+            auth.avatar_updated.connect(self._on_avatar_updated,
+                                        Qt.ConnectionType.UniqueConnection)
             # 积分实时推送：同步刷新个人信息面板（面板打开时仅更新数字）
             auth.points_updated.connect(self.refresh_profile_panel_points,
                                         Qt.ConnectionType.UniqueConnection)
@@ -22002,10 +22005,58 @@ class AgentPanel(QDialog):
         except Exception:
             pass
 
-    def _auth_avatar_cache_path(self) -> str:
+    def _auth_avatar_cache_path(self, avatar_path: str = "") -> str:
+        """头像本地缓存路径。
+
+        **按头像 URL 派生文件名**（而非固定 avatar.png）：服务端每次上传都会
+        生成新的 UUID 文件名，URL 变化 ⇒ 缓存文件名变化 ⇒ 自动失效并重新下载。
+        固定文件名会导致「换了头像但本地永远显示旧图」——这是本 bug 的根因。
+
+        无 avatar_path 时返回用户名下的目录（供清理用）。
+        """
         from PyQt6.QtCore import QStandardPaths
         d = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
-        return os.path.join(d, "zhuzhu_auth", "avatar.png")
+        base = os.path.join(d, "zhuzhu_auth", "avatars")
+        if not avatar_path:
+            return base
+        # 只取路径部分做 hash，避免不同账号/服务器同名文件互相覆盖
+        import hashlib
+        key = hashlib.sha1(str(avatar_path).encode("utf-8")).hexdigest()[:20]
+        ext = os.path.splitext(str(avatar_path))[1].lower() or ".img"
+        if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".img"):
+            ext = ".img"
+        return os.path.join(base, f"{key}{ext}")
+
+    def _clear_auth_avatar_cache(self, keep: str = ""):
+        """清理头像缓存（登出/切换账号时调用，避免串号显示上一个用户的头像）。
+
+        keep 指定需保留的缓存文件（当前登录用户的头像）。
+        """
+        try:
+            # 顺带删除旧版遗留的固定文件名缓存（zhuzhu_auth/avatar.png）：
+            # 新版按 URL 派生文件名，该文件已不再被读取，留着只会造成混淆。
+            try:
+                legacy = os.path.join(os.path.dirname(self._auth_avatar_cache_path()),
+                                      "avatar.png")
+                if os.path.isfile(legacy):
+                    os.remove(legacy)
+            except Exception:
+                pass
+
+            d = self._auth_avatar_cache_path()
+            if not os.path.isdir(d):
+                return
+            for name in os.listdir(d):
+                p = os.path.join(d, name)
+                if keep and os.path.abspath(p) == os.path.abspath(keep):
+                    continue
+                try:
+                    if os.path.isfile(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _refresh_auth_user_widget(self, *_a):
         """按登录状态切换 登录按钮 / 头像+用户名，并尝试加载头像。"""
@@ -22017,16 +22068,38 @@ class AgentPanel(QDialog):
         self._auth_login_btn.setVisible(not logged)
         self._auth_user_btn.setVisible(logged)
         if not logged:
+            # 登出：清掉图标与缓存，避免下次登录前残留上一个用户的头像
+            try:
+                self._auth_user_btn.setIcon(QIcon())
+            except Exception:
+                pass
+            self._clear_auth_avatar_cache()
             return
         self._auth_user_btn.setText(u.get("username") or "")
-        pm = QPixmap(self._auth_avatar_cache_path())
+
+        avatar_path = u.get("avatar") or ""
+        if not avatar_path:
+            # 该用户没有头像：清空图标，防止沿用上一个用户的缓存图
+            self._clear_auth_avatar_cache()
+            try:
+                self._auth_user_btn.setIcon(QIcon())
+            except Exception:
+                pass
+            return
+
+        cache = self._auth_avatar_cache_path(avatar_path)
+        pm = QPixmap(cache)
         if not pm.isNull():
             self._apply_auth_avatar(pm)
-        elif u.get("avatar"):
+            # 顺手清掉其它用户的缓存，防止换账号时串号
+            self._clear_auth_avatar_cache(keep=cache)
+        else:
             threading.Thread(target=self._download_auth_avatar,
-                             args=(auth.server, u["avatar"]), daemon=True).start()
+                             args=(auth.server, avatar_path, cache),
+                             daemon=True).start()
 
-    def _download_auth_avatar(self, server: str, avatar_path: str):
+    def _download_auth_avatar(self, server: str, avatar_path: str,
+                              cache_path: str = ""):
         """后台下载头像：存本地缓存目录后发信号回主线程显示。"""
         try:
             import urllib.request
@@ -22034,21 +22107,67 @@ class AgentPanel(QDialog):
                 server.rstrip("/") + avatar_path
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             data = urllib.request.urlopen(req, timeout=10).read()
-            p = self._auth_avatar_cache_path()
+            p = cache_path or self._auth_avatar_cache_path(avatar_path)
             try:
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 with open(p, "wb") as f:
                     f.write(data)
             except Exception:
                 pass
+            # 下载成功即清理其它旧缓存（含旧的固定文件名 avatar.png）
+            self._clear_auth_avatar_cache(keep=p)
             self.auth_avatar_bytes.emit(data)
+        except Exception:
+            # 下载失败：若已有旧缓存先顶着，避免图标空白
+            try:
+                old = QPixmap(self._auth_avatar_cache_path(avatar_path))
+                if not old.isNull():
+                    self.auth_avatar_bytes.emit(b"")
+            except Exception:
+                pass
+
+    def _on_avatar_updated(self, avatar_path: str = ""):
+        """头像变更（WS avatar_update 或 /me 发现新地址）：重新拉取并刷新界面。
+
+        先删本地旧缓存，再走与登录时相同的「无缓存即下载」路径，
+        保证顶栏图标与个人信息面板都换成新头像。
+        """
+        auth = getattr(self, "_auth", None)
+        if auth is None:
+            return
+        u = auth.current_user()
+        if not u:
+            return
+        path = avatar_path or (u.get("avatar") or "")
+        if not path:
+            return
+        try:
+            self._auth_user_btn.setText(u.get("username") or "")
+            cache = self._auth_avatar_cache_path(path)
+            try:
+                if os.path.isfile(cache):
+                    os.remove(cache)   # 强制重新下载（同 URL 但内容可能已变）
+            except Exception:
+                pass
+            threading.Thread(target=self._download_auth_avatar,
+                             args=(auth.server, path, cache),
+                             daemon=True).start()
         except Exception:
             pass
 
     def _set_auth_avatar(self, data: bytes):
+        if not data:
+            return          # 空数据 = 下载失败的兜底信号，保持现状
         pm = QPixmap()
         if pm.loadFromData(data):
             self._apply_auth_avatar(pm)
+            # 个人信息面板若打开，同步刷新头像
+            try:
+                panel = self.__dict__.get("_profile_panel")
+                if panel is not None and self.__dict__.get("_profile_panel_open"):
+                    panel.set_profile(self._profile_panel_data())
+            except Exception:
+                pass
 
     def _apply_auth_avatar(self, pm: QPixmap):
         pm = pm.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatioByExpanding,

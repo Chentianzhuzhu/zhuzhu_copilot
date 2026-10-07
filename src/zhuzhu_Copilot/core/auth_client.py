@@ -225,6 +225,7 @@ class WebSocketClient(QThread):
     order_paid_received = pyqtSignal(dict)    # 订单支付成功信息
     membership_updated = pyqtSignal(dict)     # 会员类型/到期日变动 {membership_type, membership_expire}
     announcement_received = pyqtSignal(dict)  # 系统公告变更 {content, enabled}
+    avatar_received = pyqtSignal(dict)        # 头像地址变更 {avatar}
     checkin_received = pyqtSignal(dict)       # 签到结果 {points_added, points, tier, total_days}
     connected = pyqtSignal()
     disconnected = pyqtSignal()
@@ -328,6 +329,8 @@ class WebSocketClient(QThread):
                 self.announcement_received.emit(data)
             elif mtype == "checkin_result":
                 self.checkin_received.emit(data)
+            elif mtype == "avatar_update":
+                self.avatar_received.emit(data)
         except Exception:
             pass
 
@@ -396,6 +399,7 @@ class AuthClient(QObject):
     force_logout = pyqtSignal(str)      # 服务端强制下线（原因）
     order_paid = pyqtSignal(dict)       # 订单支付到账
     membership_updated = pyqtSignal(dict)  # 会员类型/到期日变动
+    avatar_updated = pyqtSignal(str)       # 头像地址变动（新 URL）
     announcement_updated = pyqtSignal(dict)  # 系统公告变更 {content, enabled}
     checkin_status_updated = pyqtSignal(dict)  # 签到状态变更 {can_checkin, checked, reward, ...}
     checkin_done = pyqtSignal(dict)            # 本机签到成功 {points_added, points, tier}
@@ -1086,6 +1090,30 @@ class AuthClient(QObject):
         # 避免断网时误杀用户正在进行的输出。
         return False if status == 402 else True
 
+    def _on_ws_avatar(self, data: dict):
+        """头像变更实时推送：更新本地缓存地址并广播（UI 据此重新拉图）。
+
+        服务端每次上传头像都会生成新的 UUID 文件名，因此「地址变了」即
+        「头像内容变了」；客户端只需按新地址重新下载，无需比对图片内容。
+        """
+        try:
+            d = data or {}
+            avatar = str(d.get("avatar") or "")
+            if not avatar:
+                return
+            self._user["avatar"] = avatar
+            # 持久化（与 _persist_points 同款：写 auth_user_json）
+            try:
+                q = app_identity.qsettings()
+                q.setValue("auth_user_json",
+                           json.dumps(self._user, ensure_ascii=False))
+                q.sync()
+            except Exception:
+                pass
+            self.avatar_updated.emit(avatar)
+        except Exception:
+            pass
+
     def _persist_points(self, points: int):
         try:
             q = app_identity.qsettings()
@@ -1159,18 +1187,63 @@ class AuthClient(QObject):
             pass
 
     def _probe_account_status(self):
-        """调用 /api/auth/me 探测账号状态；403/401 视为已被禁用/删除，强制下线。"""
+        """调用 /api/auth/me 探测账号状态；403/401 视为已被禁用/删除，强制下线。
+
+        成功时顺带同步「头像/会员」等可能被其它端（或后台）改动的字段——
+        WS 断线期间的头像变更就靠这条轮询兜底，否则客户端会一直显示旧头像。
+        """
         token = self.token
         if not token:
             return
         ok, data, status = _http_get_json(f"{self.server}/api/auth/me",
                                           token=token, timeout=10)
         if ok:
+            self._sync_from_me(data)
             return
         if status == 403:
             detail = (data or {}).get("message") or (data or {}).get("detail") or ""
             self._on_force_logout(detail or _ui("账号已被禁用，已强制下线"))
         # 401 交由 consume_points / WS 的既有 401 处理，避免误清「短暂网络抖动」
+
+    def _sync_from_me(self, data):
+        """把 /me 返回的最新字段同步到本地缓存；有实质变化才广播。
+
+        目前覆盖头像（服务端换头像后客户端需重拉图）与会员信息。
+        仅在值真正变化时发信号，避免轮询周期内反复触发 UI 重绘。
+        """
+        try:
+            d = (data or {}).get("data") if isinstance(data, dict) else None
+            if not isinstance(d, dict):
+                return
+            changed_avatar = False
+            new_avatar = str(d.get("avatar") or "")
+            if new_avatar and new_avatar != (self._user.get("avatar") or ""):
+                self._user["avatar"] = new_avatar
+                changed_avatar = True
+
+            changed_member = False
+            for k in ("membership_type", "membership_expire", "points"):
+                if k in d and d.get(k) is not None:
+                    if str(d.get(k)) != str(self._user.get(k) or ""):
+                        self._user[k] = d.get(k)
+                        changed_member = True
+
+            if not (changed_avatar or changed_member):
+                return
+            # 落盘（保持与其它写入路径一致）
+            try:
+                q = app_identity.qsettings()
+                q.setValue("auth_user_json",
+                           json.dumps(self._user, ensure_ascii=False))
+                q.sync()
+            except Exception:
+                pass
+            if changed_avatar:
+                self.avatar_updated.emit(new_avatar)
+            if changed_member:
+                self.membership_updated.emit(dict(self._user))
+        except Exception:
+            pass
 
     def _start_ws(self):
         self._stop_ws()
@@ -1183,6 +1256,7 @@ class AuthClient(QObject):
             ws.order_paid_received.connect(self.order_paid)
             ws.membership_updated.connect(self._on_ws_membership)
             ws.announcement_received.connect(self._on_ws_announcement)
+            ws.avatar_received.connect(self._on_ws_avatar)
             ws.checkin_received.connect(self._on_ws_checkin)
             self._ws = ws
             ws.start()

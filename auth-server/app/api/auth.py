@@ -318,6 +318,8 @@ async def upload_avatar(
     """上传头像（multipart/form-data）。
 
     校验与落盘统一走 ``services/avatar_service``，与注册/后台建号同一套规则。
+    更新后经 WS 推送 ``avatar_update``：客户端据此丢弃本地旧缓存并重新拉图，
+    否则多端登录时其它端会一直显示旧头像。
     """
     file_bytes = await file.read()
     try:
@@ -332,6 +334,16 @@ async def upload_avatar(
         text("UPDATE users SET avatar = :av WHERE id = :uid"),
         {"av": avatar_url, "uid": current_user["id"]},
     )
+
+    # 推送新头像地址（含本端）：客户端刷新顶栏与个人信息面板
+    try:
+        from app.services.ws_manager import ws_manager
+        await ws_manager.send_to_user(current_user["id"], {
+            "type": "avatar_update",
+            "data": {"avatar": avatar_url},
+        })
+    except Exception:
+        pass   # 推送失败不影响上传结果，客户端下次 /me 也能拿到
 
     return {"code": 0, "data": {"avatar": avatar_url}}
 
