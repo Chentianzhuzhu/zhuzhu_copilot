@@ -4,6 +4,10 @@
     "note": "UI 文案语言包；key 为中文原文，value 为英文译文。空 value 表示未翻译（运行时自动回退显示中文原文）。"
   },
   "ui": {
+    "高效模式（不向模型提供 MCP 工具、插件、冗余技能与冗余工具）": "Efficient mode (no MCP tools, plugins, redundant skills or redundant tools are given to the model)",
+    "开启后每轮请求只发送最小必需工具集（文件读写/检索、命令行、联网检索、提问、任务清单），不发送任何 MCP 服务器工具、插件工具、子 Agent / 工作团工具与文档生成类工具，系统提示词也不再注入整份工具手册、技能与插件规范。适合长对话/省钱场景；需要 MCP、插件、技能或文档生成能力时请关闭本开关。": "When enabled, every request only sends the minimal required tool set (file read/write and search, shell, web retrieval, asking the user, task checklist) and sends no MCP server tools, plugin tools, sub agent / team tools or document generation tools; the system prompt also stops injecting the full tool manual, skill and plugin specs. Good for long conversations and saving budget; turn this off when you need MCP, plugins, skills or document generation.",
+    "已订阅更高档位，无需重复订阅": "You are already subscribed to a higher tier, no need to subscribe again",
+    "签到失败，请稍后重试": "Check-in failed, please try again later",
     "\n\n当前版本已停止服务，必须更新后才能继续使用。\n\n更新页已打开，本窗口关闭后应用将退出。": "\n\nThis version has stopped receiving service and must be updated to continue.\n\nThe update page has opened; the app will exit when this window closes.",
     "   [工作流: {wfs}]": "   [Workflows: {wfs}]",
     " · 完整样式": " · Full fidelity",

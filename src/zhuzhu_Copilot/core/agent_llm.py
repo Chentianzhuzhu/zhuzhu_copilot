@@ -1449,8 +1449,23 @@ class AgentLLMError(Exception):
     pass
 
 
+# 非 CJK 文本的 token 密度（字符/token）。实测（deepseek-flash，真实 API 计费口径）：
+#   纯英文散文 ≈4.5、Python 代码 ≈2.7、JSON/工具 schema ≈2.35、重复短串 ≈2.0，
+#   CJK 中文 ≈1.75（即 1 token ≈ 1.75 汉字）。
+# 取 2.35 = 实测中最密的一类常见内容（JSON/工具 schema，也恰是本应用喂给模型最多的
+# 内容）：对代码与散文偏保守（宁可高估），对 JSON 基本对齐。
+# **估算宁高勿低**：低估会让压缩/硬裁触发过晚，把已经超窗的请求发给上游 →
+# HTTP 400 "maximum context length..."，任务当场失败（用户实测：200 万字符代码文本
+# 被旧口径（1/4 字符）估成 50 万 token，上游真实计费 100 万 token，于是 1M 窗口
+# 模型在估算「刚过半」时真实上下文早已占满，压缩全程未触发，直接 400）。
+# 估算的残余偏差由引擎的运行期校准系数（见 agent_engine._tok_factor）双向修正：
+# 纯文字对话会把系数校准下来（不浪费长窗口），结构化内容会把系数校准上去（不越窗）。
+_NONCJK_CHARS_PER_TOKEN = 2.35
+
+
 def estimate_tokens(text: str) -> int:
-    """启发式估算文本 tokens（无 tiktoken 依赖）：中文约 1/字，英文约 1/4 字符。
+    """启发式估算文本 tokens（无 tiktoken 依赖）：CJK 约 1 token/字，
+    非 CJK 文本按 _NONCJK_CHARS_PER_TOKEN 字符/token 估算（偏保守，见其注释）。
 
     性能：本函数位于引擎每轮的 token 预算计算链路上（对全量历史逐条调用），
     原实现用 Python 生成器逐字符判断 CJK，长上下文下是热点；
@@ -1458,7 +1473,7 @@ def estimate_tokens(text: str) -> int:
     if not text:
         return 0
     cjk = _CJK_RE.subn("", text)[1]
-    return int(cjk + (len(text) - cjk) / 4) + 4
+    return int(cjk + (len(text) - cjk) / _NONCJK_CHARS_PER_TOKEN) + 4
 
 
 def estimate_image_tokens() -> int:

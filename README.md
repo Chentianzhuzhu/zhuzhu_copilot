@@ -135,6 +135,32 @@ Cordis 式「一切皆可替换」，目录 `~/.zhuzhu_Copilot/workflows/`。核
 - **IP 限流**：每个 IP 每天最多提交 3 次反馈，以服务器端时间为准，超限返回 429。
 - 管理后台可查看反馈列表、回复、标记已解决；反馈内容含 IP、时间、内容、联系方式、状态、回复。
 
+### 1.15 账号系统（登录 / 积分 / 会员）
+
+后端 `auth-server/`（FastAPI + MySQL + Redis），已部署至 `https://chentian.dpdns.org/authapp/`。
+
+- **服务端地址固定**：客户端统一使用内置常量 `DEFAULT_AUTH_SERVER`
+  （`https://chentian.dpdns.org/authapp`），**已取消自定义服务端地址**功能；
+  历史遗留的 `QSettings(auth_server_url)` 在启动时自动清理。
+- **登录方式**：桌面端点击「登录」→ 系统浏览器打开登录页 → 登录/注册成功 → 回调本地
+  `127.0.0.1:18765/callback` 传 token（失败时页面提供手动复制 Token 兜底）。
+- **登录 URL 格式**：
+  `{server}/static/login/index.html?platform=zhuzhu-copilot&state=<64位hex>&version=<APP_VERSION>&callback_port=18765`
+- **登录握手 state（防 login CSRF / 重放）**：客户端登录前调 `POST /api/auth/state` 申请一次性
+  state（Redis 存 600s、单次消费），拼进登录页 URL 并在登录/注册体中回传；服务端校验后
+  随回调原样返回，客户端用 `secrets.compare_digest` 做常量时间比对，不一致即拒绝 token。
+  生产已开启 `REQUIRE_LOGIN_STATE=true`（无 state 的登录/注册直接 400）。
+- **登录态健壮性**：JWT 携带 jti，服务端 Redis 会话 + 滑动续期；客户端 30 分钟巡检，token
+  临近过期（<6h）自动 `/api/auth/refresh` 换新并重连 WS；积分上报遇 401 自动续期重试一次，
+  续期失败清凭证并弹窗引导重新登录。登出/被禁用/被删除立即撤销服务端会话。
+- **实时推送**：WebSocket `wss://chentian.dpdns.org/authapp/ws?token=...`，30s 心跳、指数退避
+  自动重连；推送积分变动、强制下线、订单到账。
+- **积分与会员**：内置模型（agnes）需登录后使用，按 token 实时扣积分（每 1000 token ≈ 30 积分）；
+  积分耗尽立即截断输出并追加「您的积分不足，请接入其他AI服务」。
+- **安全加固**：bcrypt cost=12（每次独立随机盐，盐值随哈希串存储，不单独保存）；JWT HS256
+  ≥32 字符强随机密钥（生产 `REQUIRE_STRONG_JWT_SECRET=true` 拒绝弱密钥启动）；每 IP 限注册
+  一个账号；登录失败账号级 + IP 级双向锁定；CORS 收敛为具体域名。
+
 ---
 
 ## 二、目录结构

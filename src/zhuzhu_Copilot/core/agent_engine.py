@@ -25,6 +25,12 @@ from zhuzhu_Copilot.core import agent_llm, agent_tools, agent_skills, agent_suba
 from zhuzhu_Copilot.core import agent_workflow
 from zhuzhu_Copilot.core import agent_sandbox
 from zhuzhu_Copilot.core import agent_background
+# 账号系统：内置默认模型（agnes）登录门槛 + 按 token 实时积分消耗
+from zhuzhu_Copilot.core.auth_client import (
+    get_auth_client as _get_auth_client,
+    is_builtin_base_url as _is_builtin_base_url,
+    PointsConsumer,
+)
 from zhuzhu_Copilot.core.i18n import ui as _ui, uif as _uif
 from zhuzhu_Copilot.core.agent_json import parse_tool_args
 # agent_screen.virtual_desktop 惰性导入：其模块导入链约 500ms，仅任务实际
@@ -120,6 +126,34 @@ _CTX_CEILING_MARGIN = 8192
 # 上游用量字段（服务商返回并已归一化为 OpenAI 命名，见 agent_llm._norm_usage）：
 # prompt/completion 为请求消耗，cache_hit/cache_miss 为提示词前缀缓存命中情况。
 _USAGE_KEYS = ("prompt", "completion", "cache_hit", "cache_miss")
+
+
+# 上游「上下文超长」400 的识别特征（各服务商文案不统一，穷举常见写法）。
+# 命中即认为"本轮请求已越窗"，可安全地压缩+硬裁后原地重试（有界），
+# 而不是把整个任务判失败（用户报的"1M 上下文爆满 → HTTP 400"）。
+_CTX_OVERFLOW_KEYS = ("maximum context length", "context length is",
+                      "context_length_exceeded", "context window",
+                      "reduce the length", "too long", "exceeds the maximum",
+                      "maximum number of tokens", "上下文长度", "上下文超长",
+                      "超过最大", "长度超限", "超出上下文")
+# 越窗自动恢复的最大次数（每任务归零）：每次都会上修 token 校准系数并强压上下文
+_MAX_CTX_OVERFLOW_RETRIES = 2
+
+# token 密度校准：样本足够大的估算才采信（避免工具 schema 等固定开销在小样本上
+# 把系数推得过大），系数双向修正但有下界（下界即"最少保留多少保守量"，见 _TOK_FACTOR_MIN）
+_TOK_CALIB_MIN_EST = 20000
+_TOK_FACTOR_MIN = 0.75
+_TOK_FACTOR_MAX = 3.0
+
+
+def _is_ctx_overflow(err) -> bool:
+    """错误是否属于「上游上下文超长（HTTP 400）」类。
+
+    只按已知文案特征识别：命中后引擎会把本轮当作"请求越窗"处理（压缩+硬裁+重试），
+    误判代价有限（最多多压缩一次），漏判代价是任务直接失败，故口径宁可宽松。
+    """
+    t = str(err or "").lower()
+    return any(k.lower() in t for k in _CTX_OVERFLOW_KEYS)
 
 
 def _zero_usage() -> dict:
@@ -228,6 +262,23 @@ _CORE_TOOLS = frozenset({
     "preview_open", "preview_refresh",  # 可视化预览：把产物送进用户浏览器并刷新（决策由模型做，恒可用）
     "send_file_to_wechat", "send_files_to_wechat",  # 微信交付：任何任务都可能推送产物到手机微信，不可被任务裁剪
 })
+# ---- 高效模式（设置页开关）保留的最小工具集 ----
+# 只保留完成真实工作所必需的「文件 / 命令 / 检索 / 网络 / 问答 / 清单」工具：
+#   · 不含任何 MCP server 工具（_all_tools 直接跳过 MCP 合并）
+#   · 不含插件与工作流自定义工具（它们都是"可选扩展"，只进白名单之外的集合）
+#   · 不含子 Agent / 工作团 / 技能注册类工具
+#   · 不含文档三件套、预览、朗读、微信交付、自定义等功能型工具
+# 效果：每轮工具 schema token 大幅下降（首包更快、更省额度），系统提示词里的
+# 工具手册/技能路由整段不再注入（见 agent_skills.build_system_prompt 的 efficient）。
+_EFFICIENT_TOOLS = frozenset({
+    "read_file", "write_file", "edit_file", "search_replace", "insert_lines",
+    "undo_file", "delete_file", "list_directory",
+    "search_files", "grep", "search_code",
+    "run_command", "check_command",
+    "web_search", "web_fetch", "find_app", "get_time",
+    "ask_user", "update_todo", "list_todo",
+})
+
 # 任务类别 → (触发词, 额外暴露的工具)。触发词命中即裁剪到「核心+该类」，
 # 减小 schema token、降低选错工具概率；未命中任何类别则保留全部（保守）。
 _TASK_GROUPS = [
@@ -434,6 +485,7 @@ class AgentEngine:
                  text_only: bool = False, memory_enabled: bool = True,
                  direct: bool = False, on_sub_event=None,
                  allow_subagents: bool = True,
+                 efficient_mode: bool = False,
                  on_engine_rebuild=None,
                  on_uiux_rebuild=None,
                  on_btn_reg=None,
@@ -478,6 +530,10 @@ class AgentEngine:
         conversation: str 本引擎所属对话（会话 id）。共同上下文空间按对话隔离——同一对话内
                  主 Agent 与各子 Agent / 成员工作流共用一份空间，不同对话互不可见。
                  任务线程入口据此设置线程局部作用域，派发侧再下传给子 Agent 工作线程。
+        efficient_mode: bool 高效模式（设置页开关）：只把最小必需工具集（_EFFICIENT_TOOLS）
+                 发给上游 —— 不提供任何 MCP server 工具、插件与工作流自定义工具，也没有
+                 子 Agent / 工作团 / 功能型工具；系统提示词同步精简（不注入工具手册、
+                 技能路由、技能规范、插件规范），显著降低每轮 token 消耗。
         """
         self.llm = llm
         self.conversation = str(conversation or "")
@@ -511,6 +567,8 @@ class AgentEngine:
         self.direct = direct
         # 子 Agent / 跨工作流派发准入：简单与中等任务禁止组队（详见 _SUBAGENT_TOOLS 注释）
         self.allow_subagents = bool(allow_subagents)
+        # 高效模式：最小工具集 + 精简系统提示词（无 MCP/插件/技能规范），见 _EFFICIENT_TOOLS
+        self.efficient_mode = bool(efficient_mode)
         self.on_engine_rebuild = on_engine_rebuild   # Cordis 工作流切换：Callable[[str], None] 接收新工作流名
         self.on_uiux_rebuild = on_uiux_rebuild       # UI/UX 包切换回调：Callable[[], None]（主线程调用）
         self.on_btn_reg = on_btn_reg                 # 按钮注册回调：Callable[[dict], None]，UI 操作须回主线程
@@ -525,7 +583,16 @@ class AgentEngine:
         # 比本地估算更准（服务商计费口径）。prompt=0 表示尚无上游数据 → UI 回退本地估算。
         self.last_usage = _zero_usage()
         self.last_usage_at = 0.0             # 最近一次上游 usage 的时间戳（UI 展示新鲜度）
-        self.last_estimate = 0       # 最近一次请求前的预计算（输入 tokens）
+        self.last_estimate = 0       # 最近一次请求前的预计算（输入 tokens，校准口径）
+        # token 密度校准系数（0.75~3.0）：本地估算相对上游真实计费的偏差倍率，由每次
+        # 请求的真实 usage 反推（扣掉工具 schema 后 real_prompt / 本地原文估算）并
+        # 平滑更新，双向修正且始终保留下界 —— 下界即"最少保留的保守量"：
+        # 低估会让压缩/硬裁触发过晚 → 上游 HTTP 400（上下文超窗）；高估只是更早压缩。
+        self._tok_factor = 1.0
+        self._sent_raw_est = 0       # 上一次实际发送前的本地原文估算（校准样本）
+        self._ctx_overflow_retries = 0   # 上游越窗 400 的自动恢复次数（每任务归零）
+        self._tools_est = 0          # 工具 schema token 估算（见 _tool_schema_tokens）
+        self._tools_est_at = 0.0     # 上面那份估算的取样时间（TTL 缓存用）
         self.end_state = ""          # 本轮结束状态: done|stopped|error
         self._edit_bucket = {"added": 0, "removed": 0, "files": {}}   # 本轮变更累计桶（跨线程共享，run 起始重建）
         self._last_edit_delta = {"added": 0, "removed": 0, "files": {}}   # 本轮文件变更统计（气泡末尾「-N +M」）
@@ -1006,6 +1073,10 @@ class AgentEngine:
     # ---------- 工具 ----------
     def _all_tools(self) -> list:
         tools = list(agent_tools.tool_schemas(self.workflow))
+        if self.efficient_mode:
+            # 高效模式：只给上游最小必需工具集（无 MCP / 插件 / 工作流自定义 /
+            # 子 Agent / 功能型工具），系统层面「禁用工具」仍然优先。
+            return self._efficient_tools(tools)
         # 任务裁剪：user_input 明确命中某任务类别时，只暴露「核心 + 命中类别」工具，
         # 显著减小 schema token（首包更小）并降低模型选错工具概率；
         # 未命中任何类别则保留全部（保守，避免误裁影响能力）。
@@ -1067,6 +1138,20 @@ class AgentEngine:
             tools = [t for t in tools
                      if t["function"]["name"].lower() not in self._disabled_tools]
         return tools
+
+    def _efficient_tools(self, tools: list) -> list:
+        """高效模式工具集：仅保留 _EFFICIENT_TOOLS 白名单内的内置工具。
+
+        与能力开关/系统管控的关系：系统层面「禁用全部工具 / 禁用指定工具」优先级更高
+        （用户显式禁用必须生效），故此处先按白名单过滤，再套用同一套禁用规则。
+        """
+        out = [t for t in tools if t["function"]["name"] in _EFFICIENT_TOOLS]
+        if getattr(self, "_disabled_all", False):
+            return []
+        if getattr(self, "_disabled_tools", None):
+            out = [t for t in out
+                   if t["function"]["name"].lower() not in self._disabled_tools]
+        return out
 
     def plugin_of_tool(self, name: str) -> str:
         """该工具是否由插件提供 → 归属插件名（内置工具/普通 MCP 工具返回空串）。
@@ -1856,6 +1941,17 @@ class AgentEngine:
         """LLM 流式文本增量：转发面板显示，同时把完整句子切出投递给朗读线程"""
         if self.on_delta:
             self.on_delta(s)
+        # 积分消耗：内置模型按 token 增量实时扣费；积分耗尽立即截断输出并追加固定文案
+        pc = getattr(self, "_points_consumer", None)
+        if pc is not None and s:
+            try:
+                if pc.feed(s):
+                    if self.on_delta:
+                        self.on_delta(pc.get_insufficient_message())
+                    self._points_exhausted = True
+                    self._stop.set()
+            except Exception:
+                pass
         if self._tts_auto and s and not self._tts_finish:
             self._tts_buf += s
             self._tts_flush_sentences()
@@ -1967,7 +2063,12 @@ class AgentEngine:
         _lang = agent_skills._tp("prompt.lang.directive",
                                  agent_skills._LANG_DIRECTIVE_ZH)
         if self.persona:
-            return _lang + "\n\n" + self.persona
+            _p = _lang + "\n\n" + self.persona
+            # 高效模式：自定义人格同样整体替换提示词 → 补挂"本次只有这些工具"的说明
+            # （人格是用户内容，可能按全套工具描述流程，而那些工具本次并不存在）
+            if self.efficient_mode:
+                _p = agent_skills.ensure_efficient_notice(_p)
+            return _p
         try:
             hooks = agent_workflow.agent_hooks(self.workflow)
             mod = hooks.get("mod")
@@ -1978,7 +2079,20 @@ class AgentEngine:
                 if custom is None and getattr(mod, "SYSTEM_PROMPT", None):
                     custom = getattr(mod, "SYSTEM_PROMPT")
             if custom:
-                return _lang + "\n\n" + str(custom)
+                # 防重复：内置 build_system_prompt 的首段**本身就是**同一语言指令，
+                # 而默认工作流的 agent.py 会把 build_system_prompt 委托给内置实现
+                # （见 zhuzhu_copilot/agent.py）→ 此处若再无脑前置，语言指令会被拼两次。
+                # 仅当自定义提示词尚未包含该指令时才前置（自定义人格是用户内容，
+                # 必须补语言指令；委托内置的则已自带，无需重复）。
+                c = str(custom)
+                if _lang.strip() and _lang.strip() not in c[:len(_lang) + 80]:
+                    c = _lang + "\n\n" + c
+                # 高效模式：工作流提示词可能仍按"全套工具"描述流程（自带方法论里会让人
+                # 先调 browser_open / create_docx 等），而在高效模式下这些工具并不在
+                # 工具表中 → 补挂说明，避免模型反复调用被剔除的工具白烧轮次。
+                if self.efficient_mode:
+                    c = agent_skills.ensure_efficient_notice(c)
+                return c
         except Exception:
             pass
         # 非默认工作流：禁止静默套用默认人设 —— 工作流未提供自定义 agent.py 人设时，
@@ -1986,7 +2100,10 @@ class AgentEngine:
         wf = self.workflow or agent_workflow.active_workflow()
         if wf and wf != agent_workflow.DEFAULT_WORKFLOW:
             if agent_workflow.is_workflow(wf):
-                return _wf_fallback_persona(wf)
+                _fp = _wf_fallback_persona(wf)
+                if self.efficient_mode:
+                    _fp = agent_skills.ensure_efficient_notice(_fp)
+                return _fp
             # 工作流已不存在（被删除/禁用）：绝不能再派生其专属人设，否则已删工作流的
             # 身份会被"复活"（AI 从此自称该工作流助手并反复提及该工作流）。
             # 就地清除陈旧绑定并回退内置默认提示。
@@ -1996,7 +2113,8 @@ class AgentEngine:
                                                   text_only=self.text_only,
                                                   memory_enabled=self.memory_enabled,
                                                   direct=self.direct,
-                                                  subagents_allowed=self.allow_subagents)
+                                                  subagents_allowed=self.allow_subagents,
+                                                  efficient=self.efficient_mode)
         wd = agent_tools.get_workdir()
         if wd:
             prompt += agent_skills._tpf(
@@ -2077,6 +2195,20 @@ class AgentEngine:
         else:
             self._messages.append({"role": "user", "content": text})
 
+    def _skill_mark_index(self):
+        """返回对话中「任务技能/插件规范」那条哨兵消息的下标（无则 None）。
+
+        与 _sync_skill_msg 的定位规则完全一致（末尾往前找第一条以 _SKILL_MARK 开头的
+        user 消息），抽出来供高效模式清理残留技能消息复用，避免两处扫描逻辑漂移。
+        """
+        for i in range(len(self._messages) - 1, 0, -1):
+            m = self._messages[i]
+            if (isinstance(m, dict) and m.get("role") == "user"
+                    and isinstance(m.get("content"), str)
+                    and m["content"].startswith(_SKILL_MARK)):
+                return i
+        return None
+
     def _sync_skill_msg(self, manual_skills: list = None, manual_plugins: list = None):
         """把当前任务的技能 / 插件规范同步为对话末尾独立 user 消息（原位替换，不累积）。
 
@@ -2087,7 +2219,16 @@ class AgentEngine:
 
         用户手动调用的技能与插件**必须**把说明与调用规范一并给出，且用强约束措辞
         （「必须严格…不得跳过…」）—— 只给名字或只给正文时，模型常常按自己的理解自由发挥，
-        表现为「调用了但没按技能流程走」。"""
+        表现为「调用了但没按技能流程走」。
+
+        （高效模式 efficient_mode=True 时不调用本方法：技能/插件规范不注入上游。）"""
+        # 兜底：高效模式即便被调用也不注入技能/插件规范，并清掉历史里可能残留的
+        # 那一条（用户中途开启高效模式时，旧技能消息不该继续占用上下文）。
+        if self.efficient_mode:
+            _idx = self._skill_mark_index()
+            if _idx is not None:
+                del self._messages[_idx]
+            return
         merged = list(self._auto_skills or [])
         for s in (agent_skills.filter_enabled_skills(manual_skills) or []):
             if s not in merged:
@@ -2116,14 +2257,7 @@ class AgentEngine:
             "用户手动调用了以下插件，其说明、SKILL.md 规范与调用规范如下，"
             "必须按规范真正调用它提供的工具完成任务：\n\n") + spec)
         text = (f"{_SKILL_MARK}\n" + "\n\n".join(parts)) if parts else ""
-        idx = None
-        for i in range(len(self._messages) - 1, 0, -1):   # 从末尾向前找（最新一条）
-            m = self._messages[i]
-            if (isinstance(m, dict) and m.get("role") == "user"
-                    and isinstance(m.get("content"), str)
-                    and m["content"].startswith(_SKILL_MARK)):
-                idx = i
-                break
+        idx = self._skill_mark_index()
         if not text:
             if idx is not None:
                 del self._messages[idx]
@@ -2271,6 +2405,24 @@ class AgentEngine:
         self.end_state = ""
         self._rules_confirmed = False   # 每个新任务重新强制规则确认
         self._empty_retries = 0         # 每任务重置上游空响应纠正重试计数
+        self._ctx_overflow_retries = 0  # 每任务重置「上游越窗 400」自动恢复计数
+        # 账号系统：内置默认模型（agnes）必须登录后使用，未登录直接报错结束；
+        # 已登录则初始化积分消耗器，流式输出按 token 增量实时扣费（见 _on_stream_delta）。
+        self._points_consumer = None
+        self._points_exhausted = False
+        try:
+            if _is_builtin_base_url(getattr(self.llm, "base_url", "")):
+                _auth = _get_auth_client()
+                if not _auth.is_logged_in():
+                    _msg = _ui("未登录：内置模型（agnes）需登录账号后使用，请在右上角点击「登录」")
+                    if self.on_status:
+                        self.on_status(_msg)
+                    self._messages.append({"role": "assistant", "content": _msg})
+                    self.end_state = "done"
+                    return
+                self._points_consumer = PointsConsumer(_auth)
+        except Exception:
+            self._points_consumer = None
         # 每任务重置后台任务列表与自动后台标记
         self._bg_tasks_this_turn = []
         self._auto_background = False
@@ -2293,10 +2445,12 @@ class AgentEngine:
         # 命中技能再按当前工作流过滤（被禁用的技能不注入，遵循工作流技能隔离）；
         # 最后按子 Agent 准入过滤：能力禁用时剔除 sub-agent 技能（否则它通篇教派发，
         # 会把模型推向已被 schema 剔除的工具）
-        self._auto_skills = agent_skills.filter_subagent_skills(
-            agent_skills.filter_enabled_skills(
-                agent_skills.auto_skill_names(user_input)),
-            self.allow_subagents)
+        # 高效模式：不匹配任何技能（上游只拿最小工具集与其说明，见 _EFFICIENT_TOOLS）
+        self._auto_skills = [] if self.efficient_mode else (
+            agent_skills.filter_subagent_skills(
+                agent_skills.filter_enabled_skills(
+                    agent_skills.auto_skill_names(user_input)),
+                self.allow_subagents))
         # 当前任务相关技能 = 自动匹配 + 手动指定（技能规范硬拦截仅限这些技能覆盖的工具，
         # 避免无关技能 instruction 顺带提及的基础工具被误拦截）
         self._task_skills = set(self._auto_skills or [])
@@ -2316,6 +2470,11 @@ class AgentEngine:
                     self.allow_subagents) or []):
                 self._task_skills.add(_s)
         except Exception:
+            self._manual_plugins = []
+        if self.efficient_mode:
+            # 高效模式：技能集整体置空 —— 不注入技能/插件规范，也不做技能路由硬拦截
+            # （规范里教的是被剔除的那些工具，注入只会诱导模型调用不可用工具）。
+            self._task_skills = set()
             self._manual_plugins = []
         self._task_groups = _detect_task_groups(user_input)
         # 系统层面（sandbox 级）工具硬拦截状态：每任务开始时读取一次，
@@ -2338,6 +2497,14 @@ class AgentEngine:
         for _s in (agent_skills.filter_enabled_skills(skills) or []):
             if _s not in _invoked:
                 _invoked.append(_s)
+        if self.efficient_mode:
+            # 高效模式：技能/插件规范一律不注入 —— 用户用 /技能名、/插件名 手动点名时
+            # 必须明确告知（否则界面显示"已调用技能"却毫无规范注入，用户会以为技能失效）。
+            if _invoked or plugins:
+                if self.on_status:
+                    self.on_status("高效模式已开启：技能/插件规范不注入上游（请在设置页"
+                                   "关闭高效模式后再使用技能与插件）")
+            _invoked = []
         if _invoked and self.on_status:
             self.on_status(f"正在调用技能: {', '.join(_invoked)}")
             self.on_status(f"技能已调用: {', '.join(_invoked)}")
@@ -2490,17 +2657,73 @@ class AgentEngine:
                     self._strip_images(send_msgs)
                 else:
                     send_msgs = self._messages
-                result = self.llm.chat_stream(
-                    send_msgs, tools=self._all_tools(), tool_choice="auto",
-                    on_delta=self._on_stream_delta,
-                    on_reasoning=self.on_reasoning,
-                    stop=lambda: self._stop.is_set(),
-                    max_tokens=int(self._max_output or _DEFAULT_MAX_OUTPUT))
+                result = None
+                try:
+                    # 发送前的本地原文估算留档（消息 + 工具 schema，同一套密度口径）：
+                    # 请求返回后用真实 usage 反推「本地估算 / 上游真实计费」的倍率，
+                    # 见下方 token 校准。
+                    self._sent_raw_est = (self._estimate_raw()
+                                          + self._tool_schema_tokens())
+                    result = self.llm.chat_stream(
+                        send_msgs, tools=self._all_tools(), tool_choice="auto",
+                        on_delta=self._on_stream_delta,
+                        on_reasoning=self.on_reasoning,
+                        stop=lambda: self._stop.is_set(),
+                        max_tokens=int(self._max_output or _DEFAULT_MAX_OUTPUT))
+                except agent_llm.AgentLLMError as _e:
+                    # 上游报「上下文超长」（HTTP 400 ContextWindowExceeded）：
+                    # 说明本轮请求确实越窗（本地估算偏低）。原地强压上下文后重试
+                    # （有界），而不是把整个任务判失败 —— 用户报的
+                    # 「没开 1M、1M 模型上下文却爆满并 400」正是走到这里的场景。
+                    if (self._stop.is_set() or not _is_ctx_overflow(_e) or
+                            self._ctx_overflow_retries >= _MAX_CTX_OVERFLOW_RETRIES):
+                        raise
+                    self._ctx_overflow_retries += 1
+                    self._recover_ctx_overflow()
+                    if self.on_status:
+                        self.on_status(
+                            "上游提示上下文超长（HTTP 400），已自动压缩并重试本轮"
+                            f"（{self._ctx_overflow_retries}/{_MAX_CTX_OVERFLOW_RETRIES}）")
+                    continue
+                # 积分结算：本轮 LLM 调用结束，结算未达扣费阈值的零头 token
+                if getattr(self, "_points_consumer", None) is not None:
+                    try:
+                        self._points_consumer.finalize()
+                    except Exception:
+                        pass
+                # 积分耗尽截断：流式阶段已追加固定文案，此处并入助手消息并结束任务
+                if getattr(self, "_points_exhausted", False):
+                    _tail = (self._points_consumer.get_insufficient_message()
+                             if getattr(self, "_points_consumer", None) is not None
+                             else _ui(PointsConsumer.INSUFFICIENT_MESSAGE))
+                    self._messages.append({"role": "assistant",
+                                           "content": (result.get("text") or "") + _tail})
+                    if self.on_status:
+                        self.on_status(_ui("积分不足，任务已截断"))
+                    self.end_state = "done"
+                    return
                 # 模型自动回退提示：选中模型请求失败已改用内置默认模型（连接参数已恢复）
                 if (getattr(self.llm, "fell_back", False) and self.on_status
                     and not getattr(self.llm, "silent_fallback", False)):
                     self.on_status("模型调用失败，已自动回退内置默认模型继续")
                 self._accum_usage(result["usage"], result.get("cache"))
+                # token 密度校准：用上游真实 prompt 用量反推本地估算的偏差倍率并平滑
+                # 修正（双向、有界）。
+                # · 比对的是"消息估算 + 工具 schema 估算"这一个合计数（同一套密度口径）；
+                # · 只采信足够大的样本（≥_TOK_CALIB_MIN_EST），否则固定开销占比过高；
+                # · 下界 _TOK_FACTOR_MIN 保证始终留一份保守量（宁可早压缩，不可越窗）。
+                try:
+                    _real_p = int((result.get("usage") or {}).get("prompt") or 0)
+                    _real_p = _real_p or int((result.get("usage") or {})
+                                            .get("prompt_tokens") or 0)
+                except Exception:
+                    _real_p = 0
+                if _real_p > 0 and self._sent_raw_est >= _TOK_CALIB_MIN_EST:
+                    _f = _real_p / float(self._sent_raw_est)
+                    _f = min(_TOK_FACTOR_MAX, max(_TOK_FACTOR_MIN, _f))
+                    self._tok_factor = min(_TOK_FACTOR_MAX,
+                                           max(_TOK_FACTOR_MIN,
+                                               0.5 * self._tok_factor + 0.5 * _f))
 
                 calls = result["tool_calls"]
                 # 上游空响应（正文与工具调用均为空）不致命：注入纠正提示重试有限次，
@@ -2928,8 +3151,8 @@ class AgentEngine:
             est += agent_llm.estimate_tokens("\n".join(texts))
         return est
 
-    def _estimate_tokens(self) -> int:
-        """估算当前上下文 token（含数组文本/tool_calls 参数/图片）
+    def _estimate_raw(self) -> int:
+        """估算当前上下文 token（**未校准**口径：含数组文本/tool_calls 参数/图片）
 
         性能：本函数每轮被多次调用（发送前预计算 / 占用判定 / 压缩与硬裁判定，实测
         4 次/轮），而每条消息的估算含 C 层正则扫全文（system 提示词约万字符 → 单次
@@ -2940,7 +3163,9 @@ class AgentEngine:
         ① 持有消息对象引用可防止其被回收后 id() 复用造成的错配；
         ② content/tool_calls 被**替换为新对象**（改写/修剪图片/压缩重建）时身份比对
         立即失效并重算，与不缓存的语义一致（内容字符串不可变，故身份即内容）。
-        消息被压缩/裁剪后缓存里会残留旧条目，超过 _EST_CACHE_SLACK 即整体清空重建。"""
+        消息被压缩/裁剪后缓存里会残留旧条目，超过 _EST_CACHE_SLACK 即整体清空重建。
+
+        校准系数不参与本函数（故缓存不受系数变化影响），由 _estimate_tokens 统一乘上。"""
         cache = self._est_cache
         msgs = self._messages
         if len(cache) > len(msgs) + _EST_CACHE_SLACK:
@@ -2957,6 +3182,60 @@ class AgentEngine:
             cache[key] = (m, m.get("content"), m.get("tool_calls"), est)
             total += est
         return total
+
+    def _tool_schema_tokens(self) -> int:
+        """本轮工具 schema 的 token 开销（随请求一起发给上游，但不属于任何消息，
+        旧实现完全没算 → 又一处系统性低估）。
+
+        按 1 秒 TTL 缓存：`_all_tools()` 每轮会被 _estimate_tokens 调用多次，而 MCP
+        重连 / 高效模式切换 / 任务裁剪都会改变工具表 —— TTL 兼顾"跟得上变化"与"不重复
+        序列化整个工具表"。"""
+        now = time.time()
+        if now - self._tools_est_at < 1.0:
+            return self._tools_est
+        self._tools_est_at = now
+        try:
+            tools = self._all_tools()
+            self._tools_est = (agent_llm.estimate_tokens(
+                json.dumps(tools, ensure_ascii=False)) if tools else 0)
+        except Exception:
+            self._tools_est = 0
+        return self._tools_est
+
+    def _estimate_tokens(self) -> int:
+        """当前上下文 token 估算（**校准口径**）：(本地原文估算 + 工具 schema 开销)
+        × 运行期校准系数。
+
+        所有阈值/压缩/硬裁/占用口径统一用本口径：本地估算受 tokenizer 密度差异
+        影响必然有偏差，而阈值本身是按窗口（上游真实 token 口径）算出来的 ——
+        只把"原始估算"和"真实口径阈值"比较，就是超窗 400 的直接来源。
+        两项估算出自同一套密度口径，故共用同一个校准系数（而不是只缩放其中一项）。
+        """
+        return int(self._tok_factor
+                   * (self._estimate_raw() + self._tool_schema_tokens()))
+
+    def _recover_ctx_overflow(self) -> None:
+        """上游「上下文超长」400 的自动恢复：上修校准系数 + 强制压缩 + 硬裁。
+
+        上游明确告知"请求 token 数超过窗口上限"时，本地的占用判定一定是低估了
+        （tokenizer 密度 / 工具 schema 等固定开销未被算入）。故这里：
+        1. 直接把校准系数上修一档（下次判定立刻更保守）；
+        2. 强制摘要压缩（忽略冷却，越窗优先于缓存命中）；
+        3. 仍超硬上限就硬裁到上限的 60%（留足余量），保证重试的请求一定进窗口。
+        """
+        self._tok_factor = min(_TOK_FACTOR_MAX,
+                               max(1.05, self._tok_factor * 1.25))
+        self._est_cache.clear()
+        try:
+            self._auto_compress(keep_recent=10)
+        except Exception:
+            pass
+        if self._estimate_tokens() > self._hard_ceiling():
+            self._hard_trim(max(4096, int(self._hard_ceiling() * 0.6)))
+        self._est_cache.clear()
+        self._invalidate_usage()   # 上下文已重压 → 旧占用值失效
+        self._compress_cooldown = 0
+        self.last_estimate = self._estimate_tokens()
 
     def _hard_trim(self, limit: int) -> None:
         """硬上限兜底：配对完整地从最旧处丢弃整段（assistant(tool_calls)+tool 回复），

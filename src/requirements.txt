@@ -15,3 +15,6 @@ yara-python>=4.5
 # 音乐播放与 TTS 朗读回放（pygame.mixer；缺失时音乐/朗读静默降级，不影响其余功能）
 # 注：构建 spec 已把 pygame 列为 hiddenimport，此处同步声明，避免开发/CI 环境漏装
 pygame>=2.5
+# 账号系统：WebSocket 长连接（积分推送/强制下线）；httpx 保留为后续异步请求预留
+websockets>=12.0
+httpx>=0.27

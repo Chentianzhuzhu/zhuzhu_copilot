@@ -89,3 +89,11 @@ build/smoke_result.txt
 # 第三方 npm 包本地解压与 tarball（不入库）
 package/
 *.tgz
+
+# 账号服务机密配置（含数据库口令与 JWT 密钥，严禁入库）
+auth-server/.env
+auth-server/.env.*
+!auth-server/.env.example
+auth-server/.env.bak.*
+# SSH/部署辅助脚本可能含主机口令：仅保留示例
+scripts/_ssh_local.*

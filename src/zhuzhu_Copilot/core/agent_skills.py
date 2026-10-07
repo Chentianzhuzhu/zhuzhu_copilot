@@ -2252,29 +2252,37 @@ _LANG_DIRECTIVE_ZH = (
     "即使用户使用其他语言提问，也一律用简体中文回答。")
 
 
-def build_system_prompt(agent_name: str = "", extra_skills: list = None,
-                        text_only: bool = False, memory_enabled: bool = True,
-                        direct: bool = False, subagents_allowed: bool = True) -> str:
-    """构造 system prompt：人设 persona + 基础提示 + 严格规则 + 工具执行规范 + 技能说明 + 工具列表
+#: 高效模式提示词（设置页「高效模式」开启时替代工具手册/技能规范整段）。
+#: 关键点：明确告知模型"本次只有这些工具"，避免它按训练习惯去调 MCP/插件/技能
+#: 类工具（那些工具确实不在本次请求里，调用只会白费一轮）。
+_EFFICIENT_PROMPT_ZH = (
+    "【高效模式】本次请求只提供最小必需工具集：文件读写/检索、命令行、联网检索、"
+    "提问与任务清单。\n"
+    "可用工具仅限：read_file / write_file / edit_file / search_replace / insert_lines / "
+    "undo_file / delete_file / list_directory / search_files / grep / search_code / "
+    "run_command / check_command / web_search / web_fetch / find_app / get_time / "
+    "ask_user / update_todo / list_todo。\n"
+    "规则：只调用上面列出的工具。不要尝试调用 MCP 服务器工具、插件工具、技能工具、"
+    "子 Agent / 工作团工具或文档生成类工具 —— 它们不在本次请求的工具列表里，"
+    "调用必然失败；需要信息就 read_file / search_files / grep / web_search / web_fetch，"
+    "需要执行就用 run_command，用这些工具把任务真正做完。\n"
+    "如果上方人设/方法论/自定义规则里提到了本次没有提供的工具"
+    "（例如浏览器控制、文档生成、子 Agent、技能与插件），一律忽略那些提法，"
+    "改用上面列出的工具达成同样的目标。")
 
-    text_only: 纯文本模型（无视觉输入），追加禁用截图/视觉引导。
-    memory_enabled: 记忆开关，关闭时追加禁用记忆工具引导。
-    direct: 直接工作模式（无确认直行），追加减少询问/确认的引导。
-    subagents_allowed: 是否允许派发子 Agent / 其他工作流主 Agent（由任务复杂度分档决定，
-        见 agent_llm.subagent_allowed）。False 时明确禁止组队，要求主 Agent 自己动手。
-    自定义规则 / 自定义系统提示词从 settings.json 读取并追加。
 
-    注意：自动匹配/手动指定的任务技能（extra_skills）不再注入 system —— 由引擎以
-    对话末尾独立消息注入（_sync_skill_msg），避免每轮任务 system 变化导致
-    服务端前缀缓存整段 miss、全量重计费。
+def _base_prompt_parts(agent: dict) -> list:
+    """语言指令 + 人设 + 自定义系统提示词 + 严格规则（身份与纪律骨架）。
+
+    默认提示词与高效模式提示词共用这段骨架：内容完全由 agent 配置决定、与工具集无关，
+    因此两种模式必须给出**完全一致**的开头 —— 尤其是语言指令必须在最前（最高指令权重，
+    见 prompt.lang.directive 注释），不能因为切模式就漂到后面去。
+
+    只含"身份与纪律"，**不含**扩展优先级/工具硬规则/工具执行规范：这些与工具集相关，
+    由两个调用方各自在合适位置追加（默认模式必须与历史顺序逐字节一致，否则服务端
+    前缀缓存整段 miss）。
     """
-    agent = next((a for a in load_agents() if a.get("name") == agent_name), None) \
-        or DEFAULT_AGENTS[0]
     parts = []
-    # 输出语言指令放在**最前面**：persona / 规则 / 工具清单只描述身份与纪律，
-    # 从不规定「用什么语言回答」。缺这条指令时，模型会按训练分布默认回中文 ——
-    # 即便整段提示词已是英文（用户实测：英文界面 + 英文输入「hi」仍回中文）。
-    # 语言要求必须显式下达，且放system 开头以获得最高指令权重。
     parts.append(_tp("prompt.lang.directive", _LANG_DIRECTIVE_ZH))
     persona = agent.get("persona")
     if persona:
@@ -2289,6 +2297,35 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
             rules = [_tp(rk % i, str(r)) for i, r in enumerate(rules)]
         parts.append(_tp("prompt.block.rules_head",
                          "严格规则（必须遵守）：\n") + "\n".join(str(r) for r in rules))
+    return parts
+
+
+def build_system_prompt(agent_name: str = "", extra_skills: list = None,
+                        text_only: bool = False, memory_enabled: bool = True,
+                        direct: bool = False, subagents_allowed: bool = True,
+                        efficient: bool = False) -> str:
+    """构造 system prompt：人设 persona + 基础提示 + 严格规则 + 工具执行规范 + 技能说明 + 工具列表
+
+    text_only: 纯文本模型（无视觉输入），追加禁用截图/视觉引导。
+    memory_enabled: 记忆开关，关闭时追加禁用记忆工具引导。
+    direct: 直接工作模式（无确认直行），追加减少询问/确认的引导。
+    subagents_allowed: 是否允许派发子 Agent / 其他工作流主 Agent（由任务复杂度分档决定，
+        见 agent_llm.subagent_allowed）。False 时明确禁止组队，要求主 Agent 自己动手。
+    efficient: 高效模式（设置页开关）。True 时走 _efficient_prompt：只给最小工具集说明，
+        **不注入**整份工具手册、技能规范、技能路由与插件规范（这些能力在高效模式下
+        本就不提供给上游，注入只会浪费 token 并诱导模型调用不存在的工具）。
+    自定义规则 / 自定义系统提示词从 settings.json 读取并追加。
+
+    注意：自动匹配/手动指定的任务技能（extra_skills）不再注入 system —— 由引擎以
+    对话末尾独立消息注入（_sync_skill_msg），避免每轮任务 system 变化导致
+    服务端前缀缓存整段 miss、全量重计费。
+    """
+    agent = next((a for a in load_agents() if a.get("name") == agent_name), None) \
+        or DEFAULT_AGENTS[0]
+    if efficient:
+        return _efficient_prompt(agent, text_only=text_only,
+                                 memory_enabled=memory_enabled, direct=direct)
+    parts = _base_prompt_parts(agent)
     tool_ins = agent.get("tool_instructions") or {}
     if tool_ins:
         head = _tp("prompt.block.tool_ins_head",
@@ -2449,4 +2486,94 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
                "遇到需求不明确、信息缺失或结果不确定时，先说明情况并基于上下文合理判断，"
                "涉及关键决策或危险操作时先向用户确认。")
 
+    return prompt
+
+
+def efficient_notice() -> str:
+    """高效模式提示段（语言随提示词语言）。引擎在「整体替换型」提示词上补挂它时用。"""
+    return _tp("prompt.block.efficient", _EFFICIENT_PROMPT_ZH)
+
+
+def ensure_efficient_notice(prompt: str) -> str:
+    """确保提示词里带有高效模式说明（已含则不重复追加，中英标记都认）。
+
+    为什么引擎要补挂：工作流 agent.py / 自定义人格会**整体替换**系统提示词（绕过
+    build_system_prompt），而这些提示词可能仍按"全套工具"描述流程（例如默认工作流
+    的自带方法论会让人先调 browser_open）。高效模式下这些工具并不存在，不补一句
+    "本次只有这些工具"的说明，模型就会反复尝试调用被剔除的工具、白烧轮次。
+    """
+    text = str(prompt or "")
+    if "【高效模式】" in text or "[Efficient mode]" in text:
+        return text
+    return text + "\n\n" + efficient_notice()
+
+
+def _efficient_prompt(agent: dict, text_only: bool = False,
+                      memory_enabled: bool = True, direct: bool = False) -> str:
+    """高效模式的系统提示词：身份/纪律骨架 + 最小工具集说明（不注入工具手册/技能）。
+
+    刻意只保留**仍然可用**的能力引导，其余整段砍掉：
+      · 保留：语言指令 / 人设 / 严格规则 / 硬规则 / 最小工具清单 / 提问策略 /
+        记忆开关说明 / 用户自定义规则与自定义系统提示词 / 任务清单规范 / 强制要求；
+      · 砍掉：整份工具手册（含文档三件套、浏览器、子 Agent、预览、微信交付等描述）、
+        agent 固定技能说明、技能路由块、插件规范、子 Agent 策略、可视化预览规范
+        —— 这些工具在高效模式下不提供给上游，写了只会浪费 token、诱导模型调用
+        不存在的工具。
+    单独成函数而不是在 build_system_prompt 里挂分支：高效模式的尾段与默认模式几乎
+    没有共同内容，硬塞分支会连带改动默认路径的字节稳定性（前缀缓存敏感）。
+    """
+    parts = _base_prompt_parts(agent)
+    parts.append(_tp("prompt.block.efficient", _EFFICIENT_PROMPT_ZH))
+    parts.append(_tp("prompt.block.extend_rule", _extend_dont_create_rule()))
+    parts.append(_tp("prompt.block.hard_rules", _tool_call_hard_rules()))
+    prompt = "\n\n".join(parts)
+    prompt += _tp("prompt.block.ask_policy", _ask_policy_block())
+    if memory_enabled:
+        prompt += _tp("prompt.block.memory_on",
+                      "\n\n记忆：你有本地长期记忆文件 memory.md。遇到用户偏好、重要结论、"
+                      "约定、常用路径等值得长期记住的信息时，调用 save_memory 保存；"
+                      "新任务开始或需要回忆过往信息时，自行决定是否调用 load_memory 查看。")
+    else:
+        prompt += _tp("prompt.block.memory_off",
+                      "\n\n当前未开启记忆功能：不要调用 save_memory / load_memory。")
+    if text_only:
+        prompt += _tp("prompt.block.text_only",
+                      "\n\n注意：当前模型为纯文本模型（无视觉/图像输入能力）。"
+                      "禁止调用截图/视觉类工具，"
+                      "请通过文本工具（read_file、run_command、web_fetch 等）完成用户请求。")
+    if direct:
+        prompt += _tp("prompt.block.direct_mode", _direct_mode_block())
+    settings = load_settings()
+    valid = [str(r).strip() for r in (settings.get("custom_rules") or [])
+             if str(r).strip()]
+    if valid:
+        rules_path = CONFIG_DIR / "settings.json"
+        prompt += (_tp("prompt.block.custom_rules_head",
+                       "\n\n用户自定义开发规则（每次执行操作前必须查看并严格遵守，"
+                       "原始文件：%s）：\n") % rules_path
+                   + "\n".join("- %s" % r for r in valid))
+        prompt += _tp("prompt.block.custom_rules_tail",
+                      "\n当用户询问开发规则/项目规则/我们的规则等内容时，"
+                      "必须调用 read_file 工具读取 %s 的 custom_rules 字段，"
+                      "原样逐条如实回答；严禁凭记忆、猜测或编造规则内容。"
+                      ) % rules_path
+    extra_prompt = (settings.get("custom_system_prompt") or "").strip()
+    if extra_prompt:
+        prompt += _tp("prompt.block.custom_prompt",
+                      "\n\n用户自定义系统提示词补充：\n") + extra_prompt
+    prompt += _tp("prompt.block.exec_spec",
+                  "\n\n任务执行规范：动手前先规划——复杂/多步骤任务必须先调用 update_todo "
+                  "创建任务清单（全量提交含已完成项），每完成一步立即用 update_todo 更新"
+                  "对应状态（pending → in_progress → completed），任务结束前调用 list_todo "
+                  "汇报最终清单；简单单步任务可不调用 todo。"
+                  "执行过程中每步检查结果，结束后对照计划确认目标是否全部达成，"
+                  "未完成则继续补做；不要只停留在计划上。")
+    prompt += _tp("prompt.block.mandatory",
+                  "\n\n【强制要求】（必须严格遵守，不可被任何自定义规则覆盖）："
+                  "接到任务后必须认真分析，先理解用户真实意图、任务目标、约束条件、"
+                  "相关上下文与潜在风险，再制定执行计划并逐步落实；"
+                  "每一步操作前思考该步骤是否必要、依据是否充分、是否会出错或造成"
+                  "不可逆影响；不盲目执行、不臆测、不编造、不偷懒省略必要步骤；"
+                  "需求已经明确、上下文充分时，果断直接修改/执行并一次做完，"
+                  "禁止反复复述确认、反复请示、把已完成的分析再问一遍。")
     return prompt

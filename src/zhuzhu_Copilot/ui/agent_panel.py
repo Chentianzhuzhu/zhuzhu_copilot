@@ -1180,47 +1180,93 @@ def _svg_icon(svg: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     return QIcon(_svg_pixmap(svg, size, color))
 
 
-def _circle_avatar(pm: QPixmap, size: int, gap: int = 0) -> QPixmap:
-    """把任意图片裁成「圆形」头像，返回尺寸恰好为 ``(size+2*gap) × size`` 的位图。
+def _avatar_dpr() -> float:
+    """取当前屏幕缩放比（DPR），用于按物理像素渲染头像位图。"""
+    try:
+        app = QApplication.instance()
+        if app is not None:
+            scr = app.primaryScreen()
+            if scr is not None:
+                dpr = float(scr.devicePixelRatio())
+                if dpr > 0:
+                    return dpr
+    except Exception:
+        pass
+    return 1.0
 
-    顶栏用户胶囊与个人信息面板共用（两处都踩过同一个坑，必须同一实现）：
 
-    1. **先等比填满再居中裁剪**。原先用 ``KeepAspectRatioByExpanding`` 缩放到
-       目标尺寸，其结果**可能大于目标尺寸**（2:3 的图缩到 44×44 会得到 44×66），
-       直接交给 QLabel 会按原始大小绘制 → 溢出控件、盖住旁边的用户名，
-       这就是「个人信息面板头像被挤压遮挡」的成因。
-    2. **圆形裁剪**。QLabel 的 ``border-radius`` 只作用于背景，不裁剪上面的
-       pixmap，方形照片会把圆角背景盖成方的。
-    3. ``gap`` 在左右留出透明边：把间距画进图标本身，绕开 Qt 固定的
-       icon-text 间距（顶栏需要，面板不需要）。
+def _circle_avatar(pm: QPixmap, size: int, gap: int = 0,
+                   dpr: float = 0.0) -> QPixmap:
+    """把任意图片裁成「**正圆**」头像，返回逻辑尺寸恰为 ``(size+2*gap) × size`` 的位图。
+
+    顶栏用户胶囊与个人信息面板共用（两处必须同一实现）。三次修复的历史坑：
+
+    1. **先等比填满再居中裁剪**。直接用 ``KeepAspectRatioByExpanding`` 缩放到
+       目标尺寸，结果**可能大于目标尺寸**（2:3 的图缩到 44×44 会得到 44×66），
+       交给 QLabel 会按原始尺寸绘制 → 溢出控件、盖住旁边的用户名
+       （「头像被挤压遮挡」的成因）。故先把源图居中裁成**正方形**再画。
+    2. **必须裁成正圆，不能是椭圆**。画布是 ``(圆 + 左右 gap)`` 的**非方**矩形，
+       若把 ``IgnoreAspectRatio`` 缩放当收尾，宽高缩放因子不等
+       （44/76 ≈ 0.579 vs 32/64 = 0.5）→ 圆被横向拉伸约 16% 变成**椭圆**；
+       同时圆画在 ``x=0`` 使 gap 全落在右侧、左侧无边距。
+       修法：圆在画布中**水平居中**绘制（两侧 gap 等宽），并且**不再做收尾缩放**
+       —— 改由 ``setDevicePixelRatio`` 让 Qt 映射回逻辑尺寸，物理像素不丢。
+    3. **模糊**。位图按 1x 生成、在 >100% 缩放的屏幕上被放大显示 → 发虚。
+       这里按屏幕 DPR 渲染，并保证圆本身至少 96 物理像素（原图偏小时走
+       高质量放大），再用 ``SmoothPixmapTransform`` 出图，避免二次重采样。
+
+    ``gap``：在左右留出透明边（把间距画进图标本身，绕开 Qt 固定的 icon-text
+    间距，顶栏需要、面板不需要）。
     """
-    side = max(1, int(size) * 2)          # 2x 采样：缩小后边缘更平滑
-    scaled = pm.scaled(side, side,
+    if pm is None or pm.isNull():
+        return QPixmap()
+    # 先归一到 dpr=1 的物理像素位图：Qt 的 scaled() 按**逻辑**尺寸缩放、copy() 却按
+    # **设备**像素取矩形（dpr=2 时 scaled(96) 得 144×96、copy(50) 得 50 物理像素）。
+    # 若源图带 dpr，后续「按 circle_dev 缩放 + 按 circle_dev 居中裁剪」会错位；
+    # 统一成 dpr=1 后，全流程都按物理像素计算，语义一致。
+    if pm.devicePixelRatio() != 1.0:
+        _img = pm.toImage()
+        _img.setDevicePixelRatio(1.0)
+        pm = QPixmap.fromImage(_img)
+        pm.setDevicePixelRatio(1.0)
+    size = max(1, int(size))
+    gap = max(0, int(gap))
+    # 显式传入的 dpr 优先（便于按需指定渲染倍率）；否则自动取屏幕 DPR。
+    ratio = max(1.0, float(dpr)) if dpr and dpr > 0 else _avatar_dpr()
+    # 圆本身的物理像素数：>= 目标物理像素，且不低于 96px 以保证清晰/抗锯齿。
+    circle_dev = max(round(size * ratio), 96)
+    # 物理像素/逻辑像素 的实际比例（既含屏幕 DPR，也含清晰度提升）：
+    # 用它作为 devicePixelRatio，逻辑尺寸才会精确等于 (size+2*gap) × size。
+    k = circle_dev / float(size)
+    gap_dev = round(gap * k)
+
+    canvas = QPixmap(circle_dev + gap_dev * 2, circle_dev)
+    canvas.fill(Qt.GlobalColor.transparent)
+
+    scaled = pm.scaled(circle_dev, circle_dev,
                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                        Qt.TransformationMode.SmoothTransformation)
-    x = max(0, (scaled.width() - side) // 2)
-    y = max(0, (scaled.height() - side) // 2)
-    square = scaled.copy(x, y, side, side)
+    x = max(0, (scaled.width() - circle_dev) // 2)
+    y = max(0, (scaled.height() - circle_dev) // 2)
+    square = scaled.copy(x, y, circle_dev, circle_dev)
 
-    canvas = QPixmap(side + int(gap) * 2, side)
-    canvas.fill(Qt.GlobalColor.transparent)
     painter = QPainter(canvas)
     try:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         path = QPainterPath()
-        path.addEllipse(0, 0, side, side)
+        # 居中绘制：左右 gap 等宽，圆自身是正方形外接圆 → 一定是正圆。
+        path.addEllipse(gap_dev, 0, circle_dev, circle_dev)
         painter.setClipPath(path)
-        painter.drawPixmap(0, 0, square)
+        painter.drawPixmap(gap_dev, 0, square)
     finally:
         painter.end()
 
-    # **必须缩回目标尺寸**：canvas 是 2x 采样，直接返回会得到 2 倍大的位图。
-    # QLabel 默认不缩放 pixmap 而是裁掉多余部分 → 头像只露出左上角一块
-    # （反而制造出新的「头像显示不对」问题）。这里缩回 1x，
-    # 2x→1x 的重采样同时起到抗锯齿作用。
-    return canvas.scaled(int(size) + int(gap) * 2, int(size),
-                         Qt.AspectRatioMode.IgnoreAspectRatio,
-                         Qt.TransformationMode.SmoothTransformation)
+    # 不做收尾缩放（旧实现用 IgnoreAspectRatio 缩到 (size+2*gap)×size，
+    # 正是把圆拉成椭圆的元凶）。改标 DPR，Qt 自动映射为逻辑尺寸；
+    # 需要 1x 位图时为 96/size 倍降采样，同样由 Qt 高质量完成。
+    canvas.setDevicePixelRatio(k)
+    return canvas
 
 
 @lru_cache(maxsize=128)
@@ -2708,6 +2754,14 @@ class _AgentSettingsDialog(QDialog):
     plugin_progress = pyqtSignal(int, str)    # 插件生成进度（百分比, 阶段提示），后台线程回主线程
     plugin_progress = pyqtSignal(int, str)  # 插件生成进度（百分比, 阶段提示）
     wechat_message_signal = pyqtSignal(str)   # 微信消息：后台线程 → 主线程分发
+    #: /api/shop/products 拉取完成（后台线程 → 主线程重建会员卡片）。
+    #: 控件操作只能在 GUI 线程执行：跨线程 takeAt/setParent/addWidget 会把旧卡片摘掉、
+    #: 新卡片却挂不上（全部 isVisible=False）→「会员订阅」只剩标题、卡片整排消失。
+    memb_products_ready = pyqtSignal(list)
+    # 支付收款码加载完成：gen(批次号), pixmap|None, 失败文案, 订单号文案（后台线程 → 主线程）。
+    # 收款码对话框属于本设置对话框（会员页），故信号也声明在这里；不能在后台线程直接
+    # 操作控件，否则切换支付方式时更新可能静默失效（见 _memb_show_pay_dialog / _on_pay_qr）。
+    pay_qr_signal = pyqtSignal(int, object, str, str)
 
     # 极简配色：纯黑 / 淡黑 / 白 / 深蓝
     _BG = "#000000"
@@ -2841,6 +2895,8 @@ class _AgentSettingsDialog(QDialog):
         self.workflow_done.connect(self._on_workflow_done)
         self.workflow_progress.connect(self._on_workflow_progress)
         self.plugin_progress.connect(self._on_plugin_progress)
+        # 支付收款码加载结果回主线程落地（后台线程 → 主线程，Qt 自动排队）
+        self.pay_qr_signal.connect(self._on_pay_qr)
 
     def _dialog_qss(self) -> str:
         """本对话框的根样式：输入类控件（输入框 / 多行文本 / 下拉框）的配色都在这里。
@@ -3677,6 +3733,23 @@ class _AgentSettingsDialog(QDialog):
         self.context_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         self.context_hint.setWordWrap(True)
         lay.addWidget(self.context_hint)
+        # ── 高效模式 ────────────────────────────────────────────────────────
+        # 开启后上游只拿到最小必需工具集与精简系统提示词：不提供任何 MCP server 工具、
+        # 插件工具、工作流自定义工具、子 Agent / 工作团工具与文档生成等功能型工具，
+        # 也不注入技能规范、技能路由与插件规范 —— 显著降低每轮 token 消耗与首包体积。
+        self.efficient_check = QCheckBox(
+            _ui("高效模式（不向模型提供 MCP 工具、插件、冗余技能与冗余工具）"))
+        self.efficient_check.setStyleSheet(
+            f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
+        self.efficient_check.setToolTip(_ui(
+            "开启后每轮请求只发送最小必需工具集（文件读写/检索、命令行、联网检索、"
+            "提问、任务清单），不发送任何 MCP 服务器工具、插件工具、子 Agent / 工作团工具"
+            "与文档生成类工具，系统提示词也不再注入整份工具手册、技能与插件规范。"
+            "适合长对话/省钱场景；需要 MCP、插件、技能或文档生成能力时请关闭本开关。"))
+        self.efficient_check.blockSignals(True)
+        self.efficient_check.setChecked(bool(s.get("efficient_mode", False)))
+        self.efficient_check.blockSignals(False)
+        lay.addWidget(self.efficient_check)
         self._sync_context_hint()
         tip = QLabel(_ui("思考模式按上方开关手动控制。开启「始终思考」后，思考强度取当前「思考强度」滑块档位并自动映射：DeepSeek V4 仅 high/max、GLM-5.2 全档、OpenAI o 系列 reasoning_effort、Agnes reasoning_effort 等"))
         tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
@@ -5361,6 +5434,13 @@ class _AgentSettingsDialog(QDialog):
     )
     #: 可购买的档位（「免费版」不是商品，不参与下单）
     _PURCHASABLE_TIERS = ("pro", "max")
+    #: 档位高低序，与后端 order_service.MEMBERSHIP_TIERS 的次序一致
+    #: （free 即界面上的 Basic/免费版 / pro / max）。
+    #: 已订阅某档位时，**序位更低**的档位按钮一律置灰禁用，不依赖服务端是否
+    #: 回传 purchasable —— 否则「已订阅 Max 仍能点 Pro 购买」（历史问题）。
+    _TIER_RANK = {"free": 0, "pro": 1, "max": 2}
+    #: 积分包 = **加购项**（故意不设 membership_type）：与订阅等级无关，
+    #: free / pro / max 任何订阅均可购买（见 _memb_card_state 的加购项分支）。
     _POINTPACK_PRODUCTS = (
         {"id": "points_150", "name": "150 积分", "price": 1, "points": 150,
          "desc": "轻量补充"},
@@ -5460,6 +5540,13 @@ class _AgentSettingsDialog(QDialog):
         # 保留行容器引用：服务端商品数据回来后在原位重建，避免整页重排
         self._memb_sub_row = sub_row
         lay.addLayout(sub_row)
+        # 后台线程拉取商品 → 主线程重建卡片（控件操作只能在 GUI 线程）。
+        # 用标志位防止设置页重建时重复连接（重复连接会触发多次重建）。
+        if not self.__dict__.get("_memb_products_wired"):
+            self.memb_products_ready.connect(
+                self._on_memb_products_ready,
+                Qt.ConnectionType.QueuedConnection)
+            self.__dict__["_memb_products_wired"] = True
 
         # ---- 积分包卡片 ----
         lay.addWidget(self._section_label(_ui("积分包")))
@@ -5527,15 +5614,32 @@ class _AgentSettingsDialog(QDialog):
                         if sv.get(k) is not None:
                             item[k] = sv[k]
                 merged.append(item)
-            self._memb_membership_products = merged
+            # **不在此处碰控件**：本函数跑在后台线程，跨线程操作控件会让旧卡片被摘掉、
+            # 新卡片挂不上（整排 isVisible=False，只剩「会员订阅」标题）。
+            # 只把数据交回主线程，由 _on_memb_products_ready 在 GUI 线程重建卡片。
             try:
-                self._memb_rebuild_membership_cards()
+                self.memb_products_ready.emit(merged)
             except Exception:
                 pass
 
         try:
             import threading
             threading.Thread(target=_work, daemon=True).start()
+        except Exception:
+            pass
+
+    def _on_memb_products_ready(self, merged: list):
+        """主线程槽：接收后台线程拉到的商品数据并重建会员卡片。
+
+        Qt 控件只能在 GUI 线程操作（takeAt / setParent / addWidget），
+        后台线程直接重建会出现「卡片全被摘掉、新卡片不可见」的空白订阅区。
+        """
+        try:
+            if not merged:
+                return
+            self._memb_membership_products = list(merged)
+            if self.__dict__.get("_memb_sub_row") is not None:
+                self._memb_rebuild_membership_cards()
         except Exception:
             pass
 
@@ -5549,6 +5653,7 @@ class _AgentSettingsDialog(QDialog):
             w = item.widget()
             if w is not None:
                 w.setParent(None)
+                w.deleteLater()   # 摘下的旧卡片要回收，否则每次重建都漏一批控件
         self._memb_card_widgets = {}
         for p in self._memb_membership_products:
             card = self._memb_product_card(p)
@@ -5564,6 +5669,7 @@ class _AgentSettingsDialog(QDialog):
         """返回 (按钮文案, tooltip)。集中一处，卡片创建与后续刷新走同一规则。
 
         - free 档不是商品：占位为「当前版本」（已是免费版）/「免费版」（付费档时）
+        - ``_outranked``（已订阅更高档位）→ 不可购买（如 Max 用户看 Pro/Basic）
         - action=renew   → 续费（在当前到期日上叠加时长）
         - action=upgrade → 升级（换到更高档）
         - action=purchase→ 购买
@@ -5571,7 +5677,15 @@ class _AgentSettingsDialog(QDialog):
         """
         tier = prod.get("membership_type") or ""
         if tier == "free" or prod.get("id") == "free":
-            return (_ui("当前版本") if prod.get("_current") else _ui("免费版"), "")
+            if prod.get("_current"):
+                return (_ui("当前版本"), "")
+            # 已是更高档位（Pro/Max）时，Basic（免费版）也是「不可购买」的更低档位，
+            # 按用户要求显式置灰 —— 不再只显示「免费版」这种看不出状态的文案。
+            if prod.get("_outranked"):
+                return (_ui("不可购买"), _ui("已订阅更高档位，无需重复订阅"))
+            return (_ui("免费版"), "")
+        if prod.get("_outranked"):
+            return (_ui("不可购买"), _ui("已订阅更高档位，无需重复订阅"))
         if prod.get("purchasable", True) is False:
             return (_ui("不可购买"), prod.get("reason") or "")
         action = prod.get("action") or "purchase"
@@ -5581,8 +5695,44 @@ class _AgentSettingsDialog(QDialog):
             return (_ui("升级"), _ui("升级到更高档位，时长叠加"))
         return (_ui("购买"), "")
 
+    def _memb_card_state(self, prod: dict, cur: str) -> tuple[str, str, bool]:
+        """统一计算某档位卡片的 ``(按钮文案, tooltip, 可否购买)``。
+
+        卡片**创建时**与**后续刷新**都走这里，避免两套规则漂移
+        （曾漏掉 action=upgrade → 显示「购买」）。
+
+        **会员档位**：可否购买 = 属于可购档位 且 服务端未判定不可购 且
+        **不是低于当前档位的档位**。有了最后一条，即便服务端漏回
+        ``purchasable=False``，「已订阅 Max 仍能点 Pro 订阅」也不会发生。
+
+        **积分包等加购项**（无 ``membership_type``）：与订阅等级无关 ——
+        free / pro / max **任何订阅均可购买**，只受服务端 ``purchasable`` 约束。
+        （旧逻辑用 ``membership_type in ('pro','max')`` 判可购，加购项没有该字段
+        → 一律被置灰，任何用户都买不了积分包。）
+        """
+        tier = prod.get("membership_type") or ""
+        is_plan = bool(tier)            # 带 membership_type 的才是「订阅档位」
+        p2 = dict(prod)
+        # 档位「当前版本 / 更高档位」判定只对订阅档位有意义，加购项不参与
+        p2["_current"] = is_plan and (tier == cur)
+        p2["_outranked"] = (is_plan and self._TIER_RANK.get(tier, 0)
+                            < self._TIER_RANK.get(cur, 0))
+        label, tip = self._memb_btn_label(p2)
+        if is_plan:
+            can_buy = (tier in self._PURCHASABLE_TIERS
+                       and prod.get("purchasable", True) is not False
+                       and not p2["_outranked"])
+        else:
+            # 加购项（积分包）：任何订阅等级均可购买
+            can_buy = prod.get("purchasable", True) is not False
+        return label, tip, bool(can_buy)
+
     def _memb_apply_purchase_state(self):
-        """按服务端下发的 purchasable/action 刷新按钮：购买 / 续费 / 升级 / 置灰。"""
+        """按**当前档位**与服务端 purchasable/action 刷新按钮：购买/续费/升级/置灰。
+
+        置灰的两个来源：① 服务端判定不可购；② 本地档位序判定「更低档位」
+        （已订阅 Max ⇒ Pro / Basic 一律置灰，不依赖服务端字段是否齐全）。
+        """
         cur = ((self._memb_auth.current_user() or {}).get("membership_type")
                if getattr(self, "_memb_auth", None) else None) or "free"
         for pid, (_card, btn) in (self.__dict__.get("_memb_card_widgets") or {}).items():
@@ -5590,13 +5740,8 @@ class _AgentSettingsDialog(QDialog):
             if prod is None:
                 continue
             try:
-                p2 = dict(prod)
-                p2["_current"] = (p2.get("membership_type") == cur)
-                label, tip = self._memb_btn_label(p2)
-                # 免费版档位永远不可点击（不是可购买商品）
-                can_buy = (p2.get("membership_type") in self._PURCHASABLE_TIERS
-                           and p2.get("purchasable", True) is not False)
-                btn.setEnabled(bool(can_buy))
+                label, tip, can_buy = self._memb_card_state(prod, cur)
+                btn.setEnabled(can_buy)
                 btn.setText(label)
                 btn.setToolTip(tip)
             except Exception:
@@ -5638,22 +5783,22 @@ class _AgentSettingsDialog(QDialog):
         price = QLabel(price_text)
         price.setStyleSheet(f"color: {self._ACCENT_HOVER}; font-size: 13px; font-weight: 700;")
         cl.addWidget(price)
-        # 文案与可用性统一由 _memb_btn_label / _memb_apply_purchase_state 决定，
+        # 文案与可用性统一由 _memb_card_state 决定（含「已订阅更高档位 → 置灰」），
         # 避免「创建时」与「后续刷新」两套规则漂移（曾漏掉 action=upgrade → 显示「购买」）。
         cur = ((self._memb_auth.current_user() or {}).get("membership_type")
                if getattr(self, "_memb_auth", None) else None) or "free"
-        p2 = dict(p)
-        p2["_current"] = (tier == cur)
-        label, tip = self._memb_btn_label(p2)
+        label, tip, can_buy = self._memb_card_state(p, cur)
         buy = QPushButton(label)
         buy.setAutoDefault(False)
         buy.setStyleSheet(
-            f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
-            "border-radius: 6px; padding: 6px 0px; font-weight: 700;")
-        can_buy = (tier in self._PURCHASABLE_TIERS
-                   and p.get("purchasable", True) is not False)
+            f"QPushButton {{ background: {self._ACCENT}; color: #FFFFFF; border: none;"
+            " border-radius: 6px; padding: 6px 0px; font-weight: 700; }"
+            # 必须显式写 :disabled：QSS 里没有该规则时，禁用按钮会**沿用强调色**，
+            # 「置灰不可点」在视觉上根本看不出来（用户要求的是灰色禁用态）。
+            f"QPushButton:disabled {{ background: {self._PANEL2};"
+            f" color: {self._DIM}; border: 1px solid {self._BORDER}; }}")
         if not can_buy:
-            buy.setEnabled(False)      # 灰色禁用（免费版档位 / Max 期间的 Pro 等）
+            buy.setEnabled(False)   # 灰色禁用（免费版/低档位，或服务端判定不可购）
         buy.setToolTip(tip)
         prod = dict(p)
         buy.clicked.connect(lambda _checked=False, pr=prod: self._memb_buy(pr))
@@ -5892,19 +6037,41 @@ class _AgentSettingsDialog(QDialog):
         btns.addWidget(done)
         dl.addLayout(btns)
 
-        def _load_order():
-            pay_method = "alipay" if pay_combo.currentIndex() == 0 else "wechat"
+        # 收款码刷新的批次号：每次下单/切换支付方式都 +1，旧批次结果一律丢弃。
+        # 用户快速连点切换时会有多个后台请求在飞，若不做过期判定，先返回的旧方式
+        # 收款码会把后返回的新收款码覆盖掉（表现为"切了却显示上一个方式的码"）。
+        self._pay_qr_gen = 0
+        # 支付对话框内的收款码/订单号标签引用：UI 更新由 _on_pay_qr 在主线程统一执行；
+        # 对话框关闭时置空，避免迟到的后台结果写向已销毁控件。
+        self._pay_qr_label = qr_label
+        self._pay_order_label = order_lab
+
+        def _current_method() -> str:
+            """当前支付方式键（与后端 pay_method 取值一致）。
+
+            **在主线程读取**控件状态后作为参数传给后台线程：工作线程里访问 QComboBox
+            属于跨线程操作 Qt 控件，结果不可靠。
+            """
+            return "alipay" if pay_combo.currentIndex() == 0 else "wechat"
+
+        def _load_order(gen: int, pay_method: str):
+            """后台：按指定支付方式下单并取回收款码。
+
+            结果一律经 pay_qr_signal 回主线程落地（见 _on_pay_qr）——**绝不在此线程直接
+            setPixmap/setText**：跨线程写 GUI 是 Qt 未定义行为，可能静默失效或崩溃，
+            正是"切换支付方式后收款码不更新"这类偶发问题的温床。
+            """
             from zhuzhu_Copilot.core.auth_client import _http_post_json, _http_get_json
             ok, data, _ = _http_post_json(
                 f"{auth.server}/api/shop/order",
                 {"product_id": product["id"], "pay_method": pay_method},
                 token=auth.token, timeout=10)
             if not ok or not isinstance(data, dict) or data.get("code") != 0:
-                qr_label.setText(_ui("订单创建失败，请重试"))
+                self.pay_qr_signal.emit(gen, None, _ui("订单创建失败，请重试"), "")
                 return
             od = data.get("data") or {}
-            order_lab.setText(_uif("订单号：{oid}（金额 {amt} 元）",
-                                   oid=od.get("order_id", ""), amt=od.get("amount", "")))
+            order_text = _uif("订单号：{oid}（金额 {amt} 元）",
+                              oid=od.get("order_id", ""), amt=od.get("amount", ""))
             qrcode_url = od.get("qrcode_url") or ""
             if not qrcode_url:
                 ok2, qd, _ = _http_get_json(f"{auth.server}/api/shop/qrcodes",
@@ -5921,19 +6088,67 @@ class _AgentSettingsDialog(QDialog):
                     img_bytes = urllib.request.urlopen(req, timeout=15).read()
                     pm = QPixmap()
                     if pm.loadFromData(img_bytes):
-                        qr_label.setPixmap(pm.scaled(
-                            210, 210, Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation))
+                        scaled = pm.scaled(210, 210,
+                                           Qt.AspectRatioMode.KeepAspectRatio,
+                                           Qt.TransformationMode.SmoothTransformation)
+                        self.pay_qr_signal.emit(gen, scaled, "", order_text)
                         return
                 except Exception:
                     pass
-            qr_label.setText(_ui("收款码加载失败，请联系管理员配置"))
+            self.pay_qr_signal.emit(gen, None,
+                                    _ui("收款码加载失败，请联系管理员配置"), order_text)
 
-        threading.Thread(target=_load_order, daemon=True).start()
-        if dlg.exec():
+        def _reload_qr():
+            """（重新）加载收款码：首次打开、以及每次切换支付方式时调用。
+
+            先把上一方式的收款码清掉并显示加载态：否则新码返回前界面上仍是旧码，
+            用户可能扫错码付款（这是切换支付方式必须刷新收款码的根本原因）。
+            """
+            self._pay_qr_gen += 1
+            gen = self._pay_qr_gen
+            qr_label.clear()
+            qr_label.setText(_ui("正在加载收款码..."))
+            order_lab.setText("")
+            threading.Thread(target=_load_order, args=(gen, _current_method()),
+                             daemon=True).start()
+
+        # 切换支付方式 → 立即刷新为新方式的收款码（订单按 pay_method 创建，故重新下单）
+        pay_combo.currentIndexChanged.connect(lambda _i: _reload_qr())
+        _reload_qr()
+        accepted = False
+        try:
+            accepted = bool(dlg.exec())
+        finally:
+            # 关闭对话框：摘掉标签引用并作废在途批次，避免后台线程写向已销毁控件
+            self._pay_qr_gen += 1
+            self._pay_qr_label = None
+            self._pay_order_label = None
+        if accepted:
             QMessageBox.information(
                 self, _ui("已提交"),
                 _ui("已提交支付确认，管理员确认到账后积分/会员将自动入账。"))
+
+    def _on_pay_qr(self, gen: int, pixmap, qr_text: str, order_text: str):
+        """支付收款码加载完成（后台线程 → 主线程）：应用结果并丢弃过期批次。
+
+        gen 与当前批次不一致 → 用户已再次切换支付方式（或已关窗），该结果必须丢弃：
+        否则旧方式的收款码会把新方式的覆盖回去，用户就会扫到错的码。
+        """
+        if int(gen) != int(getattr(self, "_pay_qr_gen", 0)):
+            return
+        lbl = getattr(self, "_pay_qr_label", None)
+        order_lbl = getattr(self, "_pay_order_label", None)
+        try:
+            if order_lbl is not None and order_text:
+                order_lbl.setText(order_text)
+            if lbl is None:
+                return
+            if pixmap is not None and not pixmap.isNull():
+                lbl.setPixmap(pixmap)
+            else:
+                lbl.setText(qr_text)
+        except RuntimeError:
+            pass   # 控件已随对话框销毁（关闭瞬间返回的结果）
 
     def _wechat_start_binding(self):
         """获取二维码并启动状态轮询。"""
@@ -6695,6 +6910,8 @@ class _AgentSettingsDialog(QDialog):
             "custom_safe_commands": [ln.strip() for ln in self.safe_edit.toPlainText().splitlines()
                                      if ln.strip()],
             "memory_enabled": self.memory_check.isChecked(),
+            # 高效模式：最小工具集 + 精简提示词（上游不再收到 MCP/插件/技能与冗余工具）
+            "efficient_mode": self.efficient_check.isChecked(),
             "cap_mcp": "1" if self.cap_mcp_check.isChecked() else "0",
             "cap_skill": "1" if self.cap_skill_check.isChecked() else "0",
             "cap_plugin": "1" if self.cap_plugin_check.isChecked() else "0",
@@ -10095,6 +10312,11 @@ class _ProfilePanel(QFrame):
     PREFERRED_WIDTH = 232   # 紧凑宽度（用户要求缩小面板）
     #: 头像直径（用户要求「再次放大」：44 → 56）
     _AVATAR_PX = 56
+    #: 头像描边宽度：QSS 的 border 占用控件**内容区**，
+    #: 故控件比圆大 2*_AVATAR_RING，圆形位图才不会被内容区裁掉边缘。
+    _AVATAR_RING = 1
+    #: 用户名最大显示宽度（超出省略号 + tooltip），防止长名把面板撑爆。
+    _USERNAME_MAX_PX = 104
     SLIDE = 16          # 水平滑入位移（px）
     IN_MS = 180
     OUT_MS = 130
@@ -10138,8 +10360,14 @@ class _ProfilePanel(QFrame):
         top.setSpacing(SPACING_SM)
         self._avatar = QLabel("")
         self._avatar.setObjectName("pfAvatar")
-        self._avatar.setFixedSize(self._AVATAR_PX, self._AVATAR_PX)
+        # 控件比圆大 2*_AVATAR_RING：QSS 的 1px 描边占用**内容区**，
+        # 若控件只有 56px，56px 圆形位图会溢出 54×54 的内容区、边缘被裁掉
+        # （「头像被边缘裁剪」的根因）。留出边距后圆形完整落在内容区内。
+        self._avatar.setFixedSize(self._AVATAR_PX + self._AVATAR_RING * 2,
+                                  self._AVATAR_PX + self._AVATAR_RING * 2)
         self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._avatar.setScaledContents(False)     # 位图按原尺寸居中，不拉伸
+        self._avatar.setPixmap(QPixmap())
         top.addWidget(self._avatar)
         name_col = QVBoxLayout()
         name_col.setContentsMargins(0, 0, 0, 0)
@@ -10150,6 +10378,12 @@ class _ProfilePanel(QFrame):
         name_row.setSpacing(4)
         self._username = QLabel("-")
         self._username.setObjectName("pfUsername")
+        # 长用户名会把面板首选宽从 232px 顶到 500px+（挤压头像行）→
+        # 限宽 + 省略号居中，完整名放 tooltip。
+        self._username.setWordWrap(False)
+        self._username.setMaximumWidth(self._USERNAME_MAX_PX)
+        self._username.setAlignment(Qt.AlignmentFlag.AlignLeft |
+                                    Qt.AlignmentFlag.AlignVCenter)
         name_row.addWidget(self._username)
         self._checkin_btn = QPushButton(_ui("签到"))
         self._checkin_btn.setObjectName("pfCheckinBtn")
@@ -10254,7 +10488,10 @@ class _ProfilePanel(QFrame):
             f"#profilePanel QLabel#pfLive {{ color: {ACCENT};"
             f" font-size: {FONT_CAPTION}px; }}"
             f"#profilePanel QLabel#pfAvatar {{ background: {chip_bg}; border: 1px solid {border};"
-            f" border-radius: {self._AVATAR_PX // 2}px; color: {TEXT_DIM};"
+            # 圆角取控件外框半径（含描边），描边本身才是正圆，
+            # 内部 56px 的圆形照片与描边同心 → 视觉上是「带一圈描边的正圆头像」。
+            f" border-radius: {(self._AVATAR_PX + self._AVATAR_RING * 2) // 2}px;"
+            f" padding: 0px; color: {TEXT_DIM};"
             f" font-size: {FONT_BODY}px; font-weight: 700; }}"
             f"#profilePanel QFrame#pfDivider {{ background: {border}; border: none; }}"
             f"#profilePanel QPushButton#pfClose {{ background: transparent; color: {TEXT_DIM};"
@@ -10279,6 +10516,24 @@ class _ProfilePanel(QFrame):
             f" border: 1px solid {border}; background: transparent; }}")
 
     # ---------- 数据注入 ----------
+    def _set_username(self, name):
+        """设置用户名：超出 ``_USERNAME_MAX_PX`` 用省略号，完整名放 tooltip。
+
+        只按**固定上限**省略、不依赖控件当前宽度，避免「文本变短 → 宽度变小 →
+        再次省略」的自反馈抖动；限宽同时保证面板首选宽不被长用户名撑爆。
+        """
+        text = str(name or "").strip()
+        self.__dict__["_username_full"] = text
+        if not text:
+            self._username.setText("-")
+            self._username.setToolTip("")
+            return
+        fm = self._username.fontMetrics()
+        avail = max(24, int(self._USERNAME_MAX_PX))
+        elided = fm.elidedText(text, Qt.TextElideMode.ElideRight, avail)
+        self._username.setText(elided)
+        self._username.setToolTip(text if elided != text else "")
+
     def set_profile(self, info: dict = None):
         """注入个人信息快照；控件只读展示。
 
@@ -10286,7 +10541,7 @@ class _ProfilePanel(QFrame):
                membership_expire, user_id}
         """
         info = info or {}
-        self._username.setText(str(info.get("username") or "-"))
+        self._set_username(info.get("username"))
         mt = {"free": _ui("免费版"), "pro": _ui("Pro 会员"), "max": _ui("Max 会员")}
         self._member.setText(mt.get(info.get("membership_type") or "free",
                                     info.get("membership_type") or _ui("免费版")))
@@ -14652,6 +14907,8 @@ class AgentPanel(QDialog):
                 else self._provider_for_model(_last_model)
         self._refresh_text_only()
         self._memory_enabled = bool(_s.get("memory_enabled", True))
+        # 高效模式（设置页开关）：只把最小工具集与精简提示词发给上游（见 agent_engine）
+        self._efficient_mode = bool(_s.get("efficient_mode", False))
         # 执行模式（ask/edit/yolo）在设置页调整，此处仅从 QSettings 读取
         self._mode = str(self._settings.value("agent_mode", "ask"))
 
@@ -15202,11 +15459,14 @@ class AgentPanel(QDialog):
         self._announce_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._announce_label.setWordWrap(False)
         self._announce_label.setVisible(False)
-        self._announce_label.setMaximumWidth(420)
+        # 不限制显示字数：去掉旧的 maximumWidth(420) 硬上限（长公告会被裁掉）；
+        # 只保留 minimumWidth(0) —— 空间不足时允许收缩，空间充足时按完整文本展开。
+        self._announce_label.setMinimumWidth(0)
         # 纯文本、无修饰：只给一个与主题一致的前景色（无边框/无背景/无描边）
+        # 字号 FONT_TITLE(16px)，原为 FONT_SMALL(12px)：公告需醒目、易读。
         self._announce_label.setStyleSheet(
             f"QLabel#announceLabel {{ color: {TEXT}; background: transparent;"
-            f" border: none; font-size: {FONT_SMALL}px; font-weight: 600; }}")
+            f" border: none; font-size: {FONT_TITLE}px; font-weight: 600; }}")
         top.addWidget(self._announce_label)
         top.addStretch(1)
 
@@ -16025,6 +16285,8 @@ class AgentPanel(QDialog):
             ask_user=lambda a, _sid=sid: self._ask_user_tool(_sid, a),
             text_only=self._text_only,
             memory_enabled=self._memory_enabled,
+            # 高效模式：只发最小工具集与精简提示词（设置页开关，见 _apply_agent_settings）
+            efficient_mode=self._efficient_mode,
             direct=self._mode == "yolo",
             # 子 Agent 准入：沿用该会话上一次任务的判定（新任务在 _launch_task 按当轮
             # 力度/显式要求重算），避免引擎重建后门槛突然放开
@@ -22199,9 +22461,9 @@ class AgentPanel(QDialog):
         if not content and auth is not None:
             content = auth.announcement() or ""
         content = content.strip()
-        # 单行展示，过长截断（顶栏空间有限，避免挤压 CPU/状态区）
-        if len(content) > 60:
-            content = content[:60] + "…"
+        # 不限制显示字数：不再按 60 字截断（用户要求公告完整展示）。
+        # 顶栏宽度不足时交由布局按可用宽度裁剪显示，但**绝不主动丢弃**文本，
+        # tooltip 也给出完整原文，便于悬停查看。
         try:
             lbl.setText(content)
             lbl.setVisible(bool(content))
@@ -23039,6 +23301,7 @@ class AgentPanel(QDialog):
         self._cleanup_legacy_panel_keys()
         self._refresh_text_only()
         self._memory_enabled = bool(s.get("memory_enabled", True))
+        self._efficient_mode = bool(s.get("efficient_mode", False))
         if self._sess:
             busy = any(st.get("engine") and st["engine"]._thread
                        and st["engine"]._thread.is_alive() for st in self._sess.values())
@@ -23057,6 +23320,8 @@ class AgentPanel(QDialog):
                 eng.llm.model = cfg.get("model") or agent_llm.DEFAULT_MODEL
                 eng.text_only = self._text_only
                 eng.memory_enabled = self._memory_enabled
+                # 高效模式：下一个任务即生效（工具表与系统提示词每轮重建）
+                eng.efficient_mode = self._efficient_mode
                 eng.direct = self._mode == "yolo"
                 # 上下文上限随设置即时对齐（勾选/取消「开启 1M 上下文」当场生效，
                 # 否则统计面板与压缩阈值会一直停在旧窗口）
