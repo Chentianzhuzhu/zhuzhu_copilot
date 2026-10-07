@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>团队成员头像「巨大」Bug 修复对比 · zhuzhu Copilot 官网</title>
+<style>
+  :root {
+    --theme-color: #3D7DFF; --accent-color: #7DF9E4;
+    --bg-color: #0A0C11; --card-bg: #11141C; --surface-3: #181C26;
+    --text-color: #F0F3F9; --text-muted: #A8B2C6; --ink-faint: #7C879E;
+    --line: rgba(150,170,210,.14); --line-strong: rgba(150,170,210,.3);
+    --radius: 14px; --font-body: "Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg-color); color: var(--text-color); font: 15px/1.7 var(--font-body); padding: 40px 32px 64px; }
+  h1 { font-size: 26px; letter-spacing: -.02em; }
+  .sub { color: var(--text-muted); margin-top: 10px; max-width: 900px; }
+  .verdict { margin-top: 22px; padding: 18px 22px; border: 1px solid var(--line); border-left: 3px solid var(--accent-color); background: var(--card-bg); border-radius: 8px; max-width: 980px; }
+  .verdict b { color: var(--accent-color); }
+  .verdict code { font-family: Consolas, monospace; font-size: 13px; color: var(--text-color); background: var(--surface-3); padding: 1px 6px; border-radius: 4px; }
+  .cols { display: flex; flex-wrap: wrap; gap: 28px; margin-top: 34px; }
+  .col { flex: 0 0 460px; }
+  .col h2 { font-size: 17px; display: flex; align-items: center; gap: 10px; }
+  .tag { font: 11px/1 Consolas, monospace; padding: 3px 8px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--text-muted); }
+  .tag.bad { color: #FB7185; border-color: #FB7185; }
+  .tag.good { color: var(--accent-color); border-color: var(--accent-color); }
+  /* 桌面视口窗口：内部画布按真实 1180px 宽度渲染，再等比缩小到 460px 展示 */
+  .viewport { position: relative; width: 460px; height: 560px; margin-top: 14px; border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; background: var(--bg-color); }
+  .viewport .hint { position: absolute; z-index: 3; right: 8px; bottom: 8px; font: 11px/1.5 Consolas, monospace; color: var(--ink-faint); background: rgba(10,12,17,.85); padding: 4px 8px; border-radius: 4px; }
+  .canvas { width: 1180px; transform-origin: top left; }
+  .wrap { width: 1180px; }
+
+  /* ---------- 团队成员卡（与线上一致的结构） ---------- */
+  .about-team-grid { display: grid; gap: 24px; align-items: start; }
+  .member-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 16px 26px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card-bg); text-align: center; }
+  .member-avatar { width: 100%; aspect-ratio: 4 / 5; border-radius: calc(var(--radius) - 4px); display: grid; place-items: center; overflow: hidden; background: var(--surface-3); }
+  .member-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: center 15%; }
+  .member-avatar-fallback { font-size: 44px; color: var(--accent-color); }
+  .member-name { margin-top: 16px; font-size: 21px; font-weight: 600; }
+  .member-role { font-size: 14px; color: var(--text-muted); }
+
+  /* 修复前：auto-fit + 1fr（无上限），图片未绝对定位 */
+  .before .about-team-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+  /* 修复后：列宽有上限并居中，图片绝对定位撑满取景框 */
+  .after .about-team-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 260px)); justify-content: center; }
+  .after .member-avatar { position: relative; }
+  .after .member-avatar img { position: absolute; inset: 0; }
+
+  .measure { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-bg); font: 13px/1.9 Consolas, monospace; }
+  .measure .k { color: var(--ink-faint); }
+  .measure .bad { color: #FB7185; }
+  .measure .good { color: var(--accent-color); }
+  .steps { margin-top: 40px; max-width: 980px; }
+  .steps h2 { font-size: 17px; margin-bottom: 12px; }
+  .steps ol { margin-left: 20px; color: var(--text-muted); }
+  .steps code { font-family: Consolas, monospace; font-size: 13px; color: var(--text-color); }
+  .shot { margin-top: 16px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; width: 460px; }
+  .shot img { display: block; width: 100%; }
+  footer { margin-top: 44px; color: var(--ink-faint); font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>团队成员头像「巨大」Bug —— 修复前后对比</h1>
+<p class="sub">官网 <code style="font-family:Consolas,monospace">/about</code>「背后的人」区块。桌面视口按真实栅格宽度 1180px 渲染后等比缩小，两侧结构、头像图片与线上完全一致。</p>
+
+<div class="verdict">
+  <b>根因（实测证据）</b>：团队网格用 <code>repeat(auto-fit, minmax(220px, 1fr))</code>。当前只有 1 位成员时，<code>auto-fit</code> 会折叠空轨道并把仅剩的那一列<b>拉伸填满整行</b>，桌面端 wrap 宽 1180px，4:5 取景框随之被撑到 <b>1146×1433</b> —— 这就是「头像巨大」。
+  移动端因为媒体查询里有 <code>max-width: 320px</code> 兜底，所以只有电脑端出问题。
+  次要问题：只写 <code>height: 100%</code> 时，容器高度由 <code>aspect-ratio</code> 推导会让百分比高度解析为 auto，图片按原始比例（3456×4608）自行撑高到 1528px 并溢出框体，<code>object-fit</code> 形同失效。
+</div>
+
+<div class="cols">
+  <div class="col before">
+    <h2><span class="tag bad">修复前</span> 唯一一列被拉伸</h2>
+    <div class="viewport">
+      <div class="canvas" id="canvasBefore">
+        <div class="wrap">
+          <div class="about-team-grid">
+            <article class="member-card">
+              <div class="member-avatar">
+                <img src="https://chentian.dpdns.org/uploads/img/d36ebb93f299492bb566d000a7990a08_IMG_20261007_203045.jpg" alt="朱天亮">
+              </div>
+              <h3 class="member-name">朱天亮</h3>
+              <p class="member-role">CEO,团队创始人,董事长,开发者,项目维护者,投资者</p>
+            </article>
+          </div>
+        </div>
+      </div>
+      <span class="hint">1180px 画布 · 等比缩小展示</span>
+    </div>
+    <div class="measure" id="mBefore"></div>
+  </div>
+
+  <div class="col after">
+    <h2><span class="tag good">修复后</span> 列宽上限 260px + 居中</h2>
+    <div class="viewport">
+      <div class="canvas" id="canvasAfter">
+        <div class="wrap">
+          <div class="about-team-grid">
+            <article class="member-card">
+              <div class="member-avatar">
+                <img src="https://chentian.dpdns.org/uploads/img/d36ebb93f299492bb566d000a7990a08_IMG_20261007_203045.jpg" alt="朱天亮">
+              </div>
+              <h3 class="member-name">朱天亮</h3>
+              <p class="member-role">CEO,团队创始人,董事长,开发者,项目维护者,投资者</p>
+            </article>
+          </div>
+        </div>
+      </div>
+      <span class="hint">1180px 画布 · 等比缩小展示</span>
+    </div>
+    <div class="measure" id="mAfter"></div>
+  </div>
+</div>
+
+<div class="steps">
+  <h2>本次改动（update-server/src/main/resources/static/css/site.css）</h2>
+  <ol>
+    <li>团队网格列宽加上限并整体居中：<code>grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 260px)); justify-content: center;</code> —— 卡片尺寸从此与成员数量无关。</li>
+    <li>取景框改为定位容器、图片绝对定位撑满：<code>.member-avatar { position: relative; }</code> + <code>.member-avatar img { position: absolute; inset: 0; object-fit: cover; object-position: center 15%; }</code></li>
+    <li>新增回归测试 <code>TestTeamMemberLayout</code>（4 条断言），锁死「列宽必须有限、图片必须绝对定位」，防止再次改回。</li>
+  </ol>
+  <p class="sub" style="margin-top:14px">同一份改动在线上真实页面的 1440px 视口实测结果：卡片 1180×1560 → <b>260×434</b>，头像框 1146×1433 → <b>226×283</b>，图片精确填满取景框；成员为 1／4／9 位时卡片均为 260px 宽并居中。</p>
+</div>
+
+<footer>生成时间：本机验证通过后（72 项官网静态回归测试全部 OK）。预览使用线上真实头像图片。</footer>
+
+<script>
+  var scale = 460 / 1180;
+  function fit(id) {
+    var el = document.getElementById(id);
+    el.style.transform = 'scale(' + scale + ')';
+  }
+  fit('canvasBefore');
+  fit('canvasAfter');
+
+  function measure(rootSel, boxId, tone) {
+    var root = document.querySelector(rootSel);
+    var grid = root.querySelector('.about-team-grid');
+    var card = root.querySelector('.member-card');
+    var av = root.querySelector('.member-avatar');
+    var img = root.querySelector('.member-avatar img');
+    function wh(el) { var r = el.getBoundingClientRect(); return Math.round(r.width) + ' × ' + Math.round(r.height); }
+    var cols = getComputedStyle(grid).gridTemplateColumns;
+    document.getElementById(boxId).innerHTML =
+      '<div><span class="k">网格列宽　</span>' + cols + '</div>' +
+      '<div><span class="k">卡片　　</span><span class="' + tone + '">' + wh(card) + ' px</span></div>' +
+      '<div><span class="k">头像框　</span><span class="' + tone + '">' + wh(av) + ' px</span></div>' +
+      '<div><span class="k">图片元素</span><span class="' + tone + '">' + wh(img) + ' px</span></div>' +
+      '<div><span class="k">原始尺寸</span>' + img.naturalWidth + ' × ' + img.naturalHeight + ' px</div>';
+  }
+  window.addEventListener('load', function () {
+    measure('.before', 'mBefore', 'bad');
+    measure('.after', 'mAfter', 'good');
+  });
+</script>
+</body>
+</html>

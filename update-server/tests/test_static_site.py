@@ -829,5 +829,58 @@ class TestOverlayVisibility(unittest.TestCase):
                          "admin.css 的 .hidden 必须是 !important")
 
 
+class TestTeamMemberLayout(unittest.TestCase):
+    """团队成员照片卡：桌面端「头像巨大」的历史回归。
+
+    根因：团队网格用 auto-fit + minmax(220px, 1fr)。auto-fit 会折叠空轨道，
+    并把剩余列拉伸填满容器 —— 只有 1 位成员时该列在桌面端（wrap 1180px）
+    被拉成 1180px，4:5 取景框随之变成 1146×1433，照片看起来巨大。
+    移动端因媒体查询里有 max-width: 320px 兜底，所以只有电脑端出问题。
+
+    这里锁住两条约束：列宽必须有上限；图片必须绝对定位撑满取景框
+    （只写 height:100% 时，容器高度由 aspect-ratio 推导会导致百分比高度解析为
+    auto，图片按原始比例自行撑高并溢出，object-fit 形同失效）。
+    """
+
+    @staticmethod
+    def _team_grid_rule() -> str:
+        css = read(STATIC / "css/site.css")
+        rules = re.findall(r"\.about-team-grid\s*\{[^}]*\}", css)
+        self_ = [r for r in rules if "grid-template-columns" in r]
+        assert self_, "site.css 缺少 .about-team-grid 的列定义"
+        return self_[-1]
+
+    def test_team_grid_columns_have_upper_bound(self) -> None:
+        rule = self._team_grid_rule()
+        self.assertNotRegex(
+            rule, r"minmax\(\s*min\(100%,\s*\d+px\s*\)\s*,\s*1fr\s*\)",
+            "团队网格列宽不能是无上限的 1fr：auto-fit 会把唯一一列拉伸到整行宽，"
+            "桌面端单成员时照片框会被撑成上千像素高")
+        self.assertRegex(
+            rule, r"minmax\(\s*min\(100%,\s*\d+px\s*\)\s*,\s*\d+px\s*\)",
+            "团队网格列宽应写成 minmax(min(100%, Npx), Mpx)，给出明确上限")
+
+    def test_team_grid_is_centered(self) -> None:
+        rule = self._team_grid_rule()
+        self.assertIn("justify-content: center", rule,
+                      "卡片窄于整行时需要居中，否则会靠在左侧")
+
+    def test_member_avatar_is_positioned_container(self) -> None:
+        css = read(STATIC / "css/site.css")
+        rule = re.findall(r"\.member-avatar\s*\{[^}]*\}", css)[-1]
+        self.assertIn("aspect-ratio", rule, "取景框必须固定 4:5 比例")
+        self.assertIn("overflow: hidden", rule, "取景框必须裁切溢出内容")
+        self.assertIn("position: relative", rule, "取景框要作为图片的定位参照")
+
+    def test_member_avatar_img_fills_frame(self) -> None:
+        css = read(STATIC / "css/site.css")
+        rule = re.findall(r"\.member-avatar img\s*\{[^}]*\}", css)[-1]
+        self.assertIn("position: absolute", rule,
+                      "取景框高度由 aspect-ratio 推导时 height:100% 会解析为 auto，"
+                      "图片会按原始比例溢出框体，必须绝对定位撑满")
+        self.assertIn("inset: 0", rule, "绝对定位需要 inset:0 才能四边贴合")
+        self.assertIn("object-fit: cover", rule, "照片需等比裁切填满取景框")
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)

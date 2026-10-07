@@ -572,7 +572,10 @@ body[data-page="/faq"] #faq > .wrap { display: block; max-width: 880px; }
 /* 联系、团队与站点索引 */
 .about-contacts-grid, .about-team-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); gap: 24px; }
 /* 团队网格单独加宽列数：竖版照片卡比联系方式卡窄一号更协调。 */
-.about-team-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); align-items: start; }
+/* 列宽必须有上限：auto-fit 会在成员较少时折叠空轨道，把仅剩的列拉伸到整行宽。
+   桌面端（wrap 1180px）只有 1 位成员时，取景框会被拉成 1146×1433 —— 照片看起来「巨大」。
+   这里给出 260px 列宽上限并整体居中，卡片尺寸与成员数量无关。 */
+.about-team-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),260px)); justify-content: center; align-items: start; }
 .contact-card { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 30px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); transition: border-color .18s; }
 .contact-card:hover { border-color: var(--blue-bright); }
 .contact-icon { width: 44px; height: 44px; display: grid; place-items: center; color: var(--blue-bright); }
@@ -585,8 +588,12 @@ body[data-page="/faq"] #faq > .wrap { display: block; max-width: 880px; }
    15%（人像头部通常在上部），照片可完整呈现头部到上半身；无头像时的首字母占位也一并居中放大。 */
 .member-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 16px 26px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); text-align: center; }
 .member-card:hover { border-color: var(--blue-bright); }
-.member-avatar { width: 100%; aspect-ratio: 4 / 5; border-radius: calc(var(--radius) - 4px); display: grid; place-items: center; overflow: hidden; background: var(--surface-3); }
-.member-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: center 15%; }
+/* 取景框与图片：图片用绝对定位撑满框体。
+   若只写 height:100%，在「容器高度由 aspect-ratio 从列宽推导」时百分比高度解析为 auto，
+   图片会按原始比例（这里 3456×4608）自行撑高并溢出框体 —— 框高 1433 而图片高 1528，
+   底部被 overflow 硬裁。绝对定位后 object-fit 才真正生效。 */
+.member-avatar { position: relative; width: 100%; aspect-ratio: 4 / 5; border-radius: calc(var(--radius) - 4px); display: grid; place-items: center; overflow: hidden; background: var(--surface-3); }
+.member-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 15%; }
 .member-avatar-fallback { font-size: 44px; color: var(--blue-bright); }
 .member-name { margin-top: 16px; font-size: var(--text-lg); font-weight: 600; }
 .member-role { font-size: var(--text-sm); color: var(--ink-dim); }

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>官网团队成员照片裁切修复 · 对比验证</title>
+<!-- 直接引用线上真实样式表，保证「修复后」就是官网实际渲染效果 -->
+<link rel="stylesheet" href="../update-server/src/main/resources/static/css/site.css">
+<style>
+  /* 以下为验证页自身排版，不属于官网样式改动 */
+  .pv-page { max-width: 1040px; margin: 0 auto; padding: 44px 24px 96px; }
+  .pv-h1 { font-size: 27px; font-weight: 700; letter-spacing: -.02em; }
+  .pv-sub { margin-top: 12px; color: var(--ink-dim); font-size: 14px; line-height: 1.9; }
+  .pv-sub code { font: 12px var(--font-mono); color: var(--accent-color); }
+  .pv-h2 { margin: 44px 0 6px; font-size: 18px; font-weight: 600; }
+  .pv-note { margin-bottom: 18px; color: var(--ink-faint); font-size: 13px; line-height: 1.7; }
+  .pv-cols { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; align-items: start; max-width: 520px; }
+  .pv-badge { display: inline-block; margin-bottom: 12px; padding: 5px 9px; border-radius: 4px; font: 11px/1.35 var(--font-mono); }
+  .pv-bad { color: var(--err-color); border: 1px dashed var(--err-color); }
+  .pv-good { color: var(--ok-color); border: 1px dashed var(--ok-color); }
+  .pv-list { margin-top: 10px; padding-left: 20px; color: var(--ink-dim); font-size: 14px; line-height: 2; }
+  .pv-list b { color: var(--text-color); }
+  .pv-ratio { display: block; margin-top: 10px; color: var(--ink-faint); font: 11px var(--font-mono); }
+
+  /* —— 仅本页复刻「修复前」的旧规则，用于并排对比（官网上已替换）——
+     旧版：头像框 64×64 正方形 + border-radius:50% + object-fit:cover 居中取景 */
+  .legacy .member-card { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px 22px; padding: 30px; text-align: left; }
+  .legacy .member-avatar { width: 64px; height: 64px; aspect-ratio: auto; border-radius: 50%; }
+  .legacy .member-avatar img { object-position: center; }
+  .legacy .member-name { margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="pv-page">
+
+  <h1 class="pv-h1">团队成员照片裁切修复 · 对比验证</h1>
+  <p class="pv-sub">
+    同一张 3:4 竖版半身照，分别用「修复前」与「修复后」的样式渲染。<br>
+    「修复后」直接使用线上样式表 <code>update-server/src/main/resources/static/css/site.css</code>；
+    「修复前」规则仅在本页内复刻，用于并排对比。
+  </p>
+
+  <h2 class="pv-h2">① 修复前 vs 修复后（同一张半身照）</h2>
+  <p class="pv-note">列宽 220px，与官网团队网格单列等宽。</p>
+  <div class="pv-cols">
+    <div>
+      <span class="pv-badge pv-bad">修复前 · 64×64 圆形 + cover 居中</span>
+      <div class="legacy">
+        <article class="member-card">
+          <div class="member-avatar">
+            <img src="team-fix-assets/img_20261007_203754_1.png" alt="修复前">
+          </div>
+          <h3 class="member-name">zhuzhu</h3>
+          <p class="member-role">项目负责人</p>
+        </article>
+      </div>
+      <span class="pv-ratio">半身照被裁到只剩头部区域</span>
+    </div>
+    <div>
+      <span class="pv-badge pv-good">修复后 · 4:5 竖版取景框</span>
+      <article class="member-card">
+        <div class="member-avatar">
+          <img src="team-fix-assets/img_20261007_203754_1.png" alt="修复后">
+        </div>
+        <h3 class="member-name">zhuzhu</h3>
+        <p class="member-role">项目负责人</p>
+      </article>
+      <span class="pv-ratio">头部到上半身完整呈现</span>
+    </div>
+  </div>
+
+  <h2 class="pv-h2">② 修复后的完整团队网格</h2>
+  <p class="pv-note">同一套样式面对不同比例的原始照片：3:4 半身照、1:1 方形照、16:9 横幅照，以及未上传头像的首字母占位。</p>
+  <div class="about-team-grid">
+    <article class="member-card">
+      <div class="member-avatar"><img src="team-fix-assets/img_20261007_203754_1.png" alt="3:4 半身照"></div>
+      <h3 class="member-name">竖版半身照</h3>
+      <p class="member-role">3:4 原图</p>
+    </article>
+    <article class="member-card">
+      <div class="member-avatar"><img src="team-fix-assets/avatar_1x1.png" alt="1:1 方形照"></div>
+      <h3 class="member-name">方形照</h3>
+      <p class="member-role">1:1 原图</p>
+    </article>
+    <article class="member-card">
+      <div class="member-avatar"><img src="team-fix-assets/img_20261007_203821_1.png" alt="16:9 横幅照"></div>
+      <h3 class="member-name">横幅照</h3>
+      <p class="member-role">16:9 原图</p>
+    </article>
+    <article class="member-card">
+      <div class="member-avatar"><span class="member-avatar-fallback">Z</span></div>
+      <h3 class="member-name">未上传头像</h3>
+      <p class="member-role">首字母占位</p>
+    </article>
+  </div>
+
+  <h2 class="pv-h2">③ 修复要点</h2>
+  <ul class="pv-list">
+    <li><b>根因</b>：头像框固定 64×64 正方形且为圆形，配合 <code>object-fit: cover</code> 居中取景，竖幅半身照先被纵向裁掉约 1/4，再被圆形切掉四角，最终只剩头部。</li>
+    <li><b>取景框</b>：改为宽度铺满卡片的 4:5 竖版比例（<code>aspect-ratio: 4 / 5</code>），与半身照的常见比例一致。</li>
+    <li><b>取景点</b>：<code>object-position: center 15%</code> 上移，优先保住头部与肩部，避免顶部被切。</li>
+    <li><b>卡片布局</b>：改为竖排居中（照片在上、姓名与角色在下），网格列宽由 260px 收窄到 220px，窄屏单列时限宽 320px。</li>
+  </ul>
+
+</div>
+</body>
+</html>
