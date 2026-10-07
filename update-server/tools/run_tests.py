@@ -31,6 +31,26 @@ def sep() -> str:
     return ";" if sys.platform.startswith("win") else ":"
 
 
+def run_with_argfile(cmd: list[str], argfile: Path, encoding: str | None = None) -> int:
+    """通过 @argfile 执行 java，规避 Windows 命令行长度上限（WinError 206）。
+
+    仅当整条命令过长时才启用；否则保持直接调用，便于排查。
+    """
+    joined = " ".join(cmd)
+    if len(joined) < 20000:
+        return run(cmd, encoding=encoding)
+    argfile.parent.mkdir(parents=True, exist_ok=True)
+    # @argfile 按空白切分，含空格的参数必须整体加引号；反斜杠会被当转义符，统一改成正斜杠
+    lines: list[str] = []
+    for part in cmd[1:]:
+        normalized = part.replace("\\", "/")
+        if " " in normalized:
+            normalized = '"' + normalized + '"'
+        lines.append(normalized)
+    argfile.write_text("\n".join(lines), encoding="utf-8")
+    return run([cmd[0], "@" + str(argfile).replace("\\", "/")], encoding=encoding)
+
+
 def run(cmd: list[str], encoding: str | None = None) -> int:
     """执行外部命令并回显输出；javac 用系统代码页，java 用 UTF-8。"""
     enc = encoding or locale.getpreferredencoding(False) or "utf-8"
@@ -115,7 +135,7 @@ def main() -> int:
         "--details=tree",
         "--disable-ansi-colors",
     ]
-    code = run(java_cmd, encoding="utf-8")
+    code = run_with_argfile(java_cmd, here / "target/junit.args", encoding="utf-8")
     print("[OK] 全部单元测试通过" if code == 0 else f"[FAIL] 单元测试失败，退出码 {code}")
     return code
 

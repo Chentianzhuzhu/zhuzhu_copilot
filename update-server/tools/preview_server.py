@@ -2,7 +2,8 @@
 """本地官网预览服务（开发辅助，不是生产服务器）。
 
 把 tools/run_tests.py --preview 生成的页面产物按线上同样的路由对外提供，
-并用真实抓取的 /api/site 响应回放接口，因此预览效果与线上一致：
+回放生成时使用的 /api/site 结构。只有指定线上抓取文件时才使用线上数据；
+默认下载量、版本和时间戳是测试样例，预览不支持反馈写入：
 
   /                     → target/preview/pages/index.html
   /gallery /download /faq → 对应页面产物
@@ -37,6 +38,9 @@ ROUTES = {
     "/gallery": "gallery.html",
     "/download": "download.html",
     "/faq": "faq.html",
+    "/about": "about.html",
+    "/feedback": "feedback.html",
+    "/sitemap": "sitemap.html",
 }
 STATIC_PREFIXES = ("/css/", "/js/", "/og/", "/uploads/")
 STATIC_FILES = ("/favicon.ico", "/favicon.svg", "/apple-touch-icon.png",
@@ -81,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 约定
         route = urlparse(self.path).path
 
-        # 接口回放：使用真实抓取内容，保证前端实时数字与线上一致
+        # 接口回放：使用生成预览时的数据；默认是测试样例，不冒充线上数据
         if route == "/api/site":
             self._send(json.dumps(payload(), ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=UTF-8")
@@ -117,7 +121,7 @@ class Handler(BaseHTTPRequestHandler):
             base = f"http://{self.headers.get('Host', '127.0.0.1')}"
             urls = "".join(
                 f"  <url><loc>{base}{p}</loc><priority>{pr}</priority></url>\n"
-                for p, pr in (("/", "1.0"), ("/gallery", "0.8"), ("/download", "0.9"), ("/faq", "0.6"))
+                for p, pr in (("/", "1.0"), ("/gallery", "0.8"), ("/download", "0.9"), ("/faq", "0.6"), ("/about", "0.6"), ("/feedback", "0.6"))
             )
             self._send(('<?xml version="1.0" encoding="UTF-8"?>\n'
                         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'

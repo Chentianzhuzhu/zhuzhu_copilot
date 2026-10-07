@@ -4,9 +4,6 @@
 <body th:attr="data-page=${pagePath}">
 
 <a class="skip-link" href="#main">跳到主要内容</a>
-<canvas id="starfield" aria-hidden="true"></canvas>
-<div class="noise" aria-hidden="true"></div>
-<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
 
 <header th:replace="~{fragments/nav :: nav}"></header>
 
@@ -33,7 +30,7 @@
           <p class="section-sub">先下载安装试用，或前往下载页查看版本说明与系统要求。</p>
         </div>
         <div class="help-actions">
-          <a class="btn btn-primary magnetic" th:href="${latest != null ? latest.url : '/download'}">下载安装包</a>
+          <a class="btn btn-primary" th:href="${latest != null ? latest.url : '/download'}">下载安装包</a>
           <a class="btn btn-ghost" href="/download">查看版本历史</a>
           <a class="btn btn-ghost" href="/about" th:text="${site.footer.contactLabel}">联系我们</a>
         </div>

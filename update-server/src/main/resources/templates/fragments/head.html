@@ -62,14 +62,14 @@
   -->
   <style th:inline="css">
     :root {
-      --theme-color: [[${site.style.themeColor} ?: '#4f8cff']];
-      --theme-color-dark: [[${site.style.themeColorDark} ?: '#3a6fd4']];
-      --accent-color: [[${site.style.accentColor} ?: '#00d4aa']];
-      --bg-color: [[${site.style.bgColor} ?: '#0a0a0f']];
-      --card-bg: [[${site.style.cardBgColor} ?: '#141420']];
-      --text-color: [[${site.style.textColor} ?: '#e8e8f0']];
-      --text-muted: [[${site.style.textMuted} ?: '#8888a0']];
-      --corner-radius: [[${site.style.cornerRadius} ?: '12']]px;
+      --theme-color: [(${site.style.themeColor} ?: '#1E40AF')];
+      --theme-color-dark: [(${site.style.themeColorDark} ?: '#0F1D5E')];
+      --accent-color: [(${site.style.accentColor} ?: '#5B7BE8')];
+      --bg-color: [(${site.style.bgColor} ?: '#0B0C0F')];
+      --card-bg: [(${site.style.cardBgColor} ?: '#121419')];
+      --text-color: [(${site.style.textColor} ?: '#F5F5F5')];
+      --text-muted: [(${site.style.textMuted} ?: 'rgba(245,245,245,.68)')];
+      --corner-radius: [(${site.style.cornerRadius} ?: '12')]px;
     }
   </style>
   <!-- 后台注入的自定义 CSS 代码（原样输出） -->
@@ -78,9 +78,8 @@
   <link rel="icon" th:if="${!#strings.isEmpty(site.style.faviconUrl)}" th:attr="href=${site.style.faviconUrl}">
 
   <!--
-    标记 JS 可用：滚动揭示动画只在 JS 可用时才隐藏初始内容。
-    site.js 若因 CDN 拦截、缓存错配或网络问题没能执行，3 秒后撤回该标记，
-    让正文恢复可见 —— 内容可见性优先于装饰动画，绝不留下一屏空白。
+    记录脚本是否成功启动；正文默认可见，不依赖这个标记。
+    site.js 若加载失败，3 秒后撤回标记，兼容既有后台自定义样式。
   -->
   <script>
     document.documentElement.classList.add('js');

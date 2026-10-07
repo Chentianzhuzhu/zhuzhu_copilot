@@ -228,8 +228,45 @@
       </div>
 
       <div class="card">
+        <div class="card-head-row">
+          <h3 class="card-title">底部角标 footer.badge</h3>
+          <span class="count-badge">官网页脚署名</span>
+        </div>
+        <p class="field-hint">展示在官网页脚最底部独立一行，用于品牌署名 / 开源许可 / 赞助声明。留空则整块不显示。</p>
+        <div class="form-grid">
+          <div class="form-field span-2">
+            <label class="field-label" for="footerBadge">角标文案 footer.badge</label>
+            <input type="text" id="footerBadge" class="input" maxlength="120"
+                   placeholder="zhuzhu Copilot powered by xiaozhu · 开源免费">
+            <p class="field-hint">示例：<code>zhuzhu Copilot powered by xiaozhu，开源免费</code>；留空则不显示角标。</p>
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="footerBadgeHref">角标跳转地址 footer.badgeHref</label>
+            <input type="text" id="footerBadgeHref" class="input" placeholder="留空则角标不可点击">
+          </div>
+          <div class="form-field">
+            <label class="field-label" for="footerBadgeDot">角标状态灯 footer.badgeDot</label>
+            <select id="footerBadgeDot" class="input">
+              <option value="pulse">呼吸闪烁 pulse</option>
+              <option value="solid">常亮 solid</option>
+              <option value="none">不显示 none</option>
+            </select>
+          </div>
+          <div class="form-field span-2">
+            <label class="field-label">
+              <input type="checkbox" id="footerBadgeVisible"> 显示角标 footer.badgeVisible
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <h3 class="card-title">页脚信息与 SEO</h3>
         <div class="form-grid">
+          <div class="form-field">
+            <label class="field-label" for="footerCopyrightSince">版权起始年份 footer.copyrightSince</label>
+            <input type="text" id="footerCopyrightSince" class="input" placeholder="如 2023，留空只显示当前年份">
+          </div>
           <div class="form-field">
             <label class="field-label" for="footerIcp">备案号 footer.icp</label>
             <input type="text" id="footerIcp" class="input" placeholder="留空则不显示">

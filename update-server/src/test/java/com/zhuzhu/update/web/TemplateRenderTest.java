@@ -120,6 +120,8 @@ class TemplateRenderTest {
             case "/gallery" -> "gallery";
             case "/download" -> "changelog";
             case "/faq" -> "faq";
+            case "/about" -> "about";
+            case "/sitemap" -> "sitemap";
             default -> "features";
         };
         Object sections = buildModel().site().get("sections");
@@ -172,6 +174,7 @@ class TemplateRenderTest {
         ctx.setVariable("base", "https://example.com");
         ctx.setVariable("assetCss", "testcss1");
         ctx.setVariable("assetJs", "testjs01");
+        ctx.setVariable("assetFeedbackJs", "testfb01");
         ctx.setVariable("canonical", "https://example.com" + ("/".equals(pagePath) ? "/" : pagePath));
         ctx.setVariable("pagePath", pagePath);
         ctx.setVariable("pageTitle", seoTitle);
@@ -182,6 +185,22 @@ class TemplateRenderTest {
         // 面包屑用独立短名，避免与区块标题同值（线上：面包屑「常见问题」/ 标题「你可能想问」）
         ctx.setVariable("pageCrumb", "测试页");
         ctx.setVariable("pageTag", str(pageSection.get("tag")));
+        if ("/about".equals(pagePath)) {
+            Map<?, ?> about = (Map<?, ?>) site.get("about");
+            ctx.setVariable("pageTag", str(about.get("sectionTag")));
+            ctx.setVariable("pageSection", str(about.get("sectionTitle")));
+            ctx.setVariable("pageDesc", "团队介绍与联系方式");
+        }
+        if ("/feedback".equals(pagePath)) {
+            ctx.setVariable("pageTag", "// 用户反馈");
+            ctx.setVariable("pageSection", "告诉我们你的想法");
+            ctx.setVariable("pageDesc", "每一条反馈都会被认真阅读，通常在 48 小时内回复");
+        }
+        if ("/sitemap".equals(pagePath)) {
+            ctx.setVariable("sitePages", SitePageController.SITE_PAGES);
+            ctx.setVariable("pageSection", "站点地图");
+            ctx.setVariable("pageDesc", "本站全部页面的索引：核心功能、界面实拍、下载安装、常见问题与关于我们。");
+        }
         ctx.setVariable("ogImage", "https://example.com/og/og-cover.png");
         ctx.setVariable("ogImageDefault", true);
         ctx.setVariable("keywords", "关键词");
@@ -243,7 +262,8 @@ class TemplateRenderTest {
         for (String[] spec : new String[][]{
                 {"首页", "/", "", "hero"}, {"功能特性", "/", "#features", "features"},
                 {"界面实拍", "/gallery", "", ""}, {"下载安装", "/download", "", ""},
-                {"常见问题", "/faq", "", ""}}) {
+                {"常见问题", "/faq", "", ""},
+                {"用户反馈", "/feedback", "", ""}, {"关于我们", "/about", "", ""}}) {
             Map<String, String> m = new LinkedHashMap<>();
             m.put("label", spec[0]);
             m.put("href", spec[1] + spec[2]);
@@ -315,6 +335,17 @@ class TemplateRenderTest {
         assertTrue(html.contains("/js/site.js?v=testjs01"), "脚本未带版本号");
         String downloads = String.format(java.util.Locale.US, "%,d", buildModel().totalDownloads());
         assertTrue(html.contains(downloads), "下载量未注入，期望：" + downloads);
+    }
+
+    @Test
+    @DisplayName("主题变量输出为可解析的 CSS 值，而不是转义后的标识符")
+    void themeValuesAreValidCss() {
+        String html = render("index", context("/", "WinAppMigrator"));
+        assertTrue(html.contains("--theme-color: #1E40AF;"));
+        assertTrue(html.contains("--bg-color: #0B0C0F;"));
+        assertTrue(html.contains("--text-muted: rgba(245,245,245,.68);"));
+        assertTrue(html.contains("--corner-radius: 12px;"));
+        assertFalse(html.contains("\\\\#"), "CSS 颜色不能被转义为标识符");
     }
 
     @Test
@@ -479,6 +510,9 @@ class TemplateRenderTest {
                 {"gallery", "/gallery", "界面实拍", "界面实拍"},
                 {"download", "/download", "下载与更新日志", "最新版本"},
                 {"faq", "/faq", "常见问题", "常见问题"},
+                {"about", "/about", "关于我们", "关于我们"},
+                {"feedback", "/feedback", "用户反馈", "用户反馈"},
+                {"sitemap", "/sitemap", "站点地图", "站点地图"},
         };
         for (String[] page : pages) {
             // 标题按 SitePageController 的规则拼装，保证预览与线上一致
@@ -487,6 +521,11 @@ class TemplateRenderTest {
                     ? name + " — " + str(model.site().get("slogan"))
                     : page[2] + " — " + name;
             Context ctx = context(page[1], title);
+            ctx.setVariable("pageCrumb", page[2]);
+            // 交付预览不注入测试图片 / 视频；没有素材就忠实呈现空态。
+            ctx.setVariable("galleryPreview", SitePageController.preview(model.site().get("gallery"), 6));
+            ctx.setVariable("videoPreview", SitePageController.preview(model.site().get("videos"), 4));
+            ctx.setVariable("faqPreview", SitePageController.preview(model.site().get("faq"), 5));
             Files.writeString(out.resolve(page[0] + ".html"), render(page[0], ctx),
                     java.nio.charset.StandardCharsets.UTF_8);
         }

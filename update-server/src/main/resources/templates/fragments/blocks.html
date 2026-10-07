@@ -7,9 +7,9 @@
   <div class="footer-inner">
     <div class="footer-brand">
       <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="3" stroke="currentColor" stroke-width="1.5"/>
-        <path d="M12 1.6v20.8M1.6 12h20.8" stroke="currentColor" stroke-width="1" opacity=".38"/>
-        <rect x="4.7" y="4.7" width="6" height="6" rx="1.2" fill="#1E40AF"/>
+        <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="4" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M12 1.6v20.8M1.6 12h20.8" stroke="currentColor" stroke-width="1" opacity=".34"/>
+        <rect x="4.7" y="4.7" width="6" height="6" rx="1.6" fill="#1E40AF"/>
       </svg>
       <span class="footer-name" th:text="${site.title}">WinAppMigrator</span>
     </div>
@@ -33,11 +33,40 @@
     </nav>
 
     <div class="footer-meta">
-      <span>© <span id="year">2026</span> <span th:text="${site.title}">WinAppMigrator</span></span>
+      <span th:with="yr=${#dates.year(#dates.createNow())}"
+            th:text="${#strings.isEmpty(site.footer.copyrightSince)
+                      ? '© ' + yr + ' ' + site.title
+                      : '© ' + site.footer.copyrightSince + '–' + yr + ' ' + site.title}">© 2026 WinAppMigrator</span>
       <span th:if="${!#strings.isEmpty(site.footer.icp)}" th:text="${site.footer.icp}">备案号</span>
       <a href="/about" th:text="${site.footer.contactLabel}">联系我们</a>
       <a href="/sitemap">站点地图</a>
       <a href="#top" id="backTopLink">返回顶部</a>
+    </div>
+
+    <!--
+      底部角标：品牌署名 / 开源许可 / 赞助声明，文案完全由后台 footer.badge 自定义。
+      任一条件不满足（总开关关闭、文案为空）时整块不渲染，不留空占位。
+      badgeHref 非空时渲染为链接，否则为纯文本；badgeDot 控制左侧状态灯的三种形态。
+    -->
+    <div class="footer-badge-wrap"
+         th:if="${site.footer.badgeVisible != null and site.footer.badgeVisible
+                  and !#strings.isEmpty(site.footer.badge)}">
+      <a class="footer-badge"
+         th:if="${!#strings.isEmpty(site.footer.badgeHref)}"
+         th:href="${site.footer.badgeHref}" target="_blank" rel="noopener">
+        <span class="fb-badge-dot"
+              th:classappend="${'is-' + (site.footer.badgeDot == null ? 'pulse' : site.footer.badgeDot)}"></span>
+        <span class="fb-badge-text" th:text="${site.footer.badge}">zhuzhu Copilot powered by xiaozhu · 开源免费</span>
+        <span class="fb-badge-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>
+        </span>
+      </a>
+      <span class="footer-badge" th:unless="${!#strings.isEmpty(site.footer.badgeHref)}">
+        <span class="fb-badge-dot"
+              th:classappend="${'is-' + (site.footer.badgeDot == null ? 'pulse' : site.footer.badgeDot)}"></span>
+        <span class="fb-badge-text" th:text="${site.footer.badge}">zhuzhu Copilot powered by xiaozhu · 开源免费</span>
+      </span>
     </div>
 
     <!--
@@ -94,18 +123,20 @@
 <section class="section" id="features" th:fragment="features(list, sec)" th:if="${list != null and !list.isEmpty()}">
   <div class="wrap">
     <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
-    <div class="features-grid sr" id="featuresGrid">
-      <article class="feature-card" data-light th:each="f, it : ${list}">
-        <span class="feature-num" th:text="${'/' + #numbers.formatInteger(it.index + 1, 2)}">/01</span>
-        <span class="feature-icon" aria-hidden="true">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-               stroke-linecap="round" stroke-linejoin="round"
-               th:utext="${iconPaths[f.icon]}"></svg>
-        </span>
-        <h3 class="feature-title" th:text="${f.title}">特性标题</h3>
-        <p class="feature-desc" th:text="${f.desc}">特性描述</p>
-        <span class="feature-corn" aria-hidden="true"></span>
-      </article>
+    <div class="features-grid sr" id="featuresGrid" data-parallax="0.06">
+      <div class="tilt" th:each="f, it : ${list}">
+        <article class="feature-card" data-light>
+          <span class="feature-num" th:text="${'/' + #numbers.formatInteger(it.index + 1, 2)}">/01</span>
+          <span class="feature-icon" aria-hidden="true">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                 stroke-linecap="round" stroke-linejoin="round"
+                 th:utext="${iconPaths[f.icon]}"></svg>
+          </span>
+          <h3 class="feature-title" th:text="${f.title}">特性标题</h3>
+          <p class="feature-desc" th:text="${f.desc}">特性描述</p>
+          <span class="feature-corn" aria-hidden="true"></span>
+        </article>
+      </div>
     </div>
   </div>
 </section>
@@ -118,7 +149,7 @@
     <th:block th:if="${showHead}">
       <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
     </th:block>
-    <div class="gallery-grid sr" id="galleryGrid">
+    <div class="gallery-grid sr" id="galleryGrid" data-parallax="-0.06">
       <figure class="gallery-item" th:each="g, it : ${list}"
               th:classappend="${it.index % 5 == 0} ? 'wide' : ''">
         <a class="gallery-link" th:href="${g.url}" data-lightbox
@@ -205,12 +236,14 @@
 <section class="section" id="advantages" th:fragment="advantages(list, sec)" th:if="${list != null and !list.isEmpty()}">
   <div class="wrap">
     <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
-    <div class="adv-grid sr">
-      <article class="adv-card" data-light th:each="a, it : ${list}">
-        <span class="adv-index" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
-        <h3 class="adv-title" th:text="${a.title}">优势标题</h3>
-        <p class="adv-desc" th:text="${a.desc}">优势描述</p>
-      </article>
+    <div class="adv-grid sr" data-parallax="0.10">
+      <div class="tilt" th:each="a, it : ${list}">
+        <article class="adv-card" data-light>
+          <span class="adv-index" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
+          <h3 class="adv-title" th:text="${a.title}">优势标题</h3>
+          <p class="adv-desc" th:text="${a.desc}">优势描述</p>
+        </article>
+      </div>
     </div>
   </div>
 </section>
@@ -269,7 +302,7 @@
 <!-- ============ 结尾行动区 ============ -->
 <section class="section cta-section" th:fragment="ctaBand()">
   <div class="wrap">
-    <div class="cta-card sr">
+    <div class="cta-card sr" data-parallax="0.06">
       <p class="section-tag cta-tag">READY TO GO</p>
       <h2 class="cta-title">让系统更轻盈，也让操作更省心</h2>
       <p class="cta-desc" th:text="${site.slogan}">标语</p>
@@ -284,7 +317,7 @@
 </section>
 
 <!-- ============ 灯箱与视频弹层（全站共用，无需 JS 时降级为新窗口打开） ============ -->
-<div class="lightbox" id="lightbox" hidden th:fragment="overlays">
+<div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="产品界面图片浏览" th:fragment="overlays">
   <div class="lb-backdrop" data-lb-close></div>
   <button class="lb-btn lb-prev" type="button" data-lb-prev aria-label="上一张">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg>
@@ -303,7 +336,7 @@
       <span class="lb-counter" id="lbCounter"></span>
     </figcaption>
   </figure>
-  <div class="lb-strip" id="lbStrip" aria-hidden="true"></div>
+  <div class="lb-strip" id="lbStrip" role="group" aria-label="选择图片"></div>
 </div>
 
 <div class="video-modal" id="videoModal" hidden th:fragment="videoModal">

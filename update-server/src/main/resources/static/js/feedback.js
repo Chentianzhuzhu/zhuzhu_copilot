@@ -45,6 +45,11 @@
   var STATUS_LABEL = { pending: '待处理', replied: '已回复', resolved: '已解决' };
 
   var MIN = 5, MAX = 2000;
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function showResult(el) {
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' });
+  }
 
   /* 实时字数计数与校验提示 */
   function syncCount() {
@@ -64,6 +69,7 @@
 
   function setBusy(busy) {
     submitBtn.disabled = busy;
+    form.setAttribute('aria-busy', String(busy));
     submitBtn.classList.toggle('is-busy', busy);
     submitText.textContent = busy ? '提交中…' : '提交反馈';
   }
@@ -83,6 +89,7 @@
 
   form.addEventListener('submit', function (e) {
     e.preventDefault();
+    if (submitBtn.disabled) { return; }
     hideMessages();
 
     var text = content.value.trim();
@@ -117,7 +124,7 @@
         if (copyText) { copyText.textContent = '复制'; }
         successBox.hidden = false;
         form.hidden = true;
-        successBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        showResult(successBox);
         return;
       }
       // 限流（429）
@@ -170,20 +177,25 @@
   }
 
   function fallbackCopy(text, cb) {
+    var previousFocus = document.activeElement;
     var ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed';
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
-    try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
     document.body.removeChild(ta);
-    cb();
+    if (previousFocus && previousFocus.isConnected) { previousFocus.focus(); }
+    if (copied) { cb(); }
+    else { copyText.textContent = '请手动复制'; }
   }
 
   /* ---------- 查询回复 ---------- */
   function setQueryBusy(busy) {
     querySubmit.disabled = busy;
+    queryForm.setAttribute('aria-busy', String(busy));
     querySubmit.classList.toggle('is-busy', busy);
     querySubmitText.textContent = busy ? '查询中…' : '查询回复';
   }
@@ -203,7 +215,9 @@
   if (queryForm) {
     queryForm.addEventListener('submit', function (e) {
       e.preventDefault();
+      if (querySubmit.disabled) { return; }
       queryError.hidden = true;
+      queryResult.hidden = true;
 
       var token = queryIdInput.value.trim();
       if (!token) {
@@ -244,7 +258,7 @@
             qrPending.hidden = false;
           }
           queryResult.hidden = false;
-          queryResult.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          showResult(queryResult);
         } else if (r.status === 404) {
           showQueryError((r.data && r.data.error) ? r.data.error : '查询凭证无效或反馈不存在。');
         } else {

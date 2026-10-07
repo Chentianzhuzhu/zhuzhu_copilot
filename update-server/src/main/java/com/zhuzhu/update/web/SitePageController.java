@@ -234,6 +234,7 @@ public class SitePageController {
         model.addAttribute("base", base);
         model.addAttribute("assetCss", assets.of(CSS_PATH));
         model.addAttribute("assetJs", assets.of(JS_PATH));
+        model.addAttribute("assetFeedbackJs", assets.of("/js/feedback.js"));
         model.addAttribute("canonical", SeoSupport.canonical(base, path));
         model.addAttribute("pagePath", path);
         model.addAttribute("pageTitle", pageTitle);

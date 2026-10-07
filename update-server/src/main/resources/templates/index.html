@@ -4,9 +4,6 @@
 <body th:attr="data-page=${pagePath}" class="has-mobile-bar">
 
 <a class="skip-link" href="#main">跳到主要内容</a>
-<canvas id="starfield" aria-hidden="true"></canvas>
-<div class="noise" aria-hidden="true"></div>
-<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
 
 <header th:replace="~{fragments/nav :: nav}"></header>
 
@@ -19,18 +16,18 @@
         <p class="eyebrow reveal" style="--d:.05s">
           <span class="pulse-dot" aria-hidden="true"></span>WINDOWS 应用迁移 / AI COPILOT
         </p>
-        <h1 class="hero-title reveal" style="--d:.15s" th:text="${site.title}">WinAppMigrator</h1>
-        <p class="hero-slogan reveal" style="--d:.28s" th:text="${site.slogan}">标语</p>
+        <p class="hero-slogan" th:text="${site.title}">WinAppMigrator</p>
+        <h1 class="hero-title" th:text="${site.slogan}">把电脑交给 AI，替你把活干完</h1>
         <p class="hero-desc reveal" style="--d:.4s" th:text="${site.description}">产品描述</p>
         <div class="hero-actions reveal" style="--d:.52s">
-          <a class="btn btn-primary magnetic" id="downloadBtn"
+          <a class="btn btn-primary" id="downloadBtn"
              th:href="${latest != null ? latest.url : '/download'}">
             <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>
             </svg>
             <span th:text="${'下载 ' + site.title}">下载</span>
           </a>
-          <a class="btn btn-ghost magnetic" href="#features">浏览功能特性</a>
+          <a class="btn btn-ghost" href="#features">浏览功能特性</a>
         </div>
         <p class="hero-version reveal" id="versionLine" style="--d:.64s">
           <span th:if="${latest != null}">
@@ -43,39 +40,41 @@
         </p>
       </div>
 
-      <!-- 右侧视觉：有主图则展示产品截图，否则用真实数据渲染状态面板 -->
-      <div class="hero-visual reveal" id="heroVisual" style="--d:.6s">
+      <!-- 没有后台主图时使用内容索引，不伪造产品界面或运行状态。 -->
+      <div class="hero-visual" id="heroVisual">
         <figure class="hero-shot" th:if="${!#strings.isEmpty(site.heroImage)}">
-          <img th:src="${site.heroImage}" th:alt="${site.title + ' 界面预览'}" loading="eager" decoding="async">
-          <span class="shot-glow" aria-hidden="true"></span>
+          <img th:src="${site.heroImage}" th:alt="${site.title + ' 界面预览'}" loading="eager" fetchpriority="high" decoding="async">
         </figure>
-        <div class="console" th:unless="${!#strings.isEmpty(site.heroImage)}">
-          <div class="console-bar">
-            <span class="c-dot"></span><span class="c-dot"></span><span class="c-dot"></span>
-            <span class="c-title">winappmigrator — status</span>
+        <aside class="product-overview" aria-label="产品概览" th:unless="${!#strings.isEmpty(site.heroImage)}">
+          <div class="overview-head">
+            <span class="overview-kicker">PRODUCT OVERVIEW / 产品概览</span>
+            <span class="overview-os">WINDOWS</span>
           </div>
-          <div class="console-body">
-            <p class="c-cmd"><span class="c-prompt">$</span> winappmigrator --status</p>
-            <p class="c-line"><span class="c-key">VERSION</span>
-              <span class="c-val" th:text="${latest != null ? 'v' + latest.version : '—'}">—</span></p>
-            <p class="c-line"><span class="c-key">SIZE</span>
-              <span class="c-val" th:text="${latest != null and !#strings.isEmpty(latest.sizeText) ? latest.sizeText : '—'}">—</span></p>
-            <p class="c-line"><span class="c-key">DOWNLOADS</span>
-              <span class="c-val" id="consoleDownloads" th:text="${downloadsText}">0</span></p>
-            <p class="c-line"><span class="c-key">STATE</span><span class="c-val c-ok">OK</span></p>
-            <p class="c-cursor"><span class="caret"></span></p>
+          <div class="overview-brand">
+            <div class="product-symbol" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+            <div>
+              <p class="overview-title" th:text="${site.title}">WinAppMigrator</p>
+              <p class="overview-caption">迁移 · 优化 · AI 辅助操作</p>
+            </div>
           </div>
-        </div>
+          <nav class="overview-list" aria-label="了解产品能力">
+            <a class="overview-item" href="#features" th:each="f, it : ${features}">
+              <span class="overview-num" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
+              <strong th:text="${f.title}">产品功能</strong>
+              <svg class="overview-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+            </a>
+          </nav>
+          <div class="overview-foot">
+            <span><span id="consoleDownloads" th:text="${downloadsText}">0</span> 次累计下载</span>
+            <a href="/download" th:text="${latest != null ? '查看 v' + latest.version : '查看下载信息'}">查看下载信息</a>
+          </div>
+        </aside>
       </div>
     </div>
-
-    <div class="marquee" aria-hidden="true">
-      <div class="marquee-track">
-        <span th:text="${site.title + ' ◆ AI COPILOT ◆ WINDOWS 迁移优化 ◆ 数据安全 ◆ 自动操作 ◆'}"></span>
-        <span th:text="${site.title + ' ◆ AI COPILOT ◆ WINDOWS 迁移优化 ◆ 数据安全 ◆ 自动操作 ◆'}"></span>
-      </div>
+    <div class="hero-bottom">
+      <span>MIGRATE / OPTIMIZE / AUTOMATE</span>
+      <a href="#features">向下了解产品<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg></a>
     </div>
-    <span class="hero-deco" aria-hidden="true">MIGRATE · OPTIMIZE · AUTOMATE</span>
   </section>
 
   <!-- ==================== 功能特性 ==================== -->

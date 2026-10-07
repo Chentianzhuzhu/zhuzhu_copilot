@@ -34,12 +34,20 @@ VOID_TAGS = {
 # 允许省略闭合标签的块级元素（HTML 规范），模板里偶尔会用到
 OPTIONAL_END = {"p", "li", "td", "th", "tr", "option", "dt", "dd", "thead", "tbody"}
 
-# 四色体系允许的颜色（含同色系派生与近黑/近白过渡色）
+# 色系允许的颜色（黑白蓝 + 淡灰的中性色阶 + 深蓝主色 / 冷蓝点缀）
+# 黑白蓝为设计基准，灰阶与蓝色派生仅用于层次与柔化过渡，不允许出现第三色系。
 ALLOWED_HEX = {
-    "#000000", "#000", "#0a0a0a", "#08090b", "#0a0b0d", "#12151c", "#141414",
-    "#1e40af", "#1E40AF", "#0f1d5e", "#5b7be8",
-    "#f5f5f5", "#ffffff", "#fff", "#9db4f2", "#26262a", "#2a2d35",
+    # 近黑 → 面板灰阶（surface-1/2/3 等）
+    "#000000", "#000", "#050505", "#07080a", "#0a0a0a", "#0a0b0d", "#0b0c0f",
+    "#08090b", "#0e1014", "#121419", "#12151c", "#141414", "#15181f", "#171a20",
+    "#1d1f24", "#26262a", "#2a2d35", "#2c3140",
+    # 深蓝主色 + 冷蓝点缀
+    "#1e40af", "#0f1d5e", "#5b7be8", "#7c97f2", "#9db4f2",
+    # 白 / 淡灰文字
+    "#f5f5f5", "#ffffff", "#fff",
 }
+# 大写形式同样放行（主题变量兜底里会写成 #1E40AF）
+ALLOWED_HEX |= {"#1E40AF"}
 
 EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\u20E3]"
@@ -233,6 +241,102 @@ class TestDesignRules(unittest.TestCase):
                     self.assertEqual(hits, [], f"{name} 使用了原生 confirm")
                     continue
                 self.assertNotIn(bad, code, f"{name} 使用了原生 {bad.rstrip('(')}")
+
+
+class TestProductRedesign(unittest.TestCase):
+    def test_decorative_render_loops_removed(self) -> None:
+        """动效体系（2026-10 起）的红线。
+
+        动效本身被鼓励，但实现方式受限：只走 transform / opacity 合成层。
+        下列属性与循环会把动画从合成层拖回主线程（重排 / 栅格化 / 逐帧计算），
+        一旦引入，移动端滚动就会掉帧，因此由本用例长期看住。
+        """
+        js = read(STATIC / "js/site.js")
+        for removed in ("initStars", "initCursorGlow", "initTilt", "initMagnetic", "initHeroTitle"):
+            self.assertNotIn(removed, js, f"重新引入了高成本装饰动效：{removed}")
+        css = read(STATIC / "css/site.css")
+        for removed in ("backdrop-filter", "text-shadow", "will-change", "radial-gradient"):
+            self.assertNotIn(removed, css, f"CSS 引入了性能杀手：{removed}")
+
+    def test_motion_stays_on_compositor(self) -> None:
+        """入场动画只允许动 transform / opacity；改 height/top/left 会引起重排。"""
+        css = read(STATIC / "css/site.css")
+        anchor = "   动效体系\n"
+        self.assertIn(anchor, css, "site.css 缺少动效体系区块")
+        motion = css[css.index(anchor):]
+        for banned in ("transition: height", "transition: top", "transition: left",
+                       "transition: width", "transition: all"):
+            self.assertNotIn(banned, motion, f"动效体系里出现会触发重排的声明：{banned}")
+
+    def test_motion_degrades_without_js_or_on_reduced_motion(self) -> None:
+        """动效绝不能以牺牲可读性为代价。
+
+        入场动画的初始隐藏态必须限定在 html.js 作用域内：脚本未执行时
+        head 的兜底会撤回 .js，内容立即恢复可见。reduced-motion 下同样全关。
+        """
+        css = read(STATIC / "css/site.css")
+        self.assertRegex(css, r"html\.js\s+\.reveal", "初始隐藏态未限定在 html.js 作用域，无 JS 时正文会不可见")
+        self.assertIn("prefers-reduced-motion", css, "动效体系未响应减少动态效果偏好")
+        # prefers-reduced-motion 段落必须把揭示类元素强制拉回可见。
+        tail = css[css.rindex("@media (prefers-reduced-motion: reduce)"):]
+        self.assertIn("opacity: 1 !important", tail, "reduced-motion 下未强制恢复可见度")
+        self.assertIn("animation: none !important", tail, "reduced-motion 下未关闭动画")
+        js = read(STATIC / "js/site.js")
+        self.assertIn("prefers-reduced-motion", js, "JS 侧未响应减少动态效果偏好")
+
+    def test_reveal_observer_unobserves_after_trigger(self) -> None:
+        """揭示观察器触发一次后必须 unobserve，否则回调常驻滚动路径。"""
+        js = read(STATIC / "js/site.js")
+        self.assertIn("io.unobserve(en.target)", js, "揭示观察器未在触发后停止观察")
+
+    def test_parallax_is_limited_to_capable_viewports(self) -> None:
+        """微视差必须自行降级：窄屏与触摸指针直接不注册监听。
+
+        移动端滚动时逐帧写 transform 是掉帧的主要来源，视差属于锦上添花，
+        因此在低算力场景必须整段关闭，而不是靠 CSS 兜底。
+        """
+        js = read(STATIC / "js/site.js")
+        if "initParallax" not in js:
+            return
+        body = js[js.index("function initParallax"):]
+        body = body[:body.index("\n  function ")]
+        self.assertIn("max-width: 800px", body, "视差未在窄屏关闭")
+        self.assertIn("pointer: coarse", body, "视差未在触摸设备关闭")
+        self.assertIn("passive: true", body, "scroll 监听未标记 passive，会阻塞滚动")
+
+    def test_hero_has_real_content_not_fake_status(self) -> None:
+        index = read(TEMPLATES / "index.html")
+        self.assertRegex(index, r'<h1[^>]+th:text="\$\{site.slogan\}"')
+        for removed in ("迁移引擎就绪", "沙盒防护开启", "starfield", "cursorGlow"):
+            self.assertNotIn(removed, index)
+        self.assertIn('class="product-overview"', index)
+        self.assertIn("${features}", index)
+
+    def test_dialog_keyboard_and_background_isolation(self) -> None:
+        js = read(STATIC / "js/site.js")
+        self.assertIn("function lockLayer(", js)
+        self.assertIn("el.inert = true", js)
+        self.assertIn("e.key !== 'Tab'", js)
+        self.assertIn("lastFocus.focus()", js)
+        self.assertIn("document.createElement('button')", js)
+        blocks = read(TEMPLATES / "fragments/blocks.html")
+        self.assertRegex(blocks, r'id="lightbox"[^>]+role="dialog"')
+        self.assertNotRegex(blocks, r'id="lbStrip"[^>]+aria-hidden="true"')
+
+    def test_defaults_and_head_palette_agree(self) -> None:
+        service = read(JAVA / "service/ContentService.java")
+        head = read(TEMPLATES / "fragments/head.html")
+        for color in ("#1E40AF", "#0F1D5E", "#5B7BE8", "#0B0C0F", "#121419", "#F5F5F5"):
+            self.assertIn(color, service)
+            self.assertIn(color, head)
+
+    def test_feedback_announces_errors_and_respects_reduced_motion(self) -> None:
+        html = read(TEMPLATES / "feedback.html")
+        self.assertRegex(html, r'id="feedbackError"[^>]+role="alert"')
+        self.assertRegex(html, r'id="queryError"[^>]+role="alert"')
+        js = read(STATIC / "js/feedback.js")
+        self.assertIn("prefers-reduced-motion", js)
+        self.assertIn("aria-busy", js)
 
 
 class TestSeoAssets(unittest.TestCase):

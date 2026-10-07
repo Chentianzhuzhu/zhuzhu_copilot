@@ -250,6 +250,12 @@
     var footer = c.footer || {};
     $("footerIcp").value = footer.icp || "";
     $("footerContactLabel").value = footer.contactLabel || "";
+    $("footerCopyrightSince").value = footer.copyrightSince || "";
+    // 底部角标：文案 / 链接 / 状态灯 / 总开关
+    $("footerBadge").value = footer.badge == null ? "" : footer.badge;
+    $("footerBadgeHref").value = footer.badgeHref || "";
+    $("footerBadgeDot").value = footer.badgeDot || "pulse";
+    $("footerBadgeVisible").checked = footer.badgeVisible !== false;
 
     var seo = c.seo || {};
     $("seoKeywords").value = seo.keywords || "";
@@ -671,6 +677,11 @@
       footer: {
         icp: $("footerIcp").value.trim(),
         contactLabel: $("footerContactLabel").value.trim() || "联系我们",
+        copyrightSince: $("footerCopyrightSince").value.trim(),
+        badge: $("footerBadge").value.trim(),
+        badgeHref: $("footerBadgeHref").value.trim(),
+        badgeDot: $("footerBadgeDot").value || "pulse",
+        badgeVisible: $("footerBadgeVisible").checked !== false,
         links: collectRows("footerLinks", ["label", "href"])
       },
       about: {

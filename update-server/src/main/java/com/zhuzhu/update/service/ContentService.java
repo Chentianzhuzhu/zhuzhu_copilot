@@ -201,13 +201,13 @@ public class ContentService {
     /** 官网视觉自定义：主题色 / 背景 / Logo / 自定义 CSS 等，后台可逐项覆盖 */
     private static Map<String, Object> style() {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("themeColor", "#4f8cff");
-        m.put("themeColorDark", "#3a6fd4");
-        m.put("accentColor", "#00d4aa");
-        m.put("bgColor", "#0a0a0f");
-        m.put("cardBgColor", "#141420");
-        m.put("textColor", "#e8e8f0");
-        m.put("textMuted", "#8888a0");
+        m.put("themeColor", "#1E40AF");
+        m.put("themeColorDark", "#0F1D5E");
+        m.put("accentColor", "#5B7BE8");
+        m.put("bgColor", "#0B0C0F");
+        m.put("cardBgColor", "#121419");
+        m.put("textColor", "#F5F5F5");
+        m.put("textMuted", "rgba(245,245,245,.68)");
         m.put("logoUrl", "");
         m.put("faviconUrl", "");
         m.put("heroBgImage", "");
@@ -220,6 +220,13 @@ public class ContentService {
         return m;
     }
 
+    /**
+     * 页脚内容：备案号 / 联系文字 / 导航链接，以及「底部角标」。
+     *
+     * <p>角标（badge）是页脚最底部独立成行的一条品牌署名，形如
+     * {@code zhuzhu Copilot powered by xiaozhu · 开源免费}，可在后台逐字自定义，
+     * 用于放置版权归属、开源许可、赞助方等对外声明；可选配跳转地址与是否显示。
+     */
     private static Map<String, Object> footer() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("icp", "");
@@ -232,6 +239,18 @@ public class ContentService {
         links.add(link("关于我们", "/about"));
         links.add(link("用户反馈", "/feedback"));
         m.put("links", links);
+
+        // ---- 底部角标（后台可自定义） ----
+        // badge：角标正文，留空即整块不渲染
+        m.put("badge", "zhuzhu Copilot powered by xiaozhu · 开源免费");
+        // badgeHref：角标点击跳转地址（可留空，此时角标为纯文本不可点击）
+        m.put("badgeHref", "");
+        // badgeVisible：角标总开关，关闭时即使有文案也不显示
+        m.put("badgeVisible", true);
+        // 角标左侧的状态灯样式：pulse=呼吸 / solid=常亮 / none=不显示
+        m.put("badgeDot", "pulse");
+        // 版权年份起始值，留空只用当前年份
+        m.put("copyrightSince", "");
         return m;
     }
 

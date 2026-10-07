@@ -4,9 +4,6 @@
 <body th:attr="data-page=${pagePath}">
 
 <a class="skip-link" href="#main">跳到主要内容</a>
-<canvas id="starfield" aria-hidden="true"></canvas>
-<div class="noise" aria-hidden="true"></div>
-<div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
 
 <header th:replace="~{fragments/nav :: nav}"></header>
 
@@ -21,7 +18,7 @@
         <form id="feedbackForm" class="feedback-form" novalidate>
           <div class="fb-field">
             <label class="fb-label" for="feedbackContent">反馈内容 <span class="fb-req" aria-hidden="true">*</span></label>
-            <textarea id="feedbackContent" class="fb-textarea" rows="7"
+            <textarea id="feedbackContent" class="fb-textarea" rows="7" aria-describedby="fbHint fbCount"
                       maxlength="2000" minlength="5" required
                       placeholder="遇到了什么问题？有什么想改进的地方？越具体越好（例如：在哪个界面、做了什么操作、出现了什么现象）"></textarea>
             <div class="fb-meta">
@@ -36,7 +33,7 @@
                    placeholder="邮箱 / QQ / 微信（选填，方便我们回复你）">
           </div>
 
-          <p class="fb-error" id="feedbackError" hidden></p>
+          <p class="fb-error" id="feedbackError" role="alert" hidden></p>
 
           <div class="fb-actions">
             <button type="submit" class="btn btn-primary" id="feedbackSubmit">
@@ -50,7 +47,7 @@
         </form>
 
         <!-- 提交成功 -->
-        <div class="feedback-result feedback-success" id="feedbackSuccess" hidden>
+        <div class="feedback-result feedback-success" id="feedbackSuccess" tabindex="-1" role="status" hidden>
           <span class="fb-result-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M20 6 9 17l-5-5"/>
@@ -74,7 +71,7 @@
         </div>
 
         <!-- 限流提示 -->
-        <div class="feedback-result feedback-limit" id="feedbackLimit" hidden>
+        <div class="feedback-result feedback-limit" id="feedbackLimit" role="alert" hidden>
           <span class="fb-result-icon fb-warn" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 9v4"/><path d="M12 17h.01"/>
@@ -101,7 +98,7 @@
             <textarea id="queryId" class="fb-input fb-token-input" rows="2"
                       placeholder="粘贴提交反馈时获得的 64 位凭证字符串" autocomplete="off"></textarea>
           </div>
-          <p class="fb-error" id="queryError" hidden></p>
+          <p class="fb-error" id="queryError" role="alert" hidden></p>
           <div class="fb-actions">
             <button type="submit" class="btn btn-primary" id="querySubmit">
               <span id="querySubmitText">查询回复</span>
@@ -110,7 +107,7 @@
         </form>
 
         <!-- 查询结果 -->
-        <div class="fb-query-result" id="queryResult" hidden>
+        <div class="fb-query-result" id="queryResult" tabindex="-1" role="status" hidden>
           <div class="fb-query-meta">
             <span class="fb-query-id" id="qrId"></span>
             <span class="fb-status-badge" id="qrStatus"></span>
@@ -154,6 +151,6 @@
 </button>
 
 <script th:src="'/js/site.js?v=' + ${assetJs}" defer></script>
-<script th:src="'/js/feedback.js?v=' + ${assetJs}" defer></script>
+<script th:src="'/js/feedback.js?v=' + ${assetFeedbackJs}" defer></script>
 </body>
 </html>

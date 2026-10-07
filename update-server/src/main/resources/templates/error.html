@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
   <meta name="robots" content="noindex, follow">
   <title th:text="${status != null ? status + ' · ' + title : '页面出错'}">页面出错</title>
   <link rel="icon" href="/favicon.ico" sizes="32x32">
@@ -11,7 +12,7 @@
   <!--
     错误页刻意不引用外部样式与脚本：出错时资源本身可能正是不可用的，
     因此这里只用一小段内联样式，保证任何情况下都能正常显示。
-    四色体系：纯黑 #000 / 白 #F5F5F5 / 深蓝 #1E40AF（+ 灰阶过渡）。
+    色系：纯黑 #000 / 白 #F5F5F5 / 深蓝 #1E40AF / 冷蓝 #5B7BE8（+ 灰阶过渡）。
   -->
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -23,34 +24,44 @@
       background: #000;
       color: #F5F5F5;
       font-family: "Source Han Sans SC", "HarmonyOS Sans SC", "MiSans", "PingFang SC", "Microsoft YaHei", sans-serif;
-      line-height: 1.6;
+      line-height: 1.65;
       -webkit-font-smoothing: antialiased;
+      position: relative;
+      overflow: hidden;
     }
-    .err-wrap { width: min(560px, 90%); }
+    :focus-visible { outline: 2px solid #5B7BE8; outline-offset: 5px; }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+    .err-wrap { width: min(560px, 90%); position: relative; z-index: 1; }
     .err-mark { width: 34px; height: 34px; margin-bottom: 26px; color: #F5F5F5; }
     .err-code {
       font-family: "Cascadia Code", Consolas, monospace;
       font-size: 12px; letter-spacing: .32em; color: #5B7BE8;
     }
-    .err-title { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800; margin: 16px 0 12px; }
+    .err-title { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800; margin: 16px 0 12px; letter-spacing: -.015em; }
     .err-msg { color: rgba(245,245,245,.62); margin-bottom: 28px; }
     .err-actions { display: flex; flex-wrap: wrap; gap: 14px; }
     .err-btn {
       display: inline-flex; align-items: center; gap: .5em;
-      padding: 14px 26px; font-size: 14px; letter-spacing: .06em; text-decoration: none;
-      clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+      padding: 14px 26px; font-size: 14px; letter-spacing: .05em; text-decoration: none;
+      border-radius: 10px;
+      transition: transform .3s cubic-bezier(.22,.61,.36,1), box-shadow .3s, border-color .3s, background .3s;
     }
-    .err-btn-primary { background: #1E40AF; color: #fff; }
-    .err-btn-ghost { color: #F5F5F5; border: 1px solid rgba(245,245,245,.18); }
+    .err-btn:hover { transform: translateY(-2px); }
+    .err-btn-primary {
+      background: #1E40AF; color: #fff;
+    }
+    .err-btn-primary:hover { background: #0F1D5E; }
+    .err-btn-ghost { color: #F5F5F5; border: 1px solid rgba(245,245,245,.18); background: rgba(245,245,245,.03); }
+    .err-btn-ghost:hover { border-color: rgba(91,123,232,.55); background: rgba(91,123,232,.1); }
   </style>
 </head>
 <body>
 
 <div class="err-wrap">
   <svg class="err-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="3" stroke="currentColor" stroke-width="1.5"/>
-    <path d="M12 1.6v20.8M1.6 12h20.8" stroke="currentColor" stroke-width="1" opacity=".38"/>
-    <rect x="4.7" y="4.7" width="6" height="6" rx="1.2" fill="#1E40AF"/>
+    <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="4" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M12 1.6v20.8M1.6 12h20.8" stroke="currentColor" stroke-width="1" opacity=".34"/>
+    <rect x="4.7" y="4.7" width="6" height="6" rx="1.6" fill="#1E40AF"/>
   </svg>
   <p class="err-code" th:text="${status != null ? status : 'ERR'}">ERR</p>
   <h1 class="err-title" th:text="${title != null ? title : '页面暂时无法访问'}">页面暂时无法访问</h1>
