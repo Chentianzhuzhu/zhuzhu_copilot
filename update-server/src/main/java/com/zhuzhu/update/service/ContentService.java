@@ -198,24 +198,30 @@ public class ContentService {
         return m;
     }
 
-    /** 官网视觉自定义：主题色 / 背景 / Logo / 自定义 CSS 等，后台可逐项覆盖 */
+    /**
+     * 官网视觉自定义：主题色 / 背景 / Logo / 自定义 CSS 等，后台可逐项覆盖。
+     *
+     * <p>注意：配色实际以 {@code static/css/site.css} 的 :root 为准，这里只是后台表单的
+     * 默认展示值与新增库记录的初始值。head.html 已不再内联注入配色变量 —— 两处并存时
+     * 后加载的 :root 会静默覆盖前者，表现为「后台改了配色但线上无变化」。
+     */
     private static Map<String, Object> style() {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("themeColor", "#1E40AF");
-        m.put("themeColorDark", "#0F1D5E");
-        m.put("accentColor", "#5B7BE8");
-        m.put("bgColor", "#0B0C0F");
-        m.put("cardBgColor", "#121419");
-        m.put("textColor", "#F5F5F5");
-        m.put("textMuted", "rgba(245,245,245,.68)");
+        m.put("themeColor", "#3D7DFF");
+        m.put("themeColorDark", "#1E4FD0");
+        m.put("accentColor", "#7DF9E4");
+        m.put("bgColor", "#0A0C11");
+        m.put("cardBgColor", "#11141C");
+        m.put("textColor", "#F0F3F9");
+        m.put("textMuted", "#A8B2C6");
         m.put("logoUrl", "");
         m.put("faviconUrl", "");
         m.put("heroBgImage", "");
-        m.put("heroGradient", "linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #0a0a0f 100%)");
+        m.put("heroGradient", "linear-gradient(160deg, #0A0C11 0%, #111A2E 55%, #0A0C11 100%)");
         m.put("fontFamily", "");
         m.put("customCss", "");
         m.put("navStyle", "glass");
-        m.put("cornerRadius", "12");
+        m.put("cornerRadius", "14");
         m.put("socialLinks", new ArrayList<>());
         return m;
     }

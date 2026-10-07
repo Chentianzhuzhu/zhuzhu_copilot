@@ -338,14 +338,18 @@ class TemplateRenderTest {
     }
 
     @Test
-    @DisplayName("主题变量输出为可解析的 CSS 值，而不是转义后的标识符")
-    void themeValuesAreValidCss() {
+    @DisplayName("配色只由样式表提供，head 不再内联注入第二份 :root")
+    void paletteComesFromStylesheetOnly() {
         String html = render("index", context("/", "WinAppMigrator"));
-        assertTrue(html.contains("--theme-color: #1E40AF;"));
-        assertTrue(html.contains("--bg-color: #0B0C0F;"));
-        assertTrue(html.contains("--text-muted: rgba(245,245,245,.68);"));
-        assertTrue(html.contains("--corner-radius: 12px;"));
-        assertFalse(html.contains("\\\\#"), "CSS 颜色不能被转义为标识符");
+        // head 里曾注入一份后台可配的配色，与 site.css 同为 :root 且后加载，会静默覆盖
+        // 样式表取值，表现为「后台改了配色但线上没变化」。现在配色唯一来源是样式表。
+        assertFalse(html.contains("--theme-color:"), "head 不应再注入 --theme-color，配色唯一来源应为 site.css");
+        assertFalse(html.contains("--bg-color:"), "head 不应再注入 --bg-color");
+        assertFalse(html.contains("--text-muted:"), "head 不应再注入 --text-muted");
+        assertTrue(html.contains("name=\"theme-color\" content=\"#0A0C11\""),
+                "theme-color 应与样式表底色同源");
+        // 样式表本身仍必须带完整主色，否则页面会退化成浏览器默认配色
+        assertTrue(html.contains("/css/site.css?v=testcss1"), "样式表必须被引用");
     }
 
     @Test

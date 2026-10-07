@@ -34,20 +34,29 @@ VOID_TAGS = {
 # 允许省略闭合标签的块级元素（HTML 规范），模板里偶尔会用到
 OPTIONAL_END = {"p", "li", "td", "th", "tr", "option", "dt", "dd", "thead", "tbody"}
 
-# 色系允许的颜色（黑白蓝 + 淡灰的中性色阶 + 深蓝主色 / 冷蓝点缀）
-# 黑白蓝为设计基准，灰阶与蓝色派生仅用于层次与柔化过渡，不允许出现第三色系。
+# 色系允许的颜色（冷调中性色阶 + 蓝/青双主色 + 三个语义色）
+# 设计原则（2026-10 重构）：
+#   1. 中性色带极轻的冷蓝倾向，不用纯灰也不用纯黑 —— 纯黑纯灰在大面积暗色上
+#      显得死板，且两者在真实显示器上都无法还原，视觉上必然发闷。
+#   2. 主色为电光蓝，强调色为青绿；两者构成冷色双轴，强调色只用于 10% 的
+#      关键处（焦点环、状态、点缀），滥用会失去力量。
+#   3. 语义色（绿/琥珀/玫瑰）仅用于状态表达，不做整块背景，避免界面失焦。
 ALLOWED_HEX = {
-    # 近黑 → 面板灰阶（surface-1/2/3 等）
-    "#000000", "#000", "#050505", "#07080a", "#0a0a0a", "#0a0b0d", "#0b0c0f",
-    "#08090b", "#0e1014", "#121419", "#12151c", "#141414", "#15181f", "#171a20",
-    "#1d1f24", "#26262a", "#2a2d35", "#2c3140",
-    # 深蓝主色 + 冷蓝点缀
-    "#1e40af", "#0f1d5e", "#5b7be8", "#7c97f2", "#9db4f2",
-    # 白 / 淡灰文字
-    "#f5f5f5", "#ffffff", "#fff",
+    # 表面层级：越亮越高（暗色模式靠表面色差而非阴影制造深度）
+    "#0a0c11", "#11141c", "#181c26", "#202634",
+    # 描边与分割用的深色
+    "#0b0d12", "#0a0b0d", "#0b0c0f",
+    # 文字四级
+    "#f0f3f9", "#a8b2c6", "#7c879e",
+    # 主色（蓝）与强调色（青）
+    "#3d7dff", "#1e4fd0", "#7df9e4",
+    # 语义色：成功 / 警告 / 错误
+    "#4ade80", "#fbbf24", "#fb7185",
+    # 中性（弹层、遮罩、纯白前景）
+    "#ffffff", "#fff", "#000000", "#000",
 }
-# 大写形式同样放行（主题变量兜底里会写成 #1E40AF）
-ALLOWED_HEX |= {"#1E40AF"}
+# 大写形式同样放行（不同来源的十六进制写法大小写混用）
+ALLOWED_HEX |= {c.upper() for c in list(ALLOWED_HEX)}
 
 EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\u20E3]"
@@ -268,6 +277,46 @@ class TestProductRedesign(unittest.TestCase):
                        "transition: width", "transition: all"):
             self.assertNotIn(banned, motion, f"动效体系里出现会触发重排的声明：{banned}")
 
+    def test_ripple_respects_reduced_motion_and_cleans_up(self) -> None:
+        """按压涟漪必须响应「减少动效」，且不留下常驻 DOM 节点。"""
+        js = read(STATIC / "js/site.js")
+        self.assertIn("function initRipple", js)
+        body = js[js.index("function initRipple"):]
+        body = body[:body.index("\n  function ")]
+        self.assertIn("if (REDUCED) { return; }", body, "涟漪未响应减少动效偏好")
+        self.assertIn("pointerdown", body, "涟漪应监听 pointerdown（比 click 快半拍）")
+        self.assertIn("passive: true", body, "pointerdown 未标记 passive")
+        self.assertIn("dot.remove()", body, "涟漪元素未清理，会持续累积 DOM")
+        self.assertIn("safe('ripple'", js, "涟漪未接入异常隔离初始化")
+
+    def test_type_scale_is_centralized(self) -> None:
+        """字阶必须走令牌，且正文不得小于 16px。
+
+        混用 13/14/15/16px 这类相邻字号会让层级糊成一团（muddy hierarchy），
+        WCAG 也要求正文字号不低于 16px。数值展示类（版本号、统计值）可例外。
+        """
+        css = read(STATIC / "css/site.css")
+        for token in ("--text-xs:", "--text-sm:", "--text-base:", "--text-lg:", "--text-xl:", "--text-hero:"):
+            self.assertIn(token, css, f"缺少字阶令牌 {token}")
+        body = css[css.index("* {"):]
+        # 除数据展示类外，正文区不允许出现 15px 及以下
+        for raw in re.findall(r"font-size: (\d+)px", body):
+            if int(raw) <= 15:
+                # 仅允许出现在明确的数据/版本展示选择器上
+                line_start = body.rfind("\n", 0, body.index(f"font-size: {raw}px"))
+                line = body[line_start:body.index("\n", body.index(f"font-size: {raw}px"))]
+                self.assertRegex(
+                    line, r"\.(num|stat-value|cl-version|dl-num|dl-stat-value|version|code|pre|kbd)\b",
+                    f"正文区出现 {raw}px，应改用字阶令牌：{line.strip()[:60]}",
+                )
+
+    def test_micro_interactions_present(self) -> None:
+        """活力微交互必须在样式表里真实存在，且都带过渡。"""
+        css = read(STATIC / "css/site.css")
+        for name, sel in (("按压涟漪", ".ripple"), ("链接下划线展开", "background-size"),
+                          ("图标微动", ".btn:hover .ico"), ("焦点环", ":focus-visible")):
+            self.assertIn(sel, css, f"缺少微交互：{name}")
+
     def test_motion_degrades_without_js_or_on_reduced_motion(self) -> None:
         """动效绝不能以牺牲可读性为代价。
 
@@ -323,12 +372,45 @@ class TestProductRedesign(unittest.TestCase):
         self.assertRegex(blocks, r'id="lightbox"[^>]+role="dialog"')
         self.assertNotRegex(blocks, r'id="lbStrip"[^>]+aria-hidden="true"')
 
-    def test_defaults_and_head_palette_agree(self) -> None:
-        service = read(JAVA / "service/ContentService.java")
+    def test_palette_has_single_source_in_css(self) -> None:
+        """配色只能有一处来源：site.css 的 :root。
+
+        历史上有过「后端默认值 + head.html 内联注入」两处并存的情况。两者都是
+        :root 且 head 的 <style> 后加载，会静默覆盖样式表 —— 表现为后台改了配色
+        而线上毫无变化。这个用例锁死单一来源，防止悄悄退回两处并存。
+        """
         head = read(TEMPLATES / "fragments/head.html")
-        for color in ("#1E40AF", "#0F1D5E", "#5B7BE8", "#0B0C0F", "#121419", "#F5F5F5"):
-            self.assertIn(color, service)
-            self.assertIn(color, head)
+        css = read(STATIC / "css/site.css")
+        # head 里不得再有动态注入配色变量的内联样式块
+        self.assertNotIn("th:inline", head, "head.html 又开始内联注入配色，会覆盖 site.css")
+        for token in ("--theme-color:", "--bg-color:", "--card-bg:", "--text-color:"):
+            self.assertNotIn(token, head, f"head.html 出现配色变量 {token}，配色来源必须唯一")
+        # 反之，样式表必须自带完整主色，否则页面会退化成浏览器默认配色
+        for token in ("--theme-color:", "--bg-color:", "--card-bg:", "--text-color:",
+                      "--surface-3:", "--ok-color:", "--err-color:"):
+            self.assertIn(token, css, f"site.css 缺少设计令牌 {token}")
+        # theme-color 必须与样式表的底色同源，不能再读后台字段
+        self.assertIn('<meta name="theme-color" content="#0A0C11">', head)
+
+    def test_no_bounce_easing_curves(self) -> None:
+        """禁用回弹/弹性缓动。
+
+        真实物体停下时是平滑减速，overshoot 曲线（两点式 cubic-bezier 中
+        任一控制点超出 0..1）会把注意力吸引到动画本身而非内容，2015 年后
+        已被主流设计规范判为廉价感。这里静态拦截。
+        """
+        css = read(STATIC / "css/site.css")
+        for bad in ("ease-spring", "ease-bounce", "cubic-bezier(.34,1.56", "cubic-bezier(.68,-.6",
+                    "backwards", "elastic"):
+            self.assertNotIn(bad, css, f"出现了回弹/弹性缓动：{bad}")
+        # 允许的缓动必须单调（控制点均在 0..1 内）
+        for m in re.finditer(r"cubic-bezier\(([^)]+)\)", css):
+            for part in m.group(1).split(","):
+                try:
+                    v = float(part.strip())
+                except ValueError:
+                    continue
+                self.assertTrue(0.0 <= v <= 1.0, f"缓动控制点 {v} 越界，会产生回弹：{m.group(0)}")
 
     def test_feedback_announces_errors_and_respects_reduced_motion(self) -> None:
         html = read(TEMPLATES / "feedback.html")

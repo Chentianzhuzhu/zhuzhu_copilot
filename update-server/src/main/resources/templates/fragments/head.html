@@ -7,7 +7,7 @@
 <head th:fragment="head">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" th:attr="content=${site.style.themeColor} ?: '#000000'">
+  <meta name="theme-color" content="#0A0C11">
   <meta name="color-scheme" content="dark">
 
   <title th:text="${pageTitle}">WinAppMigrator</title>
@@ -57,21 +57,11 @@
   <link rel="stylesheet" th:href="'/css/site.css?v=' + ${assetCss}">
 
   <!--
-    后台自定义视觉样式：主题色 / 背景色 / 文字色 / 圆角等 CSS 变量。
-    取值来自库内内容 style 块（defaults 已兜底），未配置时使用下面的默认值。
+    配色唯一来源是 /css/site.css 的 :root。
+    历史上这里还注入过一份后台可配的配色，但它与 site.css 同为 :root 且后加载，
+    会静默覆盖样式表取值 —— 表现为「后台改了配色，线上却没变化」。
+    现在配色统一由代码管理；后台的自定义 CSS（customCss）仍可追加覆盖。
   -->
-  <style th:inline="css">
-    :root {
-      --theme-color: [(${site.style.themeColor} ?: '#1E40AF')];
-      --theme-color-dark: [(${site.style.themeColorDark} ?: '#0F1D5E')];
-      --accent-color: [(${site.style.accentColor} ?: '#5B7BE8')];
-      --bg-color: [(${site.style.bgColor} ?: '#0B0C0F')];
-      --card-bg: [(${site.style.cardBgColor} ?: '#121419')];
-      --text-color: [(${site.style.textColor} ?: '#F5F5F5')];
-      --text-muted: [(${site.style.textMuted} ?: 'rgba(245,245,245,.68)')];
-      --corner-radius: [(${site.style.cornerRadius} ?: '12')]px;
-    }
-  </style>
   <!-- 后台注入的自定义 CSS 代码（原样输出） -->
   <style th:if="${site.style.customCss != null and !site.style.customCss.isEmpty()}" th:utext="${site.style.customCss}"></style>
   <!-- 自定义 favicon：后台配置后覆盖默认图标 -->

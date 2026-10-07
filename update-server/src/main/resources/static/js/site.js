@@ -126,6 +126,31 @@
     }, { rootMargin: '-20% 0px -65% 0px', threshold: 0 });
     targets.forEach(function (t) { io.observe(t); });
   }
+  /* 按压涟漪：从点击点扩散，给「被按下去」的实感。
+     只在 JS 可用且未开启「减少动效」时注册；涟漪元素 500ms 后自行移除，
+     不留常驻 DOM 节点。事件用 pointerdown 而非 click —— 响应更快半拍。 */
+  function initRipple() {
+    if (REDUCED) { return; }
+    var sel = '.btn, .nav-cta, .drawer-download, .mb-download, .fb-copy-btn, .lb-btn';
+    document.addEventListener('pointerdown', function (e) {
+      var el = e.target.closest ? e.target.closest(sel) : null;
+      if (!el || !el.getClientRects().length) { return; }
+      var rect = el.getBoundingClientRect();
+      /* 以点击点为圆心，直径取到最远角的距离，保证涟漪能覆盖整个按钮 */
+      var size = Math.max(
+        Math.hypot(e.clientX - rect.left, e.clientY - rect.top),
+        Math.hypot(rect.right - e.clientX, rect.bottom - e.clientY)
+      ) * 2;
+      var dot = document.createElement('span');
+      dot.className = 'ripple';
+      dot.style.width = dot.style.height = size + 'px';
+      dot.style.left = (e.clientX - rect.left) + 'px';
+      dot.style.top = (e.clientY - rect.top) + 'px';
+      el.appendChild(dot);
+      window.setTimeout(function () { dot.remove(); }, 520);
+    }, { passive: true });
+  }
+
   /* 揭示动效：所有入场动画共用一个 IntersectionObserver。
      元素进入视口后立即 unobserve —— 观察器不常驻，回调不重复触发。
      没有 IntersectionObserver 的旧浏览器直接给终态，绝不留下不可见内容。 */
@@ -411,6 +436,7 @@
   }
   function init() {
     safe('nav', initNav);
+    safe('ripple', initRipple);
     safe('reveal', initReveal);
     safe('countUp', initCountUp);
     safe('parallax', initParallax);
