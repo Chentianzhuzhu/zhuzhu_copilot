@@ -99,18 +99,21 @@
   }
   /* <input type="date"> 不能关原生指示器（否则日历点不开），但它的日历图标在
      深色底上默认是深色 → 看起来像一个方块。
-     注意：**只反色图标本身**。曾经给整个 input 加 filter: invert(0.9)，
+     注意一：**只反色图标本身**。曾经给整个 input 加 filter: invert(0.9)，
      结果连输入框背景一起被反成了米色，图标也随之变浅 → 图标与底色几乎同色，
-     反而更看不清（这是 2026-10-07 的真实回归）。故此处只对 ::-webkit 伪元素
-     处理，input 本身背景/文字保持主题原样。 */
+     反而更看不清（这是 2026-10-07 的真实回归）。
+     注意二：**不要用 invert(1) 单独反相**。原生图标颜色随平台与 color-scheme
+     浮动（可能本来已是浅色），再反一次反而变深。这里用 brightness(0) 先把图标
+     压成纯黑、再 invert(1) 提成纯白，结果与原始颜色无关，稳定输出白色。 */
   input[type="date"]::-webkit-calendar-picker-indicator {
-    filter: invert(1);      /* 深色图标 → 浅色图标 */
-    opacity: 0.85;
+    filter: brightness(0) invert(1);   /* 强制纯白：任何原始颜色都先压黑再反白 */
+    opacity: 1;
     cursor: pointer;
   }
-  input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+  /* hover 略降不透明度作为可点反馈（默认已是纯白，无法再"变亮"） */
+  input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 0.75; }
   /* Firefox 用::-moz-picker-indicator，且不支持 filter，故用 opacity 提升可见性 */
-  input[type="date"]::-moz-picker-indicator { opacity: 0.85; cursor: pointer; }
+  input[type="date"]::-moz-picker-indicator { opacity: 1; cursor: pointer; }
   /* 复选框行：不能吃 .form-group input 的 width:100%，否则勾选框会被拉满整行、
      把右侧文字标签挤到最右边，出现「文字排序错乱」。这里单独还原为自适应尺寸。 */
   .form-group.checkbox-row {
