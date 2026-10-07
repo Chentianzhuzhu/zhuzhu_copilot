@@ -88,8 +88,35 @@ def generate_order_id() -> str:
     return f"ORD{now.strftime('%Y%m%d')}{now.microsecond // 10000:04d}"
 
 
+def effective_tier(membership_type: str | None, expire) -> str:
+    """把「存的等级」折算成「当前有效等级」：已过期一律算 free。
+
+    **唯一事实来源**：``/api/auth/me`` 下发的等级、``/api/shop/products``
+    的可购性评估都必须走这里，否则会出现「客户端显示 Pro 会员、服务端按 free
+    允许购买」这类口径不一致（会员过期后设置页仍显示已订阅）。
+
+    ``expire`` 允许传入 datetime 或 'YYYY-MM-DD HH:MM:SS' 字符串，方便调用方
+    直接用它已有的数据、不必再多查一次库。
+    """
+    tier = membership_type or "free"
+    if tier == "free" or expire is None:
+        return tier
+    exp = expire
+    if isinstance(exp, str):
+        try:
+            exp = datetime.strptime(exp.strip()[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return tier          # 解析不了就不擅自降级
+    try:
+        if exp <= datetime.now():
+            return "free"
+    except Exception:
+        pass
+    return tier
+
+
 async def get_user_membership(user_id: int, db: AsyncSession) -> tuple[str, datetime | None]:
-    """读取用户当前（等级, 到期时间）。"""
+    """读取用户当前（有效等级, 到期时间）。"""
     result = await db.execute(
         text("SELECT membership_type, membership_expire FROM users WHERE id = :uid"),
         {"uid": user_id},
@@ -97,12 +124,9 @@ async def get_user_membership(user_id: int, db: AsyncSession) -> tuple[str, date
     row = result.mappings().first()
     if not row:
         raise ValueError("用户不存在", 401)
-    tier = row["membership_type"] or "free"
     expire = row["membership_expire"]
-    # 已过期视为 free：过期 Max 不应再被当作Max 拦截购买 Pro
-    if expire is not None and expire <= datetime.now():
-        tier = "free"
-    return tier, expire
+    # 已过期视为 free：过期 Max 不应再被当作 Max 拦截购买 Pro
+    return effective_tier(row["membership_type"], expire), expire
 
 
 def evaluate_purchase(current_tier: str, product: dict) -> dict:

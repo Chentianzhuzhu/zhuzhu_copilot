@@ -1109,15 +1109,19 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
     # 微信 ClawBot：消息气泡 —— 手机微信扫码绑定，局域网通信
     "wechat": _lucide(
         '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
-    # 会员与积分：皇冠 —— 账号会员订阅与积分充值
-    "membership": _lucide(
-        '<path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.5a1 1 0 0 1-.879 1.5H10.49a1 1 0 0 1-.879-1.5l1.95-5.234z"/>'
-        '<path d="M11.18 10.563l-1.957-5.244a1 1 0 0 0-1.815 0L3.41 10.5a1 1 0 0 0 .868 1.5h2.61c1.045 0 1.866.816 1.716 1.95'
-        '-1.045.125-1.733.784-1.733 1.75V20a1 1 0 0 0 1 1h5.289a1 1 0 0 0 1-1v-1.703c0-.966-.688-1.624-1.733-1.75'
-        '-.15-1.133.67-1.95 1.715-1.95h2.611a1 1 0 0 0 .868-1.5L16.59 5.319a1 1 0 0 0-1.815 0l-1.955 5.244a1 1 0 0 0 .879 1.5h2.591'
-        'a1 1 0 0 1 .868 1.5L19 9.878l.596-.319a1.147 1.147 0 0 1 1.337 2.85l-2.22 1.767a1 1 0 0 0-.362 1.056l.731 2.46'
-        'a1 1 0 0 1-1.687.96L16.7 16.65a1 1 0 0 0-1 0l-1.694 1.75a1 1 0 0 1-1.686-.958l.726-2.438a1 1 0 0 0-.363-1.06l-2.22-1.767'
-        'a1.147 1.147 0 0 1 1.337-2.85l.596.32.146.078"/>'),
+    # 会员与积分：VIP 文字徽标（用户要求用 VIP 文字样式，替换原皇冠图形）
+    # 注意：**不能用 <text> 元素**。QtSvg 会解析它但渲染成空心方框
+    # （缺字形 / tofu），实测即使显式写 font-family="Arial" 也一样。
+    # 故用 stroke 路径手工画出 V / I / P，与其余 Lucide 图标同风格
+    # （2px 线宽 + 圆头圆角），且完全不依赖字体，打包分发后也不会变样。
+    "membership": (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"'
+        ' stroke="{color}" stroke-width="2" stroke-linecap="round"'
+        ' stroke-linejoin="round">'
+        '<polyline points="1.5,5 4.5,19 7.5,5"/>'
+        '<line x1="10.5" y1="5" x2="10.5" y2="19"/>'
+        '<path d="M13.5 19V5h3.2a3.5 3.5 0 0 1 0 7h-3.2"/>'
+        '</svg>'),
 }
 
 # 设置页导航项（展示顺序 = 左侧导航顺序，与 _page_builders 的下标一一对应）
@@ -1174,6 +1178,49 @@ def _svg_icon(svg: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     """渲染内联 SVG 线条矢量图标（开源矢量路径，统一着色，线条风格一致）。
     结果按 (svg, size, color) 缓存：主题切换/面板重建时重复图标直接命中，避免反复渲染。"""
     return QIcon(_svg_pixmap(svg, size, color))
+
+
+def _circle_avatar(pm: QPixmap, size: int, gap: int = 0) -> QPixmap:
+    """把任意图片裁成「圆形」头像，返回尺寸恰好为 ``(size+2*gap) × size`` 的位图。
+
+    顶栏用户胶囊与个人信息面板共用（两处都踩过同一个坑，必须同一实现）：
+
+    1. **先等比填满再居中裁剪**。原先用 ``KeepAspectRatioByExpanding`` 缩放到
+       目标尺寸，其结果**可能大于目标尺寸**（2:3 的图缩到 44×44 会得到 44×66），
+       直接交给 QLabel 会按原始大小绘制 → 溢出控件、盖住旁边的用户名，
+       这就是「个人信息面板头像被挤压遮挡」的成因。
+    2. **圆形裁剪**。QLabel 的 ``border-radius`` 只作用于背景，不裁剪上面的
+       pixmap，方形照片会把圆角背景盖成方的。
+    3. ``gap`` 在左右留出透明边：把间距画进图标本身，绕开 Qt 固定的
+       icon-text 间距（顶栏需要，面板不需要）。
+    """
+    side = max(1, int(size) * 2)          # 2x 采样：缩小后边缘更平滑
+    scaled = pm.scaled(side, side,
+                       Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                       Qt.TransformationMode.SmoothTransformation)
+    x = max(0, (scaled.width() - side) // 2)
+    y = max(0, (scaled.height() - side) // 2)
+    square = scaled.copy(x, y, side, side)
+
+    canvas = QPixmap(side + int(gap) * 2, side)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        path = QPainterPath()
+        path.addEllipse(0, 0, side, side)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, square)
+    finally:
+        painter.end()
+
+    # **必须缩回目标尺寸**：canvas 是 2x 采样，直接返回会得到 2 倍大的位图。
+    # QLabel 默认不缩放 pixmap 而是裁掉多余部分 → 头像只露出左上角一块
+    # （反而制造出新的「头像显示不对」问题）。这里缩回 1x，
+    # 2x→1x 的重采样同时起到抗锯齿作用。
+    return canvas.scaled(int(size) + int(gap) * 2, int(size),
+                         Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
 
 
 @lru_cache(maxsize=128)
@@ -5370,6 +5417,15 @@ class _AgentSettingsDialog(QDialog):
         self._memb_login_hint = QLabel("")
         self._memb_login_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         lay.addWidget(self._memb_login_hint)
+        # 当前权益：已订阅时展示等级对应的权益与到期日；免费/过期时提示可订阅。
+        # 文案由 _memb_tier_benefits 统一生成，不在此处硬编码。
+        self._memb_benefits = QLabel("")
+        self._memb_benefits.setObjectName("membBenefits")
+        self._memb_benefits.setWordWrap(True)
+        self._memb_benefits.setStyleSheet(
+            f"#membBenefits {{ color: {self._DIM}; font-size: 12px;"
+            " background: transparent; }")
+        lay.addWidget(self._memb_benefits)
         self._memb_login_btn = QPushButton(_ui("立即登录"))
         self._memb_login_btn.setAutoDefault(False)
         self._memb_login_btn.setStyleSheet(
@@ -5410,11 +5466,23 @@ class _AgentSettingsDialog(QDialog):
         self._memb_membership_products = [dict(p) for p in self._MEMBERSHIP_PRODUCTS]
         self._memb_refresh_status()
         self._memb_load_products()
+
+        def _on_membership_changed(*_a):
+            """会员变动（WS 推送 / 后台改档 / 自然过期）：状态与**商品**都要刷新。
+
+            只刷新状态标签是不够的：可购性与按钮文案（购买 / 续费 / 不可购买）
+            都由服务端按「当前有效等级」评估。会员过期或被降为免费版后，
+            必须重拉商品，才能把可订阅的 plans 重新点亮、按钮回到「购买」；
+            已订阅时则显示当前权益并把按钮改成「续费」。
+            """
+            self._memb_refresh_status()
+            self._memb_load_products()
+
         try:
             auth.points_updated.connect(lambda *_: self._memb_refresh_status())
-            auth.membership_updated.connect(lambda *_: self._memb_refresh_status())
-            auth.order_paid.connect(lambda *_: self._memb_refresh_status())
-            auth.login_success.connect(lambda *_: self._memb_refresh_status())
+            auth.membership_updated.connect(_on_membership_changed)
+            auth.order_paid.connect(_on_membership_changed)
+            auth.login_success.connect(_on_membership_changed)
             auth.logged_out.connect(self._memb_refresh_status)
         except Exception:
             pass
@@ -5558,6 +5626,8 @@ class _AgentSettingsDialog(QDialog):
         self._memb_login_btn.setVisible(not logged)
         if not logged:
             self._memb_login_hint.setText(_ui("未登录：内置模型需登录后使用，购买前请先登录。"))
+        # 当前权益 / 过期提示：等级或到期日变化时一并更新
+        self._refresh_memb_benefits(u if logged else None)
         # 会员等级变化会影响购买资格（Max 不能再买 Pro）→ 按钮态与卡片数据一起刷新
         try:
             if logged:
@@ -5569,6 +5639,55 @@ class _AgentSettingsDialog(QDialog):
                     btn.setText(_ui("购买"))
         except Exception:
             pass
+
+    #: 各档权益文案。等级定义仍以服务端 MEMBERSHIP_TIERS 为准，这里只做展示，
+    #: 签到积分数与 checkin_service.DEFAULT_CHECKIN_REWARDS 保持一致。
+    _TIER_BENEFITS = {
+        "free": ("免费版权益", "每日签到 +50 积分"),
+        "pro": ("Pro 权益", "每日签到 +100 积分 · 每月赠送 1000 积分 · 内置模型优先额度"),
+        "max": ("Max 权益", "每日签到 +200 积分 · 每月赠送 2000 积分 · 内置模型最高额度"),
+    }
+
+    def _refresh_memb_benefits(self, user: dict | None):
+        """刷新「当前权益」区。
+
+        - 已订阅（pro/max 未过期）：显示该档权益 + 到期日 + 「到期后可续费」；
+        - 免费版 / 已过期：提示可订阅，引导到下方 plans。
+        """
+        lab = self.__dict__.get("_memb_benefits")
+        if lab is None:
+            return
+        if not user:
+            lab.setText("")
+            lab.setVisible(False)
+            return
+        tier = (user.get("membership_type") or "free")
+        title, perks = self._TIER_BENEFITS.get(tier, self._TIER_BENEFITS["free"])
+        expire = str(user.get("membership_expire") or "")[:10]
+        if tier == "free":
+            # 免费版含两种来源：① 被后台调低（到期日可能仍留在未来）
+            #                  ② 会员自然过期（到期日已过）
+            # 只有到期日**确实已过**才说「已到期」，否则会写出
+            # 「已于 2075-11-07 到期」这种自相矛盾的文案。
+            text = _ui("当前为免费版，下方可选择订阅 Pro / Max 解锁更多权益。")
+            if expire and self._is_past_date(expire):
+                text += " " + _uif("上一个会员已于 {d} 到期。", d=expire)
+        else:
+            text = _uif("当前 {t}：{p}", t=_ui(title), p=_ui(perks))
+            if expire:
+                text += " " + _uif("有效期至 {d}。", d=expire)
+            text += " " + _ui("如需延长，点击下方「续费」在到期日上叠加时长。")
+        lab.setText(text)
+        lab.setVisible(True)
+
+    @staticmethod
+    def _is_past_date(date_str: str) -> bool:
+        """判断 'YYYY-MM-DD' 是否早于今天（用于区分「已到期」与「仍有效」）。"""
+        try:
+            from datetime import date as _date, datetime as _dt
+            return _dt.strptime(date_str, "%Y-%m-%d").date() < _date.today()
+        except Exception:
+            return False
 
     def _memb_buy(self, product: dict):
         """购买流程：未登录先提示登录 → 用户协议确认 → 支付对话框（收款码）。"""
@@ -9919,6 +10038,8 @@ class _ProfilePanel(QFrame):
     """
 
     PREFERRED_WIDTH = 232   # 紧凑宽度（用户要求缩小面板）
+    #: 头像直径（用户要求「再次放大」：44 → 56）
+    _AVATAR_PX = 56
     SLIDE = 16          # 水平滑入位移（px）
     IN_MS = 180
     OUT_MS = 130
@@ -9962,7 +10083,7 @@ class _ProfilePanel(QFrame):
         top.setSpacing(SPACING_SM)
         self._avatar = QLabel("")
         self._avatar.setObjectName("pfAvatar")
-        self._avatar.setFixedSize(44, 44)
+        self._avatar.setFixedSize(self._AVATAR_PX, self._AVATAR_PX)
         self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top.addWidget(self._avatar)
         name_col = QVBoxLayout()
@@ -10078,7 +10199,8 @@ class _ProfilePanel(QFrame):
             f"#profilePanel QLabel#pfLive {{ color: {ACCENT};"
             f" font-size: {FONT_CAPTION}px; }}"
             f"#profilePanel QLabel#pfAvatar {{ background: {chip_bg}; border: 1px solid {border};"
-            f" border-radius: 22px; color: {TEXT_DIM}; font-size: {FONT_SMALL}px; }}"
+            f" border-radius: {self._AVATAR_PX // 2}px; color: {TEXT_DIM};"
+            f" font-size: {FONT_BODY}px; font-weight: 700; }}"
             f"#profilePanel QFrame#pfDivider {{ background: {border}; border: none; }}"
             f"#profilePanel QPushButton#pfClose {{ background: transparent; color: {TEXT_DIM};"
             " border: none; font-size: 13px; }"
@@ -10124,9 +10246,11 @@ class _ProfilePanel(QFrame):
 
         pm = info.get("avatar_pixmap")
         if pm is not None and not pm.isNull():
-            self._avatar.setPixmap(pm.scaled(
-                44, 44, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation))
+            # 必须走 _circle_avatar：原先直接 KeepAspectRatioByExpanding 到 44×44，
+            # 非正方形图会得到大于 44 的位图（如 2:3 → 44×66），QLabel 按原尺寸
+            # 绘制 → 溢出并盖住右侧用户名/签到按钮（「头像被挤压遮挡」的根因）；
+            # 且方形照片还会盖住圆角背景，看起来是方块而不是圆。
+            self._avatar.setPixmap(_circle_avatar(pm, self._AVATAR_PX))
             self._avatar.setText("")
         else:
             # 无头像：用用户名首字占位
@@ -21904,12 +22028,17 @@ class AgentPanel(QDialog):
         self._retheme()
 
     # ---------- 账号系统：顶栏用户区域 ----------
-    #: 顶栏头像直径（用户要求「头像放大」，从 24 提到 28，与 34px 按钮协调）
-    _AUTH_AVATAR_PX = 28
+    #: 顶栏头像直径（用户要求「再次放大」：24 → 28 → 32）
+    _AUTH_AVATAR_PX = 32
     #: 头像两侧留出的透明间距（做进图标里，拉开与用户名的距离）
-    _AUTH_AVATAR_GAP = 5
+    _AUTH_AVATAR_GAP = 6
     #: 用户名最多显示宽度，超出用省略号（防止长名把按钮撑爆/挤掉头像）
-    _AUTH_NAME_MAX_PX = 130
+    _AUTH_NAME_MAX_PX = 140
+    #: 用户胶囊（头像+用户名）高度：32 头像 + 上下各 2px 呼吸
+    _AUTH_CHIP_H = 36
+    #: 胶囊左右内边距（左侧贴近头像、右侧贴近文字，保证点击热区贴合内容）
+    _AUTH_PAD_L = 4
+    _AUTH_PAD_R = 12
 
     def _build_auth_user_bar(self, top):
         """顶栏齿轮右侧用户区域：未登录=登录按钮；已登录=头像+用户名，点击弹菜单。"""
@@ -21932,13 +22061,15 @@ class AgentPanel(QDialog):
         self._auth_user_btn.setFlat(True)
         self._auth_user_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._auth_user_btn.setAutoDefault(False)
-        # padding: 左边 6px（图标前留白）+ 右边 12px；高度 34 与其他顶栏按钮对齐。
-        # border-radius 17 ≈ 高度一半，呈胶囊形。
+        # 胶囊样式：上下 padding 2px（容 32px 头像），左右按 _AUTH_PAD_L/R；
+        # border-radius 取高度一半，呈胶囊形。宽度不写死 —— 由
+        # _sync_auth_user_btn_size 按「头像 + 用户名长度」算出，点击热区随之自适应。
         self._auth_user_btn.setStyleSheet(
-            f"QPushButton {{ color: {TEXT}; padding: 4px 12px 4px 6px;"
-            " border-radius: 17px; }"
+            f"QPushButton {{ color: {TEXT};"
+            f" padding: 2px {self._AUTH_PAD_R}px 2px {self._AUTH_PAD_L}px;"
+            f" border-radius: {self._AUTH_CHIP_H // 2}px; }}"
             f"QPushButton:hover {{ background: {HOVER}; }}")
-        self._auth_user_btn.setFixedHeight(34)
+        self._auth_user_btn.setFixedHeight(self._AUTH_CHIP_H)
         self._auth_user_btn.clicked.connect(self._auth_user_menu)
         bl.addWidget(self._auth_user_btn)
         top.addWidget(bar)
@@ -22087,10 +22218,16 @@ class AgentPanel(QDialog):
         self._sync_auth_user_btn_size()
 
     def _sync_auth_user_btn_size(self):
-        """按「图标宽 + 省略后文字宽 + 内边距」计算按钮最小宽度。
+        """按「头像 + 省略后用户名 + 内边距」计算按钮宽度，点击热区随名字长度自适应。
 
-        目的：让按钮宽度可预测且够用，避免布局把它压得只剩几像素间距
-        （Qt 在空间不足时会优先压缩图标 → 头像被挤扁/消失）。
+        为什么必须显式算宽：
+        - 布局空间不足时 Qt 会**优先压缩图标**，头像会被挤扁甚至整块消失；
+        - 宽度写死则短名留一大片空白、长名被裁字，点击热区与视觉内容不匹配。
+
+        这里把最小宽度设为「内容实际所需」，于是：
+        短名 → 胶囊紧贴内容；长名 → 随名字变宽（超过 140px 才省略）。
+        末尾额外留 8px slack：实测「恰好相等」时最后一个字符仍会被裁 1px
+        （字体度量与实际绘制有取整差），不同 DPI/字体下差异更大。
         """
         btn = self._auth_user_btn
         text = self.__dict__.get("_auth_username_raw") or ""
@@ -22102,11 +22239,9 @@ class AgentPanel(QDialog):
             btn.setToolTip(text if elided != text else "")
             has_icon = (not btn.icon().isNull()) if btn.icon() is not None else False
             icon_w = (self._AUTH_AVATAR_PX + self._AUTH_AVATAR_GAP * 2) if has_icon else 0
-            # 6(左) + 12(右) 内边距 = 18；再留 8px 余量：
-            # 实测「刚好相等」时最后一个字符仍会被裁掉 1px（字体度量与实际
-            # 绘制存在取整差），且不同 DPI/字体下差异更大，必须有 slack。
-            hint = icon_w + fm.horizontalAdvance(elided) + 18 + 8
-            btn.setMinimumWidth(max(56, min(hint, 320)))
+            pad = self._AUTH_PAD_L + self._AUTH_PAD_R
+            hint = icon_w + fm.horizontalAdvance(elided) + pad + 8
+            btn.setMinimumWidth(max(56, min(hint, 360)))
         except Exception:
             try:
                 btn.setText(text)
@@ -22228,42 +22363,15 @@ class AgentPanel(QDialog):
                 pass
 
     def _apply_auth_avatar(self, pm: QPixmap):
-        """把头像设为**圆形**图标。
+        """把头像设为**圆形**图标（顶栏用户胶囊）。
 
-        QPushButton 的 icon+text 是 Qt 内部布局：图标框与文字之间只有固定几像素
-        间距，且空间不足时优先压缩图标 → 观感上「头像挤住用户名」。
-        这里做两件事：
-          1) 圆形裁剪（先等比填充到正方形，再用椭圆路径裁剪），
-             避免非正方形头像被 KeepAspectRatioByExpanding 拉成畸形；
-          2) 做成带**透明内边距**的图标——在头像四周留出透明边，
-             相当于人为拉开头像与文字的间距，不再依赖 Qt 的默认间距。
+        裁剪逻辑统一在 ``_circle_avatar``（顶栏与个人信息面板共用同一实现）：
+        等比填满 → 居中裁剪 → 圆形裁剪 → 左右留透明间距。
+        间距做进图标是为了绕开 Qt 固定的 icon-text 距离，否则头像与用户名会贴在一起。
         """
         size = self._AUTH_AVATAR_PX
-        side = size * 2                      # 2x 采样，缩小后边缘更平滑
-        # 1) 等比填充成正方形（保持长宽比，超出部分裁掉）
-        scaled = pm.scaled(side, side,
-                           Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                           Qt.TransformationMode.SmoothTransformation)
-        # 居中裁剪到正方形，避免 KeepAspectRatioByExpanding 后长边溢出
-        x = max(0, (scaled.width() - side) // 2)
-        y = max(0, (scaled.height() - side) // 2)
-        square = scaled.copy(x, y, side, side)
-
-        # 2) 圆形裁剪，并留出右侧透明间距（把间距画进图标，绕开 Qt 的固定间距）
-        canvas = QPixmap(side + self._AUTH_AVATAR_GAP * 2, side)
-        canvas.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(canvas)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            path = QPainterPath()
-            path.addEllipse(0, 0, side, side)
-            painter.setClipPath(path)
-            painter.drawPixmap(0, 0, square)
-        finally:
-            painter.end()
-
-        icon = QIcon(canvas)
-        self._auth_user_btn.setIcon(icon)
+        canvas = _circle_avatar(pm, size, self._AUTH_AVATAR_GAP)
+        self._auth_user_btn.setIcon(QIcon(canvas))
         self._auth_user_btn.setIconSize(
             QSize(size + self._AUTH_AVATAR_GAP * 2, size))
         # 图标到位后重算按钮宽度（此时才知道图标真的存在）

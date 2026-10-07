@@ -274,6 +274,14 @@ async def get_me(current_user: dict = Depends(get_current_user),
     except Exception:
         checkin = {}
 
+    # 会员等级取「有效等级」：已过期一律按 free 下发。
+    # 否则客户端会一直显示「Pro 会员」，而服务端购买评估早已按 free 处理，
+    # 两边口径不一致 → 会员过期后设置页仍显示已订阅、看不到可订阅的 plans。
+    # 过期判定复用 order_service.effective_tier（唯一事实来源，避免两处规则漂移）。
+    from app.services.order_service import effective_tier as _effective_tier
+    effective_type = _effective_tier(current_user["membership_type"],
+                                     current_user["membership_expire"])
+
     return {
         "code": 0,
         "data": {
@@ -281,7 +289,7 @@ async def get_me(current_user: dict = Depends(get_current_user),
             "username": current_user["username"],
             "avatar": current_user["avatar"],
             "points": current_user["points"],
-            "membership_type": current_user["membership_type"],
+            "membership_type": effective_type,
             "membership_expire": current_user["membership_expire"],
             "announcement": announcement,
             "checkin": checkin,
