@@ -5346,12 +5346,21 @@ class _AgentSettingsDialog(QDialog):
     # 商品表（与 API_SPEC /api/shop/products 契约一致）：服务端拉取失败时用此兜底。
     # desc 里的签到积分数与 checkin_service.DEFAULT_CHECKIN_REWARDS 保持一致；
     # 等级定义只在服务端 order_service.MEMBERSHIP_TIERS 一处维护。
+    # 订阅档位模板：**固定三档，始终全部展示**（便于横向比较）。
+    # 服务端 /api/shop/products 只提供动态字段（价格/可购性/action），
+    # 按 membership_type 合并进本模板 —— 这样即使服务端少返回某项，
+    # 三档卡片也不会消失（此前卡片数完全由服务端返回条数决定）。
+    # 「免费版」无购买动作，仅作基线展示；desc 与 checkin_service 一致。
     _MEMBERSHIP_PRODUCTS = (
+        {"id": "free", "name": "免费版", "price": 0, "points": 0,
+         "membership_type": "free", "desc": "每日签到 +50 积分"},
         {"id": "pro_monthly", "name": "Pro 版", "price": 7, "points": 1000,
-         "desc": "每月 1000 积分，每日签到 +100"},
+         "membership_type": "pro", "desc": "每月 1000 积分，每日签到 +100"},
         {"id": "max_monthly", "name": "Max 版", "price": 14, "points": 2000,
-         "desc": "每月 2000 积分，每日签到 +200"},
+         "membership_type": "max", "desc": "每月 2000 积分，每日签到 +200"},
     )
+    #: 可购买的档位（「免费版」不是商品，不参与下单）
+    _PURCHASABLE_TIERS = ("pro", "max")
     _POINTPACK_PRODUCTS = (
         {"id": "points_150", "name": "150 积分", "price": 1, "points": 150,
          "desc": "轻量补充"},
@@ -5365,6 +5374,9 @@ class _AgentSettingsDialog(QDialog):
         """会员与积分页：当前积分/会员状态、每日签到、订阅与积分包购买、支付流程。"""
         from zhuzhu_Copilot.core.auth_client import get_auth_client
         auth = get_auth_client()
+        # 必须**先于**卡片构建赋值：_memb_product_card 要读当前等级来决定
+        # 「当前版本 / 免费版 / 购买 / 升级」，否则首帧会按 free 误渲染。
+        self._memb_auth = auth
         w = self._page(_ui("会员与积分"))
         lay = self._page_body(w)
 
@@ -5460,7 +5472,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addStretch(1)
 
         # 刷新状态显示；WS 推送积分/会员/订单到账时实时更新
-        self._memb_auth = auth
+        # （_memb_auth 已在方法开头赋值，此处不再重复）
         # 会员卡片数据源：优先服务端 /api/shop/products（含可购性与续费语义），
         # 拉取失败时回退到类内置兜底表，保证离线/接口异常时页面仍可用。
         self._memb_membership_products = [dict(p) for p in self._MEMBERSHIP_PRODUCTS]
@@ -5501,16 +5513,19 @@ class _AgentSettingsDialog(QDialog):
                 return
             payload = data.get("data") or {}
             items = payload.get("memberships") or []
-            if not items:
-                return
+            # 不因服务端条目数变化而增减卡片：始终以三档模板为准，
+            # 只把服务端的动态字段按 membership_type 合并进来。
             merged = []
-            for it in items:
-                # 服务端不返回 desc：沿用本地兜底表的描述文案
-                local = next((x for x in self._MEMBERSHIP_PRODUCTS
-                              if x["id"] == it.get("id")), None)
-                item = dict(it)
-                if local and local.get("desc"):
-                    item["desc"] = local["desc"]
+            for base in self._MEMBERSHIP_PRODUCTS:
+                tier = base.get("membership_type")
+                sv = next((x for x in items
+                           if (x.get("membership_type") or "") == tier), None)
+                item = dict(base)
+                if sv:
+                    for k in ("id", "price", "points", "duration_days",
+                              "purchasable", "reason", "action"):
+                        if sv.get(k) is not None:
+                            item[k] = sv[k]
                 merged.append(item)
             self._memb_membership_products = merged
             try:
@@ -5544,23 +5559,46 @@ class _AgentSettingsDialog(QDialog):
         holder.addStretch(1)
         self._memb_apply_purchase_state()
 
+    @staticmethod
+    def _memb_btn_label(prod: dict) -> tuple[str, str]:
+        """返回 (按钮文案, tooltip)。集中一处，卡片创建与后续刷新走同一规则。
+
+        - free 档不是商品：占位为「当前版本」（已是免费版）/「免费版」（付费档时）
+        - action=renew   → 续费（在当前到期日上叠加时长）
+        - action=upgrade → 升级（换到更高档）
+        - action=purchase→ 购买
+        - purchasable=False → 不可购买，并显示服务端给的原因
+        """
+        tier = prod.get("membership_type") or ""
+        if tier == "free" or prod.get("id") == "free":
+            return (_ui("当前版本") if prod.get("_current") else _ui("免费版"), "")
+        if prod.get("purchasable", True) is False:
+            return (_ui("不可购买"), prod.get("reason") or "")
+        action = prod.get("action") or "purchase"
+        if action == "renew":
+            return (_ui("续费"), _ui("续费将在当前到期日上叠加 30 天"))
+        if action == "upgrade":
+            return (_ui("升级"), _ui("升级到更高档位，时长叠加"))
+        return (_ui("购买"), "")
+
     def _memb_apply_purchase_state(self):
-        """按服务端下发的 purchasable/action 刷新按钮：续费 / 置灰不可购。"""
+        """按服务端下发的 purchasable/action 刷新按钮：购买 / 续费 / 升级 / 置灰。"""
+        cur = ((self._memb_auth.current_user() or {}).get("membership_type")
+               if getattr(self, "_memb_auth", None) else None) or "free"
         for pid, (_card, btn) in (self.__dict__.get("_memb_card_widgets") or {}).items():
             prod = next((p for p in self._memb_membership_products if p["id"] == pid), None)
             if prod is None:
                 continue
             try:
-                action = prod.get("action") or "purchase"
-                if prod.get("purchasable", True) is False:
-                    btn.setEnabled(False)
-                    btn.setText(_ui("不可购买"))
-                    btn.setToolTip(prod.get("reason") or "")
-                else:
-                    btn.setEnabled(True)
-                    btn.setText(_ui("续费") if action == "renew" else _ui("购买"))
-                    btn.setToolTip(_ui("续费将在当前到期日上叠加 30 天")
-                                   if action == "renew" else "")
+                p2 = dict(prod)
+                p2["_current"] = (p2.get("membership_type") == cur)
+                label, tip = self._memb_btn_label(p2)
+                # 免费版档位永远不可点击（不是可购买商品）
+                can_buy = (p2.get("membership_type") in self._PURCHASABLE_TIERS
+                           and p2.get("purchasable", True) is not False)
+                btn.setEnabled(bool(can_buy))
+                btn.setText(label)
+                btn.setToolTip(tip)
             except Exception:
                 pass
 
@@ -5587,22 +5625,36 @@ class _AgentSettingsDialog(QDialog):
         desc.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
         desc.setWordWrap(True)
         cl.addWidget(desc)
-        price = QLabel(_uif("{price} 元 / 月 · 送 {pts} 积分",
-                            price=p["price"], pts=p["points"])
-                       if "monthly" in p["id"] else
-                       _uif("{price} 元 = {pts} 积分", price=p["price"], pts=p["points"]))
+        # 价格文案：免费版不是「N 元 = N 积分」，单独处理
+        tier = p.get("membership_type") or ""
+        if tier == "free" or p.get("id") == "free":
+            price_text = _ui("永久免费")
+        elif "monthly" in str(p.get("id") or ""):
+            price_text = _uif("{price} 元 / 月 · 送 {pts} 积分",
+                              price=p["price"], pts=p["points"])
+        else:
+            price_text = _uif("{price} 元 = {pts} 积分",
+                              price=p["price"], pts=p["points"])
+        price = QLabel(price_text)
         price.setStyleSheet(f"color: {self._ACCENT_HOVER}; font-size: 13px; font-weight: 700;")
         cl.addWidget(price)
-        buy = QPushButton(_ui("续费") if p.get("action") == "renew" else _ui("购买"))
+        # 文案与可用性统一由 _memb_btn_label / _memb_apply_purchase_state 决定，
+        # 避免「创建时」与「后续刷新」两套规则漂移（曾漏掉 action=upgrade → 显示「购买」）。
+        cur = ((self._memb_auth.current_user() or {}).get("membership_type")
+               if getattr(self, "_memb_auth", None) else None) or "free"
+        p2 = dict(p)
+        p2["_current"] = (tier == cur)
+        label, tip = self._memb_btn_label(p2)
+        buy = QPushButton(label)
         buy.setAutoDefault(False)
         buy.setStyleSheet(
             f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
             "border-radius: 6px; padding: 6px 0px; font-weight: 700;")
-        # 不可购时（如 Max 有效期内购买 Pro）按钮置灰
-        if p.get("purchasable", True) is False:
-            buy.setEnabled(False)
-            buy.setText(_ui("不可购买"))
-            buy.setToolTip(p.get("reason") or "")
+        can_buy = (tier in self._PURCHASABLE_TIERS
+                   and p.get("purchasable", True) is not False)
+        if not can_buy:
+            buy.setEnabled(False)      # 灰色禁用（免费版档位 / Max 期间的 Pro 等）
+        buy.setToolTip(tip)
         prod = dict(p)
         buy.clicked.connect(lambda _checked=False, pr=prod: self._memb_buy(pr))
         cl.addWidget(buy)
@@ -5633,10 +5685,9 @@ class _AgentSettingsDialog(QDialog):
             if logged:
                 self._memb_load_products()
             else:
-                # 未登录：全部可购（真实可购性以下单接口为准）
-                for _pid, (_c, btn) in (self.__dict__.get("_memb_card_widgets") or {}).items():
-                    btn.setEnabled(True)
-                    btn.setText(_ui("购买"))
+                # 未登录：除「免费版」档位外均可购买（真实可购性以下单接口为准）。
+                # 统一走 _memb_apply_purchase_state，避免与登录态两套规则分叉。
+                self._memb_apply_purchase_state()
         except Exception:
             pass
 
@@ -5693,6 +5744,10 @@ class _AgentSettingsDialog(QDialog):
         """购买流程：未登录先提示登录 → 用户协议确认 → 支付对话框（收款码）。"""
         auth = getattr(self, "_memb_auth", None)
         if auth is None:
+            return
+        # 防御：「免费版」是展示用基线，不是可下单商品（按钮已禁用，此处兜底）
+        if (product.get("membership_type") or "") not in self._PURCHASABLE_TIERS \
+                and product.get("id") == "free":
             return
         if not auth.is_logged_in():
             QMessageBox.information(
@@ -22072,6 +22127,10 @@ class AgentPanel(QDialog):
         self._auth_user_btn.setFixedHeight(self._AUTH_CHIP_H)
         self._auth_user_btn.clicked.connect(self._auth_user_menu)
         bl.addWidget(self._auth_user_btn)
+        # 头像**原图**（未裁剪、未缩放）。顶栏胶囊需要 32px 圆形带透明间距的小图标，
+        # 但个人信息面板要 56px 大圆 —— 若从顶栏那个小图标反向放大，会既模糊又因
+        # 混入图标的透明间距而被裁成椭圆。故这里额外留一份原图给面板用。
+        self.__dict__["_auth_avatar_full"] = None
         top.addWidget(bar)
         # 信号连接（UniqueConnection 防重复）
         try:
@@ -22260,6 +22319,7 @@ class AgentPanel(QDialog):
         if not logged:
             # 登出：清掉图标与缓存，避免下次登录前残留上一个用户的头像
             self._auth_username_raw = ""
+            self.__dict__["_auth_avatar_full"] = None
             try:
                 self._auth_user_btn.setIcon(QIcon())
                 self._auth_user_btn.setText("")
@@ -22274,6 +22334,7 @@ class AgentPanel(QDialog):
         if not avatar_path:
             # 该用户没有头像：清空图标，防止沿用上一个用户的缓存图
             self._clear_auth_avatar_cache()
+            self.__dict__["_auth_avatar_full"] = None
             try:
                 self._auth_user_btn.setIcon(QIcon())
             except Exception:
@@ -22283,6 +22344,7 @@ class AgentPanel(QDialog):
         cache = self._auth_avatar_cache_path(avatar_path)
         pm = QPixmap(cache)
         if not pm.isNull():
+            self.__dict__["_auth_avatar_full"] = pm   # 原图留给个人信息面板
             self._apply_auth_avatar(pm)
             # 顺手清掉其它用户的缓存，防止换账号时串号
             self._clear_auth_avatar_cache(keep=cache)
@@ -22353,8 +22415,9 @@ class AgentPanel(QDialog):
             return          # 空数据 = 下载失败的兜底信号，保持现状
         pm = QPixmap()
         if pm.loadFromData(data):
+            self.__dict__["_auth_avatar_full"] = pm   # 保留原图给个人信息面板
             self._apply_auth_avatar(pm)
-            # 个人信息面板若打开，同步刷新头像
+            # 个人信息面板若打开，同步刷新头像（用原图重绘，不受胶囊小图标影响）
             try:
                 panel = self.__dict__.get("_profile_panel")
                 if panel is not None and self.__dict__.get("_profile_panel_open"):
@@ -22577,12 +22640,14 @@ class AgentPanel(QDialog):
         if auth is None:
             return {}
         u = auth.current_user() or {}
-        pm = None
-        try:
-            icon = self._auth_user_btn.icon()
-            if icon is not None and not icon.isNull():
-                pm = icon.pixmap(QSize(56, 56))
-        except Exception:
+        # 头像必须用**原图**，不能用顶栏胶囊的小图标：
+        # 胶囊图标是 32px 头像 + 透明间距合成的 44×32 位图，
+        # 把它放大到 56 会同时产生两个问题 ——
+        #   ① 3.5 倍上采样 → 明显模糊；
+        #   ② 位图含透明间距、宽高比 11:8，圆形裁剪后边缘被切 → 看起来是椭圆。
+        pm = self.__dict__.get("_auth_avatar_full")
+        if pm is None or pm.isNull():
+            # 原图尚未就绪（首次打开面板、下载中）：优雅降级为空，显示首字占位
             pm = None
         return {
             "username": u.get("username") or "",
