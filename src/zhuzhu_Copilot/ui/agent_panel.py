@@ -21904,6 +21904,13 @@ class AgentPanel(QDialog):
         self._retheme()
 
     # ---------- 账号系统：顶栏用户区域 ----------
+    #: 顶栏头像直径（与 34px 的图标按钮协调：留出上下各 5px 呼吸空间）
+    _AUTH_AVATAR_PX = 24
+    #: 头像两侧留出的透明间距（做进图标里，拉开与用户名的距离）
+    _AUTH_AVATAR_GAP = 4
+    #: 用户名最多显示宽度，超出省略（防止长名把按钮撑爆/挤掉头像）
+    _AUTH_NAME_MAX_PX = 120
+
     def _build_auth_user_bar(self, top):
         """顶栏齿轮右侧用户区域：未登录=登录按钮；已登录=头像+用户名，点击弹菜单。"""
         from zhuzhu_Copilot.core.auth_client import get_auth_client
@@ -21925,9 +21932,13 @@ class AgentPanel(QDialog):
         self._auth_user_btn.setFlat(True)
         self._auth_user_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._auth_user_btn.setAutoDefault(False)
+        # padding: 左边 6px（图标前留白）+ 右边 12px；高度 34 与其他顶栏按钮对齐。
+        # border-radius 17 ≈ 高度一半，呈胶囊形。
         self._auth_user_btn.setStyleSheet(
-            f"QPushButton {{ color: {TEXT}; padding: 4px 12px; border-radius: 18px; }}"
+            f"QPushButton {{ color: {TEXT}; padding: 4px 12px 4px 6px;"
+            " border-radius: 17px; }"
             f"QPushButton:hover {{ background: {HOVER}; }}")
+        self._auth_user_btn.setFixedHeight(34)
         self._auth_user_btn.clicked.connect(self._auth_user_menu)
         bl.addWidget(self._auth_user_btn)
         top.addWidget(bar)
@@ -22058,6 +22069,45 @@ class AgentPanel(QDialog):
         except Exception:
             pass
 
+    def _set_auth_username(self, username: str):
+        """设置按钮上的用户名：过长时省略，完整名进 tooltip。
+
+        不省略的话长名会把按钮撑到几百像素，顶栏空间不足时 Qt 会先压缩图标
+        （于是头像被挤成一条竖线甚至消失），这正是「用户名挤住头像」的成因。
+        这里主动省略 + 限宽，按钮宽度因此可预测，头像不会被牺牲。
+
+        注意：头像图标是异步下载的，早于/晚于文字就绪都可能发生，故把原名字
+        记在 ``_auth_username_raw``，由 ``_sync_auth_user_btn_size`` 统一算宽，
+        两边（设名字 / 设图标）都调用它，保证顺序无关。
+        """
+        self._auth_username_raw = username or ""
+        self._sync_auth_user_btn_size()
+
+    def _sync_auth_user_btn_size(self):
+        """按「图标宽 + 省略后文字宽 + 内边距」计算按钮最小宽度。
+
+        目的：让按钮宽度可预测且够用，避免布局把它压得只剩几像素间距
+        （Qt 在空间不足时会优先压缩图标 → 头像被挤扁/消失）。
+        """
+        btn = self._auth_user_btn
+        text = self.__dict__.get("_auth_username_raw") or ""
+        try:
+            fm = btn.fontMetrics()
+            elided = fm.elidedText(text, Qt.TextElideMode.ElideRight,
+                                   self._AUTH_NAME_MAX_PX)
+            btn.setText(elided)
+            btn.setToolTip(text if elided != text else "")
+            has_icon = (not btn.icon().isNull()) if btn.icon() is not None else False
+            icon_w = (self._AUTH_AVATAR_PX + self._AUTH_AVATAR_GAP * 2) if has_icon else 0
+            # 6(左) + 12(右) 内边距 = 18
+            hint = icon_w + fm.horizontalAdvance(elided) + 18
+            btn.setMinimumWidth(max(56, min(hint, 320)))
+        except Exception:
+            try:
+                btn.setText(text)
+            except Exception:
+                pass
+
     def _refresh_auth_user_widget(self, *_a):
         """按登录状态切换 登录按钮 / 头像+用户名，并尝试加载头像。"""
         auth = getattr(self, "_auth", None)
@@ -22069,13 +22119,16 @@ class AgentPanel(QDialog):
         self._auth_user_btn.setVisible(logged)
         if not logged:
             # 登出：清掉图标与缓存，避免下次登录前残留上一个用户的头像
+            self._auth_username_raw = ""
             try:
                 self._auth_user_btn.setIcon(QIcon())
+                self._auth_user_btn.setText("")
+                self._auth_user_btn.setMinimumWidth(0)
             except Exception:
                 pass
             self._clear_auth_avatar_cache()
             return
-        self._auth_user_btn.setText(u.get("username") or "")
+        self._set_auth_username(u.get("username") or "")
 
         avatar_path = u.get("avatar") or ""
         if not avatar_path:
@@ -22142,7 +22195,7 @@ class AgentPanel(QDialog):
         if not path:
             return
         try:
-            self._auth_user_btn.setText(u.get("username") or "")
+            self._set_auth_username(u.get("username") or "")
             cache = self._auth_avatar_cache_path(path)
             try:
                 if os.path.isfile(cache):
@@ -22170,10 +22223,46 @@ class AgentPanel(QDialog):
                 pass
 
     def _apply_auth_avatar(self, pm: QPixmap):
-        pm = pm.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                       Qt.TransformationMode.SmoothTransformation)
-        self._auth_user_btn.setIcon(QIcon(pm))
-        self._auth_user_btn.setIconSize(QSize(32, 32))
+        """把头像设为**圆形**图标。
+
+        QPushButton 的 icon+text 是 Qt 内部布局：图标框与文字之间只有固定几像素
+        间距，且空间不足时优先压缩图标 → 观感上「头像挤住用户名」。
+        这里做两件事：
+          1) 圆形裁剪（先等比填充到正方形，再用椭圆路径裁剪），
+             避免非正方形头像被 KeepAspectRatioByExpanding 拉成畸形；
+          2) 做成带**透明内边距**的图标——在头像四周留出透明边，
+             相当于人为拉开头像与文字的间距，不再依赖 Qt 的默认间距。
+        """
+        size = self._AUTH_AVATAR_PX
+        side = size * 2                      # 2x 采样，缩小后边缘更平滑
+        # 1) 等比填充成正方形（保持长宽比，超出部分裁掉）
+        scaled = pm.scaled(side, side,
+                           Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                           Qt.TransformationMode.SmoothTransformation)
+        # 居中裁剪到正方形，避免 KeepAspectRatioByExpanding 后长边溢出
+        x = max(0, (scaled.width() - side) // 2)
+        y = max(0, (scaled.height() - side) // 2)
+        square = scaled.copy(x, y, side, side)
+
+        # 2) 圆形裁剪，并留出右侧透明间距（把间距画进图标，绕开 Qt 的固定间距）
+        canvas = QPixmap(side + self._AUTH_AVATAR_GAP * 2, side)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            path = QPainterPath()
+            path.addEllipse(0, 0, side, side)
+            painter.setClipPath(path)
+            painter.drawPixmap(0, 0, square)
+        finally:
+            painter.end()
+
+        icon = QIcon(canvas)
+        self._auth_user_btn.setIcon(icon)
+        self._auth_user_btn.setIconSize(
+            QSize(size + self._AUTH_AVATAR_GAP * 2, size))
+        # 图标到位后重算按钮宽度（此时才知道图标真的存在）
+        self._sync_auth_user_btn_size()
 
     def _auth_user_menu(self):
         """点击用户区域弹出：个人信息 / 切换账号 / 退出登录。"""
