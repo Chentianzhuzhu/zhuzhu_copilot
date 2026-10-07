@@ -1,0 +1,1611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>zhuzhu Copilot 管理后台</title>
+<style>
+  /* ========== 主题变量 ========== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    color-scheme: dark;   /* 原生控件（下拉箭头/日期图标/滚动条）按深色渲染，否则深色底上是方块 */
+    --bg: #1a1a2e;
+    --card: #16213e;
+    --primary: #0f3460;
+    --accent: #e94560;
+    --text: #eaeaea;
+    --text-dim: #9a9ab0;
+    --border: #2a2a4a;
+    --success: #2ecc71;
+    --warning: #f39c12;
+    --danger: #e74c3c;
+    --info: #3498db;
+  }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    font-size: 14px;
+  }
+  a { color: var(--info); text-decoration: none; }
+
+  /* ========== 登录页 ========== */
+  .login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .login-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 40px 36px;
+    width: 100%;
+    max-width: 380px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  }
+  .login-card h1 {
+    font-size: 20px;
+    text-align: center;
+    margin-bottom: 6px;
+  }
+  .login-card h1 span { color: var(--accent); }
+  .login-card .sub {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 28px;
+  }
+  .form-group { margin-bottom: 16px; }
+  .form-group label {
+    display: block;
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .form-group input, .form-group select {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+  }
+  .form-group input:focus { border-color: var(--accent); }
+
+  /* ========== 原生下拉/日期控件的箭头（深色主题适配） ==========
+   * 深色底上浏览器原生下拉箭头是深色 → 看起来像一个方块。
+   * 方案：appearance:none 关掉原生箭头，用 SVG data-URI 自绘浅灰箭头，
+   * 颜色跟随 --text-dim，hover/focus 变亮。
+   * 注意：<input type="date"> 不能关原生指示器（否则日历点不开），
+   * 只用 filter: invert() 反色其内置图标。 */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    /* 右侧留出 32px 给自绘箭头，避免文字压到箭头上 */
+    padding-right: 32px !important;
+    background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239a9ab0' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 14px 14px;
+  }
+  select:hover, select:focus {
+    background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23eaeaea' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  }
+  /* 日期输入：保留原生可点开的日历图标，仅反色使其在深色底上可见 */
+  input[type="date"] { filter: invert(0.9); }
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    cursor: pointer;
+    opacity: 0.7;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+  /* 复选框行：不能吃 .form-group input 的 width:100%，否则勾选框会被拉满整行、
+     把右侧文字标签挤到最右边，出现「文字排序错乱」。这里单独还原为自适应尺寸。 */
+  .form-group.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .form-group.checkbox-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .form-group.checkbox-row label {
+    display: inline;
+    margin: 0;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+    line-height: 1.5;
+  }
+
+  /* ========== 按钮 ========== */
+  .btn {
+    padding: 8px 16px;
+    /* 默认底色：.btn 可单独使用（不叠加 btn-primary 等变体）。
+       缺这一行时按钮会退化为浏览器默认浅灰底，配上白字就读不清了。 */
+    background: var(--primary);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #fff;
+    transition: opacity 0.2s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn-primary { background: var(--primary); }
+  .btn-accent { background: var(--accent); width: 100%; padding: 11px; font-size: 15px; }
+  .btn-warning { background: var(--warning); }
+  .btn-danger { background: var(--danger); }
+  .btn-success { background: var(--success); }
+  .btn-info { background: var(--info); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  /* 工具栏内的强调按钮：.btn-accent 撑满整行（width:100%）不适合放在 flex 工具栏里，
+     故单独提供不带 width 的紧凑变体。 */
+  .btn-accent-inline { background: var(--accent); }
+  /* 禁用态：降不透明度即可。刻意不给 background，否则会盖掉变体色，
+     出现「按钮底色与文字色同源、整块糊成一片」的问题。 */
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ========== 后台主布局 ========== */
+  .admin-layout { display: none; min-height: 100vh; }
+  .admin-layout.show { display: flex; flex-direction: column; }
+
+  /* 顶部导航 */
+  .topbar {
+    height: 56px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .topbar .title { font-size: 16px; font-weight: 600; }
+  .topbar .title span { color: var(--accent); }
+  .topbar .right { display: flex; align-items: center; gap: 12px; }
+  .topbar .admin-name { color: var(--text-dim); font-size: 13px; }
+
+  /* 主体 */
+  .main { display: flex; flex: 1; }
+  /* 左侧菜单 */
+  .sidebar {
+    width: 200px;
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    padding: 16px 0;
+    flex-shrink: 0;
+  }
+  .menu-item {
+    padding: 12px 24px;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 14px;
+    transition: all 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .menu-item:hover { background: var(--bg); color: var(--text); }
+  .menu-item.active {
+    background: var(--bg);
+    color: var(--accent);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+  /* 右侧内容 */
+  .content {
+    flex: 1;
+    padding: 24px;
+    overflow-x: auto;
+  }
+  .page { display: none; }
+  .page.active { display: block; }
+  .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .page-header h2 { font-size: 18px; }
+  .toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .toolbar input, .toolbar select {
+    padding: 8px 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+  }
+  .toolbar input:focus, .toolbar select:focus { border-color: var(--accent); }
+
+  /* ========== 表格 ========== */
+  .table-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    overflow-x: auto;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead { background: var(--primary); }
+  th {
+    padding: 12px 10px;
+    text-align: left;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px;
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
+  tbody tr:hover { background: rgba(233,69,96,0.08); }
+  .avatar-cell {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    object-fit: cover;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+  }
+  .badge-active { background: rgba(46,204,113,0.15); color: var(--success); }
+  .badge-disabled { background: rgba(243,156,18,0.15); color: var(--warning); }
+  .badge-deleted { background: rgba(231,76,60,0.15); color: var(--danger); }
+  .badge-free { background: rgba(154,154,176,0.15); color: var(--text-dim); }
+  .badge-pro { background: rgba(52,152,219,0.15); color: var(--info); }
+  .badge-max { background: rgba(233,69,96,0.15); color: var(--accent); }
+  .badge-pending { background: rgba(243,156,18,0.15); color: var(--warning); }
+  .badge-paid { background: rgba(46,204,113,0.15); color: var(--success); }
+  .badge-cancelled { background: rgba(154,154,176,0.15); color: var(--text-dim); }
+  .badge-refunded { background: rgba(231,76,60,0.15); color: var(--danger); }
+  .ops { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* ========== 分页 ========== */
+  .pagination {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  /* ========== 收款码设置 ========== */
+  .qrcode-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 20px;
+  }
+  .qrcode-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    text-align: center;
+  }
+  .qrcode-card h3 { margin-bottom: 14px; font-size: 15px; }
+  .qrcode-preview {
+    width: 200px;
+    height: 200px;
+    margin: 0 auto 14px;
+    background: #fff;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .qrcode-preview img { width: 100%; height: 100%; object-fit: contain; }
+  .qrcode-preview .empty { color: var(--text-dim); font-size: 12px; }
+
+  /* ========== 模态弹窗 ========== */
+  .modal-mask {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal-mask.show { display: flex; }
+  .modal {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    width: 90%;
+    max-width: 400px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  }
+  .modal h3 { margin-bottom: 16px; font-size: 16px; }
+  .modal .modal-body { margin-bottom: 20px; color: var(--text-dim); line-height: 1.6; font-size: 13px; }
+  .modal .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  .modal .form-group input, .modal .form-group select {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+  }
+
+  /* ========== Toast ========== */
+  #toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--success);
+    color: var(--text);
+    padding: 12px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    z-index: 200;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none;
+  }
+  #toast.error { border-left-color: var(--danger); }
+  #toast.show { opacity: 1; }
+
+  /* ========== Loading 旋转 ========== */
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-row td { text-align: center; color: var(--text-dim); padding: 30px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Toast 提示 -->
+<div id="toast"></div>
+
+<!-- ====================== 管理员登录视图 ====================== -->
+<div class="login-wrap" id="loginView">
+  <div class="login-card">
+    <h1>zhuzhu <span>Copilot</span></h1>
+    <div class="sub">管理后台登录</div>
+    <form onsubmit="return doAdminLogin(event)">
+      <div class="form-group">
+        <label>管理员用户名</label>
+        <input type="text" id="adminUsername" placeholder="请输入用户名" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>密码</label>
+        <input type="password" id="adminPassword" placeholder="请输入密码" autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-accent" id="adminLoginBtn">登 录</button>
+    </form>
+  </div>
+</div>
+
+<!-- ====================== 后台主视图 ====================== -->
+<div class="admin-layout" id="adminView">
+  <!-- 顶部导航 -->
+  <div class="topbar">
+    <div class="title">zhuzhu <span>Copilot</span> 管理后台</div>
+    <div class="right">
+      <span class="admin-name" id="adminNameLabel">admin</span>
+      <button class="btn btn-sm btn-danger" onclick="doLogout()">退出登录</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- 左侧菜单 -->
+    <div class="sidebar">
+      <div class="menu-item active" data-page="users" onclick="switchPage('users')">用户管理</div>
+      <div class="menu-item" data-page="orders" onclick="switchPage('orders')">订单管理</div>
+      <div class="menu-item" data-page="qrcode" onclick="switchPage('qrcode')">收款码设置</div>
+      <div class="menu-item" data-page="announce" onclick="switchPage('announce')">系统公告</div>
+    </div>
+
+    <!-- 右侧内容 -->
+    <div class="content">
+      <!-- ========== 用户管理页 ========== -->
+      <div class="page active" id="page-users">
+        <div class="page-header">
+          <h2>用户管理</h2>
+        </div>
+        <div class="toolbar">
+          <input type="text" id="searchKeyword" placeholder="按用户名搜索..." style="width:220px;" onkeydown="if(event.key==='Enter')loadUsers(1)">
+          <button class="btn btn-primary" onclick="loadUsers(1)">搜索</button>
+          <button class="btn btn-accent-inline" onclick="openCreateUserModal()">添加账号</button>
+          <span style="flex:1;"></span>
+          <span id="batchInfo" style="color:var(--text-dim);font-size:13px;">已选 0 项</span>
+          <button class="btn btn-sm" id="batchPointsBtn" onclick="openBatchPointsModal()" disabled>批量设置积分</button>
+          <button class="btn btn-sm" id="batchMemberBtn" onclick="openBatchMemberModal()" disabled>批量设置会员</button>
+          <button class="btn btn-sm btn-warning" id="batchDisableBtn" onclick="askBatchAction('disable')" disabled>批量禁用</button>
+          <button class="btn btn-sm btn-success" id="batchEnableBtn" onclick="askBatchAction('enable')" disabled>批量解封</button>
+          <button class="btn btn-sm btn-danger" id="batchDeleteBtn" onclick="askBatchAction('delete')" disabled>批量删除</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:36px;"><input type="checkbox" id="usersCheckAll" onchange="toggleAllUsers(this.checked)"></th>
+                <th>ID</th><th>头像</th><th>用户名</th><th>积分</th><th>会员类型</th>
+                <th>状态</th><th>注册IP</th><th>注册时间</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="usersTbody"></tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <button class="btn btn-sm btn-primary" id="usersPrev" onclick="changeUserPage(-1)">上一页</button>
+          <span id="usersPageInfo">第 1 页</span>
+          <button class="btn btn-sm btn-primary" id="usersNext" onclick="changeUserPage(1)">下一页</button>
+        </div>
+      </div>
+
+      <!-- ========== 订单管理页 ========== -->
+      <div class="page" id="page-orders">
+        <div class="page-header">
+          <h2>订单管理</h2>
+        </div>
+        <div class="toolbar">
+          <label style="color:var(--text-dim);font-size:13px;">状态筛选：</label>
+          <select id="orderStatusFilter" onchange="loadOrders(1)">
+            <option value="">全部</option>
+            <option value="pending">待支付</option>
+            <option value="paid">已支付</option>
+            <option value="cancelled">已取消</option>
+            <option value="refunded">已退款</option>
+          </select>
+          <span style="flex:1;"></span>
+          <span id="ordersBatchInfo" style="color:var(--text-dim);font-size:13px;">已选 0 项</span>
+          <button class="btn btn-sm btn-danger" id="ordersBatchDeleteBtn" onclick="askBatchDeleteOrders()" disabled>批量删除</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:36px;"><input type="checkbox" id="ordersCheckAll" onchange="toggleAllOrders(this.checked)"></th>
+                <th>订单号</th><th>用户ID</th><th>商品</th><th>金额</th>
+                <th>支付方式</th><th>状态</th><th>创建时间</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="ordersTbody"></tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <button class="btn btn-sm btn-primary" id="ordersPrev" onclick="changeOrderPage(-1)">上一页</button>
+          <span id="ordersPageInfo">第 1 页</span>
+          <button class="btn btn-sm btn-primary" id="ordersNext" onclick="changeOrderPage(1)">下一页</button>
+        </div>
+      </div>
+
+      <!-- ========== 收款码设置页 ========== -->
+      <div class="page" id="page-qrcode">
+        <div class="page-header">
+          <h2>收款码设置</h2>
+        </div>
+        <div class="qrcode-grid">
+          <div class="qrcode-card">
+            <h3>支付宝收款码</h3>
+            <div class="qrcode-preview" id="alipayPreview">
+              <span class="empty">暂无图片</span>
+            </div>
+            <button class="btn btn-primary" onclick="document.getElementById('alipayFile').click()">上传新图片</button>
+            <input type="file" id="alipayFile" accept="image/*" class="hidden" onchange="uploadQrcode('alipay', event)">
+          </div>
+          <div class="qrcode-card">
+            <h3>微信收款码</h3>
+            <div class="qrcode-preview" id="wechatPreview">
+              <span class="empty">暂无图片</span>
+            </div>
+            <button class="btn btn-primary" onclick="document.getElementById('wechatFile').click()">上传新图片</button>
+            <input type="file" id="wechatFile" accept="image/*" class="hidden" onchange="uploadQrcode('wechat', event)">
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== 系统公告页 ========== -->
+      <div class="page" id="page-announce">
+        <div class="page-header">
+          <h2>系统公告</h2>
+        </div>
+        <div style="max-width:680px;">
+          <p style="color:var(--text-dim);font-size:13px;line-height:1.7;margin-top:0;">
+            公告内容将<b style="color:var(--text);">实时推送</b>给所有在线用户，
+            直接显示在客户端面板顶部中间（用户名右侧、系统状态左侧），无任何文字修饰。
+            留空并保存即清除公告。
+          </p>
+          <div class="form-group">
+            <label>公告内容（最长 200 字）</label>
+            <textarea id="announceContent" rows="3" maxlength="200"
+              placeholder="例如：服务器将于今晚 23:00 维护，请提前保存工作"
+              style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:14px;resize:vertical;"></textarea>
+          </div>
+          <div class="form-group checkbox-row">
+            <input type="checkbox" id="announceEnabled" checked>
+            <label for="announceEnabled">启用公告（取消勾选则保留内容但不展示）</label>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:6px;">
+            <button class="btn btn-primary" onclick="saveAnnouncement()">保存并推送</button>
+            <button class="btn btn-sm btn-danger" onclick="clearAnnouncement()">清除公告</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====================== 模态弹窗 ====================== -->
+<!-- 调整积分弹窗 -->
+<div class="modal-mask" id="modalPoints">
+  <div class="modal">
+    <h3>调整积分</h3>
+    <div class="modal-body">
+      正在调整用户 <b id="pointsUsername" style="color:var(--text);"></b> 的积分。<br>
+      正数为增加，负数为扣减。
+    </div>
+    <div class="form-group">
+      <label>变动量</label>
+      <input type="number" id="pointsAmount" placeholder="例如 100 或 -50">
+    </div>
+    <div class="form-group">
+      <label>备注</label>
+      <input type="text" id="pointsDetail" placeholder="调整原因说明">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modalPoints')">取消</button>
+      <button class="btn btn-info" id="btnConfirmPoints" onclick="confirmAdjustPoints()">确认调整</button>
+    </div>
+  </div>
+</div>
+
+<!-- 调整会员弹窗 -->
+<div class="modal-mask" id="modalMembership">
+  <div class="modal">
+    <h3>调整会员类型</h3>
+    <div class="modal-body">
+      正在调整用户 <b id="memberUsername" style="color:var(--text);"></b> 的会员类型。<br>
+      修改后将<b>实时推送</b>到该用户客户端。
+    </div>
+    <div class="form-group">
+      <label>会员类型</label>
+      <select id="memberType">
+        <option value="free">免费版（free）</option>
+        <option value="pro">Pro 会员（pro）</option>
+        <option value="max">Max 会员（max）</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>到期日（可选）</label>
+      <input type="date" id="memberExpire">
+      <div style="color:var(--text-dim);font-size:12px;margin-top:4px;">
+        留空且选「免费版」将清空到期日；留空且选付费类型则保留原有到期日。
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modalMembership')">取消</button>
+      <button class="btn btn-success" id="btnConfirmMember" onclick="confirmSetMembership()">确认修改</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认弹窗（禁用/删除/确认到账） -->
+<div class="modal-mask" id="modalConfirm">
+  <div class="modal">
+    <h3 id="confirmTitle">确认操作</h3>
+    <div class="modal-body" id="confirmBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modalConfirm')">取消</button>
+      <button class="btn btn-danger" id="btnConfirmOk">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增账号弹窗（管理后台代建账号：用户名/密码/头像/会员/积分） -->
+<div class="modal-mask" id="modalCreateUser">
+  <div class="modal" style="max-width:460px;">
+    <h3>添加账号</h3>
+    <div class="modal-body">
+      由管理员直接创建，<b>不受「同一 IP 只能注册一个」限制</b>。<br>
+      密保问题与答案留空即可，用户日后可在登录页自行设置。
+    </div>
+    <div class="form-group">
+      <label>用户名 <span style="color:var(--accent);">*</span></label>
+      <input type="text" id="cuUsername" maxlength="32" placeholder="3~32 字符">
+    </div>
+    <div class="form-group">
+      <label>密码 <span style="color:var(--accent);">*</span></label>
+      <input type="text" id="cuPassword" maxlength="64" placeholder="至少 6 位">
+    </div>
+    <div class="form-group">
+      <label>初始积分</label>
+      <input type="number" id="cuPoints" min="0" placeholder="留空默认 500">
+    </div>
+    <div class="form-group">
+      <label>会员类型</label>
+      <select id="cuMemberType">
+        <option value="free">免费版（free）</option>
+        <option value="pro">Pro 会员（pro）</option>
+        <option value="max">Max 会员（max）</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>会员到期日（可选）</label>
+      <input type="date" id="cuExpire">
+      <div style="color:var(--text-dim);font-size:12px;margin-top:4px;">
+        选择付费档位时留空表示长期有效。
+      </div>
+    </div>
+    <div class="form-group">
+      <label>头像（可选）</label>
+      <input type="file" id="cuAvatarFile" accept="image/png,image/jpeg,image/gif,image/webp"
+             style="padding:6px 10px;" onchange="previewCreateUserAvatar()">
+      <div id="cuAvatarPreviewWrap" style="display:none;margin-top:8px;align-items:center;gap:8px;">
+        <img id="cuAvatarPreview"
+             style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid var(--border);">
+        <span style="color:var(--text-dim);font-size:12px;">预览（不超过 2MB）</span>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>密保问题（可选）</label>
+      <input type="text" id="cuSecQ" maxlength="128" placeholder="留空则由用户自行设置">
+    </div>
+    <div class="form-group">
+      <label>密保答案（可选）</label>
+      <input type="text" id="cuSecA" maxlength="255" placeholder="留空则与问题相同">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modalCreateUser')">取消</button>
+      <button class="btn btn-success" id="btnCreateUser" onclick="confirmCreateUser()">确认创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量设置积分弹窗 -->
+<div class="modal-mask" id="modalBatchPoints">
+  <div class="modal">
+    <h3>批量设置积分</h3>
+    <div class="modal-body">
+      将对已选 <b id="bpCount" style="color:var(--text);">0</b> 位用户批量调整积分。<br>
+      调整后<b>实时推送</b>到各用户客户端。
+    </div>
+    <div class="form-group">
+      <label>调整方式</label>
+      <select id="bpMode">
+        <option value="delta">增减（在现有余额上 + / -）</option>
+        <option value="set">直接设为指定值</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>数值</label>
+      <input type="number" id="bpAmount" placeholder="例如 100 或 -50">
+    </div>
+    <div class="form-group">
+      <label>备注（可选）</label>
+      <input type="text" id="bpDetail" placeholder="调整原因说明">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modalBatchPoints')">取消</button>
+      <button class="btn btn-info" id="btnBatchPoints" onclick="confirmBatchPoints()">确认调整</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量设置会员弹窗 -->
+<div class="modal-mask" id="modalBatchMember">
+  <div class="modal">
+    <h3>批量设置会员类型</h3>
+    <div class="modal-body">
+      将对已选 <b id="bmCount" style="color:var(--text);">0</b> 位用户批量设置会员。<br>
+      设置后<b>实时推送</b>到各用户客户端。
+    </div>
+    <div class="form-group">
+      <label>会员类型</label>
+      <select id="bmType">
+        <option value="free">免费版（free）</option>
+        <option value="pro">Pro 会员（pro）</option>
+        <option value="max">Max 会员（max）</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>到期日（可选，留空：free 清空 / 付费保留原值）</label>
+      <input type="date" id="bmExpire">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modalBatchMember')">取消</button>
+      <button class="btn btn-info" id="btnBatchMember" onclick="confirmBatchMember()">确认设置</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+ * 全局状态
+ * ============================================================ */
+var adminToken = localStorage.getItem('admin_token') || '';
+var userPage = 1;
+var orderPage = 1;
+var pageSize = 20;
+var pendingConfirmAction = null;  // 通用确认弹窗的回调
+var pointsTargetUserId = null;
+
+/* ============================================================
+ * Toast 提示
+ * ============================================================ */
+function toast(msg, isError) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = isError ? 'error show' : 'show';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.className = isError ? 'error' : ''; }, 2500);
+}
+
+/* ============================================================
+ * 路径前缀：本页可能部署在子路径下（如 /authapp/static/admin/index.html）。
+ * 所有 API / 静态资源都必须带上该前缀，否则会打到站点根（别的服务）导致 404。
+ * 由当前 pathname 去掉 /static/admin/index.html 得到，如 /authapp。
+ * ============================================================ */
+function computeApiBase() {
+  var p = location.pathname || '/';
+  var idx = p.indexOf('/static/admin/index.html');
+  var base = idx > 0 ? p.slice(0, idx) : '';
+  return base.length === 1 ? '' : base;
+}
+var API_BASE = computeApiBase();
+
+/* 把根相对路径（/api/... 或 /static/...）补上部署前缀；绝对 URL 原样返回。 */
+function withBase(url) {
+  if (!url) return url;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.charAt(0) !== '/') return API_BASE + '/' + url;
+  return API_BASE + url;
+}
+
+/* ============================================================
+ * 通用 fetch 封装（带 admin token）
+ * ============================================================ */
+function apiFetch(url, options) {
+  options = options || {};
+  options.headers = options.headers || {};
+  if (adminToken) options.headers['Authorization'] = 'Bearer ' + adminToken;
+  return fetch(withBase(url), options).then(function(res) {
+    return res.json().then(function(data) {
+      return { status: res.status, data: data };
+    });
+  });
+}
+
+/* ============================================================
+ * 管理员登录
+ * ============================================================ */
+function doAdminLogin(e) {
+  e.preventDefault();
+  var u = document.getElementById('adminUsername').value.trim();
+  var p = document.getElementById('adminPassword').value;
+  if (!u || !p) { toast('请输入用户名和密码', true); return false; }
+
+  var btn = document.getElementById('adminLoginBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>登录中...';
+
+  fetch(withBase('/api/admin/login'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: u, password: p })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    btn.disabled = false;
+    btn.innerHTML = '登 录';
+    if (data.code === 0) {
+      adminToken = data.data.token;
+      localStorage.setItem('admin_token', adminToken);
+      document.getElementById('adminNameLabel').textContent = u;
+      showAdmin();
+    } else {
+      toast(data.message || '登录失败', true);
+    }
+  })
+  .catch(function() {
+    btn.disabled = false;
+    btn.innerHTML = '登 录';
+    toast('网络错误', true);
+  });
+  return false;
+}
+
+function doLogout() {
+  adminToken = '';
+  localStorage.removeItem('admin_token');
+  location.reload();
+}
+
+/* ============================================================
+ * 视图切换
+ * ============================================================ */
+function showAdmin() {
+  document.getElementById('loginView').style.display = 'none';
+  document.getElementById('adminView').classList.add('show');
+  loadUsers(1);
+}
+function switchPage(page) {
+  document.querySelectorAll('.menu-item').forEach(function(el) {
+    el.classList.toggle('active', el.getAttribute('data-page') === page);
+  });
+  document.querySelectorAll('.page').forEach(function(el) { el.classList.remove('active'); });
+  document.getElementById('page-' + page).classList.add('active');
+  if (page === 'users') loadUsers(userPage);
+  if (page === 'orders') loadOrders(orderPage);
+  if (page === 'qrcode') loadQrcodes();
+  if (page === 'announce') loadAnnouncement();
+}
+
+/* ============================================================
+ * 用户管理
+ * ============================================================ */
+function loadUsers(page) {
+  userPage = page;
+  var kw = document.getElementById('searchKeyword').value.trim();
+  var url = '/api/admin/users?page=' + page + '&page_size=' + pageSize;
+  if (kw) url += '&keyword=' + encodeURIComponent(kw);
+
+  apiFetch(url)
+    .then(function(r) {
+      if (r.data.code !== 0) {
+        if (r.status === 401) { toast('登录已过期，请重新登录', true); doLogout(); return; }
+        toast(r.data.message || '加载失败', true);
+        return;
+      }
+      renderUsers(r.data.data);
+    })
+    .catch(function() { toast('网络错误', true); });
+}
+
+function renderUsers(d) {
+  var list = d.list || [];
+  var tbody = document.getElementById('usersTbody');
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="10">暂无用户数据</td></tr>';
+  } else {
+    tbody.innerHTML = list.map(function(u) {
+      var statusBadge = {
+        active: '<span class="badge badge-active">正常</span>',
+        disabled: '<span class="badge badge-disabled">已禁用</span>',
+        deleted: '<span class="badge badge-deleted">已删除</span>'
+      }[u.status] || u.status;
+      var memBadge = {
+        free: '<span class="badge badge-free">免费</span>',
+        pro: '<span class="badge badge-pro">Pro</span>',
+        max: '<span class="badge badge-max">Max</span>'
+      }[u.membership_type] || u.membership_type;
+      var avatarUrl = u.avatar ? withBase(u.avatar) : '';
+      var avatar = avatarUrl
+        ? '<img class="avatar-cell" src="' + avatarUrl + '" onerror="this.style.visibility=\'hidden\'">'
+        : '<div class="avatar-cell" style="display:flex;align-items:center;justify-content:center;color:var(--text-dim);">无</div>';
+      var disableBtn = u.status === 'active'
+        ? '<button class="btn btn-sm btn-warning" onclick="askDisableUser(' + u.id + ',\'' + u.username + '\')">禁用</button>'
+        : '<button class="btn btn-sm btn-success" onclick="askEnableUser(' + u.id + ')">解封</button>';
+      return '<tr>'
+        + '<td><input type="checkbox" class="user-check" value="' + u.id + '" onchange="updateBatchBar()"></td>'
+        + '<td>' + u.id + '</td>'
+        + '<td>' + avatar + '</td>'
+        + '<td>' + escapeHtml(u.username) + '</td>'
+        + '<td>' + u.points + '</td>'
+        + '<td>' + memBadge + '</td>'
+        + '<td>' + statusBadge + '</td>'
+        + '<td>' + (u.register_ip || '-') + '</td>'
+        + '<td>' + (u.created_at || '-') + '</td>'
+        + '<td><div class="ops">'
+        + disableBtn
+        + '<button class="btn btn-sm btn-info" onclick="openPointsModal(' + u.id + ',\'' + u.username + '\')">调整积分</button>'
+        + '<button class="btn btn-sm btn-success" onclick="openMemberModal(' + u.id + ',\'' + u.username + '\',\''
+        + (u.membership_type || 'free') + '\',\'' + (u.membership_expire || '') + '\')">调整会员</button>'
+        + '<button class="btn btn-sm btn-danger" onclick="askDeleteUser(' + u.id + ',\'' + u.username + '\')">删除</button>'
+        + '</div></td>'
+        + '</tr>';
+    }).join('');
+  }
+  // 分页信息
+  var total = d.total || 0;
+  var totalPages = Math.max(1, Math.ceil(total / pageSize));
+  document.getElementById('usersPageInfo').textContent = '第 ' + userPage + ' / ' + totalPages + ' 页（共 ' + total + ' 条）';
+  document.getElementById('usersPrev').disabled = userPage <= 1;
+  document.getElementById('usersNext').disabled = userPage >= totalPages;
+  try { updateBatchBar(); } catch (e) {}
+}
+
+function changeUserPage(delta) {
+  var next = userPage + delta;
+  if (next < 1) return;
+  loadUsers(next);
+}
+
+/* ============================================================
+ * 批量选择 & 批量操作
+ * ============================================================ */
+function selectedUserIds() {
+  var boxes = document.querySelectorAll('#usersTbody .user-check:checked');
+  var ids = [];
+  for (var i = 0; i < boxes.length; i++) ids.push(parseInt(boxes[i].value, 10));
+  return ids;
+}
+
+function updateBatchBar() {
+  var n = selectedUserIds().length;
+  document.getElementById('batchInfo').textContent = '已选 ' + n + ' 项';
+  document.getElementById('batchPointsBtn').disabled = n === 0;
+  document.getElementById('batchMemberBtn').disabled = n === 0;
+  document.getElementById('batchDisableBtn').disabled = n === 0;
+  document.getElementById('batchEnableBtn').disabled = n === 0;
+  document.getElementById('batchDeleteBtn').disabled = n === 0;
+  var all = document.querySelectorAll('#usersTbody .user-check');
+  var allBox = document.getElementById('usersCheckAll');
+  if (allBox) {
+    allBox.checked = all.length > 0 && n === all.length;
+    allBox.indeterminate = n > 0 && n < all.length;
+  }
+}
+
+/* ---------- 批量设置积分 ---------- */
+function openBatchPointsModal() {
+  var ids = selectedUserIds();
+  if (ids.length === 0) { toast('请先勾选用户', true); return; }
+  document.getElementById('bpCount').textContent = ids.length;
+  document.getElementById('bpAmount').value = '';
+  document.getElementById('bpDetail').value = '';
+  document.getElementById('bpMode').value = 'delta';
+  openModal('modalBatchPoints');
+}
+
+function confirmBatchPoints() {
+  var ids = selectedUserIds();
+  if (ids.length === 0) { toast('请先勾选用户', true); return; }
+  var mode = document.getElementById('bpMode').value;
+  var amount = parseInt(document.getElementById('bpAmount').value, 10);
+  if (isNaN(amount)) { toast('请输入有效数值', true); return; }
+  var detail = document.getElementById('bpDetail').value.trim();
+  var btn = document.getElementById('btnBatchPoints');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>处理中...';
+  apiFetch('/api/admin/users/batch/points', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: ids, mode: mode, amount: amount, detail: detail })
+  }).then(function(r) {
+    btn.disabled = false; btn.innerHTML = '确认调整';
+    if (r.data.code !== 0) {
+      if (r.status === 401) { toast('登录已过期', true); doLogout(); return; }
+      toast(r.data.message || '操作失败', true); return;
+    }
+    var d = r.data.data;
+    closeModal('modalBatchPoints');
+    toast('成功 ' + d.success + ' · 跳过 ' + d.skipped + ' · 实时推送 ' + d.pushed);
+    loadUsers(userPage);
+  }).catch(function() {
+    btn.disabled = false; btn.innerHTML = '确认调整';
+    toast('网络错误', true);
+  });
+}
+
+/* ---------- 新增账号（管理后台代建） ---------- */
+function openCreateUserModal() {
+  ['cuUsername', 'cuPassword', 'cuPoints', 'cuExpire',
+   'cuSecQ', 'cuSecA'].forEach(function(id) {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('cuMemberType').value = 'free';
+  // 头像 file 只能靠清空 value 重置（同时清掉上次选择的文件）
+  document.getElementById('cuAvatarFile').value = '';
+  document.getElementById('cuAvatarPreviewWrap').style.display = 'none';
+  openModal('modalCreateUser');
+}
+
+/* 头像选择后本地预览（限制 2MB，与服务端 MAX_AVATAR_SIZE 保持一致） */
+function previewCreateUserAvatar() {
+  var input = document.getElementById('cuAvatarFile');
+  var wrap = document.getElementById('cuAvatarPreviewWrap');
+  var img = document.getElementById('cuAvatarPreview');
+  var f = input.files && input.files[0];
+  if (!f) { wrap.style.display = 'none'; return; }
+  if (f.size > 2 * 1024 * 1024) {
+    toast('头像大小不能超过2MB', true);
+    input.value = '';
+    wrap.style.display = 'none';
+    return;
+  }
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    img.src = e.target.result;
+    wrap.style.display = 'flex';
+  };
+  reader.readAsDataURL(f);
+}
+
+function confirmCreateUser() {
+  var username = document.getElementById('cuUsername').value.trim();
+  var password = document.getElementById('cuPassword').value;
+  var pointsRaw = document.getElementById('cuPoints').value.trim();
+
+  if (username.length < 3 || username.length > 32) {
+    toast('用户名需3~32 个字符', true); return;
+  }
+  if (!password || password.length < 6) {
+    toast('密码至少 6 位', true); return;
+  }
+  var points = null;
+  if (pointsRaw !== '') {
+    points = parseInt(pointsRaw, 10);
+    if (isNaN(points) || points < 0) { toast('积分需为非负整数', true); return; }
+  }
+
+  var file = document.getElementById('cuAvatarFile').files[0];
+  var send = function(avatarB64) {
+    var body = {
+      username: username,
+      password: password,
+      membership_type: document.getElementById('cuMemberType').value,
+      membership_expire: document.getElementById('cuExpire').value || null,
+      points: points
+    };
+    if (avatarB64) { body.avatar = avatarB64; }
+    var sq = document.getElementById('cuSecQ').value.trim();
+    var sa = document.getElementById('cuSecA').value.trim();
+    if (sq) { body.security_question = sq; }
+    if (sa) { body.security_answer = sa; }
+
+    var btn = document.getElementById('btnCreateUser');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>创建中...';
+    apiFetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function(r) {
+      btn.disabled = false; btn.innerHTML = '确认创建';
+      if (r.data.code !== 0) {
+        if (r.status === 401) { toast('登录已过期', true); doLogout(); return; }
+        toast(r.data.message || r.data.detail || '创建失败', true); return;
+      }
+      var d = r.data.data;
+      closeModal('modalCreateUser');
+      toast('已创建账号 ' + d.username + '（积分 ' + d.points + '）');
+      loadUsers(1);
+    }).catch(function() {
+      btn.disabled = false; btn.innerHTML = '确认创建';
+      toast('网络错误，请重试', true);
+    });
+  };
+
+  if (!file) { send(''); return; }
+  // 图片压缩：长边 >512 时按比例缩放并转 JPEG，控制体积（服务端限 2MB）
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var img = new Image();
+    img.onload = function() {
+      var MAX = 512;
+      var scale = Math.min(1, MAX / Math.max(img.width, img.height));
+      if (scale === 1 && e.target.result.length < 1.5 * 1024 * 1024) {
+        send(e.target.result);return;
+      }
+      var cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      try { send(cv.toDataURL('image/jpeg', 0.88)); }
+      catch (err) { send(e.target.result); }
+    };
+    img.onerror = function() { send(e.target.result); };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+/* ---------- 批量设置会员 ---------- */
+function openBatchMemberModal() {
+  var ids = selectedUserIds();
+  if (ids.length === 0) { toast('请先勾选用户', true); return; }
+  document.getElementById('bmCount').textContent = ids.length;
+  document.getElementById('bmType').value = 'pro';
+  document.getElementById('bmExpire').value = '';
+  openModal('modalBatchMember');
+}
+
+function confirmBatchMember() {
+  var ids = selectedUserIds();
+  if (ids.length === 0) { toast('请先勾选用户', true); return; }
+  var mtype = document.getElementById('bmType').value;
+  var expire = document.getElementById('bmExpire').value;   // YYYY-MM-DD 或空
+  var btn = document.getElementById('btnBatchMember');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>处理中...';
+  apiFetch('/api/admin/users/batch/membership', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: ids, membership_type: mtype, membership_expire: expire })
+  }).then(function(r) {
+    btn.disabled = false; btn.innerHTML = '确认设置';
+    if (r.data.code !== 0) {
+      if (r.status === 401) { toast('登录已过期', true); doLogout(); return; }
+      toast(r.data.message || '操作失败', true); return;
+    }
+    var d = r.data.data;
+    closeModal('modalBatchMember');
+    toast('成功 ' + d.success + ' · 跳过 ' + d.skipped + ' · 实时推送 ' + d.pushed);
+    loadUsers(userPage);
+  }).catch(function() {
+    btn.disabled = false; btn.innerHTML = '确认设置';
+    toast('网络错误', true);
+  });
+}
+
+/* ---------- 系统公告 ---------- */
+function loadAnnouncement() {
+  apiFetch('/api/admin/announcement').then(function(r) {
+    if (r.data.code !== 0) {
+      if (r.status === 401) { toast('登录已过期', true); doLogout(); return; }
+      return;
+    }
+    var d = r.data.data || {};
+    document.getElementById('announceContent').value = d.content || '';
+    document.getElementById('announceEnabled').checked = d.enabled !== false;
+  }).catch(function() { toast('网络错误', true); });
+}
+
+function saveAnnouncement() {
+  var content = document.getElementById('announceContent').value.trim();
+  var enabled = document.getElementById('announceEnabled').checked;
+  apiFetch('/api/admin/announcement', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: content, enabled: enabled })
+  }).then(function(r) {
+    if (r.data.code !== 0) {
+      if (r.status === 401) { toast('登录已过期', true); doLogout(); return; }
+      toast(r.data.message || '保存失败', true); return;
+    }
+    var d = r.data.data;
+    toast(d.content ? ('公告已保存并实时推送 ' + d.pushed + ' 位用户') : '公告已清除');
+  }).catch(function() { toast('网络错误', true); });
+}
+
+function clearAnnouncement() {
+  document.getElementById('announceContent').value = '';
+  saveAnnouncement();
+}
+
+
+function toggleAllUsers(checked) {
+  var boxes = document.querySelectorAll('#usersTbody .user-check');
+  for (var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+  updateBatchBar();
+}
+
+function askBatchAction(action) {
+  var ids = selectedUserIds();
+  if (ids.length === 0) { toast('请先勾选用户', true); return; }
+  var label = { disable: '禁用', enable: '解封', delete: '删除' }[action] || action;
+  var extra = action === 'disable' ? '，禁用后这些用户将被强制下线'
+            : action === 'delete' ? '，删除后这些用户将被强制下线'
+            : '，解封后这些用户将立即恢复使用';
+  openConfirm('批量' + label, '确认要<b style="color:var(--text);">批量' + label + '</b> 已选中的 <b style="color:var(--text);">'
+    + ids.length + '</b> 个用户吗？' + extra + '。', function() {
+    apiFetch('/api/admin/users/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action, ids: ids })
+    }).then(function(r) {
+      if (r.data.code !== 0) {
+        if (r.status === 401) { toast('登录已过期，请重新登录', true); doLogout(); return; }
+        toast(r.data.message || ('批量' + label + '失败'), true);
+        return;
+      }
+      var d = r.data.data || {};
+      toast('批量' + label + '完成：成功 ' + (d.success || 0) + ' 个'
+        + (d.failed ? '，失败 ' + d.failed + ' 个' : ''));
+      var allBox = document.getElementById('usersCheckAll');
+      if (allBox) { allBox.checked = false; allBox.indeterminate = false; }
+      loadUsers(userPage);
+    }).catch(function() { toast('网络错误', true); });
+  });
+}
+
+/* 禁用用户 */
+function askDisableUser(id, username) {
+  openConfirm('禁用用户', '确认要禁用用户 <b style="color:var(--text);">' + escapeHtml(username) + '</b> 吗？禁用后该用户将被强制下线。', function() {
+    apiFetch('/api/admin/users/' + id + '/disable', { method: 'POST' })
+      .then(function(r) {
+        if (r.data.code === 0) { toast('已禁用'); loadUsers(userPage); }
+        else toast(r.data.message || '操作失败', true);
+      })
+      .catch(function() { toast('网络错误', true); });
+  });
+}
+
+/* 解封用户 */
+function askEnableUser(id) {
+  apiFetch('/api/admin/users/' + id + '/enable', { method: 'POST' })
+    .then(function(r) {
+      if (r.data.code === 0) { toast('已解封'); loadUsers(userPage); }
+      else toast(r.data.message || '操作失败', true);
+    })
+    .catch(function() { toast('网络错误', true); });
+}
+
+/* 删除用户 */
+function askDeleteUser(id, username) {
+  openConfirm('删除用户', '确认要删除用户 <b style="color:var(--text);">' + escapeHtml(username) + '</b> 吗？此操作将软删除账号并强制下线，不可恢复。', function() {
+    apiFetch('/api/admin/users/' + id, { method: 'DELETE' })
+      .then(function(r) {
+        if (r.data.code === 0) { toast('已删除'); loadUsers(userPage); }
+        else toast(r.data.message || '操作失败', true);
+      })
+      .catch(function() { toast('网络错误', true); });
+  });
+}
+
+/* 调整积分弹窗 */
+function openPointsModal(id, username) {
+  pointsTargetUserId = id;
+  document.getElementById('pointsUsername').textContent = username;
+  document.getElementById('pointsAmount').value = '';
+  document.getElementById('pointsDetail').value = '';
+  openModal('modalPoints');
+}
+function confirmAdjustPoints() {
+  var amount = parseInt(document.getElementById('pointsAmount').value, 10);
+  var detail = document.getElementById('pointsDetail').value.trim();
+  if (isNaN(amount) || amount === 0) { toast('请输入非零的变动量', true); return; }
+  var btn = document.getElementById('btnConfirmPoints');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>提交中...';
+
+  apiFetch('/api/admin/users/' + pointsTargetUserId + '/points', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount: amount, reason: 'admin_adjust', detail: detail || '手动调整' })
+  })
+    .then(function(r) {
+      btn.disabled = false;
+      btn.textContent = '确认调整';
+      if (r.data.code === 0) {
+        toast('积分调整成功');
+        closeModal('modalPoints');
+        loadUsers(userPage);
+      } else {
+        toast(r.data.message || '操作失败', true);
+      }
+    })
+    .catch(function() {
+      btn.disabled = false;
+      btn.textContent = '确认调整';
+      toast('网络错误', true);
+    });
+}
+
+/* ============================================================
+ * 调整会员类型
+ * ============================================================ */
+var memberTargetUserId = null;
+function openMemberModal(id, username, mtype, expire) {
+  memberTargetUserId = id;
+  document.getElementById('memberUsername').textContent = username;
+  document.getElementById('memberType').value = mtype || 'free';
+  document.getElementById('memberExpire').value = expire || '';
+  openModal('modalMembership');
+}
+function confirmSetMembership() {
+  if (memberTargetUserId == null) return;
+  var mtype = document.getElementById('memberType').value;
+  var expire = document.getElementById('memberExpire').value.trim();
+  var btn = document.getElementById('btnConfirmMember');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>提交中...';
+  var payload = { membership_type: mtype };
+  if (expire) payload.membership_expire = expire;
+
+  apiFetch('/api/admin/users/' + memberTargetUserId + '/membership', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+    .then(function(r) {
+      btn.disabled = false;
+      btn.textContent = '确认修改';
+      if (r.data && r.data.code === 0) {
+        toast('会员类型已更新，已实时推送到客户端');
+        closeModal('modalMembership');
+        loadUsers(userPage);
+      } else {
+        toast((r.data && (r.data.message || r.data.detail)) || '操作失败', true);
+      }
+    })
+    .catch(function() {
+      btn.disabled = false;
+      btn.textContent = '确认修改';
+      toast('网络错误', true);
+    });
+}
+
+/* ============================================================
+ * 订单管理
+ * ============================================================ */
+function loadOrders(page) {
+  orderPage = page;
+  var status = document.getElementById('orderStatusFilter').value;
+  var url = '/api/admin/orders?page=' + page + '&page_size=' + pageSize;
+  if (status) url += '&status=' + status;
+
+  apiFetch(url)
+    .then(function(r) {
+      if (r.data.code !== 0) {
+        if (r.status === 401) { toast('登录已过期', true); doLogout(); return; }
+        toast(r.data.message || '加载失败', true);
+        return;
+      }
+      renderOrders(r.data.data);
+    })
+    .catch(function() { toast('网络错误', true); });
+}
+
+function renderOrders(d) {
+  var list = d.list || [];
+  var tbody = document.getElementById('ordersTbody');
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="9">暂无订单数据</td></tr>';
+  } else {
+    tbody.innerHTML = list.map(function(o) {
+      var statusBadge = {
+        pending: '<span class="badge badge-pending">待支付</span>',
+        paid: '<span class="badge badge-paid">已支付</span>',
+        cancelled: '<span class="badge badge-cancelled">已取消</span>',
+        refunded: '<span class="badge badge-refunded">已退款</span>'
+      }[o.status] || o.status;
+      var payMethod = o.pay_method === 'alipay' ? '支付宝' : (o.pay_method === 'wechat' ? '微信' : o.pay_method);
+      var oid = o.order_id || o.id;
+      var confirmBtn = o.status === 'pending'
+        ? '<button class="btn btn-sm btn-success" onclick="askConfirmOrder(\'' + escapeHtml(oid) + '\')">确认到账</button>'
+        : '';
+      var deleteBtn = '<button class="btn btn-sm btn-danger" onclick="askDeleteOrder(\''
+        + escapeHtml(oid) + '\')">删除</button>';
+      return '<tr>'
+        + '<td><input type="checkbox" class="order-check" value="' + escapeHtml(oid) + '" onchange="updateOrdersBatchBar()"></td>'
+        + '<td>' + escapeHtml(oid) + '</td>'
+        + '<td>' + o.user_id + '</td>'
+        + '<td>' + escapeHtml(o.product_id || o.order_type || '-') + '</td>'
+        + '<td>¥' + (o.amount != null ? o.amount : '-') + '</td>'
+        + '<td>' + payMethod + '</td>'
+        + '<td>' + statusBadge + '</td>'
+        + '<td>' + (o.created_at || '-') + '</td>'
+        + '<td><div class="ops">' + confirmBtn + deleteBtn + '</div></td>'
+        + '</tr>';
+    }).join('');
+  }
+  var total = d.total || 0;
+  var totalPages = Math.max(1, Math.ceil(total / pageSize));
+  document.getElementById('ordersPageInfo').textContent = '第 ' + orderPage + ' / ' + totalPages + ' 页（共 ' + total + ' 条）';
+  document.getElementById('ordersPrev').disabled = orderPage <= 1;
+  document.getElementById('ordersNext').disabled = orderPage >= totalPages;
+  try { updateOrdersBatchBar(); } catch (e) {}
+}
+
+function selectedOrderIds() {
+  var boxes = document.querySelectorAll('#ordersTbody .order-check:checked');
+  var ids = [];
+  for (var i = 0; i < boxes.length; i++) ids.push(boxes[i].value);
+  return ids;
+}
+
+function updateOrdersBatchBar() {
+  var n = selectedOrderIds().length;
+  document.getElementById('ordersBatchInfo').textContent = '已选 ' + n + ' 项';
+  var btn = document.getElementById('ordersBatchDeleteBtn');
+  if (btn) btn.disabled = n === 0;
+  var all = document.querySelectorAll('#ordersTbody .order-check');
+  var allBox = document.getElementById('ordersCheckAll');
+  if (allBox) {
+    allBox.checked = all.length > 0 && n === all.length;
+    allBox.indeterminate = n > 0 && n < all.length;
+  }
+}
+
+function toggleAllOrders(checked) {
+  var boxes = document.querySelectorAll('#ordersTbody .order-check');
+  for (var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+  updateOrdersBatchBar();
+}
+
+function askDeleteOrder(orderId) {
+  openConfirm('删除订单', '确认要删除订单 <b style="color:var(--text);">'
+    + escapeHtml(orderId) + '</b> 吗？此操作不可恢复（已发放的积分/会员不会回滚）。', function() {
+    apiFetch('/api/admin/orders/' + encodeURIComponent(orderId), { method: 'DELETE' })
+      .then(function(r) {
+        if (r.data && r.data.code === 0) {
+          toast('订单已删除');
+          loadOrders(orderPage);
+        } else {
+          toast((r.data && (r.data.message || r.data.detail)) || '操作失败', true);
+        }
+      })
+      .catch(function() { toast('网络错误', true); });
+  });
+}
+
+function askBatchDeleteOrders() {
+  var ids = selectedOrderIds();
+  if (ids.length === 0) { toast('请先勾选订单', true); return; }
+  openConfirm('批量删除订单', '确认要<b style="color:var(--text);">批量删除</b> 已选中的 <b style="color:var(--text);">'
+    + ids.length + '</b> 个订单吗？此操作不可恢复（已发放的积分/会员不会回滚）。', function() {
+    apiFetch('/api/admin/orders/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids })
+    }).then(function(r) {
+      if (!r.data || r.data.code !== 0) {
+        if (r.status === 401) { toast('登录已过期，请重新登录', true); doLogout(); return; }
+        toast((r.data && (r.data.message || r.data.detail)) || '批量删除失败', true);
+        return;
+      }
+      var dd = r.data.data || {};
+      toast('批量删除完成：成功 ' + (dd.success || 0) + ' 个'
+        + (dd.failed ? '，失败 ' + dd.failed + ' 个' : '')
+        + (dd.skipped ? '，跳过 ' + dd.skipped + ' 个' : ''));
+      var allBox = document.getElementById('ordersCheckAll');
+      if (allBox) { allBox.checked = false; allBox.indeterminate = false; }
+      loadOrders(orderPage);
+    }).catch(function() { toast('网络错误', true); });
+  });
+}
+
+function changeOrderPage(delta) {
+  var next = orderPage + delta;
+  if (next < 1) return;
+  loadOrders(next);
+}
+
+function askConfirmOrder(orderId) {
+  openConfirm('确认到账', '确认订单 <b style="color:var(--text);">' + escapeHtml(orderId) + '</b> 已到账吗？确认后将发放对应积分/会员。', function() {
+    apiFetch('/api/admin/orders/' + encodeURIComponent(orderId) + '/confirm', { method: 'POST' })
+      .then(function(r) {
+        if (r.data && r.data.code === 0) {
+          toast('已确认到账，发放 ' + (r.data.data && r.data.data.points_added != null ? r.data.data.points_added + ' 积分' : '成功'));
+          loadOrders(orderPage);
+        } else {
+          toast((r.data && (r.data.message || r.data.detail)) || '操作失败', true);
+        }
+      })
+      .catch(function() { toast('网络错误', true); });
+  });
+}
+
+/* ============================================================
+ * 收款码设置
+ * ============================================================ */
+function loadQrcodes() {
+  fetch(withBase('/api/shop/qrcodes'))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.code !== 0) return;
+      var d = data.data || {};
+      setPreview('alipayPreview', d.alipay);
+      setPreview('wechatPreview', d.wechat);
+    })
+    .catch(function() { /* 静默 */ });
+}
+function setPreview(elId, src) {
+  var el = document.getElementById(elId);
+  if (src) {
+    // 收款码 URL 形如 /static/uploads/qrcodes/x.png，需补上部署前缀
+    el.innerHTML = '<img src="' + withBase(src) + '" alt="收款码">';
+  } else {
+    el.innerHTML = '<span class="empty">暂无图片</span>';
+  }
+}
+
+function uploadQrcode(type, e) {
+  var file = e.target.files[0];
+  if (!file) return;
+  var fd = new FormData();
+  fd.append('type', type);
+  fd.append('file', file);
+
+  var label = type === 'alipay' ? '支付宝' : '微信';
+  toast('正在上传' + label + '收款码...');
+
+  apiFetch('/api/admin/qrcode', { method: 'POST', body: fd })
+    .then(function(r) {
+      if (r.data.code === 0) {
+        toast(label + '收款码上传成功');
+        loadQrcodes();
+      } else {
+        toast(r.data.message || '上传失败', true);
+      }
+    })
+    .catch(function() { toast('网络错误', true); })
+    .finally(function() { e.target.value = ''; });
+}
+
+/* ============================================================
+ * 模态弹窗通用
+ * ============================================================ */
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function openConfirm(title, bodyHtml, onOk) {
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmBody').innerHTML = bodyHtml;
+  pendingConfirmAction = onOk;
+  openModal('modalConfirm');
+}
+document.getElementById('btnConfirmOk').onclick = function() {
+  closeModal('modalConfirm');
+  if (pendingConfirmAction) pendingConfirmAction();
+};
+
+/* ============================================================
+ * 工具
+ * ============================================================ */
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+/* ============================================================
+ * 启动：已有 token 则直接进入后台
+ * ============================================================ */
+if (adminToken) {
+  document.getElementById('loginView').style.display = 'none';
+  document.getElementById('adminView').classList.add('show');
+  loadUsers(1);
+}
+</script>
+</body>
+</html>

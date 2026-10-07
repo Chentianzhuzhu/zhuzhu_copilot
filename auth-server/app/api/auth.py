@@ -1,5 +1,4 @@
 """认证 API：注册、登录、登出、Token续期、用户信息、头像上传"""
-import base64
 import io
 import os
 import uuid
@@ -14,14 +13,15 @@ from app.core import login_state
 from app.config import settings
 from app.schemas import (RegisterRequest, LoginRequest, LoginResultRequest,
                          SecurityQuestionRequest, ResetPasswordRequest)
-from app.services import auth_service
+from app.services import auth_service, avatar_service
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
-# 头像存储目录
-AVATAR_DIR = os.path.join("static", "uploads", "avatars")
+# 头像落盘/校验已抽到 services/avatar_service（管理后台建号共用）；
+# 此处保留别名以兼容既有引用。
+AVATAR_DIR = avatar_service.AVATAR_DIR
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif"}
-MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2MB
+MAX_AVATAR_SIZE = avatar_service.MAX_AVATAR_SIZE
 
 
 def get_client_ip(request: Request) -> str:
@@ -49,13 +49,8 @@ async def _verify_login_state(redis, state: str) -> bool:
 
 
 def validate_image_header(file_bytes: bytes) -> bool:
-    """用 Pillow 验证图片文件头是否合法"""
-    try:
-        img = Image.open(io.BytesIO(file_bytes))
-        img.verify()
-        return True
-    except Exception:
-        return False
+    """用 Pillow 验证图片文件头是否合法（转发到共享实现，避免两份逻辑）。"""
+    return avatar_service.validate_image_header(file_bytes)
 
 
 @router.post("/state")
@@ -140,39 +135,13 @@ async def register(
 
     ip = get_client_ip(request)
 
-    # 处理 base64 头像
+    # 处理 base64 头像（落盘逻辑见 services/avatar_service，管理后台建号共用）
     avatar_url = None
     if req.avatar:
         try:
-            img_data = req.avatar
-            if "," in img_data:
-                img_data = img_data.split(",", 1)[1]
-            img_bytes = base64.b64decode(img_data)
-
-            if len(img_bytes) > MAX_AVATAR_SIZE:
-                raise HTTPException(status_code=400, detail="头像大小不能超过2MB")
-
-            if not validate_image_header(img_bytes):
-                raise HTTPException(status_code=400, detail="头像文件格式不合法")
-
-            ext = "png"
-            img = Image.open(io.BytesIO(img_bytes))
-            if img.format == "JPEG":
-                ext = "jpg"
-            elif img.format == "PNG":
-                ext = "png"
-            elif img.format == "GIF":
-                ext = "gif"
-
-            filename = f"{uuid.uuid4().hex}.{ext}"
-            filepath = os.path.join(AVATAR_DIR, filename)
-            os.makedirs(AVATAR_DIR, exist_ok=True)
-            with open(filepath, "wb") as f:
-                f.write(img_bytes)
-
-            avatar_url = f"/static/uploads/avatars/{filename}"
-        except HTTPException:
-            raise
+            avatar_url = avatar_service.save_avatar_base64(req.avatar)
+        except avatar_service.AvatarError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception:
             raise HTTPException(status_code=400, detail="头像处理失败")
 
