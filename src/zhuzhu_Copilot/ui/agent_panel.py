@@ -21904,12 +21904,12 @@ class AgentPanel(QDialog):
         self._retheme()
 
     # ---------- 账号系统：顶栏用户区域 ----------
-    #: 顶栏头像直径（与 34px 的图标按钮协调：留出上下各 5px 呼吸空间）
-    _AUTH_AVATAR_PX = 24
+    #: 顶栏头像直径（用户要求「头像放大」，从 24 提到 28，与 34px 按钮协调）
+    _AUTH_AVATAR_PX = 28
     #: 头像两侧留出的透明间距（做进图标里，拉开与用户名的距离）
-    _AUTH_AVATAR_GAP = 4
-    #: 用户名最多显示宽度，超出省略（防止长名把按钮撑爆/挤掉头像）
-    _AUTH_NAME_MAX_PX = 120
+    _AUTH_AVATAR_GAP = 5
+    #: 用户名最多显示宽度，超出用省略号（防止长名把按钮撑爆/挤掉头像）
+    _AUTH_NAME_MAX_PX = 130
 
     def _build_auth_user_bar(self, top):
         """顶栏齿轮右侧用户区域：未登录=登录按钮；已登录=头像+用户名，点击弹菜单。"""
@@ -21963,6 +21963,9 @@ class AgentPanel(QDialog):
             # 头像地址变更（WS 推送或 /me 轮询发现）：重拉图片并刷新顶栏/个人信息面板
             auth.avatar_updated.connect(self._on_avatar_updated,
                                         Qt.ConnectionType.UniqueConnection)
+            # 用户名/ID 变更（/me 修正过期缓存）：重绘顶栏用户区
+            auth.username_updated.connect(self._refresh_auth_user_widget,
+                                          Qt.ConnectionType.UniqueConnection)
             # 积分实时推送：同步刷新个人信息面板（面板打开时仅更新数字）
             auth.points_updated.connect(self.refresh_profile_panel_points,
                                         Qt.ConnectionType.UniqueConnection)
@@ -22099,8 +22102,10 @@ class AgentPanel(QDialog):
             btn.setToolTip(text if elided != text else "")
             has_icon = (not btn.icon().isNull()) if btn.icon() is not None else False
             icon_w = (self._AUTH_AVATAR_PX + self._AUTH_AVATAR_GAP * 2) if has_icon else 0
-            # 6(左) + 12(右) 内边距 = 18
-            hint = icon_w + fm.horizontalAdvance(elided) + 18
+            # 6(左) + 12(右) 内边距 = 18；再留 8px 余量：
+            # 实测「刚好相等」时最后一个字符仍会被裁掉 1px（字体度量与实际
+            # 绘制存在取整差），且不同 DPI/字体下差异更大，必须有 slack。
+            hint = icon_w + fm.horizontalAdvance(elided) + 18 + 8
             btn.setMinimumWidth(max(56, min(hint, 320)))
         except Exception:
             try:
@@ -22355,13 +22360,23 @@ class AgentPanel(QDialog):
         return panel
 
     def _profile_panel_size(self, panel) -> tuple:
-        """面板尺寸（宽, 高）：宽度取首选宽与可用宽取小；高度用布局 heightForWidth 或上限。"""
+        """面板尺寸（宽, 高）。
+
+        宽度取「首选宽 / 内容所需宽 的较大者」再夹到可用宽内：
+        固定 232px 时，像 ``2075-11-07 23:59:59`` 这类较长的值会被右对齐的
+        QLabel 从**左侧裁掉**（显示成 ``75-11-07 23:59:59``），
+        用户 ID ``41`` 也会变成 ``1``。改成按内容自适应后不会再截断。
+        """
         margin = SPACING_SM
         try:
             avail = max(200, int(self.width()) - 2 * margin)
         except Exception:
             avail = int(panel.PREFERRED_WIDTH)
-        w = max(180, min(int(panel.PREFERRED_WIDTH), avail))
+        try:
+            need = int(panel.sizeHint().width())
+        except Exception:
+            need = int(panel.PREFERRED_WIDTH)
+        w = max(180, min(max(int(panel.PREFERRED_WIDTH), need), avail))
         h = 0
         lay = panel.layout()
         try:

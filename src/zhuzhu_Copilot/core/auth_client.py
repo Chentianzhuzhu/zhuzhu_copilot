@@ -400,6 +400,7 @@ class AuthClient(QObject):
     order_paid = pyqtSignal(dict)       # 订单支付到账
     membership_updated = pyqtSignal(dict)  # 会员类型/到期日变动
     avatar_updated = pyqtSignal(str)       # 头像地址变动（新 URL）
+    username_updated = pyqtSignal(str)     # 用户名变动（缓存修正，界面需重绘）
     announcement_updated = pyqtSignal(dict)  # 系统公告变更 {content, enabled}
     checkin_status_updated = pyqtSignal(dict)  # 签到状态变更 {can_checkin, checked, reward, ...}
     checkin_done = pyqtSignal(dict)            # 本机签到成功 {points_added, points, tier}
@@ -1208,7 +1209,12 @@ class AuthClient(QObject):
     def _sync_from_me(self, data):
         """把 /me 返回的最新字段同步到本地缓存；有实质变化才广播。
 
-        目前覆盖头像（服务端换头像后客户端需重拉图）与会员信息。
+        覆盖：头像、用户名、用户ID、会员信息。
+
+        **用户名与 ID 必须同步**：本地 ``auth_user_json`` 是登录时写下的快照，
+        而积分/会员会经 WS 推送刷新，用户名和 ID 却没有任何刷新通道——
+        一旦缓存里是旧值（例如早期测试账号的 ``u`` / ``1``），界面会永远显示
+        旧用户名，看起来就像「名字被挤压/显示不全」。
         仅在值真正变化时发信号，避免轮询周期内反复触发 UI 重绘。
         """
         try:
@@ -1221,6 +1227,16 @@ class AuthClient(QObject):
                 self._user["avatar"] = new_avatar
                 changed_avatar = True
 
+            changed_name = False
+            new_name = str(d.get("username") or "")
+            if new_name and new_name != str(self._user.get("username") or ""):
+                self._user["username"] = new_name
+                changed_name = True
+            if d.get("id") is not None and str(d.get("id")) != str(
+                    self._user.get("id") or ""):
+                self._user["id"] = d.get("id")
+                changed_name = True   # 与用户名同批发信号，界面一起刷新
+
             changed_member = False
             for k in ("membership_type", "membership_expire", "points"):
                 if k in d and d.get(k) is not None:
@@ -1228,7 +1244,7 @@ class AuthClient(QObject):
                         self._user[k] = d.get(k)
                         changed_member = True
 
-            if not (changed_avatar or changed_member):
+            if not (changed_avatar or changed_name or changed_member):
                 return
             # 落盘（保持与其它写入路径一致）
             try:
@@ -1240,6 +1256,8 @@ class AuthClient(QObject):
                 pass
             if changed_avatar:
                 self.avatar_updated.emit(new_avatar)
+            if changed_name:
+                self.username_updated.emit(str(self._user.get("username") or ""))
             if changed_member:
                 self.membership_updated.emit(dict(self._user))
         except Exception:
