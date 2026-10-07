@@ -296,34 +296,36 @@ async def logout(current_user: dict = Depends(get_current_user), redis=Depends(g
     return {"code": 0, "message": "登出成功"}
 
 
+@router.get("/avatar_limits")
+async def avatar_limits():
+    """下发头像上传约束（前端校验的唯一来源）。
+
+    大小上限随服务端配置变化，登录页/管理后台不再各写一份魔法数字。
+    """
+    return {"code": 0, "data": {
+        "max_bytes": avatar_service.MAX_AVATAR_SIZE,
+        "max_mb": avatar_service.max_size_mb(),
+        "formats": ["jpg", "png", "gif", "webp"],
+    }}
+
+
 @router.post("/avatar")
 async def upload_avatar(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """上传头像（multipart/form-data）"""
-    if file.content_type not in ALLOWED_AVATAR_TYPES:
-        raise HTTPException(status_code=400, detail="仅支持 jpg/png/gif 格式")
+    """上传头像（multipart/form-data）。
 
+    校验与落盘统一走 ``services/avatar_service``，与注册/后台建号同一套规则。
+    """
     file_bytes = await file.read()
-    if len(file_bytes) > MAX_AVATAR_SIZE:
-        raise HTTPException(status_code=400, detail="头像大小不能超过2MB")
-
-    if not validate_image_header(file_bytes):
-        raise HTTPException(status_code=400, detail="图片文件不合法")
-
-    img = Image.open(io.BytesIO(file_bytes))
-    ext_map = {"JPEG": "jpg", "PNG": "png", "GIF": "gif"}
-    ext = ext_map.get(img.format, "png")
-
-    filename = f"{uuid.uuid4().hex}.{ext}"
-    os.makedirs(AVATAR_DIR, exist_ok=True)
-    filepath = os.path.join(AVATAR_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(file_bytes)
-
-    avatar_url = f"/static/uploads/avatars/{filename}"
+    try:
+        avatar_url = avatar_service.save_avatar_bytes(file_bytes)
+    except avatar_service.AvatarError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="头像处理失败")
 
     from sqlalchemy import text
     await db.execute(

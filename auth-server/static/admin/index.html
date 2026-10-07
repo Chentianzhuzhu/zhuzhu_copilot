@@ -97,14 +97,20 @@
   select:hover, select:focus {
     background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23eaeaea' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   }
-  /* 日期输入：保留原生可点开的日历图标，仅反色使其在深色底上可见 */
-  input[type="date"] { filter: invert(0.9); }
+  /* <input type="date"> 不能关原生指示器（否则日历点不开），但它的日历图标在
+     深色底上默认是深色 → 看起来像一个方块。
+     注意：**只反色图标本身**。曾经给整个 input 加 filter: invert(0.9)，
+     结果连输入框背景一起被反成了米色，图标也随之变浅 → 图标与底色几乎同色，
+     反而更看不清（这是 2026-10-07 的真实回归）。故此处只对 ::-webkit 伪元素
+     处理，input 本身背景/文字保持主题原样。 */
   input[type="date"]::-webkit-calendar-picker-indicator {
-    filter: invert(1);
+    filter: invert(1);      /* 深色图标 → 浅色图标 */
+    opacity: 0.85;
     cursor: pointer;
-    opacity: 0.7;
   }
   input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+  /* Firefox 用::-moz-picker-indicator，且不支持 filter，故用 opacity 提升可见性 */
+  input[type="date"]::-moz-picker-indicator { opacity: 0.85; cursor: pointer; }
   /* 复选框行：不能吃 .form-group input 的 width:100%，否则勾选框会被拉满整行、
      把右侧文字标签挤到最右边，出现「文字排序错乱」。这里单独还原为自适应尺寸。 */
   .form-group.checkbox-row {
@@ -693,7 +699,7 @@
       <div id="cuAvatarPreviewWrap" style="display:none;margin-top:8px;align-items:center;gap:8px;">
         <img id="cuAvatarPreview"
              style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid var(--border);">
-        <span style="color:var(--text-dim);font-size:12px;">预览（不超过 2MB）</span>
+        <span id="cuAvatarHint" style="color:var(--text-dim);font-size:12px;"></span>
       </div>
     </div>
     <div class="form-group">
@@ -852,6 +858,7 @@ function doAdminLogin(e) {
       localStorage.setItem('admin_token', adminToken);
       document.getElementById('adminNameLabel').textContent = u;
       showAdmin();
+      loadAvatarLimits();   // 建号弹窗的头像上限提示跟随服务端配置
     } else {
       toast(data.message || '登录失败', true);
     }
@@ -1037,6 +1044,32 @@ function confirmBatchPoints() {
 }
 
 /* ---------- 新增账号（管理后台代建） ---------- */
+/* 头像上传约束：上限来自服务端 /api/auth/avatar_limits（公开接口，无需登录），
+   这里的 5MB 仅为接口不可达时的兜底，避免前后端限额各写一份后漂移。 */
+var AVATAR_LIMITS = { maxBytes: 5 * 1024 * 1024, maxMb: 5 };
+
+/* 拉取服务端限额并刷新弹窗里的提示文案。 */
+function loadAvatarLimits() {
+  var hint = document.getElementById('cuAvatarHint');
+  fetch(withBase('/api/auth/avatar_limits'))
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var d = j && j.data;
+      if (d && d.max_bytes) {
+        AVATAR_LIMITS.maxBytes = d.max_bytes;
+        AVATAR_LIMITS.maxMb = d.max_mb;
+      }
+      if (hint) {
+        hint.textContent = '预览（不超过 ' + AVATAR_LIMITS.maxMb + 'MB）';
+      }
+    })
+    .catch(function () {
+      if (hint) {
+        hint.textContent = '预览（不超过 ' + AVATAR_LIMITS.maxMb + 'MB）';
+      }
+    });
+}
+
 function openCreateUserModal() {
   ['cuUsername', 'cuPassword', 'cuPoints', 'cuExpire',
    'cuSecQ', 'cuSecA'].forEach(function(id) {
@@ -1046,18 +1079,22 @@ function openCreateUserModal() {
   // 头像 file 只能靠清空 value 重置（同时清掉上次选择的文件）
   document.getElementById('cuAvatarFile').value = '';
   document.getElementById('cuAvatarPreviewWrap').style.display = 'none';
+  var hint = document.getElementById('cuAvatarHint');
+  if (hint) {
+    hint.textContent = '预览（不超过 ' + AVATAR_LIMITS.maxMb + 'MB）';
+  }
   openModal('modalCreateUser');
 }
 
-/* 头像选择后本地预览（限制 2MB，与服务端 MAX_AVATAR_SIZE 保持一致） */
+/* 头像选择后本地预览（上限取服务端下发值） */
 function previewCreateUserAvatar() {
   var input = document.getElementById('cuAvatarFile');
   var wrap = document.getElementById('cuAvatarPreviewWrap');
   var img = document.getElementById('cuAvatarPreview');
   var f = input.files && input.files[0];
   if (!f) { wrap.style.display = 'none'; return; }
-  if (f.size > 2 * 1024 * 1024) {
-    toast('头像大小不能超过2MB', true);
+  if (f.size > AVATAR_LIMITS.maxBytes) {
+    toast('头像大小不能超过' + AVATAR_LIMITS.maxMb + 'MB', true);
     input.value = '';
     wrap.style.display = 'none';
     return;
@@ -1125,15 +1162,17 @@ function confirmCreateUser() {
   };
 
   if (!file) { send(''); return; }
-  // 图片压缩：长边 >512 时按比例缩放并转 JPEG，控制体积（服务端限 2MB）
+  // 图片压缩：长边 >512 时按比例缩放并转 JPEG，控制体积。
+  // 判定阈值取服务端上限：base64 字符数 ≤ maxBytes 时，解码后字节数
+  // ≈ 0.75×maxBytes，必然在限额内，故可直接原样上传。
   var reader = new FileReader();
   reader.onload = function(e) {
     var img = new Image();
     img.onload = function() {
       var MAX = 512;
       var scale = Math.min(1, MAX / Math.max(img.width, img.height));
-      if (scale === 1 && e.target.result.length < 1.5 * 1024 * 1024) {
-        send(e.target.result);return;
+      if (scale === 1 && e.target.result.length <= AVATAR_LIMITS.maxBytes) {
+        send(e.target.result); return;
       }
       var cv = document.createElement('canvas');
       cv.width = Math.round(img.width * scale);
@@ -1605,6 +1644,7 @@ if (adminToken) {
   document.getElementById('loginView').style.display = 'none';
   document.getElementById('adminView').classList.add('show');
   loadUsers(1);
+  loadAvatarLimits();
 }
 </script>
 </body>

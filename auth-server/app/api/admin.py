@@ -20,7 +20,7 @@ from app.schemas import (AdminLoginRequest, AdminAdjustPointsRequest,
                          AdminBatchMembershipRequest, AdminAnnouncementRequest,
                          AdminCreateUserRequest, DEFAULT_INITIAL_POINTS)
 from app.services.ws_manager import ws_manager
-from app.services import order_service, avatar_service
+from app.services import order_service, avatar_service, auth_service
 from app.services.order_service import MEMBERSHIP_TIERS
 
 router = APIRouter(prefix="/api/admin", tags=["管理员"])
@@ -302,17 +302,22 @@ async def delete_user(
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
 ):
-    """删除用户（软删除）：撤销全部会话并推送强制下线。"""
+    """删除用户（软删除）：撤销全部会话并推送强制下线。
+
+    同时**释放用户名**（追加 ``#del#<id>`` 后缀）：username 是 UNIQUE 列，
+    若原样保留，这个用户名就被永久占用，之后无法再用同名建号。
+    """
     result = await db.execute(
-        text("SELECT id FROM users WHERE id = :uid AND status != 'deleted'"),
+        text("SELECT id, username FROM users WHERE id = :uid AND status != 'deleted'"),
         {"uid": user_id},
     )
-    if not result.mappings().first():
+    row = result.mappings().first()
+    if not row:
         raise HTTPException(status_code=404, detail="用户不存在")
 
     await db.execute(
-        text("UPDATE users SET status = 'deleted' WHERE id = :uid"),
-        {"uid": user_id},
+        text("UPDATE users SET status = 'deleted', username = :un WHERE id = :uid"),
+        {"uid": user_id, "un": auth_service.freed_username(row["username"], user_id)},
     )
 
     # 先推送强制下线（连接仍在），再撤销会话
@@ -355,7 +360,8 @@ async def batch_users(
     for uid in ids:
         try:
             result = await db.execute(
-                text("SELECT id, status FROM users WHERE id = :uid AND status != 'deleted'"),
+                text("SELECT id, status, username FROM users "
+                     "WHERE id = :uid AND status != 'deleted'"),
                 {"uid": uid},
             )
             row = result.mappings().first()
@@ -384,9 +390,12 @@ async def batch_users(
                 await sess_store.revoke_all_sessions(redis, uid)
                 success += 1
             else:  # delete
+                # 与单个删除同款：释放用户名，否则该名字被永久占用
                 await db.execute(
-                    text("UPDATE users SET status = 'deleted' WHERE id = :uid"),
-                    {"uid": uid},
+                    text("UPDATE users SET status = 'deleted', username = :un "
+                         "WHERE id = :uid"),
+                    {"uid": uid,
+                     "un": auth_service.freed_username(row["username"], uid)},
                 )
                 await ws_manager.send_to_user(uid, {
                     "type": "force_logout",

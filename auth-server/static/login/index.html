@@ -1,0 +1,1318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>zhuzhu Copilot - 登录 / 注册</title>
+<style>
+  /* ========== 全局深色主题 ========== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #1a1a2e;
+    --card: #16213e;
+    --primary: #0f3460;
+    --accent: #e94560;
+    --text: #eaeaea;
+    --text-dim: #9a9ab0;
+    --border: #2a2a4a;
+    --success: #2ecc71;
+    --error: #e74c3c;
+  }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background-image: radial-gradient(circle at 20% 20%, rgba(15,52,96,0.4) 0%, transparent 50%),
+                      radial-gradient(circle at 80% 80%, rgba(233,69,96,0.15) 0%, transparent 50%);
+  }
+  /* ========== 卡片容器 ========== */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 36px 32px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  }
+  .brand {
+    text-align: center;
+    margin-bottom: 24px;
+  }
+  .brand h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .brand h1 span { color: var(--accent); }
+  .brand p {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 6px;
+  }
+  /* ========== Tab 切换 ========== */
+  .tabs {
+    display: flex;
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 4px;
+    margin-bottom: 24px;
+  }
+  .tab {
+    flex: 1;
+    text-align: center;
+    padding: 10px 0;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--text-dim);
+    transition: all 0.2s;
+    user-select: none;
+  }
+  .tab.active {
+    background: var(--primary);
+    color: var(--text);
+    font-weight: 600;
+  }
+  /* ========== 表单 ========== */
+  .form-group { margin-bottom: 16px; }
+  .form-group label {
+    display: block;
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .form-group input, .form-group select {
+    width: 100%;
+    padding: 11px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .form-group input:focus, .form-group select:focus {
+    border-color: var(--accent);
+  }
+  .form-group input::placeholder { color: #5a5a7a; }
+  .form-group select option { background: var(--card); }
+  .hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+  .hint.error-hint { color: var(--error); }
+  /* ========== 头像上传 ========== */
+  .avatar-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .avatar-preview {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px dashed var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    flex-shrink: 0;
+    cursor: pointer;
+    position: relative;
+  }
+  .avatar-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .avatar-preview .placeholder {
+    font-size: 22px;
+    color: var(--text-dim);
+  }
+  .avatar-upload-btn {
+    flex: 1;
+    padding: 10px;
+    background: var(--primary);
+    border: none;
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .avatar-upload-btn:hover { opacity: 0.85; }
+  #avatarInput { display: none; }
+  /* ========== 错误提示 ========== */
+  .alert-error {
+    background: rgba(231,76,60,0.12);
+    border: 1px solid rgba(231,76,60,0.4);
+    color: var(--error);
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .alert-error.show { display: block; }
+  .alert-error.success {
+    background: rgba(46,204,113,0.12);
+    border-color: rgba(46,204,113,0.4);
+    color: var(--success);
+  }
+  /* 忘记密码：密保问题展示框 */
+  .fp-question {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 13px;
+    color: var(--text);
+    word-break: break-word;
+  }
+  /* ========== 提交按钮 ========== */
+  .btn-submit {
+    width: 100%;
+    padding: 12px;
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    margin-top: 8px;
+  }
+  .btn-submit:hover { opacity: 0.9; }
+  .btn-submit:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  /* ========== Loading 旋转 ========== */
+  .spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* ========== 底部协议 ========== */
+  .footer-note {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 18px;
+  }
+  .footer-note a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  /* ========== 回调成功/手动复制视图 ========== */
+  .success-view { display: none; text-align: center; padding: 20px 0; }
+  .success-view.show { display: block; }
+  .success-view .icon-ok {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    background: rgba(46,204,113,0.15);
+    color: var(--success);
+    font-size: 30px;
+    line-height: 56px;
+    margin: 0 auto 16px;
+  }
+  .success-view h2 { font-size: 18px; margin-bottom: 8px; }
+  .success-view p { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+  .token-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    margin: 16px 0;
+    word-break: break-all;
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    color: var(--success);
+    max-height: 100px;
+    overflow-y: auto;
+    text-align: left;
+  }
+  .btn-copy {
+    padding: 10px 24px;
+    background: var(--primary);
+    border: none;
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .btn-copy:hover { opacity: 0.85; }
+  .hidden { display: none !important; }
+  /* ========== 语言切换（右上角悬浮） ========== */
+  .lang-switch {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    display: flex;
+    gap: 6px;
+    z-index: 50;
+  }
+  .lang-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .lang-btn:hover { color: var(--text); border-color: var(--accent); }
+  .lang-btn.active {
+    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<!-- 语言切换：右上角悬浮（自动识别浏览器语言，可手动切换，记忆到 localStorage） -->
+<div class="lang-switch" id="langSwitch">
+  <button type="button" class="lang-btn" data-lang="zh-CN" onclick="setLang('zh-CN')">中文</button>
+  <button type="button" class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
+</div>
+
+<div class="card">
+  <div class="brand">
+    <h1>zhuzhu <span>Copilot</span></h1>
+    <p data-i18n="brand.sub">登录你的账号以开始使用</p>
+  </div>
+
+  <!-- 错误提示条 -->
+  <div class="alert-error" id="alertError"></div>
+
+  <!-- 登录/注册 视图 -->
+  <div id="authView">
+    <div class="tabs">
+      <div class="tab active" id="tabLogin" onclick="switchTab('login')" data-i18n="tab.login">登录</div>
+      <div class="tab" id="tabRegister" onclick="switchTab('register')" data-i18n="tab.register">注册</div>
+    </div>
+
+    <!-- 登录表单 -->
+    <form id="loginForm" onsubmit="return doLogin(event)">
+      <div class="form-group">
+        <label data-i18n="label.username">用户名</label>
+        <input type="text" id="loginUsername" data-i18n-ph="ph.username" placeholder="请输入用户名" autocomplete="username"
+               oninput="clearFieldError('loginUsername')">
+      </div>
+      <div class="form-group">
+        <label data-i18n="label.password">密码</label>
+        <input type="password" id="loginPassword" data-i18n-ph="ph.password" placeholder="请输入密码" autocomplete="current-password"
+               oninput="clearFieldError('loginPassword')">
+      </div>
+      <button type="submit" class="btn-submit" id="loginBtn" data-i18n="btn.login">登 录</button>
+      <div class="footer-note" style="margin-top:12px;">
+        <a href="javascript:void(0)" id="forgotLink" onclick="showForgot()" data-i18n="link.forgot">忘记密码？</a>
+      </div>
+    </form>
+
+    <!-- 注册表单 -->
+    <form id="registerForm" class="hidden" onsubmit="return doRegister(event)">
+      <div class="form-group">
+        <label data-i18n="label.username">用户名</label>
+        <input type="text" id="regUsername" data-i18n-ph="ph.usernameReg" placeholder="3-32位字符" oninput="validateReg()">
+        <div class="hint" id="hintRegUsername"></div>
+      </div>
+      <div class="form-group">
+        <label data-i18n="label.password">密码</label>
+        <input type="password" id="regPassword" data-i18n-ph="ph.passwordReg" placeholder="6-64位字符" oninput="validateReg()">
+        <div class="hint" id="hintRegPassword"></div>
+      </div>
+      <div class="form-group">
+        <label data-i18n="label.password2">确认密码</label>
+        <input type="password" id="regPassword2" data-i18n-ph="ph.password2" placeholder="请再次输入密码" oninput="validateReg()">
+        <div class="hint" id="hintRegPassword2"></div>
+      </div>
+      <div class="form-group">
+        <label data-i18n="label.question">密保问题</label>
+        <select id="regQuestion" onchange="onQuestionChange()">
+          <option value="" data-i18n="opt.chooseQuestion">-- 请选择密保问题 --</option>
+          <option value="你的出生地是？" data-zh="你的出生地是？" data-en="Where were you born?" data-i18n="opt.q1">你的出生地是？</option>
+          <option value="你的小学名称是？" data-zh="你的小学名称是？" data-en="What is the name of your primary school?" data-i18n="opt.q2">你的小学名称是？</option>
+          <option value="你的宠物名字是？" data-zh="你的宠物名字是？" data-en="What is your pet's name?" data-i18n="opt.q3">你的宠物名字是？</option>
+          <option value="你母亲的名字是？" data-zh="你母亲的名字是？" data-en="What is your mother's name?" data-i18n="opt.q4">你母亲的名字是？</option>
+          <option value="__custom__" data-i18n="opt.qCustom">自定义问题...</option>
+        </select>
+      </div>
+      <div class="form-group hidden" id="customQuestionGroup">
+        <label data-i18n="label.customQuestion">自定义密保问题</label>
+        <input type="text" id="regCustomQuestion" data-i18n-ph="ph.customQuestion" placeholder="请输入你自己的密保问题">
+      </div>
+      <div class="form-group">
+        <label data-i18n="label.answer">密保答案</label>
+        <input type="text" id="regAnswer" data-i18n-ph="ph.answer" placeholder="请输入密保答案">
+      </div>
+      <div class="form-group">
+        <label data-i18n="label.avatar">头像（可选，jpg/png/gif/webp，≤{mb}MB）</label>
+        <div class="avatar-row">
+          <div class="avatar-preview" id="avatarPreview" onclick="document.getElementById('avatarInput').click()">
+            <span class="placeholder">+</span>
+          </div>
+          <button type="button" class="avatar-upload-btn" onclick="document.getElementById('avatarInput').click()" data-i18n="btn.chooseImage">选择图片</button>
+          <input type="file" id="avatarInput" accept="image/jpeg,image/png,image/gif" onchange="handleAvatar(event)">
+        </div>
+      </div>
+      <button type="submit" class="btn-submit" id="regBtn" data-i18n="btn.register">注 册</button>
+    </form>
+
+    <div class="footer-note">
+      <span data-i18n="footer.agreePrefix">注册即表示你已阅读并同意 </span><a href="agreement.html" target="_blank" data-i18n="link.agreement">《用户协议》</a>
+    </div>
+  </div>
+
+  <!-- 忘记密码 / 密保重置 视图 -->
+  <div id="forgotView" class="hidden">
+    <div class="forgot-steps" id="forgotSteps">
+      <!-- 步骤1：输入用户名 -->
+      <div id="forgotStep1">
+        <div class="form-group">
+          <label data-i18n="label.username">用户名</label>
+          <input type="text" id="fpUsername" data-i18n-ph="ph.yourUsername" placeholder="请输入你的用户名"
+                 oninput="clearFieldError('fpUsername')">
+        </div>
+        <button type="button" class="btn-submit" id="fpNextBtn" onclick="forgotLoadQuestion()" data-i18n="btn.next">下一步</button>
+      </div>
+      <!-- 步骤2：回答密保 + 设置新密码 -->
+      <div id="forgotStep2" class="hidden">
+        <div class="form-group">
+          <label data-i18n="label.question">密保问题</label>
+          <div class="fp-question" id="fpQuestionText"></div>
+        </div>
+        <div class="form-group">
+          <label data-i18n="label.answer">密保答案</label>
+          <input type="text" id="fpAnswer" data-i18n-ph="ph.answer" placeholder="请输入密保答案"
+                 oninput="clearFieldError('fpAnswer')">
+        </div>
+        <div class="form-group">
+          <label data-i18n="label.newPassword">新密码</label>
+          <input type="password" id="fpNewPassword" data-i18n-ph="ph.newPasswordReg" placeholder="6-64位字符"
+                 oninput="clearFieldError('fpNewPassword')">
+        </div>
+        <div class="form-group">
+          <label data-i18n="label.newPassword2">确认新密码</label>
+          <input type="password" id="fpNewPassword2" data-i18n-ph="ph.newPassword2" placeholder="请再次输入新密码"
+                 oninput="clearFieldError('fpNewPassword2')">
+        </div>
+        <button type="button" class="btn-submit" id="fpResetBtn" onclick="forgotReset()" data-i18n="btn.reset">重置密码</button>
+      </div>
+    </div>
+    <div class="footer-note" style="margin-top:12px;">
+      <a href="javascript:void(0)" onclick="showLogin()" data-i18n="link.backLogin">返回登录</a>
+    </div>
+  </div>
+
+  <!-- 成功回调视图 -->
+  <div class="success-view" id="successView">
+    <div class="icon-ok">✓</div>
+    <h2 id="successTitle" data-i18n="success.loginTitle">登录成功</h2>
+    <p id="successDesc" data-i18n="success.loginDesc">正在返回应用...</p>
+    <div class="token-box hidden" id="manualTokenBox">
+      <div style="color:var(--text-dim);margin-bottom:6px;" data-i18n="success.manualCopy">请手动复制以下 Token 到应用中：</div>
+      <div id="manualTokenText"></div>
+    </div>
+    <button class="btn-copy hidden" id="btnCopyToken" onclick="copyToken()" data-i18n="btn.copyToken">复制 Token</button>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+ * i18n：登录页中英双语。静态文案用 data-i18n / data-i18n-ph 属性标注，
+ * JS 动态文案统一走 t(key, params)。默认按浏览器语言自动判定，
+ * 用户手动切换后写入 localStorage 记忆。零依赖、原生实现。
+ * ============================================================ */
+var I18N = {
+  'zh-CN': {
+    'title': 'zhuzhu Copilot - 登录 / 注册',
+    'brand.sub': '登录你的账号以开始使用',
+    'tab.login': '登录',
+    'tab.register': '注册',
+    'label.username': '用户名',
+    'label.password': '密码',
+    'label.password2': '确认密码',
+    'label.question': '密保问题',
+    'label.customQuestion': '自定义密保问题',
+    'label.answer': '密保答案',
+    'label.avatar': '头像（可选，jpg/png/gif/webp，≤{mb}MB）',
+    'label.newPassword': '新密码',
+    'label.newPassword2': '确认新密码',
+    'ph.username': '请输入用户名',
+    'ph.password': '请输入密码',
+    'ph.password2': '请再次输入密码',
+    'ph.usernameReg': '3-32位字符',
+    'ph.passwordReg': '6-64位字符',
+    'ph.customQuestion': '请输入你自己的密保问题',
+    'ph.answer': '请输入密保答案',
+    'ph.yourUsername': '请输入你的用户名',
+    'ph.newPasswordReg': '6-64位字符',
+    'ph.newPassword2': '请再次输入新密码',
+    'opt.chooseQuestion': '-- 请选择密保问题 --',
+    'opt.q1': '你的出生地是？',
+    'opt.q2': '你的小学名称是？',
+    'opt.q3': '你的宠物名字是？',
+    'opt.q4': '你母亲的名字是？',
+    'opt.qCustom': '自定义问题...',
+    'btn.login': '登 录',
+    'btn.register': '注 册',
+    'btn.chooseImage': '选择图片',
+    'btn.next': '下一步',
+    'btn.reset': '重置密码',
+    'btn.copyToken': '复制 Token',
+    'link.forgot': '忘记密码？',
+    'link.backLogin': '返回登录',
+    'link.agreement': '《用户协议》',
+    'footer.agreePrefix': '注册即表示你已阅读并同意 ',
+    'success.loginTitle': '登录成功',
+    'success.loginDesc': '正在返回应用...',
+    'success.manualCopy': '请手动复制以下 Token 到应用中：',
+    'msg.loggingIn': '登录中...',
+    'msg.registering': '注册中...',
+    'msg.querying': '查询中...',
+    'msg.resetting': '重置中...',
+    'err.usernameRequired': '请输入用户名',
+    'err.usernameTooLong': '用户名过长',
+    'err.passwordRequired': '请输入密码',
+    'err.usernameLength': '用户名长度需为 3-32 个字符',
+    'err.passwordLength': '密码长度需为 6-64 个字符',
+    'err.passwordMismatch': '两次输入的密码不一致',
+    'err.customQuestionRequired': '请填写自定义密保问题',
+    'err.questionRequired': '请选择或填写密保问题',
+    'err.answerRequired': '请填写密保答案',
+    'err.answerRequiredShort': '请输入密保答案',
+    'err.passwordLengthShort': '密码长度需为 6-64 位',
+    'err.network': '网络错误，请检查服务是否启动',
+    'err.networkShort': '网络错误，请检查服务是否可用',
+    'err.badCredentials': '用户名或密码错误',
+    'err.badCredentialsLeft': '用户名或密码错误，还可尝试 {n} 次',
+    'err.accountDisabled': '账号已被禁用，请联系管理员',
+    'err.accountLocked': '该账号已锁定，请 {n} 分钟后再试',
+    'err.ipLocked': '登录失败次数过多，IP 已临时锁定，请稍后再试',
+    'err.tooManyAttempts': '登录失败次数过多，请稍后再试',
+    'err.badInput': '输入有误，请检查后重试',
+    'err.loginFailed': '登录失败，请重试',
+    'err.avatarType': '仅支持 jpg / png / gif / webp 格式图片',
+    'err.avatarSize': '图片大小不能超过 {mb}MB',
+    'err.usernameExists': '用户名已存在，或该 IP 已注册过账号',
+    'err.registerTooFrequent': '注册过于频繁，请稍后再试',
+    'err.registerFailed': '注册失败，请检查输入',
+    'err.questionQueryFailed': '查询失败，请确认用户名是否正确',
+    'err.resetFailed': '重置失败，请稍后再试',
+    'msg.resetSuccess': '密码重置成功，请使用新密码登录',
+    'msg.copyDone': '已复制 ✓',
+    'msg.returning': '登录成功，正在返回应用...',
+    'msg.returningDesc': '正在将登录信息传递到桌面应用，请稍候...',
+    'msg.noAppPort': '未检测到桌面应用在本地监听回调端口（{port}）。请确保应用已启动，或手动复制下方 Token 粘贴到应用中。',
+    'msg.relayed': '登录信息已发送到桌面应用，如果应用未自动登录，可手动复制下方 Token 粘贴到应用中。',
+    'q.unset': '（未设置）'
+  },
+  'en': {
+    'title': 'zhuzhu Copilot - Sign in / Sign up',
+    'brand.sub': 'Sign in to your account to get started',
+    'tab.login': 'Sign in',
+    'tab.register': 'Sign up',
+    'label.username': 'Username',
+    'label.password': 'Password',
+    'label.password2': 'Confirm password',
+    'label.question': 'Security question',
+    'label.customQuestion': 'Custom security question',
+    'label.answer': 'Security answer',
+    'label.avatar': 'Avatar (optional, jpg/png/gif/webp, ≤{mb}MB)',
+    'label.newPassword': 'New password',
+    'label.newPassword2': 'Confirm new password',
+    'ph.username': 'Enter your username',
+    'ph.password': 'Enter your password',
+    'ph.password2': 'Enter your password again',
+    'ph.usernameReg': '3-32 characters',
+    'ph.passwordReg': '6-64 characters',
+    'ph.customQuestion': 'Enter your own security question',
+    'ph.answer': 'Enter your security answer',
+    'ph.yourUsername': 'Enter your username',
+    'ph.newPasswordReg': '6-64 characters',
+    'ph.newPassword2': 'Enter your new password again',
+    'opt.chooseQuestion': '-- Choose a security question --',
+    'opt.q1': 'Where were you born?',
+    'opt.q2': 'What is the name of your primary school?',
+    'opt.q3': 'What is your pet\'s name?',
+    'opt.q4': 'What is your mother\'s name?',
+    'opt.qCustom': 'Custom question...',
+    'btn.login': 'Sign in',
+    'btn.register': 'Sign up',
+    'btn.chooseImage': 'Choose image',
+    'btn.next': 'Next',
+    'btn.reset': 'Reset password',
+    'btn.copyToken': 'Copy Token',
+    'link.forgot': 'Forgot password?',
+    'link.backLogin': 'Back to sign in',
+    'link.agreement': 'User Agreement',
+    'footer.agreePrefix': 'By signing up, you agree to the ',
+    'success.loginTitle': 'Signed in',
+    'success.loginDesc': 'Returning to the app...',
+    'success.manualCopy': 'Please manually copy the Token below into the app:',
+    'msg.loggingIn': 'Signing in...',
+    'msg.registering': 'Signing up...',
+    'msg.querying': 'Searching...',
+    'msg.resetting': 'Resetting...',
+    'err.usernameRequired': 'Please enter your username',
+    'err.usernameTooLong': 'Username is too long',
+    'err.passwordRequired': 'Please enter your password',
+    'err.usernameLength': 'Username must be 3-32 characters',
+    'err.passwordLength': 'Password must be 6-64 characters',
+    'err.passwordMismatch': 'The two passwords do not match',
+    'err.customQuestionRequired': 'Please fill in your custom security question',
+    'err.questionRequired': 'Please choose or enter a security question',
+    'err.answerRequired': 'Please enter your security answer',
+    'err.answerRequiredShort': 'Please enter your security answer',
+    'err.passwordLengthShort': 'Password must be 6-64 characters',
+    'err.network': 'Network error. Please check whether the service is running',
+    'err.networkShort': 'Network error. Please check whether the service is available',
+    'err.badCredentials': 'Incorrect username or password',
+    'err.badCredentialsLeft': 'Incorrect username or password, {n} attempts left',
+    'err.accountDisabled': 'Account disabled. Please contact an administrator',
+    'err.accountLocked': 'This account is locked. Please try again in {n} minutes',
+    'err.ipLocked': 'Too many failed attempts. Your IP is temporarily locked, please try later',
+    'err.tooManyAttempts': 'Too many failed attempts, please try again later',
+    'err.badInput': 'Invalid input, please check and retry',
+    'err.loginFailed': 'Sign-in failed, please try again',
+    'err.avatarType': 'Only jpg / png / gif / webp images are supported',
+    'err.avatarSize': 'Image size must not exceed {mb}MB',
+    'err.usernameExists': 'Username already exists, or this IP has already registered',
+    'err.registerTooFrequent': 'Registration is too frequent, please try later',
+    'err.registerFailed': 'Registration failed, please check your input',
+    'err.questionQueryFailed': 'Query failed. Please verify the username',
+    'err.resetFailed': 'Reset failed, please try again later',
+    'msg.resetSuccess': 'Password reset successful. Please sign in with the new password',
+    'msg.copyDone': 'Copied ✓',
+    'msg.returning': 'Signed in, returning to the app...',
+    'msg.returningDesc': 'Passing your login to the desktop app, please wait...',
+    'msg.noAppPort': 'No desktop app was detected listening on the local callback port ({port}). Make sure the app is running, or manually copy the Token below into the app.',
+    'msg.relayed': 'Your login has been sent to the desktop app. If it does not sign in automatically, manually copy the Token below into the app.',
+    'q.unset': '(not set)'
+  }
+};
+
+var I18N_KEY = 'copilot_lang';
+
+/* 判定初始语言：localStorage 记忆 > 浏览器语言 > 中文。 */
+function detectLang() {
+  try {
+    var saved = localStorage.getItem(I18N_KEY);
+    if (saved && I18N[saved]) return saved;
+  } catch (e) { /* 忽略 */ }
+  var nav = (navigator.language || navigator.userLanguage || '').toLowerCase();
+  if (nav && nav.indexOf('zh') !== 0) return 'en';
+  return 'zh-CN';
+}
+var LANG = detectLang();
+
+/* 取当前语言的文案；params 做 {key} 占位替换。缺失回退中文再回退 key。 */
+function t(key, params) {
+  var dict = I18N[LANG] || I18N['zh-CN'];
+  var s = dict[key];
+  if (s == null) s = I18N['zh-CN'][key];
+  if (s == null) return key;
+  if (params) {
+    for (var k in params) {
+      if (Object.prototype.hasOwnProperty.call(params, k)) {
+        s = s.split('{' + k + '}').join(params[k]);
+      }
+    }
+  }
+  return s;
+}
+
+/* 应用语言到静态文案（data-i18n=文本, data-i18n-ph=placeholder, data-i18n-title=title）。
+   统一带上 {mb: 上限}：这样文案里的限额数字与服务端下发的值永远一致，
+   不会出现「后端改成 5MB、界面还写着 2MB」的漂移。 */
+function applyLang() {
+  document.documentElement.lang = LANG;
+  document.title = t('title');
+  var mbParams = { mb: AVATAR_LIMITS.maxMb };
+  var nodes = document.querySelectorAll('[data-i18n]');
+  for (var i = 0; i < nodes.length; i++) {
+    nodes[i].textContent = t(nodes[i].getAttribute('data-i18n'), mbParams);
+  }
+  var phs = document.querySelectorAll('[data-i18n-ph]');
+  for (var j = 0; j < phs.length; j++) {
+    phs[j].setAttribute('placeholder', t(phs[j].getAttribute('data-i18n-ph'), mbParams));
+  }
+  var titles = document.querySelectorAll('[data-i18n-title]');
+  for (var k = 0; k < titles.length; k++) {
+    titles[k].setAttribute('title', t(titles[k].getAttribute('data-i18n-title'), mbParams));
+  }
+  // 语言按钮高亮
+  var btns = document.querySelectorAll('.lang-btn');
+  for (var b = 0; b < btns.length; b++) {
+    btns[b].classList.toggle('active', btns[b].getAttribute('data-lang') === LANG);
+  }
+  // 刷新动态按钮（其文案可能正处于 loading 或需按语言重建）
+  refreshDynamicTexts();
+  applyQuestionOptions();
+}
+
+/* 切换语言并记忆。 */
+function setLang(lang) {
+  if (!I18N[lang] || lang === LANG) return;
+  LANG = lang;
+  try { localStorage.setItem(I18N_KEY, lang); } catch (e) { /* 忽略 */ }
+  applyLang();
+}
+
+/* 动态文本（按钮 loading 态 / 成功页描述）随语言刷新：仅在非交互进行中时重建。 */
+function refreshDynamicTexts() {
+  var ids = ['loginBtn', 'regBtn', 'fpNextBtn', 'fpResetBtn', 'btnCopyToken'];
+  var mapping = {
+    loginBtn: 'btn.login', regBtn: 'btn.register',
+    fpNextBtn: 'btn.next', fpResetBtn: 'btn.reset', btnCopyToken: 'btn.copyToken'
+  };
+  for (var i = 0; i < ids.length; i++) {
+    var el = document.getElementById(ids[i]);
+    if (!el) continue;
+    // 若按钮处于 loading（含 spinner），不覆盖其进度文案
+    if (el.querySelector && el.querySelector('.spinner')) continue;
+    el.textContent = t(mapping[ids[i]]);
+  }
+}
+
+/* ============================================================
+ * 全局状态
+ * ============================================================ */
+var currentTab = 'login';
+var avatarBase64 = '';  // 注册头像的 base64 数据
+
+/* 读取回调端口：URL 参数 ?callback_port=xxxx，默认 18765 */
+function getCallbackPort() {
+  var m = location.search.match(/callback_port=(\d+)/);
+  return m ? m[1] : '18765';
+}
+
+/* 读取登录握手 state：URL 参数 ?state=xxxx（防 CSRF / 重放）。
+ * 由桌面客户端生成并申请；登录/注册时原样回传服务端校验，
+ * 成功后随回调带回，客户端比对一致性。 */
+function getLoginState() {
+  var m = location.search.match(/[?&]state=([A-Za-z0-9_\-]+)/);
+  return m ? m[1] : '';
+}
+var LOGIN_STATE = getLoginState();
+
+/* 读取客户端平台标识与版本（仅展示/透传用途） */
+function getPlatform() {
+  var m = location.search.match(/[?&]platform=([A-Za-z0-9_\-]+)/);
+  return m ? m[1] : '';
+}
+function getVersion() {
+  var m = location.search.match(/[?&]version=([A-Za-z0-9_.\-]+)/);
+  return m ? m[1] : '';
+}
+
+/* 计算认证服务的 API 根路径（支持挂载在子路径下，如 /authapp）。
+ * 本页始终位于 <根路径>/static/login/index.html，
+ * 因此 API 根 = pathname 去掉 /static/login/index.html 后的部分。 */
+function getApiBase() {
+  var p = location.pathname || '/';
+  var idx = p.indexOf('/static/login/index.html');
+  var base = idx > 0 ? p.slice(0, idx) : '';
+  return base.length === 1 ? '' : base;
+}
+var API_BASE = getApiBase();
+
+/* 头像上传约束：**唯一来源是服务端** /api/auth/avatar_limits，
+   下面的 5MB 只是接口不可达时的兜底默认值（与后端 MAX_AVATAR_SIZE 一致）。
+   拉取成功后会用服务端值覆盖，避免前后端限额各写一份后悄悄不一致。 */
+var AVATAR_LIMITS = { maxBytes: 5 * 1024 * 1024, maxMb: 5, formats: ['jpg', 'png', 'gif', 'webp'] };
+/* 上限额度的文案在拿到服务端值后需要重绘一次，否则标签里会留着 {mb} 占位符。 */
+function loadAvatarLimits() {
+  try {
+    fetch(API_BASE + '/api/auth/avatar_limits')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var d = j && j.data;
+        if (d && d.max_bytes) {
+          AVATAR_LIMITS.maxBytes = d.max_bytes;
+          AVATAR_LIMITS.maxMb = d.max_mb;
+        }
+        if (d && d.formats && d.formats.length) { AVATAR_LIMITS.formats = d.formats; }
+        applyLang();          // 用真实上限重绘含 {mb} 的文案
+      })
+      .catch(function () { /* 保持兜底默认值 */ });
+  } catch (e) { /* 保持兜底默认值 */ }
+}
+
+/* ============================================================
+ * Tab 切换
+ * ============================================================ */
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('tabLogin').classList.toggle('active', tab === 'login');
+  document.getElementById('tabRegister').classList.toggle('active', tab === 'register');
+  document.getElementById('loginForm').classList.toggle('hidden', tab !== 'login');
+  document.getElementById('registerForm').classList.toggle('hidden', tab !== 'register');
+  hideError();
+}
+
+function onQuestionChange() {
+  var v = document.getElementById('regQuestion').value;
+  document.getElementById('customQuestionGroup').classList.toggle('hidden', v !== '__custom__');
+}
+
+/* 密保问题选项的语言化：下拉显示随语言切换，但提交值恒为规范中文
+ * （服务端按中文存储；切语言不回传英文，避免同一问题出现两种存法）。 */
+function applyQuestionOptions() {
+  try {
+    var sel = document.getElementById('regQuestion');
+    if (!sel) return;
+    for (var i = 0; i < sel.options.length; i++) {
+      var op = sel.options[i];
+      var zh = op.getAttribute('data-zh');
+      var en = op.getAttribute('data-en');
+      if (zh != null) {
+        var show = (LANG === 'en' && en) ? en : zh;
+        op.textContent = show;
+        op.value = zh;              // 提交值永远是中文原文
+      }
+    }
+  } catch (e) { /* 忽略 */ }
+}
+
+/* ============================================================
+ * 错误提示
+ * ============================================================ */
+function showError(msg) {
+  var el = document.getElementById('alertError');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+function hideError() {
+  document.getElementById('alertError').classList.remove('show');
+}
+/* 单个输入框的边框错误态提示 */
+function setFieldError(id, msg) {
+  var el = document.getElementById(id);
+  if (el) {
+    el.style.borderColor = 'var(--error)';
+    el.setAttribute('data-err', msg || '');
+    el.title = msg || '';
+  }
+  if (msg) showError(msg);
+}
+function clearFieldError(id) {
+  var el = document.getElementById(id);
+  if (el) {
+    el.style.borderColor = '';
+    el.removeAttribute('data-err');
+    el.title = '';
+  }
+}
+/* 按错误优先级展示登录失败提示 */
+function handleLoginError(status, data, headers) {
+  var detail = (data && data.message) || '';
+  var attemptsLeft = headers.get && headers.get('X-Attempts-Left');
+  var lockType = headers.get && headers.get('X-Lock-Type');
+  if (status === 401) {
+    // 账号不存在或密码错误（统一提示，避免枚举），附带剩余尝试次数
+    var n = (attemptsLeft != null) ? parseInt(attemptsLeft, 10) : 0;
+    if (n > 0) showError(t('err.badCredentialsLeft', { n: n }));
+    else showError(detail || t('err.badCredentials'));
+  } else if (status === 403) {
+    showError(detail || t('err.accountDisabled'));
+  } else if (status === 429) {
+    if (lockType === 'account') showError(t('err.accountLocked', { n: Math.ceil(remainingFrom(detail, headers) / 60) }));
+    else if (lockType === 'ip') showError(t('err.ipLocked'));
+    else showError(detail || t('err.tooManyAttempts'));
+  } else if (status === 400) {
+    showError(detail || t('err.badInput'));
+  } else {
+    showError(detail || t('err.loginFailed'));
+  }
+}
+function remainingFrom(detail, headers) {
+  var r = headers && headers.get && headers.get('X-Remaining');
+  if (r != null) return parseInt(r, 10) || 0;
+  var m = /(\d+)/.exec(detail || '');
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+/* ============================================================
+ * 注册表单前端即时校验
+ * ============================================================ */
+function validateReg() {
+  var u = document.getElementById('regUsername').value;
+  var p = document.getElementById('regPassword').value;
+  var p2 = document.getElementById('regPassword2').value;
+
+  // 用户名 3-32
+  var hu = document.getElementById('hintRegUsername');
+  if (u.length === 0) { hu.textContent = ''; return; }
+  if (u.length < 3 || u.length > 32) {
+    hu.textContent = t('err.usernameLength');
+    hu.className = 'hint error-hint';
+  } else {
+    hu.textContent = '✓';
+    hu.className = 'hint';
+    hu.style.color = 'var(--success)';
+  }
+
+  // 密码 6-64
+  var hp = document.getElementById('hintRegPassword');
+  if (p.length === 0) { hp.textContent = ''; return; }
+  if (p.length < 6 || p.length > 64) {
+    hp.textContent = t('err.passwordLength');
+    hp.className = 'hint error-hint';
+  } else {
+    hp.textContent = '✓';
+    hp.className = 'hint';
+    hp.style.color = 'var(--success)';
+  }
+
+  // 确认密码一致性
+  var hp2 = document.getElementById('hintRegPassword2');
+  if (p2.length === 0) { hp2.textContent = ''; return; }
+  if (p2 !== p) {
+    hp2.textContent = t('err.passwordMismatch');
+    hp2.className = 'hint error-hint';
+  } else {
+    hp2.textContent = '✓';
+    hp2.className = 'hint';
+    hp2.style.color = 'var(--success)';
+  }
+}
+
+/* ============================================================
+ * 头像上传：读取为 base64，圆形预览
+ * ============================================================ */
+function handleAvatar(e) {
+  var file = e.target.files[0];
+  if (!file) return;
+  // 类型校验（允许 jpg/png/gif/webp，与后端 ALLOWED_FORMATS 对齐）
+  var allow = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  if (allow.indexOf(file.type) === -1) {
+    showError(t('err.avatarType'));
+    return;
+  }
+  // 大小校验：上限来自服务端 /api/auth/avatar_limits
+  if (file.size > AVATAR_LIMITS.maxBytes) {
+    showError(t('err.avatarSize', { mb: AVATAR_LIMITS.maxMb }));
+    return;
+  }
+  var reader = new FileReader();
+  reader.onload = function(ev) {
+    avatarBase64 = ev.target.result;  // data:image/xxx;base64,xxxx
+    var prev = document.getElementById('avatarPreview');
+    prev.innerHTML = '<img src="' + avatarBase64 + '" alt="头像">';
+  };
+  reader.readAsDataURL(file);
+}
+
+/* ============================================================
+ * 登录
+ * ============================================================ */
+function doLogin(e) {
+  e.preventDefault();
+  hideError();
+  var username = document.getElementById('loginUsername').value.trim();
+  var password = document.getElementById('loginPassword').value;
+
+  // 前端即时校验
+  var valid = true;
+  clearFieldError('loginUsername');
+  clearFieldError('loginPassword');
+  if (!username) { setFieldError('loginUsername', t('err.usernameRequired')); valid = false; }
+  else if (username.length > 32) { setFieldError('loginUsername', t('err.usernameTooLong')); valid = false; }
+  if (!password) { setFieldError('loginPassword', t('err.passwordRequired')); valid = false; }
+  if (!valid) return false;
+
+  var btn = document.getElementById('loginBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>' + t('msg.loggingIn');
+
+  fetch(API_BASE + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username, password: password, state: LOGIN_STATE })
+  })
+  .then(function(res) {
+    return res.json().then(function(data) { return { status: res.status, data: data, headers: res.headers }; });
+  })
+  .then(function(r) {
+    btn.disabled = false;
+    btn.innerHTML = t('btn.login');
+    if (r.data.code === 0) {
+      var d = r.data.data;
+      // 保存到 localStorage
+      localStorage.setItem('copilot_token', d.token);
+      localStorage.setItem('copilot_user', JSON.stringify(d.user));
+      // 回调给桌面应用
+      deliverToken(d.token, d.user);
+    } else {
+      handleLoginError(r.status, r.data, r.headers);
+    }
+  })
+  .catch(function(err) {
+    btn.disabled = false;
+    btn.innerHTML = t('btn.login');
+    showError(t('err.network'));
+  });
+  return false;
+}
+
+/* ============================================================
+ * 注册
+ * ============================================================ */
+function doRegister(e) {
+  e.preventDefault();
+  hideError();
+  var username = document.getElementById('regUsername').value.trim();
+  var password = document.getElementById('regPassword').value;
+  var password2 = document.getElementById('regPassword2').value;
+  var questionSel = document.getElementById('regQuestion').value;
+  var answer = document.getElementById('regAnswer').value.trim();
+
+  // 前端校验
+  if (username.length < 3 || username.length > 32) {
+    showError(t('err.usernameLength')); return false;
+  }
+  if (password.length < 6 || password.length > 64) {
+    showError(t('err.passwordLength')); return false;
+  }
+  if (password !== password2) {
+    showError(t('err.passwordMismatch')); return false;
+  }
+  // 密保问题
+  var question;
+  if (questionSel === '__custom__') {
+    question = document.getElementById('regCustomQuestion').value.trim();
+    if (!question) { showError(t('err.customQuestionRequired')); return false; }
+  } else if (questionSel) {
+    question = questionSel;
+  } else {
+    showError(t('err.questionRequired')); return false;
+  }
+  if (!answer) { showError(t('err.answerRequired')); return false; }
+
+  var btn = document.getElementById('regBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>' + t('msg.registering');
+
+  var body = {
+    username: username,
+    password: password,
+    password_confirm: password2,
+    security_question: question,
+    security_answer: answer
+  };
+  if (avatarBase64) body.avatar = avatarBase64;
+  if (LOGIN_STATE) body.state = LOGIN_STATE;
+
+  fetch(API_BASE + '/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  .then(function(res) {
+    return res.json().then(function(data) { return { status: res.status, data: data }; });
+  })
+  .then(function(r) {
+    btn.disabled = false;
+    btn.innerHTML = t('btn.register');
+    if (r.data.code === 0) {
+      var d = r.data.data;
+      // 注册成功返回 token，构造一个最小 user 对象并回调
+      var user = {
+        id: d.user_id,
+        username: d.username,
+        avatar: avatarBase64 || '',
+        points: 500,
+        membership_type: 'free',
+        membership_expire: null
+      };
+      localStorage.setItem('copilot_token', d.token);
+      localStorage.setItem('copilot_user', JSON.stringify(user));
+      deliverToken(d.token, user);
+    } else {
+      if (r.status === 409) showError(r.data.message || t('err.usernameExists'));
+      else if (r.status === 429) showError(t('err.registerTooFrequent'));
+      else showError(r.data.message || t('err.registerFailed'));
+    }
+  })
+  .catch(function() {
+    btn.disabled = false;
+    btn.innerHTML = t('btn.register');
+    showError(t('err.network'));
+  });
+  return false;
+}
+
+/* ============================================================
+ * 回跳机制：把 token 交给本地桌面应用
+ *
+ * 场景：本页通过 https（https://chentian.dpdns.org/authapp/...）打开，而
+ * 本地回调是 http://127.0.0.1:<port>（明文 localhost）。浏览器对
+ * 「HTTPS 页面 → http://127.0.0.1」的子资源请求（fetch/XHR）会按混合内容 /
+ * 私有网络访问（PNA）策略拦截，mode:'no-cors' 也无法绕过——这正是
+ * 「源码运行应用时登录成功却无法定向返回应用」的根因。
+ *
+ * 因此采用「双通道 + 兜底」：
+ *  A. 主通道（服务端中转）：把登录结果 POST 回 /api/auth/login_result，
+ *     桌面客户端轮询 /api/auth/login_result 取回。完全不受浏览器本地策略影响。
+ *  B. 快通道（本地回调）：顶层导航 window.location.href = http://127.0.0.1:...
+ *     顶层导航不属于子资源请求，多数浏览器允许；成功则由本地页自动关闭返回。
+ *  C. 兜底：显示手动复制 token。
+ * ============================================================ */
+function buildCallbackUrl(token, user) {
+  var port = getCallbackPort();
+  return 'http://127.0.0.1:' + port + '/callback'
+    + '?token=' + encodeURIComponent(token)
+    + '&state=' + encodeURIComponent(LOGIN_STATE)
+    + '&username=' + encodeURIComponent(user.username || '')
+    + '&avatar=' + encodeURIComponent(user.avatar || '')
+    + '&points=' + encodeURIComponent(user.points != null ? user.points : 0);
+}
+
+/* 探测本地回调端口是否在线（img 触发即视为可达）。返回 Promise<boolean>。 */
+function probeLocalCallback(port) {
+  return new Promise(function(resolve) {
+    var done = false;
+    var finish = function(ok) { if (!done) { done = true; resolve(ok); } };
+    try {
+      var img = new Image();
+      img.onload = function() { finish(true); };
+      img.onerror = function() { finish(true); };   // 能触发即代表端口可达
+      img.src = 'http://127.0.0.1:' + port + '/callback?probe=1&t=' + Date.now();
+    } catch (e) { /* 忽略 */ }
+    setTimeout(function() { finish(false); }, 1200);
+  });
+}
+
+/* 主通道：把登录结果回传服务端（中转回跳，不受浏览器本地策略影响）。 */
+function relayToServer(token, user) {
+  if (!LOGIN_STATE) return Promise.resolve(false);
+  return fetch(API_BASE + '/api/auth/login_result', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state: LOGIN_STATE, token: token, user: user || {} })
+  })
+    .then(function(r) { return r.ok; })
+    .catch(function() { return false; });
+}
+
+function deliverToken(token, user) {
+  var port = getCallbackPort();
+  var url = buildCallbackUrl(token, user);
+
+  showSuccess(t('msg.returning'), t('msg.returningDesc'));
+
+  // 1) 主通道：服务端中转（必定执行；客户端会轮询取回）
+  relayToServer(token, user).then(function(relayOk) {
+    // 2) 快通道：探测到本地端口则尝试顶层导航，立即回跳更顺滑
+    probeLocalCallback(port).then(function(alive) {
+      if (alive) {
+        try {
+          window.location.href = url;   // 顶层导航，成功后本地页自动关闭
+        } catch (e) { /* 忽略，主通道已投递 */ }
+      }
+      // 3) 兜底：2.5s 后仍停留在本页，且未通过本地回调返回，则提示手动复制
+      setTimeout(function() {
+        if (!document.hidden) showManualCopy(token, relayOk);
+      }, 2500);
+    });
+  });
+}
+
+function showSuccess(title, desc) {
+  document.getElementById('authView').classList.add('hidden');
+  var sv = document.getElementById('successView');
+  sv.classList.add('show');
+  document.getElementById('successTitle').textContent = title;
+  document.getElementById('successDesc').textContent = desc;
+  document.getElementById('manualTokenBox').classList.add('hidden');
+  document.getElementById('btnCopyToken').classList.add('hidden');
+}
+
+function showManualCopy(token, relayOk) {
+  document.getElementById('authView').classList.add('hidden');
+  var sv = document.getElementById('successView');
+  sv.classList.add('show');
+  document.getElementById('successTitle').textContent = t('success.loginTitle');
+  var desc;
+  if (relayOk) {
+    // 已通过服务端中转投递成功：应用会自动取回，本提示仅为保险
+    desc = t('msg.relayed');
+  } else {
+    desc = t('msg.noAppPort', { port: getCallbackPort() });
+  }
+  document.getElementById('successDesc').textContent = desc;
+  var box = document.getElementById('manualTokenBox');
+  box.classList.remove('hidden');
+  document.getElementById('manualTokenText').textContent = token;
+  document.getElementById('btnCopyToken').classList.remove('hidden');
+}
+
+function copyToken() {
+  var txt = document.getElementById('manualTokenText').textContent;
+  function done() {
+    var btn = document.getElementById('btnCopyToken');
+    var old = btn.textContent;
+    btn.textContent = t('msg.copyDone');
+    setTimeout(function() { btn.textContent = old; }, 1500);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(done).catch(function() { fallbackCopy(txt, done); });
+  } else {
+    fallbackCopy(txt, done);
+  }
+}
+function fallbackCopy(text, cb) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); cb(); } catch (e) {}
+  document.body.removeChild(ta);
+}
+
+/* ============================================================
+ * 忘记密码 / 密保重置
+ * ============================================================ */
+function showForgot() {
+  hideError();
+  document.getElementById('authView').classList.add('hidden');
+  document.getElementById('forgotView').classList.remove('hidden');
+  document.getElementById('forgotStep1').classList.remove('hidden');
+  document.getElementById('forgotStep2').classList.add('hidden');
+  // 带入登录页已填的用户名，减少重复输入
+  var u = document.getElementById('loginUsername').value.trim();
+  if (u) document.getElementById('fpUsername').value = u;
+}
+
+function showLogin() {
+  hideError();
+  document.getElementById('forgotView').classList.add('hidden');
+  document.getElementById('authView').classList.remove('hidden');
+  switchTab('login');
+}
+
+function forgotLoadQuestion() {
+  hideError();
+  var username = document.getElementById('fpUsername').value.trim();
+  clearFieldError('fpUsername');
+  if (!username) { setFieldError('fpUsername', t('err.usernameRequired')); return; }
+
+  var btn = document.getElementById('fpNextBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>' + t('msg.querying');
+  fetch(API_BASE + '/api/auth/security_question', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username })
+  })
+    .then(function(res) { return res.json().then(function(d) { return { status: res.status, data: d }; }); })
+    .then(function(r) {
+      btn.disabled = false;
+      btn.innerHTML = t('btn.next');
+      if (r.data.code === 0) {
+        document.getElementById('fpQuestionText').textContent =
+          r.data.data.security_question || t('q.unset');
+        document.getElementById('forgotStep1').classList.add('hidden');
+        document.getElementById('forgotStep2').classList.remove('hidden');
+      } else {
+        showError((r.data && r.data.detail) || t('err.questionQueryFailed'));
+      }
+    })
+    .catch(function() {
+      btn.disabled = false;
+      btn.innerHTML = t('btn.next');
+      showError(t('err.networkShort'));
+    });
+}
+
+function forgotReset() {
+  hideError();
+  var username = document.getElementById('fpUsername').value.trim();
+  var answer = document.getElementById('fpAnswer').value.trim();
+  var pwd = document.getElementById('fpNewPassword').value;
+  var pwd2 = document.getElementById('fpNewPassword2').value;
+  var valid = true;
+  clearFieldError('fpAnswer'); clearFieldError('fpNewPassword'); clearFieldError('fpNewPassword2');
+  if (!answer) { setFieldError('fpAnswer', t('err.answerRequiredShort')); valid = false; }
+  if (pwd.length < 6 || pwd.length > 64) { setFieldError('fpNewPassword', t('err.passwordLengthShort')); valid = false; }
+  if (pwd !== pwd2) { setFieldError('fpNewPassword2', t('err.passwordMismatch')); valid = false; }
+  if (!valid) return;
+
+  var btn = document.getElementById('fpResetBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>' + t('msg.resetting');
+  fetch(API_BASE + '/api/auth/reset_password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: username,
+      security_answer: answer,
+      new_password: pwd,
+      password_confirm: pwd2
+    })
+  })
+    .then(function(res) { return res.json().then(function(d) { return { status: res.status, data: d }; }); })
+    .then(function(r) {
+      btn.disabled = false;
+      btn.innerHTML = t('btn.reset');
+      if (r.data.code === 0) {
+        showError('');
+        hideError();
+        // 回到登录页并预填用户名
+        showLogin();
+        document.getElementById('loginUsername').value = username;
+        document.getElementById('loginPassword').value = '';
+        var alertEl = document.getElementById('alertError');
+        alertEl.textContent = t('msg.resetSuccess');
+        alertEl.classList.add('show', 'success');
+        setTimeout(function() { alertEl.classList.remove('success'); }, 4000);
+      } else {
+        showError((r.data && r.data.detail) || t('err.resetFailed'));
+      }
+    })
+    .catch(function() {
+      btn.disabled = false;
+      btn.innerHTML = t('btn.reset');
+      showError(t('err.networkShort'));
+    });
+}
+
+/* ============================================================
+ * 初始化：应用语言（data-i18n 静态文案 + 动态文本 + 密保选项），
+ * 并拉取服务端头像限额（拉取成功后会再 applyLang 一次刷新文案里的 {mb}）。
+ * ============================================================ */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', function () {
+    applyLang();
+    loadAvatarLimits();
+  });
+} else {
+  applyLang();
+  loadAvatarLimits();
+}
+</script>
+</body>
+</html>

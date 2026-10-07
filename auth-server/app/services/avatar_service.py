@@ -11,10 +11,17 @@ import uuid
 
 from PIL import Image
 
-#: 头像存储目录（相对项目根，与 static 挂载点对应）
+#: 头像存储目录（相对项目根，与static 挂载点对应）
 AVATAR_DIR = os.path.join("static", "uploads", "avatars")
-MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2MB
+#: 头像大小上限（5MB）。**唯一事实来源**：后台/登录页的前端校验值由
+#: ``/api/auth/avatar_limits`` 下发，避免前后端各写一个数字后悄悄不一致。
+MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5MB
 ALLOWED_FORMATS = {"JPEG": "jpg", "PNG": "png", "GIF": "gif", "WEBP": "webp"}
+
+
+def max_size_mb() -> int:
+    """上限的 MB 表示（供接口/提示文案使用，避免到处写死数字）。"""
+    return MAX_AVATAR_SIZE // (1024 * 1024)
 
 
 class AvatarError(ValueError):
@@ -30,9 +37,33 @@ def validate_image_header(file_bytes: bytes) -> bool:
         return False
 
 
+def save_avatar_bytes(img_bytes: bytes) -> str:
+    """校验并落盘**原始字节**（multipart 上传路径用），返回可访问 URL。"""
+    if not img_bytes:
+        raise AvatarError("头像数据为空")
+    if len(img_bytes) > MAX_AVATAR_SIZE:
+        raise AvatarError(f"头像大小不能超过{max_size_mb()}MB")
+    if not validate_image_header(img_bytes):
+        raise AvatarError("头像文件格式不合法")
+
+    try:
+        fmt = (Image.open(io.BytesIO(img_bytes)).format or "").upper()
+    except Exception:
+        raise AvatarError("头像文件格式不合法")
+    ext = ALLOWED_FORMATS.get(fmt)
+    if not ext:
+        raise AvatarError("头像仅支持 jpg/png/gif/webp 格式")
+
+    os.makedirs(AVATAR_DIR, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    with open(os.path.join(AVATAR_DIR, filename), "wb") as f:
+        f.write(img_bytes)
+    return f"/static/uploads/avatars/{filename}"
+
+
 def save_avatar_base64(avatar_b64: str) -> str:
     """把 base64（可带 dataURL 前缀）头像存盘，返回形如
-    ``/static/uploads/avatars/<uuid>.png`` 的 URL。
+    ``/static/uploads/avatars/<uuid>.png`` 的 URL；空值返回空串。
 
     失败抛 :class:`AvatarError`（消息可直接展示给管理员）。
     """
@@ -46,21 +77,4 @@ def save_avatar_base64(avatar_b64: str) -> str:
     except (binascii.Error, ValueError):
         raise AvatarError("头像数据不是合法的 base64")
 
-    if len(img_bytes) > MAX_AVATAR_SIZE:
-        raise AvatarError("头像大小不能超过2MB")
-    if not validate_image_header(img_bytes):
-        raise AvatarError("头像文件格式不合法")
-
-    try:
-        fmt = Image.open(io.BytesIO(img_bytes)).format or ""
-    except Exception:
-        raise AvatarError("头像文件格式不合法")
-    ext = ALLOWED_FORMATS.get(fmt.upper())
-    if not ext:
-        raise AvatarError("头像仅支持 jpg/png/gif/webp 格式")
-
-    os.makedirs(AVATAR_DIR, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}.{ext}"
-    with open(os.path.join(AVATAR_DIR, filename), "wb") as f:
-        f.write(img_bytes)
-    return f"/static/uploads/avatars/{filename}"
+    return save_avatar_bytes(img_bytes)
