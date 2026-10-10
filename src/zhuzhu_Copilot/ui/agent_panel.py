@@ -139,6 +139,7 @@ from zhuzhu_Copilot.core import (
 
 from zhuzhu_Copilot.core.agent_mcp import McpManager
 from zhuzhu_Copilot.ui import agent_chat_bubbles as chat_bubbles
+from zhuzhu_Copilot.ui import brand_icons
 from zhuzhu_Copilot.ui import tool_icons
 from zhuzhu_Copilot.ui.tokens import (
     COMBO_ARROW_W,
@@ -6427,9 +6428,20 @@ class _AgentSettingsDialog(QDialog):
             card.setSizePolicy(sp)
         except Exception:
             pass
-        v = QVBoxLayout(card)
-        v.setContentsMargins(12, 8, 12, 8)
+        outer = QHBoxLayout(card)
+        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setSpacing(10)
+        # 品牌矢量图标（24px 图形置于 28px 壳内，顶部对齐不随长名称换行下沉）
+        brand = brand_icons.brand_for_provider(p)
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(28, 28)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        icon_lbl.setPixmap(brand_icons.brand_icon(
+            brand, 24, self._DIM).pixmap(24, 24))
+        outer.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignTop)
+        v = QVBoxLayout()
         v.setSpacing(2)
+        outer.addLayout(v, 1)
         name_text = _provider_disp(p)
         if agent_llm.is_default_provider(p):
             name_text += _ui("（内置 · 锁定）")
@@ -6460,6 +6472,8 @@ class _AgentSettingsDialog(QDialog):
         card._name_lbl = name
         card._url_lbl = url
         card._models_lbl = models
+        card._icon_lbl = icon_lbl
+        card._icon_brand = brand
         return card
 
     def _card_height(self, card, w) -> int:
@@ -6596,16 +6610,23 @@ class _AgentSettingsDialog(QDialog):
             selected = p is not None and sel is not None and p.get("name") == sel.get("name")
             if w is None:
                 continue
+            icon_lbl = getattr(w, "_icon_lbl", None)
             if selected:
                 w.setStyleSheet(f"background: {self._ACCENT}; border-radius: 8px;")
                 w._name_lbl.setStyleSheet("color: #FFFFFF; font-size: 14px; font-weight: 700;")
                 w._url_lbl.setStyleSheet("color: #FFFFFF; font-size: 11px;")
                 w._models_lbl.setStyleSheet("color: #FFFFFF; font-size: 12px;")
+                if icon_lbl is not None:   # 蓝底上图标反白
+                    icon_lbl.setPixmap(brand_icons.brand_icon(
+                        getattr(w, "_icon_brand", ""), 24, "#FFFFFF").pixmap(24, 24))
             else:
                 w.setStyleSheet(f"background: {self._PANEL}; border-radius: 8px;")
                 w._name_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 14px; font-weight: 700;")
                 w._url_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
                 w._models_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+                if icon_lbl is not None:
+                    icon_lbl.setPixmap(brand_icons.brand_icon(
+                        getattr(w, "_icon_brand", ""), 24, self._DIM).pixmap(24, 24))
 
     def _on_provider_add(self, *_):
         dlg = _ProviderDialog(parent=self)
@@ -7242,9 +7263,12 @@ class _ProviderDialog(QDialog):
 
         # 预设服务商：一键填入主流 coding/Agent 服务商（仍需填 Key 并测试）
         self.preset_combo = _ArrowComboBox()
+        self.preset_combo.setIconSize(QSize(16, 16))
         self.preset_combo.addItem(_ui("（自定义 / 手动填写）"), None)
         for p in agent_llm.PRESET_PROVIDERS:
-            self.preset_combo.addItem(_ui(p["name"]), p)
+            self.preset_combo.addItem(
+                brand_icons.brand_icon(brand_icons.brand_for_provider(p), 16, self._DIM),
+                _ui(p["name"]), p)
         self.preset_combo.currentIndexChanged.connect(self._apply_preset)
         form.addRow(_ui("预设服务商"), self.preset_combo)
         self.preset_hint = QLabel("")
@@ -15712,6 +15736,7 @@ class AgentPanel(QDialog):
         self.model_combo = _ArrowComboBox()
         self.model_combo.setMinimumWidth(150)
         self.model_combo.setMaximumWidth(230)
+        self.model_combo.setIconSize(QSize(16, 16))
         self.model_combo.setStyleSheet(_HOME_COMBO)
         self.model_combo.setToolTip(_ui("手动切换本次使用的模型；「自动选择」= 按工作力度路由"))
         self.model_combo.currentIndexChanged.connect(self._on_model_combo)
@@ -23412,7 +23437,10 @@ class AgentPanel(QDialog):
             pname = p.get("name", "服务商")
             for x in p.get("models") or []:
                 label = x.rsplit("/", 1)[-1] if x else x   # 去供应商/组织前缀
-                self.model_combo.addItem(label, (pname, x))
+                # 品牌矢量图标：模型名优先识别（聚合平台同挂多家模型时各归各家）
+                brand = brand_icons.brand_for(x, pname, p.get("base_url", ""))
+                self.model_combo.addItem(
+                    brand_icons.brand_icon(brand, 16, TEXT_DIM), label, (pname, x))
                 self.model_combo.setItemData(
                     self.model_combo.count() - 1, f"{pname} · {x}",
                     Qt.ItemDataRole.ToolTipRole)

@@ -76,6 +76,7 @@ PRESET_PROVIDERS = [
     # 官方模型：ark-code-latest(控制台切换) / doubao-seed-2.1-turbo / doubao-seed-2.0-lite /
     # minimax-m3 / glm-5.2(glm-latest) / glm-5.3 / deepseek-v4-flash / deepseek-v4-pro / kimi-k2.7-code
     {"name": "火山方舟（Coding Plan）",
+     "brand": "doubao",
      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
      "models": ["ark-code-latest", "deepseek-v4-flash", "deepseek-v4-pro",
                 "kimi-k2.7-code", "doubao-seed-2.1-turbo", "glm-5.3", "minimax-m3"],
@@ -87,6 +88,7 @@ PRESET_PROVIDERS = [
     # /api/plan/v3（OpenAI 兼容，支持 Chat 与 Responses API），须用 Agent Plan
     # 专属 API Key（与 Coding Plan Key、通用火山 Key 均不同，请勿混用）。
     {"name": "火山方舟（Agent Plan）",
+     "brand": "doubao",
      "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
      "models": ["ark-code-latest", "deepseek-v4-pro", "deepseek-v4-flash",
                 "glm-5.3", "glm-5.2", "kimi-k3", "doubao-seed-2.1-turbo"],
@@ -96,6 +98,7 @@ PRESET_PROVIDERS = [
              "须用 Agent Plan 专属 API Key（与 Coding Plan Key、通用火山 Key 均不同），"
              "官方推荐 Responses API 推理效果更好"},
     {"name": "火山方舟（通用）",
+     "brand": "doubao",
      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
      "models": ["doubao-seed-2.1-pro", "doubao-seed-2.1-turbo"],
      "multimodal_models": ["doubao-1-5-vision-pro"],
@@ -104,6 +107,7 @@ PRESET_PROVIDERS = [
     # 智谱 GLM Coding Plan：必须用专属端点 /api/coding/paas/v4（OpenAI 兼容），
     # 用普通 /api/paas/v4 无法享受套餐额度且可能报错。支持 glm-5.3 / glm-4.7 / glm-4.7-flash
     {"name": "智谱（GLM Coding Plan）",
+     "brand": "zhipu",
      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
      "models": ["glm-5.3", "glm-4.7", "glm-4.7-flash"],
      "multimodal_models": [],
@@ -111,24 +115,28 @@ PRESET_PROVIDERS = [
      "desc": "智谱 GLM Coding Plan 专属端点（/api/coding/paas/v4，OpenAI 兼容）；"
              "须订阅 GLM Coding Plan 并用其专属网关，否则无法享用套餐额度"},
     {"name": "智谱清言",
+     "brand": "zhipu",
      "base_url": "https://open.bigmodel.cn/api/paas/v4",
      "models": ["glm-5.3", "glm-5.2", "glm-4.7-flash"],
      "multimodal_models": ["glm-4v-plus"],
      "protocol": "chat",
      "desc": "智谱开放平台（OpenAI 兼容），glm-4.7-flash 为免费模型"},
     {"name": "DeepSeek",
+     "brand": "deepseek",
      "base_url": "https://api.deepseek.com/v1",
      "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
      "multimodal_models": [],
      "protocol": "chat",
      "desc": "DeepSeek 官方 API（V4 系列；deepseek-chat / deepseek-reasoner 已停用）"},
     {"name": "OpenAI",
+     "brand": "openai",
      "base_url": "https://api.openai.com/v1",
      "models": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3"],
      "multimodal_models": ["gpt-5.4", "gpt-5.4-mini"],
      "protocol": "chat",
      "desc": "OpenAI 官方 API（GPT-5 系列；gpt-4o / gpt-4.1 已退役）"},
     {"name": "Anthropic (Claude)",
+     "brand": "claude",
      "base_url": "https://api.anthropic.com",
      "models": ["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"],
      "multimodal_models": ["claude-sonnet-4-5", "claude-opus-4-5"],
@@ -149,6 +157,7 @@ PRESET_PROVIDERS = [
      "protocol": "chat",
      "desc": "SiliconFlow 聚合平台（OpenAI 兼容）"},
     {"name": "DeepSeek 网页版（免费）",
+     "brand": "deepseek",
      "base_url": "http://127.0.0.1:0/v1",     # 占位，运行期由本地代理替换
      "models": ["deepseek-chat-quick", "deepseek-chat-expert", "deepseek-chat-view"],
      "multimodal_models": [],
