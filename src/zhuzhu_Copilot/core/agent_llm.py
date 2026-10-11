@@ -144,6 +144,7 @@ PRESET_PROVIDERS = [
      "desc": "Anthropic 官方 API（Claude 系列；Messages API /v1/messages，x-api-key 认证；"
              "支持工具调用与视觉输入）"},
     {"name": "Kimi（月之暗面）",
+     "brand": "kimi",
      "base_url": "https://api.moonshot.cn/v1",
      "models": ["kimi-k3", "kimi-k2.6"],
      "multimodal_models": ["kimi-k2.6"],

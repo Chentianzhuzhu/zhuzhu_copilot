@@ -6437,7 +6437,7 @@ class _AgentSettingsDialog(QDialog):
         icon_lbl.setFixedSize(28, 28)
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         icon_lbl.setPixmap(brand_icons.brand_icon(
-            brand, 24, self._DIM).pixmap(24, 24))
+            brand, 24, self._TEXT).pixmap(24, 24))
         outer.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignTop)
         v = QVBoxLayout()
         v.setSpacing(2)
@@ -6626,7 +6626,7 @@ class _AgentSettingsDialog(QDialog):
                 w._models_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
                 if icon_lbl is not None:
                     icon_lbl.setPixmap(brand_icons.brand_icon(
-                        getattr(w, "_icon_brand", ""), 24, self._DIM).pixmap(24, 24))
+                        getattr(w, "_icon_brand", ""), 24, self._TEXT).pixmap(24, 24))
 
     def _on_provider_add(self, *_):
         dlg = _ProviderDialog(parent=self)
@@ -7267,7 +7267,7 @@ class _ProviderDialog(QDialog):
         self.preset_combo.addItem(_ui("（自定义 / 手动填写）"), None)
         for p in agent_llm.PRESET_PROVIDERS:
             self.preset_combo.addItem(
-                brand_icons.brand_icon(brand_icons.brand_for_provider(p), 16, self._DIM),
+                brand_icons.brand_icon(brand_icons.brand_for_provider(p), 16, self._TEXT),
                 _ui(p["name"]), p)
         self.preset_combo.currentIndexChanged.connect(self._apply_preset)
         form.addRow(_ui("预设服务商"), self.preset_combo)
@@ -23437,10 +23437,11 @@ class AgentPanel(QDialog):
             pname = p.get("name", "服务商")
             for x in p.get("models") or []:
                 label = x.rsplit("/", 1)[-1] if x else x   # 去供应商/组织前缀
-                # 品牌矢量图标：模型名优先识别（聚合平台同挂多家模型时各归各家）
+                # 品牌矢量图标：模型名优先识别（聚合平台同挂多家模型时各归各家）；
+                # 用前景主色注入：深色模式近白、浅色模式近黑，随主题切换重建
                 brand = brand_icons.brand_for(x, pname, p.get("base_url", ""))
                 self.model_combo.addItem(
-                    brand_icons.brand_icon(brand, 16, TEXT_DIM), label, (pname, x))
+                    brand_icons.brand_icon(brand, 16, TEXT), label, (pname, x))
                 self.model_combo.setItemData(
                     self.model_combo.count() - 1, f"{pname} · {x}",
                     Qt.ItemDataRole.ToolTipRole)

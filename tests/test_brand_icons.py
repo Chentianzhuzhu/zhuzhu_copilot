@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """品牌厂商矢量图标的回归测试。
 
-守四条不变式：
-1. 识别：10 个内置品牌在「服务商名 / 接口地址 / 模型名」三类线索下都能被识别，
+守五条不变式：
+1. 识别：11 个内置品牌在「服务商名 / 接口地址 / 模型名」三类线索下都能被识别，
    且模型名线索优先级最高（聚合平台同挂多家模型时各归各家）；
 2. 绘制：每个品牌（含未知品牌的通用兜底）都真实画出非空像素，图标绝不留白；
    且各品牌图形两两不同（防止误把多个品牌画成同一个图形）；
-3. 接线：模型下拉、服务商卡片、添加服务商预设下拉三处真实挂上对应图标；
-4. 数据：PRESET_PROVIDERS 里声明的 brand 必须是已知品牌，且与推断结果一致。
+3. 主题：颜色完全由调用方注入——深色主题传浅色、浅色主题传深色，图标随之反色；
+4. 接线：模型下拉、服务商卡片、添加服务商预设下拉三处真实挂上对应图标；
+5. 数据：PRESET_PROVIDERS 里声明的 brand 必须是已知品牌，且与推断结果一致。
 """
 import os
 import sys
@@ -31,6 +32,7 @@ def test_brand_by_name():
         "doubao": ["豆包", "火山方舟（Coding Plan）", "VolcEngine", "ark"],
         "qwen": ["千问", "通义千问", "DashScope", "Qwen"],
         "zhipu": ["智谱清言", "智谱（GLM Coding Plan）", "GLM", "bigmodel"],
+        "kimi": ["Kimi（月之暗面）", "Moonshot AI", "月之暗面"],
         "minimax": ["MiniMax", "minimax-m3 平台", "海螺"],
         "openai": ["OpenAI", "GPT 中转", "ChatGPT"],
         "gemini": ["Gemini", "Google AI", "谷歌"],
@@ -49,6 +51,7 @@ def test_brand_by_url():
         "doubao": ["https://ark.cn-beijing.volces.com/api/coding/v3"],
         "qwen": ["https://dashscope.aliyuncs.com/v1"],
         "zhipu": ["https://open.bigmodel.cn/api/paas/v4"],
+        "kimi": ["https://api.moonshot.cn/v1"],
         "minimax": ["https://api.minimax.io/v1"],
         "openai": ["https://api.openai.com/v1"],
         "gemini": ["https://generativelanguage.googleapis.com/v1beta"],
@@ -67,6 +70,7 @@ def test_brand_by_model():
         "doubao": ["doubao-seed-2.1-turbo", "ark-code-latest"],
         "qwen": ["qwen-max", "Qwen/Qwen3-VL-32B-Instruct"],
         "zhipu": ["glm-5.3", "zai-org/GLM-5.1", "glm-4v-plus"],
+        "kimi": ["kimi-k3", "kimi-k2.6", "moonshot/kimi-k2"],
         "minimax": ["minimax-m3", "abab6.5s-chat"],
         "openai": ["gpt-5.4", "gpt-5.4-mini"],
         "gemini": ["gemini-2.5-pro"],
@@ -86,6 +90,8 @@ def test_model_cue_beats_provider_name():
                         provider_name="火山方舟（Agent Plan）") == "zhipu"
     assert bi.brand_for(model="minimax-m3",
                         provider_name="火山方舟（Coding Plan）") == "minimax"
+    assert bi.brand_for(model="kimi-k3",
+                        provider_name="火山方舟（Coding Plan）") == "kimi"
     # 平台自有模型仍归豆包
     assert bi.brand_for(model="doubao-seed-2.1-turbo",
                         provider_name="火山方舟（通用）") == "doubao"
@@ -95,7 +101,7 @@ def test_case_insensitive_and_unknown():
     assert bi.brand_for(model="DEEPSEEK-V4") == "deepseek"
     assert bi.brand_for(provider_name="DEEPSEEK") == "deepseek"
     assert bi.brand_for(model="kimi-k3", provider_name="Kimi（月之暗面）",
-                        base_url="https://api.moonshot.cn/v1") == ""
+                        base_url="https://api.moonshot.cn/v1") == "kimi"
     assert bi.brand_for() == ""
 
 
@@ -109,13 +115,13 @@ def test_brand_for_provider():
         {"name": "我的中转", "base_url": "https://api.agnes-ai.cn/v1"}) == "agnes"
     assert bi.brand_for_provider(
         {"name": "我的中转", "base_url": "", "models": ["gemini-2.5-pro"]}) == "gemini"
-    assert bi.brand_for_provider({"name": "Kimi", "models": ["kimi-k3"]}) == ""
+    assert bi.brand_for_provider({"name": "Kimi", "models": ["kimi-k3"]}) == "kimi"
     assert bi.brand_for_provider(None) == ""
 
 
 # ---------- 2. 绘制 ----------
 def test_official_svg_registry_valid():
-    """10 个品牌均有官方 SVG，源串可被 QSvgRenderer 解析，且用 currentColor 占位"""
+    """11 个品牌均有官方 SVG，源串可被 QSvgRenderer 解析，且用 currentColor 占位"""
     from PyQt6.QtCore import QByteArray
     from PyQt6.QtSvg import QSvgRenderer
     from zhuzhu_Copilot.ui import brand_svg_data
@@ -141,7 +147,7 @@ def _ink_ratio(brand: str, size: int = 32) -> float:
 
 def test_every_glyph_paints_and_is_distinct():
     brands = sorted(bi.KNOWN_BRANDS)
-    assert brands == sorted(["agnes", "deepseek", "doubao", "qwen", "zhipu",
+    assert brands == sorted(["agnes", "kimi", "deepseek", "doubao", "qwen", "zhipu",
                              "minimax", "openai", "gemini", "grok", "claude"])
     sigs = {}
     for b in brands + [""]:   # "" = 未知品牌通用兜底
@@ -175,6 +181,15 @@ def test_icon_color_injected():
     b = bi.brand_icon("grok", 32, "#1E40AF").pixmap(32, 32).toImage()
     assert _opaque_pixel(a).name().upper() == "#FFFFFF"
     assert _opaque_pixel(b).name().upper() == "#1E40AF"
+
+
+def test_icon_inverts_with_theme():
+    """深色主题注入浅色（近白）、浅色主题注入深色（近黑），同品牌图标随之反色"""
+    for brand in bi.KNOWN_BRANDS:
+        dark_ui = bi.brand_icon(brand, 32, "#F3F5F9").pixmap(32, 32).toImage()
+        light_ui = bi.brand_icon(brand, 32, "#1B2433").pixmap(32, 32).toImage()
+        assert _opaque_pixel(dark_ui).name().upper() == "#F3F5F9", brand
+        assert _opaque_pixel(light_ui).name().upper() == "#1B2433", brand
 
 
 # ---------- 3. 真实 UI 接线 ----------
@@ -222,8 +237,11 @@ def test_model_combo_wiring_source_guard():
     from zhuzhu_Copilot.ui import agent_panel as ap
     src = inspect.getsource(ap.AgentPanel._sync_model_combo)
     assert "brand_for(" in src and "brand_icon(" in src
+    # 图标必须注入前景主色 TEXT（深主题近白 / 浅主题近黑），不能退回固定灰
+    assert "brand_icon(brand, 16, TEXT)" in src
     card_src = inspect.getsource(ap._AgentSettingsDialog._make_provider_card)
     assert "brand_for_provider(" in card_src and "brand_icon(" in card_src
+    assert "brand, 24, self._TEXT" in card_src
 
 
 # ---------- 4. 预设数据 ----------
@@ -236,4 +254,4 @@ def test_preset_brand_fields_valid():
         if b:
             branded += 1
             assert bi.brand_for_provider(p) == b, p["name"]
-    assert branded >= 8   # 当前 9 个平台预设带品牌（Kimi/硅基流动为通用图标）
+    assert branded >= 10   # 当前 10 个平台预设带品牌（仅硅基流动聚合平台为通用图标）
