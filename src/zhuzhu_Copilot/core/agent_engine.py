@@ -162,8 +162,18 @@ def _zero_usage() -> dict:
 
 # 读取长文本自动压缩：AI 读取(read_file/web_fetch/extract_text)返回的超长文本
 # 在进入上下文前用当前模型生成结构化摘要，避免单条长文本独占上下文预算。
+#
+# MCP 读取类工具同样纳入：电脑操控插件的 list_elements（元素树，最坏 200 个元素
+# ≈ 6.4K tokens）、浏览器 browser_html/browser_snapshot 等返回的都是**结构化枚举**，
+# 单条不越阈值但操控任务每步都要「截图 → 读元素 → 操作 → 再读」，几轮累积就能把
+# 上下文顶穿，且这些内容对模型只有「有哪些控件可点」这一层信息有用。
+# 走的是 LLM 结构化摘要（保留控件清单要点），不是硬截断 —— 原文可读性不受影响。
+_MCP_READ_TOOLS = frozenset({
+    "list_elements", "list_windows", "browser_html", "browser_snapshot",
+    "manage_window", "screen_info", "mcp_resource_read",
+})
 _READ_CONDENSE_TOOLS = frozenset({"read_file", "web_fetch", "extract_text",
-                                  "grep", "search_code", "search_files"})
+                                  "grep", "search_code", "search_files"}) | _MCP_READ_TOOLS
 # 触发阈值：单个工具返回文本超过该字符数即触发压缩
 _READ_CONDENSE_CHARS = 12000
 # 压缩产物的预算：结构化摘要 + 原文头尾备份合起来不得超过该字符数
@@ -281,11 +291,32 @@ _EFFICIENT_TOOLS = frozenset({
 
 # 任务类别 → (触发词, 额外暴露的工具)。触发词命中即裁剪到「核心+该类」，
 # 减小 schema token、降低选错工具概率；未命中任何类别则保留全部（保守）。
+#
+# 「desktop」（电脑操控）这一类必须显式存在：操控类请求的措辞（"操作电脑""点这个
+# 按钮""帮我点一下屏幕上的确定"）与其它任何类都不重叠，命中 None 时会走
+# 「保留全部 105 个工具」的保守分支 —— 工具 schema 本身就吃掉 38K tokens
+# （占 128K 窗口的 30%），再叠加 MCP 的 5.5K；操控任务每轮都要重发工具表
+# （截图 → 读元素 → 操作 → 再截图验证），几步就把上下文顶穿。
 _TASK_GROUPS = [
+    # 触发词只用**桌面专属**措辞，绝不收「点一下 / 双击 / 窗口」这类泛化词：
+    # 它们同样出现在网页语境里，混进来会让纯网页任务平白多带一整套操控工具。
+    # 泛化的点选措辞由 _desktop_intent() 单独判定（那里有桌面/网页的消歧逻辑）。
+    ("desktop",
+     ("操作电脑", "操控电脑", "操控桌面", "操作桌面", "电脑操作", "桌面操作",
+      "帮我操作", "帮我操控", "用鼠标", "用界面", "看屏幕", "看桌面", "截图看看",
+      "打开软件", "安装界面", "设置界面", "操作窗口", "切换窗口",
+      "在屏幕上", "屏幕上点", "界面上点", "在界面上", "在界面里"),
+     frozenset({"screen_info", "screen_shot", "virtual_desktop",
+                "find_app", "ask_user", "update_todo"})),
+    # 「帮我点 / 帮我打开」是**网页**动作（点链接、点页面上的东西）。
+    # 桌面语境下的「帮我点一下屏幕…」「帮我点这个窗口…」由 _desktop_intent()
+    # 判定为 desktop；此处用「网页/页面」限定词把两类彻底分开，避免 browser
+    # 抢走桌面点选指令、误暴露整套浏览器工具而不暴露操控所需的截图工具。
     ("browser",
      ("打开浏览器", "打开网页", "打开网站", "浏览网页", "网页操作", "网页",
       "登录", "点赞", "点视频", "看视频", "刷视频", "刷网页", "抓取网页",
-      "上网站", "进网站", "填表", "打卡", "点一下", "帮我打开", "帮我点"),
+      "上网站", "进网站", "填表", "打卡", "网页上点", "页面上点",
+      "网页上帮我点", "页面上帮我点", "帮我打开网页", "帮我打开网站"),
      frozenset({"browser_open", "browser_navigate", "browser_snapshot", "browser_click",
                 "browser_type", "browser_scroll", "browser_eval", "browser_html",
                 "browser_close", "browser_tabs", "browser_switch_tab"})),
@@ -378,12 +409,43 @@ def shared_snapshot_note() -> str:
     return agent_skills._tp("prompt.note.shared_snapshot", _SHARED_SNAPSHOT_NOTE_ZH)
 
 
+# 「点一下 / 点这个 / 双击 / 打开X」这类措辞在桌面与网页两种语境里都成立，
+# 放进 _TASK_GROUPS 的词表必然误伤另一边。故桌面意图单独判定：
+# 只有当泛化的点选措辞出现、且**没有网页线索**时，才判为 desktop。
+_DESKTOP_POINT_KWS = ("点一下", "点这个", "点那个", "点它", "双击", "单击",
+                      "点击", "按一下", "点一下", "这个按钮", "那个按钮")
+_DESKTOP_OBJECT_KWS = ("屏幕", "桌面", "窗口", "界面", "按钮", "图标", "菜单",
+                       "对话框", "弹窗", "程序", "软件", "记事本", "计算器")
+_WEB_HINT_KWS = ("网页", "网站", "浏览器", "页面", "网址", "链接", "网页上",
+                 "页面上", "网站里", "网页里", "登录", "表单")
+
+
+def _desktop_intent(t: str) -> bool:
+    """输入是否表达「操控桌面界面」意图（与网页操作消歧）。
+
+    规则（顺序即优先级）：
+    1. 出现网页线索 → 网页任务，桌面点选措辞让位（"帮我点一下网页上的链接"）。
+    2. 出现桌面对象词（屏幕/窗口/按钮/图标…）→ 桌面任务，"点一下"归桌面。
+    3. 否则只看 desktop 组自己的专属触发词（操作电脑/看屏幕…），
+       不靠泛化点选词硬猜—— 猜错会让纯聊天/写代码任务白带一整套操控工具。
+    """
+    if not t:
+        return False
+    if any(k in t for k in _WEB_HINT_KWS):
+        return False
+    if any(k in t for k in _DESKTOP_POINT_KWS) and any(k in t for k in _DESKTOP_OBJECT_KWS):
+        return True
+    return False
+
+
 def _detect_task_groups(text: str):
     """按用户输入匹配任务类别，返回命中的组名列表；未命中任何类别返回 None（不裁剪）。"""
     t = (text or "").lower()
     if not t:
         return None
     hit = [g for g, kws, _tools in _TASK_GROUPS if any(k in t for k in kws)]
+    if _desktop_intent(t) and "desktop" not in hit:
+        hit.append("desktop")
     return hit or None
 
 # 对话上下文持久化路径
@@ -413,6 +475,58 @@ def _compress_data_url(data_url: str, max_width: int = 320, quality: int = 80) -
         buf.open(QIODevice.OpenModeFlag.WriteOnly)
         img.save(buf, "JPEG", quality)
         return "data:image/jpeg;base64," + base64.b64encode(bytes(ba)).decode()
+    except Exception:
+        return data_url
+
+
+# 视觉输入图片的体积治理（修复「电脑操控没走几步上下文就爆」）：
+# 截图入库前按降级阶梯转成有界 JPEG。阶梯先只降质不缩宽（保住整屏/放大图的
+# 像素细节，点击定位依赖它），压不下来再逐级缩宽；实测即使是不可压缩的随机噪声
+# 帧，最后一档也仅约 87K base64，保证任何内容都能落进硬上限。
+_CTX_IMAGE_MAX_B64 = 180_000   # 入库图片 base64 字符硬上限（≈135KB；实测 1280 截图 q80≈105K）
+_CTX_IMAGE_LADDER = (          # (JPEG 质量, 最大宽度；0=不缩宽)
+    (80, 0),      # 绝大多数真实 UI 截图一次达标（实测 263K 字符 PNG → 105K）
+    (70, 0),      # 放大查看（zoom）等细节帧：只降质不缩宽
+    (55, 1280),   # 以下逐级缩宽，兜底极端复杂/类噪声帧
+    (40, 1024),
+    (35, 800),
+    (30, 640),
+)
+
+
+def _context_image(data_url: str) -> str:
+    """把单张图片 data URL 治理到 _CTX_IMAGE_MAX_B64 以内（JPEG 降级阶梯）。
+
+    - 非图片/空串/坏数据一律原样返回，绝不阻断工具链；
+    - 已在硬上限内的图零开销直通（治理后的历史帧/小截图不重复编码，性能优先）；
+    - http(s) 网络图片无法本地重编码，原样返回。
+    """
+    if not isinstance(data_url, str) or not data_url.startswith("data:image"):
+        return data_url
+    if len(data_url) <= _CTX_IMAGE_MAX_B64:
+        return data_url
+    import base64 as _b64
+    try:
+        _, _, b64 = data_url.partition(",")
+        src = QImage.fromData(_b64.b64decode(b64))
+        if src.isNull():
+            return data_url
+        last = data_url
+        for quality, max_w in _CTX_IMAGE_LADDER:
+            if max_w <= 0 or src.width() <= max_w:
+                img = src
+            else:
+                img = src.scaledToWidth(max_w, Qt.TransformationMode.SmoothTransformation)
+            ba = QByteArray()
+            buf = QBuffer(ba)
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            if not img.save(buf, "JPEG", quality):
+                continue
+            out = "data:image/jpeg;base64," + _b64.b64encode(bytes(ba)).decode()
+            last = out
+            if len(out) <= _CTX_IMAGE_MAX_B64:
+                return out
+        return last   # 最小档兜底（噪声帧实测 ~87K，必入上限）
     except Exception:
         return data_url
 
@@ -1014,27 +1128,42 @@ class AgentEngine:
         return ("（上下文已压缩，以下是此前对话的关键信息）\n"
                 + "\n".join(summary_parts)) if summary_parts else ""
 
-    def _prune_images(self, max_keep=2):
-        """历史中的截图只保留最近 max_keep 张，其余剥离 image_url 只留文本，防止上下文膨胀"""
+    def _prune_images(self, max_keep=2) -> int:
+        """历史截图只保留最近 max_keep 张，其余剥离 image_url 只留文本，防止上下文膨胀。
+
+        留存的图若是体积治理上线前遗留的原图，顺带补做一次治理；
+        返回被剥离的 image_url 条数（供调用方/测试观测）。
+        """
         seen = 0
+        dropped = 0
         for m in reversed(self._messages):
             c = m.get("content")
             if not isinstance(c, list):
                 continue
-            keep, drop = [], []
+            keep, drop, changed = [], [], False
             for x in c:
                 if isinstance(x, dict) and x.get("type") == "image_url":
                     if seen < max_keep:
                         seen += 1
+                        url = (x.get("image_url") or {}).get("url", "")
+                        slim = _context_image(url)   # 超限旧原图治理；已达标零开销直通
+                        if slim != url:
+                            x = dict(x)
+                            x["image_url"] = dict(x["image_url"], url=slim)
+                            changed = True
                         keep.append(x)
                     else:
                         drop.append(x)
+                        changed = True
                 else:
                     keep.append(x)
-            if drop:
-                # 纯图片消息被全部剥离后会成为空数组，补占位文本防上游拒绝
+            dropped += len(drop)
+            if changed:
+                # 纯图片消息被全部剥离后会成为空数组，补占位文本防上游拒绝；
+                # 仅有治理替换（无剥离）时也必须回写，否则治理结果不会落盘到消息
                 m["content"] = keep if keep else \
                     [{"type": "text", "text": "（截图已忽略）"}]
+        return dropped
 
     @staticmethod
     def _strip_images(messages: list):
@@ -2963,6 +3092,10 @@ class AgentEngine:
                                            else f"正在执行: {name}")
                         res = self._execute(name, args, allow_dangerous=approved)
                     text, imgs = res["text"], res["images"]
+                    # 入库前统一体积治理（MCP 电脑操控/浏览器截图等所有图片来源）：
+                    # 原始 PNG 一帧 base64 可达数十~上百万字符，兼容网关按文本粗计时
+                    # 几步即冲破窗口；治理为有界 JPEG 后 tool 消息与轮末视觉消息共用同一份。
+                    imgs = [_context_image(u) for u in imgs]
                     # 工作团监督：主 Agent 工具轨迹写入 ContextLedger（look_context 数据源）
                     if self._control is not None:
                         try:
@@ -3140,7 +3273,8 @@ class AgentEngine:
                 if t == "text" and x.get("text"):
                     texts.append(x["text"])
                 elif t == "image_url":
-                    est += agent_llm.estimate_image_tokens()
+                    est += agent_llm.estimate_image_tokens(
+                        (x.get("image_url") or {}).get("url", ""))
         for tc in (m.get("tool_calls") or []):
             if isinstance(tc, dict):
                 fn = tc.get("function") or {}
