@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: str = ""
+    # Redis 6+ ACL 用户名；留空 = 以 default 用户认证（兼容旧行为）。
+    # 指向远程缓存节点时使用 api_app 账号（见 outputs/redis_api_integration.md）。
+    redis_user: str = ""
 
     # JWT
     jwt_secret: str = "default_secret_change_in_production"
@@ -66,6 +69,9 @@ class Settings(BaseSettings):
 
     @property
     def redis_url(self) -> str:
+        if self.redis_user and self.redis_password:
+            # Redis 6+ ACL：redis://<user>:<password>@host:port/db
+            return f"redis://{self.redis_user}:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
         if self.redis_password:
             return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"

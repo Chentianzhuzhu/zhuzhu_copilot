@@ -61,6 +61,7 @@ from PyQt6.QtGui import (
     QImage,
     QImageReader,
     QKeySequence,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPalette,
@@ -735,6 +736,20 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
 _ROUND_BTN_D = 42
 
 
+def _round_icon_btn_qss_active(diameter: int) -> str:
+    """输入行圆形图标按钮的「录音中」皮肤：主色渐变底 + 白字 hover 提亮。
+
+    与常态皮肤（`_round_icon_btn_qss`）刻意拉开差距：录音中必须一眼看出"正在收音"。
+    主题切换时由面板的 `_voice_btn_qss()` 重新生成，不会残留旧主题色。
+    """
+    return (f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            f"stop:0 {ACCENT}, stop:1 {ACCENT_HOVER});"
+            f"border: 1px solid {ACCENT_HOVER};"
+            f"border-radius: {diameter // 2}px; }}"
+            f"QPushButton:hover {{ background: {ACCENT_HOVER};"
+            f"border: 1px solid {ACCENT_HOVER}; }}")
+
+
 def _round_icon_btn_qss(diameter: int) -> str:
     """输入行圆形图标按钮的统一皮肤（上传 / 优化共用，两者观感必须完全一致）。
 
@@ -1014,6 +1029,16 @@ def _std_icon(sp) -> QIcon:
 
 
 # 齿轮（设置）：Lucide 开源简约线条矢量图（stroke 用 {color} 占位，由 _svg_icon 着色）
+# Feather「mic」开源矢量图标（MIT License, https://feathericons.com）：
+# 与 _GEAR_SVG（Feather settings）同一图标库、同一画风；stroke 用 {color} 占位，
+# 由 _svg_icon 统一着色。语音输入按钮专用。
+_MIC_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+            'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>'
+            '<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>'
+            '<line x1="12" y1="19" x2="12" y2="23"/>'
+            '<line x1="8" y1="23" x2="16" y2="23"/></svg>')
+
 _GEAR_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
              'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
              '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08'
@@ -14615,6 +14640,160 @@ class _CuteBubble(QLabel):
         super().paintEvent(ev)
 
 
+class _VoiceOverlay(QWidget):
+    """语音输入遮罩：盖在输入框上的一层深蓝渐变，亮度与条形频谱跟随说话音量。
+
+    设计要点
+    --------
+    - **不吃鼠标事件**（``WA_TransparentForMouseEvents``）：盖住输入框也不影响
+      继续编辑/选中，用户可以在录音期间追加文字。
+    - **快起慢落**：目标音量跃升时每帧追 0.30（立刻有反馈），回落时每帧乘 0.86
+      （缓慢退去）。线性对称的话，环境噪声一停遮罩就"闪崩"，观感很吵。
+    - **不订内容高度**：高度始终贴合输入框（``_sync_geometry`` 写满父控件），
+      输入框因多行内容被 ``_auto_height`` 拉高时遮罩跟着变高，不会露半边。
+    - 自己画（``paintEvent`` + ``WA_NoSystemBackground``），不靠 QSS：
+      QSS 无法表达"渐变透明度随每帧变化"。
+    """
+
+    BARS = 22                 # 频谱条数
+    TICK_MS = 50              # 约 20fps：够顺，开销可忽略
+    ATTACK = 0.30             # 每帧最大升幅（快起）
+    DECAY = 0.86              # 每帧保留比例（慢落）
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._target = 0.0
+        self._level = 0.0
+        self._phase = 0.0     # 频谱相位（让相邻条形此消彼长，像在跳动）
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(False)
+        self._timer.setInterval(self.TICK_MS)
+        self._timer.timeout.connect(self._tick)
+        self.hide()
+
+    # ---------------------------------------------------------- 公开接口
+    @property
+    def level(self) -> float:
+        """当前平滑后的音量 0~1（测试与调试用）。"""
+        return self._level
+
+    def set_level(self, value: float):
+        """设置目标音量（识别线程回调经信号切主线程后调用）。"""
+        try:
+            self._target = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            self._target = 0.0
+
+    def start(self):
+        """开始录音：归零音量、贴合输入框、显示并启动动画。"""
+        self._target = 0.0
+        self._level = 0.0
+        self._sync_geometry()
+        self.show()
+        self.raise_()          # 必须在输入框文字之上
+        self._timer.start()
+
+    def stop(self):
+        """结束录音：停动画并隐藏（恢复到普通输入态）。"""
+        self._timer.stop()
+        self._target = 0.0
+        self._level = 0.0
+        self.hide()
+
+    def _sync_geometry(self):
+        """贴合父控件（输入框）当前尺寸：宽高都写满，多行拉高时同步跟随。"""
+        p = self.parentWidget()
+        if p is None:
+            return
+        w, h = p.width(), p.height()
+        if w > 0 and h > 0 and self.geometry() != QRect(0, 0, w, h):
+            self.setGeometry(0, 0, w, h)
+
+    def _tick(self):
+        """动画一帧：平滑音量 + 推进频谱相位 + 重绘（同时校正几何）。"""
+        t, lv = self._target, self._level
+        if t > lv:
+            lv = min(t, lv + self.ATTACK)      # 快起：立刻有反馈
+        elif t < lv:
+            lv = max(t, lv * self.DECAY)       # 慢落：缓慢退去
+        self._level = lv
+        self._phase += 0.30 + 0.55 * lv
+        self._sync_geometry()
+        self.update()
+
+    # ---------------------------------------------------------- 绘制
+    def _wave_path(self, w: float, y_mid: float, amp: float,
+                   freq: float, phase: float) -> QPainterPath:
+        """一条居中正弦波路径：包络 sin^0.8 —— 中间高、两端收口（胶囊形）。"""
+        path = QPainterPath()
+        steps = max(16, int(w // 4))
+        for i in range(steps + 1):
+            u = i / steps
+            env = math.sin(math.pi * u) ** 0.8
+            y = y_mid + amp * env * math.sin(u * freq * 2.0 * math.pi + phase)
+            if i == 0:
+                path.moveTo(w * u, y)
+            else:
+                path.lineTo(w * u, y)
+        return path
+
+    def _wave_fill(self, w: float, y_mid: float, amp: float,
+                   freq: float, phase: float) -> QPainterPath:
+        """波形主体：主波沿 x 正向走、镜像沿 x 反向走，首尾相接围成闭合区域。"""
+        path = self._wave_path(w, y_mid, amp, freq, phase)
+        steps = max(16, int(w // 4))
+        for i in range(steps, -1, -1):
+            u = i / steps
+            env = math.sin(math.pi * u) ** 0.8
+            y = y_mid - amp * env * math.sin(u * freq * 2.0 * math.pi + phase)
+            path.lineTo(w * u, y)
+        path.closeSubpath()
+        return path
+
+    def paintEvent(self, ev):
+        """深蓝渐变底（亮度随音量）+ 居中平滑声波（振幅随音量起伏）。"""
+        lv = self._level
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # 底：深蓝，透明度随音量 70 → 205。压暗但不遮死文字，
+            # 录音中用户仍能看清已识别的文字。
+            top = QColor(16, 42, 102, int(70 + 135 * lv))
+            bottom = QColor(8, 20, 56, int(96 + 120 * lv))
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, top)
+            grad.setColorAt(1.0, bottom)
+            painter.fillRect(0, 0, w, h, grad)
+            # 平滑声波（主流语音输入的观感）：振幅随音量缩放、相位每帧推进。
+            # 保留 10% 底振幅：静音时波形仍在轻微"呼吸"，不至完全死掉。
+            y_mid = h / 2.0
+            peak = max(3.0, h * 0.34)   # 满音量主波峰峰值 ≈ 0.61h，上下留呼吸空间
+            amp = peak * (0.10 + 0.90 * lv)
+            # 波形主体：主波与镜像之间的半透明蓝填充
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(96, 176, 255, int(45 + 85 * lv)))
+            painter.drawPath(self._wave_fill(w, y_mid, amp, 2.0, self._phase))
+            # 三层描边谐波：主波最亮最粗，两条错频错相的谐波更淡更细（层次感）
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            # 振幅系数全部 ≤ 1.0（曾用 2.3 —— 大音量时谐波贴满遮罩上下缘
+            # 被 Qt 裁成直线）。层次感改由频率/透明度/线宽区分。
+            for k, (fa, freq, alpha, wd) in enumerate((
+                    (1.0, 2.0, int(160 + 90 * lv), 2.2),
+                    (0.72, 2.9, int(90 + 70 * lv), 1.5),
+                    (0.45, 1.3, int(70 + 55 * lv), 1.1))):
+                ph = self._phase * (1.0 + 0.18 * k) + k * 1.7
+                painter.setPen(QPen(QColor(120, 195, 255, alpha), wd))
+                painter.drawPath(self._wave_path(w, y_mid, amp * fa, freq, ph))
+        finally:
+            painter.end()
+
+
 class AgentPanel(QDialog):
     confirm_signal = pyqtSignal(str, str, str, str)  # sid, name, args_json, risk
     eval_signal = pyqtSignal(str)          # agnes-2.5-flash 任务难度评估结果（后台线程 → 主线程）
@@ -14632,6 +14811,11 @@ class AgentPanel(QDialog):
     git_probe_signal = pyqtSignal(str, float)     # git 仓库根/时间戳后台探测完成（→ 主线程更新已知值）
     auth_avatar_bytes = pyqtSignal(bytes)          # 头像下载完成（后台线程 → 主线程设置 QPixmap）
     net_changed = pyqtSignal(str)                  # 网络状态：后台探测线程 → 主线程更新顶栏图标
+    # 语音输入（科大讯飞语音听写）：识别在后台线程跑，一律经信号切主线程再碰控件
+    voice_text_signal = pyqtSignal(str)     # 识别文本（全量，非增量）：直接覆盖显示
+    voice_level_signal = pyqtSignal(float)  # 当前音量 0~1 → 遮罩波动
+    voice_state_signal = pyqtSignal(str)    # 会话状态：connecting / recording / finished
+    voice_error_signal = pyqtSignal(str)    # 失败原因（触发后会话结束）
 
     # ---------- 微信 ClawBot（主面板：消息接收与回复推送） ----------
     def _wechat_start_polling(self):
@@ -15776,7 +15960,23 @@ class AgentPanel(QDialog):
         self.input.fileDropped.connect(self._on_input_files_dropped)   # 文件拖入 → 附件
         bottom.addWidget(self.input, 1)
 
-        # TTS 语音合成快捷入口
+        # 输入框右侧「语音输入」：科大讯飞流式语音听写，录音期间输入框上盖一层
+        # 深蓝遮罩并随音量起伏（见 _VoiceOverlay / core/agent_asr.py）
+        self.voice_btn = QPushButton(_svg_icon(_MIC_SVG, 20, ACCENT), "")
+        self.voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_btn.setAutoDefault(False)
+        self.voice_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
+        self.voice_btn.setIconSize(QSize(20, 20))
+        self.voice_btn.setToolTip(_ui("语音输入：点击开始说话（边说边出字），再次点击结束"))
+        self.voice_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
+        self.voice_btn.clicked.connect(self._voice_toggle)
+        bottom.addWidget(self.voice_btn)
+
+        # 语音输入遮罩：输入框的子控件，初始隐藏，不吃鼠标事件
+        self._voice_overlay = _VoiceOverlay(self.input)
+        self._voice_active = False       # 是否处于录音态（按钮皮肤 / 回调守卫）
+        self._voice_session = None       # 当前 VoiceInputSession
+        self._voice_base = ""            # 开始录音时输入框的原文（回填前缀）
 
 
         # 输入框右侧「+」上传按钮：文件选择器多选（也支持拖拽 / Ctrl+V 粘贴）
@@ -15882,6 +16082,11 @@ class AgentPanel(QDialog):
         self._sync_preview_btn()
 
     def _connect_signals(self):
+        # 语音输入：后台线程回调 → 主线程（信号天然排队，跨线程安全）
+        self.voice_text_signal.connect(self._voice_on_text)
+        self.voice_level_signal.connect(self._voice_on_level)
+        self.voice_state_signal.connect(self._voice_on_state)
+        self.voice_error_signal.connect(self._voice_on_error)
         self.confirm_signal.connect(self._on_confirm)
         self.ask_signal.connect(self._on_ask)
         self.eval_signal.connect(self._on_assess_done)
@@ -17058,6 +17263,7 @@ class AgentPanel(QDialog):
         """切换会话（多对话并发）：当前会话后台任务不中断；目标会话若已有内存态
         （可能仍在后台生成）直接恢复渲染，首次进入则后台读盘后一次性渲染。"""
         self._auto_scroll = True    # 切换会话：恢复自动滚动
+        self._voice_abort()          # 换会话即中止录音，避免识别文本落到别的对话
         self._commit_sess()
         self._persist_current()
         self._session_id = sid
@@ -17343,6 +17549,7 @@ class AgentPanel(QDialog):
         当前已是空白「新对话」时直接忽略，避免无限堆出空会话。"""
         if self._is_blank_session():
             return
+        self._voice_abort()
         self._commit_sess()
         self._persist_current()
         # 继承工作流须在切换 self._session_id 之前取（否则读到的是新会话的空状态）
@@ -19484,6 +19691,7 @@ class AgentPanel(QDialog):
 
     def hideEvent(self, e):
         super().hideEvent(e)
+        self._voice_abort()          # 面板藏起来就别再收音：用户看不到遮罩与回填
         self._collapse_float_windows()
 
     def focusInEvent(self, e):
@@ -21688,6 +21896,8 @@ class AgentPanel(QDialog):
         apply_cursor_flash()
         _set(getattr(self, "attach_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
         _set(getattr(self, "optimize_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
+        # 语音按钮：皮肤随录音态走（录音中是主色渐变，不能按常态皮肤刷回去）
+        _set(getattr(self, "voice_btn", None), self._voice_btn_qss())
         _set(getattr(self, "action_btn", None), _BTN_PRIMARY)
         _set(getattr(self, "cmd_list", None), self._cmd_list_qss())
         # 聊天滚动区（含主题自适应滚动条）：面板保留时其 QSS 也是旧的
@@ -23950,9 +24160,159 @@ class AgentPanel(QDialog):
         self._invalidate_cmd_cache()   # 工作流已切换：命令/技能候选缓存随之下次重建
         return True
 
+    # ---------- 语音输入（科大讯飞语音听写，见 core/agent_asr.py） ----------
+    def _voice_btn_qss(self) -> str:
+        """语音按钮当前皮肤：录音中主色渐变，常态与上传/优化按钮一致。"""
+        d = _ROUND_BTN_D
+        if getattr(self, "_voice_active", False):
+            return _round_icon_btn_qss_active(d)
+        return _round_icon_btn_qss(d)
+
+    def _voice_sync_btn_style(self, *_):
+        """按录音态刷新按钮皮肤与图标（换肤 / 状态切换都会走到这里）。"""
+        btn = getattr(self, "voice_btn", None)
+        if btn is None:
+            return
+        active = bool(getattr(self, "_voice_active", False))
+        try:
+            btn.setIcon(_svg_icon(_MIC_SVG, 20, "#FFFFFF" if active else ACCENT))
+            btn.setStyleSheet(self._voice_btn_qss())
+            btn.setToolTip(_ui("正在录音…再次点击结束") if active
+                           else _ui("语音输入：点击开始说话（边说边出字），再次点击结束"))
+        except Exception:
+            pass
+
+    def _voice_toggle(self, *_):
+        """点击语音按钮：录音中 → 结束并等待最终结果；空闲 → 开始录音。"""
+        if getattr(self, "_voice_active", False):
+            self._voice_stop()
+        else:
+            self._voice_start()
+
+    def _voice_start(self):
+        """开始录音：以当前输入框原文为前缀，遮罩升起，后台识别会话启动。"""
+        if getattr(self, "_voice_active", False):
+            return
+        from zhuzhu_Copilot.core import agent_asr
+        # 先记前缀再置态：置态后到达的识别文本都以它为前缀回填
+        self._voice_base = self.input.toPlainText()
+        self._voice_active = True
+        try:
+            sess = agent_asr.VoiceInputSession(
+                on_text=lambda t: self.voice_text_signal.emit(str(t)),
+                on_level=lambda v: self.voice_level_signal.emit(float(v)),
+                on_state=lambda s: self.voice_state_signal.emit(str(s)),
+                on_error=lambda m: self.voice_error_signal.emit(str(m)))
+        except Exception as e:
+            self._voice_active = False
+            self._toast(_ui("语音输入不可用"), str(e), warn=True)
+            return
+        self._voice_session = sess
+        self._voice_overlay.start()
+        self._voice_sync_btn_style()
+        try:
+            sess.start()
+        except Exception as e:
+            self._voice_abort()
+            self._toast(_ui("语音输入启动失败"), str(e), warn=True)
+
+    def _voice_stop(self):
+        """请求结束（用户再点一次按钮）：按钮先禁用，等 finished 信号再复位。
+
+        不禁用的话，用户在"等待最终结果"的 1~2 秒里再点一次会立刻开新一轮录音，
+        上一轮的迟到结果就会写进新一轮的输入框（串话）。
+        """
+        if not getattr(self, "_voice_active", False):
+            return
+        self.voice_btn.setEnabled(False)
+        sess = self._voice_session
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+
+    def _voice_abort(self):
+        """立即中止并复位（发送 / 切会话 / 新对话 / 隐藏 / 关闭都走这条）。
+
+        先置 ``_voice_active=False`` 再停会话：迟到的中间结果因此被
+        ``_voice_on_text`` 卫兵丢弃，不会把别人一轮的识别文本写进当前输入框。
+        """
+        if not getattr(self, "_voice_active", False):
+            return
+        self._voice_active = False
+        sess = self._voice_session
+        self._voice_session = None
+        self._voice_base = ""
+        try:
+            self._voice_overlay.stop()
+        except Exception:
+            pass
+        try:
+            self.voice_btn.setEnabled(True)
+        except Exception:
+            pass
+        self._voice_sync_btn_style()
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+
+    def _voice_on_text(self, text: str):
+        """识别文本回调（主线程）：以开始录音时的原文为前缀整段覆盖。"""
+        if not getattr(self, "_voice_active", False):
+            return          # 已中止：丢弃迟到的中间结果
+        try:
+            self.input.setPlainText(self._voice_base + (text or ""))
+            self._sync_action_style()
+        except Exception:
+            pass
+
+    def _voice_on_level(self, value):
+        """音量回调（主线程）：喂给遮罩做快起慢落平滑。"""
+        try:
+            self._voice_overlay.set_level(float(value))
+        except Exception:
+            pass
+
+    def _voice_on_state(self, state: str):
+        """会话状态回调（主线程）：finished 才是最可靠的复位时机。"""
+        if str(state) == "finished":
+            if not getattr(self, "_voice_active", False):
+                # 已 abort：只保证按钮可用，不碰输入框
+                try:
+                    self.voice_btn.setEnabled(True)
+                    self._voice_sync_btn_style()
+                except Exception:
+                    pass
+                return
+            self._voice_active = False
+            self._voice_session = None
+            try:
+                self._voice_overlay.stop()
+            except Exception:
+                pass
+            try:
+                self.voice_btn.setEnabled(True)
+            except Exception:
+                pass
+            self._voice_sync_btn_style()
+
+    def _voice_on_error(self, message: str):
+        """识别失败（主线程）：复位并提示原因，不吞掉。"""
+        self._voice_abort()
+        try:
+            self._toast(_ui("语音输入失败"), str(message or _ui("未知错误")),
+                        warn=True)
+        except Exception:
+            pass
+
     def _send(self):
         """发送消息：任务运行中（含评估阶段）则进入排队，本轮完成后自动发送；
         空闲则直接发送。排队消息可在提示条编辑或删除。"""
+        # 第一道守卫：发送即中止语音输入（否则迟到的识别结果会覆盖刚发出的内容）
+        self._voice_abort()
         text = self.input.toPlainText().strip()
         images = list(self._pending_images)
         files = list(self._pending_files)
@@ -26499,6 +26859,8 @@ class AgentPanel(QDialog):
             self._reset_token_pop()
         except Exception:
             pass
+        # 先掐掉语音输入（释放麦克风 + WebSocket），再停引擎
+        self._voice_abort()
         # 关闭面板时同步收起并清理 zhuzhu Copilot 浮层（含防护线程 / 桌宠 / 托盘）
         _cp = self.__dict__.get("_copilot_panel")
         if _cp is not None:
