@@ -163,13 +163,15 @@ def _zero_usage() -> dict:
 # 读取长文本自动压缩：AI 读取(read_file/web_fetch/extract_text)返回的超长文本
 # 在进入上下文前用当前模型生成结构化摘要，避免单条长文本独占上下文预算。
 #
-# MCP 读取类工具同样纳入：电脑操控插件的 list_elements（元素树，最坏 200 个元素
-# ≈ 6.4K tokens）、浏览器 browser_html/browser_snapshot 等返回的都是**结构化枚举**，
-# 单条不越阈值但操控任务每步都要「截图 → 读元素 → 操作 → 再读」，几轮累积就能把
-# 上下文顶穿，且这些内容对模型只有「有哪些控件可点」这一层信息有用。
-# 走的是 LLM 结构化摘要（保留控件清单要点），不是硬截断 —— 原文可读性不受影响。
+# MCP 读取类工具同样纳入：电脑操控插件的 list_windows（窗口列表，窗口多时数千
+# tokens）、浏览器 browser_html/browser_snapshot 等返回的都是**结构化枚举**，
+# 单条不越阈值但操控任务每步都要「截图 → 读窗口 → 操作 → 再截图」，几轮累积就能把
+# 上下文顶穿，且这些内容对模型只有「有哪些窗口/节点在哪儿」这一层信息有用。
+# 走的是 LLM 结构化摘要（保留清单要点），不是硬截断 —— 原文可读性不受影响。
+# 注：该插件的元素树枚举（list_elements）已随「改为纯坐标定位」整体移除，
+# 操控改为 screen_shot 截图 + zoom_in 放大，不再产生结构化枚举文本。
 _MCP_READ_TOOLS = frozenset({
-    "list_elements", "list_windows", "browser_html", "browser_snapshot",
+    "list_windows", "browser_html", "browser_snapshot",
     "manage_window", "screen_info", "mcp_resource_read",
 })
 _READ_CONDENSE_TOOLS = frozenset({"read_file", "web_fetch", "extract_text",
@@ -1606,14 +1608,26 @@ class AgentEngine:
         max_output = (args or {}).get("max_output")
 
         def _fn(task):
-            # 在后台线程中执行命令，wait 设为较大值让它持续运行直到完成
+            # 后台任务里的命令要一直跑到自然结束：wait 给到 6 小时，避免长命令
+            # 跑到一半被判定"超时转入后台注册表"，那样任务状态与输出会对不上。
+            # 取消走 task.cancel_event（_run_command 见信号即杀进程树）。
+            streamed = {"chars": 0}
+
+            def _on_chunk(chunk: str):
+                streamed["chars"] += len(chunk)
+                task.append_output(chunk)
+
             res = agent_tools._run_command(
-                command=cmd, wait=max(wait, 300), force_quit=False,
+                command=cmd, wait=max(wait, 6 * 3600), force_quit=False,
                 cwd=cwd, stdin_text=stdin_text,
                 max_output=max_output,
-                status_cb=lambda s: task.append_output(s + "\n"))
-            text = res.get("text", "") if isinstance(res, dict) else str(res)
-            task.append_output(text)
+                status_cb=lambda s: task.append_output(s + "\n"),
+                on_output=_on_chunk,
+                cancel_event=task.cancel_event)
+            # 输出已实时流过：不再把同一份全文再追加一次（会整段重复）。
+            if streamed["chars"] == 0:
+                text = res.get("text", "") if isinstance(res, dict) else str(res)
+                task.append_output(text)
             return res
 
         try:

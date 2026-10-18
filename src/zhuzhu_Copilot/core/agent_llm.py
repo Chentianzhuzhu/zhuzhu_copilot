@@ -1486,9 +1486,29 @@ def estimate_tokens(text: str) -> int:
     return int(cjk + (len(text) - cjk) / _NONCJK_CHARS_PER_TOKEN) + 4
 
 
-def estimate_image_tokens() -> int:
-    """单张截图约估 tokens（OpenAI 中尺寸近似）"""
-    return 765
+# 图片 token 估算：视觉原生口径只与 tile 数有关（一张中尺寸图约 765），
+# 但部分 OpenAI 兼容网关不做图像 token 化，直接按 data URL 的 base64 文本量粗计
+# （实测电脑操控 1280 宽 PNG 截图 base64 达 20~80 万字符，粗计即 8~30 万 token/张，
+# 这正是「操控没走几步上下文就爆」的计费侧根因）。故带 URL 时在基础视觉费之上，
+# 对超出免计长度的部分按保守斜率追加，让本地压缩/预警阈值能提前感知超大图。
+_IMAGE_TOKENS_BASE = 765        # 单张图基础视觉费（OpenAI 中尺寸 tile 近似）
+_IMAGE_TOKENS_FREE = 200_000   # base64 字符免计长度（覆盖体积治理后的正常截图）
+_IMAGE_TOKENS_PER_CHAR = 0.08  # 免计额以上每字符追加 token（按文本粗计口径保守取值）
+_IMAGE_TOKENS_CAP = 300_000    # 单张图估算上限：防单帧把预算判定完全架空
+
+
+def estimate_image_tokens(url: Optional[str] = None) -> int:
+    """单张截图 token 估算。
+
+    - 无 URL（UI 兜底/历史计数）：返回固定基础视觉费，保持旧口径兼容；
+    - 带 URL：基础视觉费 + 对超长 base64 的保守追加，单调不减且封顶，
+      使「网关按文本粗计图片」的最坏情况下压缩阈值也能及时触发。
+    """
+    if not url:
+        return _IMAGE_TOKENS_BASE
+    extra = max(0, len(str(url)) - _IMAGE_TOKENS_FREE)
+    return min(_IMAGE_TOKENS_CAP,
+               _IMAGE_TOKENS_BASE + int(extra * _IMAGE_TOKENS_PER_CHAR))
 
 
 def _norm_usage(usage) -> Optional[dict]:

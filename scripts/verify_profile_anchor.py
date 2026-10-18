@@ -1,64 +1,110 @@
 # -*- coding: utf-8 -*-
-"""验证：面板位置不随鼠标位置漂移 + 紧贴菜单右缘 + 关闭按钮可用。"""
-import os, sys, time
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-SRC = r"C:\Users\zhuzhu\Desktop\zhuzhu Copilot\src"
-sys.path.insert(0, SRC)
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QRect, QPoint
-APP = QApplication.instance() or QApplication(sys.argv)
-from zhuzhu_Copilot.ui import agent_panel as AP
+"""验证：点顶栏用户胶囊直接开合个人信息面板 + 面板贴胶囊右缘下方 + 跟随重排。
 
-p = AP.AgentPanel(None); p.resize(1400, 900); p.show()
-def wait(ms):
+跑法（离屏，不需要真显示器）：
+    python scripts/verify_profile_anchor.py
+
+检查项
+1. 点击胶囊 = 打开面板（不再弹「个人信息/切换账号/退出登录」菜单）；
+2. 再点一次 = 收起；
+3. 面板右缘与胶囊右缘对齐（垂直方向），顶边在胶囊下方 _PROFILE_GAP 处；
+4. 胶囊变宽 / 窗口缩放后，面板仍贴合（跟随逻辑生效）；
+5. 面板内部所有左对齐元素的左边距一致（视觉对齐）。
+"""
+import os
+import sys
+import time
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+from PyQt6.QtWidgets import QApplication          # noqa: E402
+from PyQt6.QtGui import QFont, QFontDatabase     # noqa: E402
+from PyQt6.QtCore import QPoint, QRect            # noqa: E402
+
+APP = QApplication.instance() or QApplication(sys.argv)
+_fams = QFontDatabase.families()
+APP.setFont(QFont(next((f for f in ("Microsoft YaHei UI", "Segoe UI", "Arial")
+                        if f in _fams), "Arial"), 10))
+
+from zhuzhu_Copilot.core import i18n              # noqa: E402
+from zhuzhu_Copilot.ui import agent_panel as AP    # noqa: E402
+
+i18n.set_lang("en_US", persist=False)
+
+
+def pump(ms: int):
     t0 = time.time()
     while (time.time() - t0) * 1000 < ms:
-        APP.processEvents(); time.sleep(0.004)
-wait(250)
+        APP.processEvents()
+        time.sleep(0.004)
 
-panel = p._ensure_profile_panel()
-btn = p._auth_user_btn
-btn_g = QRect(btn.mapToGlobal(QPoint(0,0)), btn.size())
-print("btn_global:", btn_g)
 
-results = []
-# 模拟 n 次「在不同鼠标位置点击用户按钮」——菜单弹出点由 _auth_menu_anchor_pos 决定，
-# 与光标无关，所以结果应完全一致。
-for cursor_at in [(btn_g.center()), QPoint(btn_g.left()+2, btn_g.top()+2),
-                  QPoint(btn_g.right()-2, btn_g.bottom()-2)]:
-    # 用 _AnchorQMenu 复刻菜单弹出+快照
-    m = AP._AnchorQMenu(p)
-    m.setMinimumWidth(132)
-    a1 = m.addAction("个人信息"); m.addSeparator()
-    m.addAction("切换账号"); m.addAction("退出登录")
-    m._target = a1
-    m.popup(p._auth_menu_anchor_pos())
-    wait(40)
-    ig, mg = m.snapshot_of(a1)
-    m.hide()
-    panel.set_profile(p._profile_panel_data())
-    panel.apply_theme()
-    w, h = p._profile_panel_size(panel)
-    panel.resize(w, h)
-    geo = p._profile_panel_geometry(panel, {"item": ig, "menu": mg})
-    # 期望：panel.x == menu 右缘（紧贴）; panel.y == item 顶
-    want_x = p.mapFromGlobal(mg.topLeft()).x() + mg.width()
-    want_y = p.mapFromGlobal(ig.topLeft()).y()
-    ok_x = (geo.x() == want_x)
-    ok_y = (geo.y() == want_y)
-    results.append((geo, ig, mg, ok_x, ok_y))
-    print(f"cursor={cursor_at} menu_global={mg} item_global={ig} -> geo={geo} ok_x={ok_x} ok_y={ok_y}")
+def rel(panel, btn):
+    """面板相对胶囊的 (右缘偏差, 顶边间距)。"""
+    chip = QRect(btn.mapTo(panel.parent(), QPoint(0, 0)), btn.size())
+    geo = panel.geometry()
+    return (geo.x() + geo.width() - (chip.x() + chip.width()),
+            geo.y() - (chip.y() + chip.height()))
 
-uniq = {r[0] for r in results}
-print("unique panel geos:", uniq)
-print("FIXED_POSITION:", "PASS" if len(uniq) == 1 else "FAIL")
-print("SNUG_RIGHT:", "PASS" if all(r[3] for r in results) else "FAIL")
-print("ALIGN_ITEM_TOP:", "PASS" if all(r[4] for r in results) else "FAIL")
 
-# 关闭按钮
-p.open_profile_panel(results[0][0])
-wait(300)
-print("opened:", panel.isVisible())
-panel._close_btn.click()
-wait(500)
-print("CLOSE_BTN:", "PASS" if not panel.isVisible() else "FAIL")
+def main():
+    p = AP.AgentPanel(None)
+    p.resize(1280, 860)
+    p.show()
+    pump(500)
+
+    btn = p._auth_user_btn
+    panel = p._ensure_profile_panel()
+    results = []
+
+    # 1/2. 点击开合（无菜单）
+    btn.click()
+    pump(500)
+    opened = panel.isVisible() and p._profile_panel_open
+    btn.click()
+    pump(500)
+    closed = (not panel.isVisible()) and (not p._profile_panel_open)
+    btn.click()
+    pump(500)
+    reopened = panel.isVisible()
+    print(f"click-open={opened} click-close={closed} click-reopen={reopened} "
+          f"menu-gone={not hasattr(p, '_auth_user_menu')}")
+    results.append(("点击直开/再点收起", opened and closed and reopened
+                    and not hasattr(p, "_auth_user_menu")))
+
+    # 3. 贴合胶囊右缘 + 下方
+    gap = rel(panel, btn)
+    ok = gap == (0, p._PROFILE_GAP)
+    print(f"anchor (right_delta, top_gap)={gap} expect=(0, {p._PROFILE_GAP})")
+    results.append(("右缘对齐 + 正下方", ok))
+
+    # 4. 胶囊变宽 / 窗口缩放后仍贴合
+    btn.setMinimumWidth(btn.minimumWidth() + 40)
+    pump(400)
+    gap2 = rel(panel, btn)
+    p.resize(1100, 800)
+    pump(400)
+    gap3 = rel(panel, btn)
+    print(f"after chip widen={gap2} after window resize={gap3}")
+    results.append(("跟随重排", gap2 == (0, p._PROFILE_GAP)
+                    and gap3 == (0, p._PROFILE_GAP)))
+
+    # 5. 面板内部左对齐（标题 / 头像 / 积分 / 键名 / 底部按钮）
+    lefts = {"title": panel._title.x(), "avatar": panel._avatar.x(),
+             "points_label": panel._pts_label.x(), "points": panel._points.x(),
+             "switch_btn": panel._switch_btn.x()}
+    for key in panel._rows:
+        lefts["key_" + key] = panel._row_keys[key].x()
+    aligned = len(set(lefts.values())) == 1
+    print("left insets:", lefts, "aligned=", aligned)
+    results.append(("左对齐", aligned))
+
+    print("\n".join(f"{'PASS' if ok else 'FAIL'}  {name}" for name, ok in results))
+    print("ALL:", "PASS" if all(ok for _n, ok in results) else "FAIL")
+    return 0 if all(ok for _n, ok in results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

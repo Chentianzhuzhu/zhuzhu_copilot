@@ -15,7 +15,31 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 APP_VERSION = "6.0.1"          # 当前客户端版本（发新版时同步修改）
 POLL_INTERVAL_MS = 30_000      # 30s 轮询
+POLL_MAX_MS = 300_000          # 连续失败最长退避到 5 分钟（受限网络里不反复打洞）
 DEFAULT_SERVER = "https://chentian.dpdns.org"   # 默认更新服务器（可被 QSettings/环境变量覆盖）
+
+
+def _friendly_error(exc: Exception) -> str:
+    """把底层网络异常翻译成用户能看懂的提示。
+
+    更新服务器常挂在 Cloudflare 后面，企业网关封掉 Cloudflare 网段时会出现
+    「模型能用但更新拿不到」的情况——文案要说清是「服务器不可达」，
+    而不是笼统的「网络异常」，免得用户误以为整台机器断网。
+    """
+    import socket
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"更新服务器返回 HTTP {exc.code}"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "连接更新服务器超时（可能被网关/防火墙拦截）"
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return "连接更新服务器超时（可能被网关/防火墙拦截）"
+        if isinstance(reason, socket.gaierror):
+            return f"更新服务器域名解析失败：{reason}"
+        return f"无法连接更新服务器：{reason}"
+    return str(exc) or exc.__class__.__name__
 
 
 class UpdateChecker(QObject):
@@ -23,6 +47,7 @@ class UpdateChecker(QObject):
 
     update_found = pyqtSignal(dict)   # latest/notes/size/force/url
     manual_result = pyqtSignal(dict)  # 手动检查结果：status=ok|none|noserver|busy|error
+    _backoff = pyqtSignal(int)        # 后台线程 → 主线程：调整轮询间隔（毫秒）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,8 +61,27 @@ class UpdateChecker(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(POLL_INTERVAL_MS)
         self._timer.timeout.connect(self.check)
+        self._backoff.connect(self._apply_interval)
         self._notified = set()   # 本次运行已提示过的版本，避免重复弹窗
         self._busy = False       # 请求进行中，防止并发检查
+        self._fails = 0          # 连续失败次数（退避用）
+
+    def _apply_interval(self, ms: int):
+        """主线程调整轮询间隔（QTimer 只能在它所属线程里改）。"""
+        try:
+            self._timer.setInterval(int(ms))
+        except RuntimeError:
+            pass   # 已销毁
+
+    def _reschedule(self, ok: bool):
+        """成功回到 30s；失败按 30s→1m→2m→4m→5m 退避。"""
+        if ok:
+            self._fails = 0
+            self._backoff.emit(POLL_INTERVAL_MS)
+            return
+        self._fails += 1
+        step = min(POLL_MAX_MS, POLL_INTERVAL_MS * (2 ** min(self._fails, 4)))
+        self._backoff.emit(step)
 
     def start(self):
         """启动轮询：首次启动立即检查一次，之后每 30s 巡检"""
@@ -70,6 +114,13 @@ class UpdateChecker(QObject):
                                "Chrome/126.0 Safari/537.36 zhuzhuCopilot")})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+            # 服务器已响应：这是「网络在线」的硬证据，顺手回填给顶栏状态
+            try:
+                from zhuzhu_Copilot.core import net_status
+                net_status.note_success()
+            except Exception:
+                pass
+            self._reschedule(True)
             if not data.get("hasUpdate"):
                 if manual:
                     self.manual_result.emit({"status": "none", "info": None})
@@ -94,8 +145,10 @@ class UpdateChecker(QObject):
             self._notified.add(ver)
             self.update_found.emit(info)
         except Exception as e:
-            # 自动轮询：静默失败，下轮重试；手动检查：反馈失败原因
+            # 自动轮询：静默失败，退避后重试；手动检查：反馈可读的失败原因
+            self._reschedule(False)
             if manual:
-                self.manual_result.emit({"status": "error", "info": None, "error": str(e)})
+                self.manual_result.emit({"status": "error", "info": None,
+                                         "error": _friendly_error(e)})
         finally:
             self._busy = False

@@ -196,7 +196,22 @@ def close_idle() -> None:
 
 def _urlopen(req, timeout: float):
     import urllib.request as _ur
-    return _ur.urlopen(req, timeout=timeout)   # 必须关键字：urlopen 第二位置参数是 data
+    resp = _ur.urlopen(req, timeout=timeout)   # 必须关键字：urlopen 第二位置参数是 data
+    _note_traffic()
+    return resp
+
+
+def _note_traffic() -> None:
+    """记录「应用请求已到达服务端」：这是网络在线最可信的证据。
+
+    顶栏网络状态据此判定在线——再拿某个探测节点（如被网关拦截的公共 DNS）
+    的连通性来代表整体网络，就会出现「模型明明能用却显示离线」。
+    """
+    try:
+        from zhuzhu_Copilot.core import net_status
+        net_status.note_success()
+    except Exception:
+        pass
 
 
 def open_stream(req, timeout: float):
@@ -225,6 +240,7 @@ def open_stream(req, timeout: float):
     except (OSError, http.client.HTTPException):
         ent.conn.close()             # 建连/首包失败（含复用死连接被 RST）→ 回退一次
         return _urlopen(req, timeout)
+    _note_traffic()                  # 已收到响应（任何状态码）：网络通路正常
     if 300 <= resp.status < 400:
         resp.close()                 # 重定向：urllib 会自动跟随，http.client 不会
         ent.conn.close()

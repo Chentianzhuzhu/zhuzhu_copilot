@@ -59,36 +59,8 @@ _CUSTOM_SANDBOX_NAMES = frozenset({
     "edit_docx", "edit_pptx", "edit_xlsx",
 })
 
-# 内置 WebView 浏览器桥（GUI 侧通过 register_builtin_browser 注入）。
-# AI 的 browser_* 工具优先在应用内置多标签浏览器内操作，不再拉起外部浏览器。
-_BUILTIN_BROWSER = None
-
-
-def register_builtin_browser(bridge_or_controller):
-    """GUI 装配时注入内置浏览器控制器。传 None 则清除（回退外置浏览器）。"""
-    global _BUILTIN_BROWSER
-    _BUILTIN_BROWSER = bridge_or_controller
-
-
-def _builtin_browser_ctl():
-    """取内置浏览器控制器对象（未装配/不可用时返回 None）。"""
-    c = _BUILTIN_BROWSER
-    if c is None:
-        return None
-    get = getattr(c, "get", None)
-    if callable(get):
-        try:
-            return get()
-        except Exception:
-            return None
-    return c
-
-
 def _browser_ctl():
-    """浏览器控制器统一入口：内置优先，未装配时回退独立（外置）浏览器实例。"""
-    b = _builtin_browser_ctl()
-    if b is not None:
-        return b
+    """浏览器控制器统一入口：独立（外置）浏览器实例。"""
     return _sub("agent_browser").controller()
 
 
@@ -260,12 +232,20 @@ def _decode_robust(raw: bytes) -> str:
         return raw.decode(_console_encoding(), errors="replace")
 
 
-def _drain_pipe(pipe, lines: list, lock: threading.Lock):
-    """后台线程逐行读取管道（二进制）并存入共享缓冲（防管道填满导致进程阻塞）"""
+def _drain_pipe(pipe, lines: list, lock: threading.Lock, on_line=None):
+    """后台线程逐行读取管道（二进制）并存入共享缓冲（防管道填满导致进程阻塞）。
+
+    on_line：可选回调，读到一行就立即回调一次（透出原始 bytes）。
+    后台任务靠它把命令输出**实时**推给 UI，而不是等命令跑完才一次性拿到全文。"""
     try:
         for line in iter(pipe.readline, b""):
             with lock:
                 lines.append(line)
+            if on_line is not None:
+                try:
+                    on_line(line)
+                except Exception:
+                    pass
     except Exception:
         pass
     finally:
@@ -793,8 +773,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_open",
-            "description": "在内置浏览器（应用内多标签 WebView）打开并接管浏览，用户可直接在应用里看到 AI 的浏览与操作，"
-                           "绝不拉起外部浏览器。浏览器任务（打开网页/登录/填表/抓取/自动操作网页）"
+            "description": "打开并接管独立浏览器，浏览器任务（打开网页/登录/填表/抓取/自动操作网页）"
                            "第一步先 browser_open，之后用 browser_navigate/browser_snapshot/browser_click/"
                            "browser_type/browser_eval/browser_html 完成操作。",
             "parameters": {"type": "object",
@@ -810,7 +789,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_navigate",
-            "description": "在内置浏览器当前标签页打开网页（自动补全 http/https）。用 browser_open 接管后使用。",
+            "description": "在当前标签页打开网页（自动补全 http/https）。用 browser_open 接管后使用。",
             "parameters": {"type": "object",
                            "properties": {"url": {"type": "string",
                                                   "description": "要打开的网址，如 https://www.baidu.com"}},
@@ -821,7 +800,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_snapshot",
-            "description": "截取内置浏览器当前页面并返回可交互元素语义清单 [id] (标签) 文字。"
+            "description": "截取浏览器当前页面并返回可交互元素语义清单 [id] (标签) 文字。"
                            "每步操作前/操作后先 browser_snapshot 看页面状态与元素，"
                            "点击/输入用 browser_click(id) / browser_type(text, id) 按编号精确操作。",
             "parameters": {"type": "object", "properties": {}, "required": []},
@@ -831,7 +810,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_click",
-            "description": "在内置浏览器中点击元素。支持三种定位（任选其一）："
+            "description": "在浏览器中点击元素。支持三种定位（任选其一）："
                            "① id=browser_snapshot 清单里的元素编号；② text=元素文字（按钮/链接/输入框/选项）；"
                            "③ selector=CSS 选择器精确定位（如 #submit / .btn-primary / form button）。"
                            "点击后返回最新页面截图。",
@@ -852,7 +831,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_type",
-            "description": "在内置浏览器的输入框中输入文本。支持三种定位（任选其一）："
+            "description": "在浏览器的输入框中输入文本。支持三种定位（任选其一）："
                            "① id=browser_snapshot 清单编号；② target=输入框文字（占位符/标签）；"
                            "③ selector=CSS 选择器精确定位输入框。先点击聚焦再输入。中文/英文/数字均可。",
             "parameters": {"type": "object",
@@ -871,7 +850,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_scroll",
-            "description": "滚动内置浏览器页面或指定容器。direction=up/down/left/right/top/bottom"
+            "description": "滚动浏览器页面或指定容器。direction=up/down/left/right/top/bottom"
                            "（top 滚到顶部、bottom 滚到底部，默认 down）；amount 指定像素步长"
                            "（默认滚动一屏的 80%）；eid/selector 可指定滚动容器（留空滚动整个页面）。"
                            "页面内容超出屏幕（列表/长文/评论区）需查看更多时使用。",
@@ -892,7 +871,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_eval",
-            "description": "在内置浏览器页面执行 JavaScript 并返回结果。可直接读取/修改 DOM（解析 HTML/CSS）、"
+            "description": "在浏览器页面执行 JavaScript 并返回结果。可直接读取/修改 DOM（解析 HTML/CSS）、"
                            "调用页面函数、抓取数据、模拟操作。返回结果文本。",
             "parameters": {"type": "object",
                            "properties": {"js": {"type": "string",
@@ -904,7 +883,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_html",
-            "description": "读取内置浏览器当前页面的 HTML/文本内容。传 selector（CSS 选择器）可只读取指定区域，"
+            "description": "读取浏览器当前页面的 HTML/文本内容。传 selector（CSS 选择器）可只读取指定区域，"
                            "留空返回整页文本摘要。用于分析网页内容、确认操作结果、抓取数据。",
             "parameters": {"type": "object",
                            "properties": {"selector": {"type": "string",
@@ -916,8 +895,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_close",
-            "description": "结束浏览器会话。内置浏览器与应用内预览面板共用同一多标签 WebView，无需真正关闭，"
-                           "浏览器任务完成后调用以收尾。",
+            "description": "结束浏览器会话。浏览器任务完成后调用以收尾。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -3455,7 +3433,7 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
 
 def _run_command(command: str, wait: int = 5, force_quit: bool = False,
                  cwd: str = "", stdin_text: str = "", max_output: int = None,
-                 status_cb=None) -> dict:
+                 status_cb=None, on_output=None, cancel_event=None) -> dict:
     """执行命令，AI 自主选择等待/强制退出策略。
 
     - wait 秒内完成：返回完整输出与退出码
@@ -3471,6 +3449,11 @@ def _run_command(command: str, wait: int = 5, force_quit: bool = False,
     **子进程级** PATH（不写系统 PATH、不在对话内联网下载），npm/pip 缓存与依赖
     落在沙盒内，与用户环境隔离。
     status_cb：可选状态回调，用于透传运行时部署/安装进度。
+    on_output：可选增量输出回调 on_output(str)。命令每产生一行 stdout/stderr 就
+        回调一次（解码后的文本），供后台任务把输出**实时**推出；为空时维持旧的
+        "跑完再一次性返回"行为。
+    cancel_event：可选 threading.Event。置位即强杀进程树并返回"已取消"，
+        让用户点「取消」能真正停掉长命令，而不只是 UI 上改个状态。
     """
     # 沙盒运行时透明拦截：先确保缺失的运行时就绪，再注入进程级环境
     run_env = None
@@ -3519,17 +3502,41 @@ def _run_command(command: str, wait: int = 5, force_quit: bool = False,
 
     out_lines, err_lines = [], []
     lock = threading.Lock()
+    # 实时出流：reader 每读到一行就解码回调一次（stdout/stderr 各自解码，
+    # 避免合流交错后长短不一导致粘行）
+    def _make_on_line():
+        if on_output is None:
+            return None
+        def _on_line(raw: bytes):
+            try:
+                s = _decode_robust(raw)
+            except Exception:
+                return
+            if s:
+                try:
+                    on_output(s)
+                except Exception:
+                    pass
+        return _on_line
     threads = [
-        threading.Thread(target=_drain_pipe, args=(proc.stdout, out_lines, lock), daemon=True),
-        threading.Thread(target=_drain_pipe, args=(proc.stderr, err_lines, lock), daemon=True),
+        threading.Thread(target=_drain_pipe, args=(proc.stdout, out_lines, lock),
+                         kwargs={"on_line": _make_on_line()}, daemon=True),
+        threading.Thread(target=_drain_pipe, args=(proc.stderr, err_lines, lock),
+                         kwargs={"on_line": _make_on_line()}, daemon=True),
     ]
     for t in threads:
         t.start()
 
     # 轮询等待：wait 秒内每 1s 检查一次进程是否退出（期间输出持续被 reader 线程收集）
     deadline = time.time() + wait
+    cancelled = False
     while time.time() < deadline:
         if proc.poll() is not None:
+            break
+        if cancel_event is not None and cancel_event.is_set():
+            # 用户取消：杀进程树，别再干等到 deadline
+            cancelled = True
+            _kill_process_tree(proc.pid)
             break
         time.sleep(1.0)
 
@@ -3547,6 +3554,18 @@ def _run_command(command: str, wait: int = 5, force_quit: bool = False,
         if max_output and max_output > 0 and len(text) > max_output:
             text = text[:max_output] + f"\n…（输出过长，已截断至 {max_output} 字符）"
         return text
+
+    if cancelled:
+        # 已杀进程树：等 reader 排空残余输出后，与已收集内容一并返回（不重复注册表）
+        for t in threads:
+            t.join(1.0)
+        with lock:
+            out = _decode_robust(b"".join(out_lines)).strip()
+            err = _decode_robust(b"".join(err_lines)).strip()
+        body = _compose()
+        return {"text": ("命令已被用户取消，进程树已终止。\n" + body)
+                if (out or err) else "命令已被用户取消，进程树已终止。",
+                "images": []}
 
     if code is not None:
         for t in threads:

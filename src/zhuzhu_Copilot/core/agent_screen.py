@@ -113,13 +113,15 @@ def physical_to_model(x: int, y: int) -> tuple:
     return mx, my
 
 
-def capture_screen_data_url(grid: bool = True, mark_cursor: bool = True) -> str:
+def capture_screen_data_url(grid: bool = False, mark_cursor: bool = False) -> str:
     """截取当前前台应用窗口 → data URL（OpenAI 兼容 image_url 输入）。
 
     优先截取"对应的进程窗口"（前台应用窗口，PrintWindow 抓取不受遮挡干扰），
     前台为桌面/本程序自身或窗口不可用时回退全屏。
-    grid=True 时先等比缩放到统一宽度 _MODEL_W，再叠加坐标网格与像素刻度。
-    mark_cursor=True 时叠加红色准星标记当前鼠标位置（物理坐标标注）。
+
+    **默认纯净出图**：grid=False 不叠加坐标网格/像素刻度，mark_cursor=False 不叠加准星 ——
+    发给视觉模型的截图直接就是屏幕原样，看图比看"被坐标轴糊住的图"更准。
+    需要人工读数/调试时才显式传 True（grid=True 会先等比缩放到统一宽度 _MODEL_W 再叠刻度）。
     """
     import base64
     global _model_size, _view
@@ -240,12 +242,13 @@ def window_rect(hwnd: int) -> wintypes.RECT:
 
 
 def capture_zoom_data_url(cx: int, cy: int, region: int = 400, zoom: int = 3,
-                          mark_cursor: bool = True) -> str:
-    """以屏幕物理坐标 (cx,cy) 为中心截取 region×region 区域 → 放大 zoom 倍 →
-    叠细网格刻度后返回，并切换视觉基准为 zoom 态。
+                          mark_cursor: bool = False, grid: bool = False) -> str:
+    """以屏幕物理坐标 (cx,cy) 为中心截取 region×region 区域 → 放大 zoom 倍 → 返回 data URL，
+    并把视觉基准切换为 zoom 态。
 
     用于两步精确定位：模型先看全屏图给粗坐标 → zoom_in 放大目标区域 →
-    基于放大图细刻度/准星对齐给精确坐标。
+    基于放大图对齐给精确坐标。默认不加网格/准星（纯净放大图，细节不被遮挡）；
+    grid=True 时才叠加细网格刻度。
     """
     import base64
     global _view
@@ -263,7 +266,8 @@ def capture_zoom_data_url(cx: int, cy: int, region: int = 400, zoom: int = 3,
     crop = crop.scaled(region * zoom, region * zoom,
                        Qt.AspectRatioMode.KeepAspectRatio,
                        Qt.TransformationMode.SmoothTransformation)
-    _draw_coord_grid(crop, cells=16)
+    if grid:
+        _draw_coord_grid(crop, cells=16)
     _view = {"cx": cx, "cy": cy, "region": region,
              "img_w": crop.width(), "img_h": crop.height(), "x0": x0, "y0": y0}
     if mark_cursor:
@@ -330,11 +334,12 @@ def capture_window_png(hwnd: int) -> bytes:
     return bytes(ba)
 
 
-def capture_window_data_url(hwnd: int, grid: bool = True, mark_cursor: bool = True) -> str:
-    """截取指定窗口 → 网格刻度 data URL，并把视觉基准切为窗口态。
+def capture_window_data_url(hwnd: int, grid: bool = False, mark_cursor: bool = False) -> str:
+    """截取指定窗口 → data URL，并把视觉基准切为窗口态。
 
-    窗口态复用 zoom 态的坐标换算语义：模型在窗口图内读数（刻度与图像同基准），
+    窗口态复用 zoom 态的坐标换算语义：模型在窗口图内的读数与图像同基准，
     click 时自动换算回屏幕物理坐标；只截目标窗口，不受其他窗口遮挡/干扰。
+    默认纯净出图（无网格/刻度/准星），只有显式 grid=True 才叠加坐标网格。
     """
     import base64
     global _view

@@ -303,6 +303,20 @@
     "发现强制更新": "A mandatory update is available",
     "发现新版本": "New Version Available",
     "发送": "Send",
+    "语音输入：点击开始说话，识别文字实时填入输入框；再次点击结束": "Voice input: click to start speaking; recognized text is typed into the box live; click again to stop",
+    "语音输入不可用": "Voice input unavailable",
+    "语音识别": "Speech recognition",
+    "语音识别失败": "Speech recognition failed",
+    "语音识别设置": "Speech Recognition Settings",
+    "语音识别设置…": "Speech recognition settings…",
+    "重新自动检测接口协议": "Re-detect API protocol automatically",
+    "当前接口：": "Current API: ",
+    "大模型版": "Large-model",
+    "经典流式版": "Classic streaming",
+    "已清除接口记忆，下次使用将自动重新检测": "API memory cleared; it will be re-detected automatically next time",
+    "在讯飞开放平台控制台「我的应用」中查看这三项；留空则使用内置默认值。": "Find these three values in your iFlytek Open Platform console under \"My Apps\"; leave blank to use the built-in defaults.",
+    "设置已保存": "Settings saved",
+    "设置保存失败": "Failed to save settings",
     "取消": "Cancel",
     "取消上传": "Cancel Upload",
     "取消全部排队消息": "Cancel All Queued Messages",
@@ -1202,6 +1216,10 @@
     "有效期至 {d}。": "Valid until {d}.",
     "如需延长，点击下方「续费」在到期日上叠加时长。": "To extend, click \"Renew\" below to stack duration onto your expiry date.",
     "每月 1000 积分，每日签到 +100": "1000 points/month, +100 daily check-in",
-    "每月 2000 积分，每日签到 +200": "2000 points/month, +200 daily check-in"
+    "每月 2000 积分，每日签到 +200": "2000 points/month, +200 daily check-in",
+    "网络受限：系统网络正常，但探测节点不可达（可能被网关/防火墙拦截）": "Limited: the system network is up, but probe endpoints are unreachable (possibly blocked by a gateway or firewall)",
+    "离线：未检测到可用网络连接": "Offline: no usable network connection detected",
+    "正在检测网络…": "Checking network…",
+    "\n\n（网络连接正常，仅更新服务器不可达；不影响模型对话与日常使用。）": "\n\n(The network connection is fine; only the update server is unreachable. This does not affect model chat or daily use.)"
   }
 }

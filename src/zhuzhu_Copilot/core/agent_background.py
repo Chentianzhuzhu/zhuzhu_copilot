@@ -33,6 +33,11 @@ STATUS_CANCELLED = "cancelled"    # 被用户/系统取消
 ACTIVE_STATUSES = frozenset({STATUS_PENDING, STATUS_RUNNING})
 TERMINAL_STATUSES = frozenset({STATUS_DONE, STATUS_FAILED, STATUS_CANCELLED})
 
+# 任务输出缓冲上限：长命令（构建/安装/抓日志）可能持续吐几十分钟，无上限会让
+# task.output 吃光内存，也会让"展开查看详情"时把整段日志灌进 QTextEdit 卡死主线程。
+# 超出后丢弃最早内容、只保留最新（进度看尾部，语义不丢）。
+MAX_OUTPUT_CHARS = 1_000_000
+
 # 任务类型
 TYPE_COMMAND = "command"           # 后台命令（run_command run_in_background=true）
 TYPE_SUBAGENT = "subagent"         # 后台子 Agent（注册式 / 临时）
@@ -98,6 +103,11 @@ class BackgroundTask:
             return
         with self._output_lock:
             self.output += delta
+            # 超限裁剪：丢头部保尾部（trim 只在越限时触发，均摊成本低）
+            if len(self.output) > MAX_OUTPUT_CHARS:
+                cut = len(self.output) - MAX_OUTPUT_CHARS // 2
+                self.output = (f"…（前 {cut} 字符已省略，仅保留最新内容）\n"
+                               + self.output[cut:])
         if self.on_output:
             try:
                 self.on_output(self, delta)
@@ -125,6 +135,12 @@ class BackgroundTask:
     @property
     def cancelled(self) -> bool:
         return self._cancel_event.is_set()
+
+    @property
+    def cancel_event(self) -> threading.Event:
+        """取消信号本体：长命令/长轮询的执行器可轮询它提前退出，
+        避免用户点了「取消」后进程还要跑满等待时间才停。"""
+        return self._cancel_event
 
     # ---- 状态迁移（内部用，由管理器调用）----
     def _mark_running(self) -> None:

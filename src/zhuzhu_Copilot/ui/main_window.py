@@ -2235,7 +2235,16 @@ class CopilotPanel(QFrame):
             QMessageBox.information(self, _ui("检查更新"), _ui("正在检查更新，请稍候…"))
         else:
             err = result.get("error") or "网络异常"
-            QMessageBox.warning(self, _ui("检查更新"), _uif("检查更新失败：{a0}", a0=err))
+            hint = ""
+            # 更新服务器常挂在 Cloudflare 后面，企业网关可能只封了它：
+            # 只要应用自身请求正常，就明确告诉用户「不影响使用」，别再吓人。
+            try:
+                from zhuzhu_Copilot.core import net_status
+                if net_status.traffic_ok():
+                    hint = _ui("\n\n（网络连接正常，仅更新服务器不可达；不影响模型对话与日常使用。）")
+            except Exception:
+                pass
+            QMessageBox.warning(self, _ui("检查更新"), _uif("检查更新失败：{a0}", a0=err) + hint)
 
     def _on_update_found(self, info: dict):
         """发现新版本：普通更新弹确认框；强制更新无忽略选项"""

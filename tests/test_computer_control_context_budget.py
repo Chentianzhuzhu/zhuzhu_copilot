@@ -10,9 +10,10 @@
    注：图片体积**不是**本问题 —— 截图早已治理为 174K 字符有界 JPEG，
    本地估765 tok 反而高于真实视觉 543 tok（高估 41%）。
 
-2. **MCP 读取类工具结果零压缩**（次因）。`_READ_CONDENSE_TOOLS` 只含 6 个内置
-   读取工具，MCP 的 list_elements（元素树，limit=200 时约 6.4K tok）/browser_html
+2. **MCP 读取类工具结果零压缩**（次因）。`_READ_CONDENSE_TOOLS` 只含几个内置
+   读取工具，MCP 的 list_windows（窗口列表，窗口多时约数千 tok）/browser_html
    等结构化枚举全部原文进上下文，且每步操控都要读一次。
+   注：元素树（list_elements）已随「改为纯坐标定位」整体移除，不再参与压缩考量。
 
 修复：
 - 新增 `desktop` 任务类别（仅用桌面专属措辞，不收"点一下/双击"等泛化词）；
@@ -122,25 +123,25 @@ def test_desktop_group_exposes_control_capable_tools():
 # 四、MCP 读取类工具进入压缩白名单
 # --------------------------------------------------------------------------
 def test_mcp_read_tools_in_condense_allowlist():
-    for name in ("list_elements", "list_windows", "browser_html",
+    for name in ("list_windows", "browser_html",
                  "browser_snapshot", "manage_window", "screen_info"):
         assert name in agent_engine._READ_CONDENSE_TOOLS, \
             f"{name} 未纳入压缩白名单，MCP 结构化枚举会原文堆进上下文"
 
 
 def test_normal_sized_mcp_results_do_not_trigger_condense():
-    """实测的真实返回体量（129~415 字符）远低于阈值，不应误触发压缩。"""
+    """实测的真实返回体量（数百字符）远低于阈值，不应误触发压缩。"""
     real_sizes = {"screen_info": 324, "list_windows": 415,
-                  "manage_window": 344, "list_elements": 370}
+                  "manage_window": 344, "browser_snapshot": 370}
     for name, size in real_sizes.items():
         assert size <= agent_engine._READ_CONDENSE_CHARS, \
             f"{name} 正常返回({size})竟超阈值，会造成无谓的 LLM 摘要调用"
 
 
-def test_oversized_element_list_would_be_condensed():
-    """元素树爆炸（limit=200 约 12.5K 字符）必须越过阈值触发压缩。"""
+def test_oversized_window_list_would_be_condensed():
+    """窗口列表爆炸（几百个窗口的枚举）必须越过阈值触发压缩。"""
     body = "\n".join(
-        f"{i}. Button “按钮{i}” 中心({100 + i * 20},{200 + i * 15}) "
-        f"区域 120×32 hwnd=2885710  [可点击]" for i in range(1, 201))
+        f"[{2885710 + i * 4}] 「窗口标题 {i}」 位置({100 + i * 20},{200 + i * 15}) "
+        f"尺寸 1200×800 类别=main 进程=app{i}.exe 置顶=否" for i in range(1, 301))
     assert len(body) > agent_engine._READ_CONDENSE_CHARS, \
-        "最坏元素树未超阈值，多轮累积仍会顶穿上下文"
+        "最坏窗口列表未超阈值，多轮累积仍会顶穿上下文"

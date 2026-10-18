@@ -135,6 +135,7 @@ from zhuzhu_Copilot.core import (
     agent_ui_ux,
     agent_workflow,
     app_wallpaper,
+    net_status,
 )
 
 from zhuzhu_Copilot.core.agent_mcp import McpManager
@@ -244,6 +245,33 @@ def _scrollbar_handle_hover() -> str:
     c = QColor(_base_color("BORDER_SOFT"))
     c.setAlphaF(_SCROLLBAR_HOVER_OPACITY)
     # 原 QColor 70% 白底托取值已移除，回退方案见本函数文档
+
+
+def _scrollbar_qss() -> str:
+    """极简滚动条 QSS（局部控件复用）：透明轨道 + 半透明淡灰滑块。
+
+    与 styles.py 的全局滚动条同款，但只返回滚动条这几条规则 —— 局部 QScrollArea
+    套用整份全局 QSS 会把内部控件的样式一起冲掉。颜色直接由原始色板算，
+    不依赖 ``_scrollbar_handle``（壁纸透出模式下该值会被覆写）。
+    """
+    def _rgba(key: str, alpha: float) -> str:
+        c = QColor(_base_color(key))
+        c.setAlphaF(alpha)
+        return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
+
+    bar = _rgba("BORDER", _SCROLLBAR_OPACITY)
+    hover = _rgba("BORDER_SOFT", _SCROLLBAR_HOVER_OPACITY)
+    return (
+        "QScrollBar:vertical { background: transparent; width: 12px;"
+        " margin: 2px 2px 2px 0; }"
+        f"QScrollBar::handle:vertical {{ background: {bar};"
+        " border-radius: 4px; min-height: 40px; margin: 0 2px; }"
+        f"QScrollBar::handle:vertical:hover {{ background: {hover}; }}"
+        "QScrollBar::sub-page:vertical, QScrollBar::add-page:vertical {"
+        " background: transparent; }"
+        "QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {"
+        " background: transparent; height: 0; width: 0; }"
+    )
 
 
 def _feedback_boosted() -> bool:
@@ -1535,6 +1563,10 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     elif kind == "chev":      # 下尖角（展开/收起指示）
         p.drawLine(QPointF(s * 0.26, s * 0.38), QPointF(s * 0.50, s * 0.62))
         p.drawLine(QPointF(s * 0.50, s * 0.62), QPointF(s * 0.74, s * 0.38))
+    elif kind == "preview":   # 预览面板（右侧分栏：外框 + 竖向分隔线）
+        p.drawRoundedRect(QRectF(s * 0.16, s * 0.20, s * 0.68, s * 0.60),
+                          s * 0.10, s * 0.10)
+        p.drawLine(QPointF(s * 0.60, s * 0.20), QPointF(s * 0.60, s * 0.80))
     p.end()
     return QIcon(pm)
 
@@ -1546,7 +1578,7 @@ _LINE_ICON_KINDS = frozenset({
     "retry", "vol", "music", "full", "trash", "new", "plus", "ok", "no",
     "drive", "list", "doc", "bash", "net", "folder", "apps", "user", "server",
     "puzzle", "mic", "video", "audio", "chart", "magic", "clock", "think",
-    "tool", "term", "chev",
+    "tool", "term", "chev", "preview",
 })
 
 
@@ -3089,8 +3121,8 @@ class _AgentSettingsDialog(QDialog):
         self.wt_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.wt_check.toggled.connect(self._on_wt_toggled)
         lay.addWidget(self.wt_check)
-        # 代码预览面板：双击工作树文件在右侧预览，关闭后不显示
-        self.code_check = QCheckBox(_ui("显示代码预览面板（双击文件预览）"))
+        # 预览面板：双击工作树文件在右侧预览，默认隐藏（右上角按钮可展开）
+        self.code_check = QCheckBox(_ui("显示预览面板（代码 / 文件 / 媒体预览，默认隐藏）"))
         self.code_check.setChecked(self._code_enabled())
         self.code_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.code_check.toggled.connect(self._on_code_toggled)
@@ -3119,20 +3151,20 @@ class _AgentSettingsDialog(QDialog):
             f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
         lay.addWidget(pref_lbl)
         self.panel_mode_combo = _ArrowComboBox()
-        self.panel_mode_combo.addItem(_ui("贴附主面板（独立窗口靠边悬浮）"), "attach")
         self.panel_mode_combo.addItem(_ui("融入主面板（与主面板同一窗口）"), "dock")
+        self.panel_mode_combo.addItem(_ui("贴附主面板（独立窗口靠边悬浮）"), "attach")
         saved_mode = _panel_mode_setting()
         _mi = self.panel_mode_combo.findData(saved_mode)
         self.panel_mode_combo.setCurrentIndex(_mi if _mi >= 0 else 0)
         self.panel_mode_combo.setStyleSheet(_QCOMBO)
-        self.panel_mode_combo.setToolTip(_ui("贴附 = 子面板为独立窗口，依序停靠主面板左右侧；融入 = 子面板嵌入主面板左右栏内，随主面板同显同隐（同一窗口）"))
+        self.panel_mode_combo.setToolTip(_ui("融入 = 子面板嵌入主面板左右栏内，随主面板同显同隐（同一窗口）；贴附 = 子面板为独立窗口，依序停靠主面板左右侧。预览面板固定融入主面板右侧，始终跟随此项设置。"))
         self.panel_mode_combo.currentIndexChanged.connect(self._on_panel_mode_changed)
         # 下拉框长度减小40%：占行宽60%，右侧留40%空白
         _mode_row = QHBoxLayout()
         _mode_row.addWidget(self.panel_mode_combo, 3)
         _mode_row.addStretch(2)
         lay.addLayout(_mode_row)
-        pref_sub = QLabel(_ui("贴附：子面板悬浮在主面板外侧，可各自拖动位置与调整大小；融入：四块面板嵌入主面板左右栏，作为同一窗口的一部分。设置保存后立即生效。"))
+        pref_sub = QLabel(_ui("融入：子面板嵌入主面板左右栏，作为同一窗口的一部分；贴附：子面板悬浮在主面板外侧，可各自拖动位置与调整大小。工作树 / Git / 任务清单跟随此项设置，预览面板固定融入主面板右侧。设置保存后立即生效。"))
         pref_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         pref_sub.setWordWrap(True)
         lay.addWidget(pref_sub)
@@ -3487,7 +3519,7 @@ class _AgentSettingsDialog(QDialog):
 
     def _code_enabled(self) -> bool:
         return str(app_identity.qsettings()
-                   .value("agent_show_code", "1")).strip().lower() in ("1", "true", "yes")
+                   .value("agent_show_preview", "0")).strip().lower() in ("1", "true", "yes")
 
     def _on_git_toggled(self, checked: bool):
         """Git 分支面板开关：点击即生效，立即写入并同步显示/隐藏"""
@@ -3510,11 +3542,13 @@ class _AgentSettingsDialog(QDialog):
             panel._apply_reserve()
 
     def _on_code_toggled(self, checked: bool):
-        """代码预览面板开关：点击即生效，立即写入并同步显示/隐藏"""
+        """预览面板开关：点击即生效，立即写入并同步显示/隐藏"""
         app_identity.qsettings().setValue(
-            "agent_show_code", "1" if checked else "0")
+            "agent_show_preview", "1" if checked else "0")
         panel = self.parent()
-        if panel is not None and hasattr(panel, "_sync_code_win"):
+        if panel is not None and hasattr(panel, "_toggle_preview"):
+            panel._toggle_preview(checked)
+        elif panel is not None and hasattr(panel, "_sync_code_win"):
             panel._sync_code_win()
         if panel is not None and hasattr(panel, "_apply_reserve"):
             panel._apply_reserve()
@@ -6437,7 +6471,7 @@ class _AgentSettingsDialog(QDialog):
         icon_lbl.setFixedSize(28, 28)
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         icon_lbl.setPixmap(brand_icons.brand_icon(
-            brand, 24, self._TEXT).pixmap(24, 24))
+            brand, 24, self._DIM).pixmap(24, 24))
         outer.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignTop)
         v = QVBoxLayout()
         v.setSpacing(2)
@@ -6626,7 +6660,7 @@ class _AgentSettingsDialog(QDialog):
                 w._models_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
                 if icon_lbl is not None:
                     icon_lbl.setPixmap(brand_icons.brand_icon(
-                        getattr(w, "_icon_brand", ""), 24, self._TEXT).pixmap(24, 24))
+                        getattr(w, "_icon_brand", ""), 24, self._DIM).pixmap(24, 24))
 
     def _on_provider_add(self, *_):
         dlg = _ProviderDialog(parent=self)
@@ -7267,7 +7301,7 @@ class _ProviderDialog(QDialog):
         self.preset_combo.addItem(_ui("（自定义 / 手动填写）"), None)
         for p in agent_llm.PRESET_PROVIDERS:
             self.preset_combo.addItem(
-                brand_icons.brand_icon(brand_icons.brand_for_provider(p), 16, self._TEXT),
+                brand_icons.brand_icon(brand_icons.brand_for_provider(p), 16, self._DIM),
                 _ui(p["name"]), p)
         self.preset_combo.currentIndexChanged.connect(self._apply_preset)
         form.addRow(_ui("预设服务商"), self.preset_combo)
@@ -9289,19 +9323,38 @@ def _usage_palette() -> dict:
 
 
 class _BackgroundTaskWidget(QFrame):
-    """单个后台任务的状态卡片：显示标题、状态、可展开查看完整输出与元数据、可取消、可复制。
+    """单个后台任务的状态卡片：标题、状态、最新输出摘要、可展开看完整输出、可取消、可复制。
 
     布局为 QVBoxLayout：
     - 第一行：状态行（指示灯 + 标题/状态文本 + 展开 + 复制 + 取消）
-    - 第二行：元数据栏（任务类型 / ID / 开始时间 / 耗时，展开时显示）
-    - 第三行：输出区（展开时显示，从 BackgroundTaskManager 拉取完整输出）"""
-    cancel_clicked = pyqtSignal(str)  # task_id
+    - 第二行：最新输出摘要（折叠时单行展示命令最新一行输出——后台命令的实时进度一眼可见）
+    - 第三行：元数据栏（任务类型 / ID / 开始时间 / 耗时，展开时显示）
+    - 第四行：输出区（展开时显示，从 BackgroundTaskManager 拉取完整输出）
+
+    输出缓冲：流式增量只进分块缓冲 ``_buf``（超限丢头部保尾部），渲染时才拼接。
+    长命令（构建 / 安装 / 抓日志）跑几十分钟，也不会把整段日志灌进 QTextEdit 拖死主线程。
+    渲染自适应节流：输出越大刷新间隔越长（100ms → 300ms → 600ms），面板始终流畅。
+    滚动为「贴底」：用户停在下沿时跟随最新输出；一旦上翻读历史就不再被拽回底部。"""
+
+    cancel_clicked = pyqtSignal(str)      # task_id
+    expanded_changed = pyqtSignal()       # 展开/收起：面板据此重算可见高度
+
+    _MAX_TEXT_CHARS = 200_000   # 单卡片保留的最大字符数（超出丢头部，保留最新）
+    _MARKDOWN_CAP = 120_000     # 超过该长度用纯文本渲染（markdown 解析大日志会卡住主线程）
 
     def __init__(self, task_id: str, title: str, parent=None):
         super().__init__(parent)
         self.task_id = task_id
         self._expanded = False
+        self._status = "running"
         self._start_time = ""
+        # —— 输出分块缓冲（替代整段字符串反复追加：高频增量下 O(n) 拼接）——
+        self._buf: list = []
+        self._buf_len = 0
+        self._buf_dropped = 0
+        self._last_line = ""        # 最新一行输出（摘要行用）
+        self._text_cache = ""       # 拼接缓存，配合 _text_dirty 避免每次渲染都 join
+        self._text_dirty = False
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet("""
             _BackgroundTaskWidget {
@@ -9375,14 +9428,22 @@ class _BackgroundTaskWidget(QFrame):
 
         root.addLayout(row)
 
-        # —— 第二行：元数据栏（展开时显示）——
+        # —— 第二行：最新输出摘要（折叠时单行显示，实时反映命令进度）——
+        self.preview_label = QLabel("")
+        self.preview_label.setStyleSheet(
+            "font-size: 11px; color: #8fa3bf; padding: 0 4px 2px 4px;")
+        self.preview_label.setWordWrap(False)
+        self.preview_label.hide()
+        root.addWidget(self.preview_label)
+
+        # —— 第三行：元数据栏（展开时显示）——
         self.meta_label = QLabel("")
         self.meta_label.setStyleSheet("font-size: 10px; color: #777; padding: 2px 4px;")
         self.meta_label.setWordWrap(True)
         self.meta_label.hide()
         root.addWidget(self.meta_label)
 
-        # —— 第三行：输出区域（展开时显示）——
+        # —— 第四行：输出区域（展开时显示）——
         self.output_area = QTextEdit()
         self.output_area.setReadOnly(True)
         self.output_area.setMinimumHeight(180)
@@ -9393,19 +9454,109 @@ class _BackgroundTaskWidget(QFrame):
         """)
         self.output_area.hide()
         root.addWidget(self.output_area)
-        self._full_text = ""  # 累积的完整输出文本（用于Markdown渲染）
         # 渲染节流：高频流式输出时批量重绘，避免每次append都setMarkdown导致卡顿
         self._render_dirty = False
         self._render_timer = None  # 延迟创建（避免未展开时无谓开销）
 
+    # ---------- 输出缓冲 ----------
     def set_start_time(self, ts: str):
         self._start_time = ts
 
+    def _set_text(self, text: str) -> None:
+        """整体替换缓冲内容（从管理器拉取完整输出 / 清理兜底）。"""
+        text = text or ""
+        if len(text) > self._MAX_TEXT_CHARS:
+            self._buf_dropped = len(text) - self._MAX_TEXT_CHARS
+            self._buf = [text[-self._MAX_TEXT_CHARS:]]
+        else:
+            self._buf_dropped = 0
+            self._buf = [text] if text else []
+        self._buf_len = len(self._buf[0]) if self._buf else 0
+        self._text_dirty = True
+        self._refresh_preview(text)
+
+    def append_output(self, text: str):
+        """累积输出文本；仅在展开可见时调度批量渲染（节流，避免高频setMarkdown卡顿）。"""
+        if not text:
+            return
+        s = str(text)
+        self._buf.append(s)
+        self._buf_len += len(s)
+        # 超限裁剪：保留最新内容（丢最早的分块），长日志不会无限吃内存
+        while self._buf_len > self._MAX_TEXT_CHARS and len(self._buf) > 1:
+            d = self._buf.pop(0)
+            self._buf_len -= len(d)
+            self._buf_dropped += len(d)
+        self._text_dirty = True
+        self._refresh_preview(s)
+        # 未展开时不渲染（节省CPU），展开时会从管理器拉取完整输出
+        if self._expanded and self.output_area.isVisible():
+            self._schedule_render()
+
+    def _refresh_preview(self, text: str) -> None:
+        """取文本尾部最后一条非空行，更新摘要行（折叠态下的实时进度）。
+        摘要按当前可用宽度省略显示（不撑宽卡片），完整一行放 tooltip。"""
+        if not text:
+            return
+        line = ""
+        for ln in text[-600:].replace("\r", "\n").split("\n"):
+            ln = ln.strip()
+            if ln:
+                line = ln
+        if line:
+            self._last_line = line
+        if self._last_line:
+            self._show_preview()
+
+    def _show_preview(self):
+        """把最新一行按当前宽度省略后渲染到摘要行。"""
+        if not self._last_line:
+            return
+        try:
+            avail = max(80, self.preview_label.width() - 8)
+            self.preview_label.setText(
+                self.preview_label.fontMetrics().elidedText(
+                    self._last_line, Qt.TextElideMode.ElideRight, avail))
+        except Exception:
+            self.preview_label.setText(self._last_line[:200])
+        self.preview_label.setToolTip(self._last_line)
+
+    def resizeEvent(self, ev):
+        # 宽度变化后重新省略摘要行（否则旧宽度下算出的省略号会残留）
+        super().resizeEvent(ev)
+        if self._last_line:
+            self._show_preview()
+
+    def _compose_text(self) -> str:
+        """拼接当前缓冲（带缓存；增量到达后由 _text_dirty 失效）。"""
+        if self._text_dirty or not self._text_cache:
+            body = "".join(self._buf)
+            if self._buf_dropped:
+                body = (_uif("…（已省略前 {a0} 字符，仅显示最新内容）\n",
+                             a0=str(self._buf_dropped)) + body)
+            self._text_cache = body
+            self._text_dirty = False
+        return self._text_cache
+
+    # ---------- 状态 ----------
+    def _task_duration(self) -> float:
+        """从管理器取实时耗时（流式增量不带 duration，直接显示会回零）。"""
+        try:
+            t = agent_background.bg_manager().get(self.task_id)
+            if t is not None:
+                return t.duration
+        except Exception:
+            pass
+        return 0.0
+
     def update_status(self, status: str, duration: float = 0):
         """更新状态显示。status: running/done/failed/cancelled"""
+        self._status = status
         if status == "running":
             self.status_dot.setStyleSheet("color: #4a9eff; font-size: 14px;")
-            self.status_label.setText(_uif("运行中… ({a0}s)", a0=f"{duration:.0f}"))
+            # duration 缺省 0（流式增量调用不带耗时）：回退到管理器实时耗时
+            d = float(duration) if duration else self._task_duration()
+            self.status_label.setText(_uif("运行中… ({a0}s)", a0=f"{d:.0f}"))
             self.cancel_btn.show()
         elif status == "done":
             self.status_dot.setStyleSheet("color: #4caf50; font-size: 14px;")
@@ -9423,50 +9574,66 @@ class _BackgroundTaskWidget(QFrame):
         if self._expanded:
             self._refresh_meta_and_output()
 
-    def append_output(self, text: str):
-        """累积输出文本；仅在展开可见时调度批量渲染（节流，避免高频setMarkdown卡顿）。"""
-        if text:
-            self._full_text += str(text)
-            # 未展开时不渲染（节省CPU），展开时会从管理器拉取完整输出
-            if self._expanded and self.output_area.isVisible():
-                self._schedule_render()
+    def refresh_elapsed(self):
+        """运行中卡片每秒刷新一次耗时（由面板统一定时器驱动，避免每卡片一个定时器）。"""
+        if self._status == "running":
+            self.status_label.setText(
+                _uif("运行中… ({a0}s)", a0=f"{self._task_duration():.0f}"))
 
+    def status_text(self) -> str:
+        """当前机器状态（running/done/failed/cancelled）：面板判断"是否还在跑"
+        只认它，避免解析标签文案（受 i18n / 文案改动影响）。"""
+        return self._status
+
+    # ---------- 渲染 ----------
     def _schedule_render(self):
-        """调度一次延迟渲染（100ms内多次调用合并为一次）。"""
+        """调度一次延迟渲染（同窗口内多次调用合并为一次）。
+        窗口随输出体积自适应放大：大日志重绘昂贵，拉长间隔换取面板不卡。"""
         self._render_dirty = True
         if self._render_timer is None:
             from PyQt6.QtCore import QTimer
             self._render_timer = QTimer(self)
             self._render_timer.setSingleShot(True)
             self._render_timer.timeout.connect(self._do_render)
+        # 间隔内已有待渲染任务时不重启（重启会让高频输出把渲染无限推迟＝ starvation）
         if not self._render_timer.isActive():
-            self._render_timer.start(100)  # 100ms批量窗口
+            n = self._buf_len
+            delay = 600 if n > 150_000 else (300 if n > 40_000 else 100)
+            self._render_timer.start(delay)
 
     def _do_render(self):
         """实际执行渲染（由定时器触发）。"""
         self._render_dirty = False
         self._render_output()
 
-    def _render_output(self):
-        """将 _full_text 渲染为Markdown富文本，并滚动到底部。"""
+    def _render_output(self, override: str = None):
+        """将输出渲染为富文本；贴底滚动（用户上翻时不拽回）。"""
         # 停止待处理的节流定时器，避免重复渲染
         if self._render_timer is not None and self._render_timer.isActive():
             self._render_timer.stop()
         self._render_dirty = False
         try:
-            if not self._full_text.strip():
+            text = self._compose_text() if override is None else override
+            if not text.strip():
                 return
-            # QTextEdit.setMarkdown 支持标题/粗体/代码块/列表等基础Markdown
-            self.output_area.setMarkdown(self._full_text)
-            # 自动滚动到底部
+            # 贴底判定必须在替换文本之前（换完后 scrollBar 已是新状态）
             sb = self.output_area.verticalScrollBar()
-            sb.setValue(sb.maximum())
+            follow = sb.value() >= sb.maximum() - 8
+            if len(text) > self._MARKDOWN_CAP:
+                # QTextEdit.setMarkdown 支持标题/粗体/代码块/列表等基础Markdown；
+                # 但超长日志逐段解析会长时间占用主线程，改用纯文本（内容不丢）
+                self.output_area.setPlainText(text)
+            else:
+                try:
+                    self.output_area.setMarkdown(text)
+                except Exception:
+                    # Markdown渲染失败时降级为纯文本
+                    self.output_area.setPlainText(text)
+            if follow:
+                # 自动滚动到底部（仅当用户本就停在底部，尊重上翻读历史的操作）
+                sb.setValue(sb.maximum())
         except Exception:
-            # Markdown渲染失败时降级为纯文本
-            try:
-                self.output_area.setPlainText(self._full_text)
-            except Exception:
-                pass
+            pass
 
     def cleanup(self):
         """widget 移除前调用：停止定时器，避免回调已删除对象导致崩溃。"""
@@ -9487,8 +9654,7 @@ class _BackgroundTaskWidget(QFrame):
             t = agent_background.bg_manager().get(self.task_id)
             if t is None:
                 self.meta_label.setText(_ui("（任务数据已清理）"))
-                self._full_text = _ui("（任务数据已清理，无法查看详细内容）")
-                self._render_output()
+                self._render_output(_ui("（任务数据已清理，无法查看详细内容）"))
                 return
             # 元数据
             type_map = {
@@ -9521,23 +9687,27 @@ class _BackgroundTaskWidget(QFrame):
             if t.description:
                 meta_parts.append(_uif("描述: {a0}", a0=t.description[:120]))
             self.meta_label.setText("  |  ".join(meta_parts))
-            # 完整输出：从管理器拉取，若比当前累积更多则替换
+            # 完整输出：从管理器拉取，比当前累积更多则整体替换（含实时增量没赶上的部分）
             full = t.output or ""
-            if full and len(full) > len(self._full_text):
-                self._full_text = full
+            if len(full) > self._buf_len:
+                self._set_text(full)
             # 错误信息始终追加（无论是否有输出）
             if t.error:
                 err_block = f"\n\n--- {_ui('错误')} ---\n{t.error}"
-                if err_block not in self._full_text:
-                    self._full_text += err_block
-            # 空输出兜底：提示用户当前无输出
-            if not self._full_text.strip():
+                if err_block not in self._compose_text():
+                    self._buf.append(err_block)
+                    self._buf_len += len(err_block)
+                    self._text_dirty = True
+            # 空输出兜底：提示用户当前无输出（直接渲染，不写缓冲，避免与后续真实输出混淆）
+            if not self._compose_text().strip():
                 if t.status == "running":
-                    self._full_text = _ui("（任务运行中，暂无输出…）")
+                    fallback = _ui("（任务运行中，暂无输出…）")
                 elif t.status == "pending":
-                    self._full_text = _ui("（任务等待执行…）")
+                    fallback = _ui("（任务等待执行…）")
                 else:
-                    self._full_text = _ui("（该任务无输出内容）")
+                    fallback = _ui("（该任务无输出内容）")
+                self._render_output(fallback)
+                return
             self._render_output()
         except Exception:
             pass
@@ -9546,19 +9716,23 @@ class _BackgroundTaskWidget(QFrame):
         self._expanded = not self._expanded
         if self._expanded:
             self.expand_btn.setText(_ui("收起"))
+            self.preview_label.hide()   # 展开后看全文，摘要行让位
             self.meta_label.show()
             self.output_area.show()
             self.copy_btn.show()
             self._refresh_meta_and_output()
         else:
             self.expand_btn.setText(_ui("详情"))
+            self.preview_label.setVisible(bool(self._last_line))
             self.meta_label.hide()
             self.output_area.hide()
             self.copy_btn.hide()
+        # 展开/收起改变卡片高度 → 通知面板重算最多可见 5 张的高度
+        self.expanded_changed.emit()
 
     def _copy_output(self):
         try:
-            text = self._full_text
+            text = self._compose_text()
             if text:
                 from PyQt6.QtWidgets import QApplication
                 QApplication.clipboard().setText(text)
@@ -9570,11 +9744,24 @@ class _BackgroundTaskWidget(QFrame):
 
 
 class _BackgroundTaskPanel(QWidget):
-    """后台任务列表面板：显示所有活跃/最近的后台任务，支持刷新和取消。"""
+    """后台任务列表面板：显示所有活跃/最近的后台任务，支持刷新和取消。
+
+    显示规则（见 _MAX_VISIBLE_TASKS）：
+    - **最多完整显示 5 张卡片**：新任务自动排到顶部，旧任务依次下移；
+    - 超过 5 个时面板高度取前 5 张的高度，其余进滚动区——不挤压输入区，
+      用户滚轮/拖滚动条即可查看全部任务；
+    - 撤销/结束的任务会被移除，剩余任务自动补位，高度随之重算；
+    - 运行中任务的耗秒由面板统一定时器刷新，新到每份输出都会更新卡片摘要行。"""
+
+    _MAX_VISIBLE_TASKS = 5          # 最多同时完整显示的卡片数，超出滚动查看
+    _MIN_PANEL_H = 72               # 滚动区最小高度（单卡片时的下限，避免过矮看不清）
+    _MAX_WIN_RATIO = 0.5            # 高度硬上限：窗口高度的一半（展开大输出时防止顶爆布局）
+    _FALLBACK_WIN_H = 800           # 拿不到窗口高度时的兜底基准
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._widgets: dict = {}  # task_id -> _BackgroundTaskWidget
+        self._widgets: dict = {}      # task_id -> _BackgroundTaskWidget
+        self._order: list = []        # 视觉顺序（新 → 旧），与 tasks_layout 对应
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -9585,38 +9772,84 @@ class _BackgroundTaskPanel(QWidget):
         self.title_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #888;")
         header.addWidget(self.title_label)
         header.addStretch()
-        self.count_label = QLabel(_ui("0 个运行中"))
+        self.count_label = QLabel("")
         self.count_label.setStyleSheet("font-size: 11px; color: #666;")
         header.addWidget(self.count_label)
         layout.addLayout(header)
-
-        # 任务列表容器
-        self.tasks_container = QWidget()
-        self.tasks_layout = QVBoxLayout(self.tasks_container)
-        self.tasks_layout.setContentsMargins(0, 0, 0, 0)
-        self.tasks_layout.setSpacing(4)
-        self.tasks_layout.addStretch()
-        layout.addWidget(self.tasks_container)
 
         # 空状态提示
         self.empty_label = QLabel(_ui("暂无后台任务"))
         self.empty_label.setStyleSheet("font-size: 11px; color: #666; padding: 8px;")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.tasks_layout.insertWidget(0, self.empty_label)
+        layout.addWidget(self.empty_label)
+
+        # 任务列表（滚动区）：卡片数变化/展开收起时按 _MAX_VISIBLE_TASKS 重算高度，
+        # 任务多时出现纵向滚动条，用户可滑动查看所有任务
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("bgTaskScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll.setStyleSheet(
+            "QScrollArea#bgTaskScroll, QWidget#bgTaskList { background: transparent; border: none; }"
+            + _scrollbar_qss())
+        self.tasks_container = QWidget()
+        self.tasks_container.setObjectName("bgTaskList")
+        self.tasks_layout = QVBoxLayout(self.tasks_container)
+        self.tasks_layout.setContentsMargins(0, 0, 0, 0)
+        self.tasks_layout.setSpacing(4)
+        self.tasks_layout.addStretch()
+        self.scroll.setWidget(self.tasks_container)
+        self.scroll.hide()
+        layout.addWidget(self.scroll)
+
+        # 运行中任务耗秒刷新（单一定时器驱动所有卡片，避免每卡片一个定时器）
+        from PyQt6.QtCore import QTimer
+        self._tick = QTimer(self)
+        self._tick.setInterval(1000)
+        self._tick.timeout.connect(self._on_tick)
 
         self.hide()  # 默认隐藏，有后台任务时显示
 
+    # ---------- 任务增删 ----------
     def add_task(self, task_id: str, title: str):
         if task_id in self._widgets:
             return
+        near_top = self._near_top()
         w = _BackgroundTaskWidget(task_id, title)
         w.cancel_clicked.connect(self._on_cancel)
-        # 插入到 stretch 之前
-        self.tasks_layout.insertWidget(self.tasks_layout.count() - 1, w)
+        w.expanded_changed.connect(self._sync_height_soon)
+        self.tasks_layout.insertWidget(0, w)   # 新任务置顶，旧任务自动下移
         self._widgets[task_id] = w
+        self._order.insert(0, task_id)
         self.empty_label.hide()
+        self.scroll.show()
         self.show()
         self._update_count()
+        self._sync_height()
+        self._sync_height_soon()
+        # 用户本来就停在顶部（或面板刚出现）→ 跟随到顶部，让最新任务立即可见；
+        # 用户正在下方翻旧任务时不打扰
+        if near_top:
+            QTimer.singleShot(0, self._scroll_top)
+
+    def append_output(self, task_id: str, text: str):
+        """流式输出入口：卡片不存在时兜底创建，保证任何增量都不丢。
+        每秒一次的耗秒由 _on_tick 统一刷，这里不做（每个 chunk 都 setText 是白烧 CPU）。"""
+        if task_id not in self._widgets:
+            try:
+                t = agent_background.bg_manager().get(task_id)
+                if t is None:
+                    return
+                self.add_task(task_id, t.title or task_id)
+            except Exception:
+                return
+        w = self._widgets.get(task_id)
+        if w is not None:
+            w.append_output(text)
 
     def update_task(self, task_id: str, status: str, duration: float = 0, output: str = ""):
         w = self._widgets.get(task_id)
@@ -9625,6 +9858,7 @@ class _BackgroundTaskPanel(QWidget):
             if output:
                 w.append_output(output)
         self._update_count()
+        self._sync_height_soon()
 
     def remove_task(self, task_id: str, delay_ms: int = 5000):
         """完成/失败的任务延迟移除（默认5秒后自动消失）。"""
@@ -9633,6 +9867,8 @@ class _BackgroundTaskPanel(QWidget):
 
     def _do_remove(self, task_id: str):
         w = self._widgets.pop(task_id, None)
+        if task_id in self._order:
+            self._order.remove(task_id)
         if w:
             try:
                 w.cleanup()   # 停止定时器，防止回调已删除对象
@@ -9641,15 +9877,17 @@ class _BackgroundTaskPanel(QWidget):
             w.setParent(None)
             w.deleteLater()
         self._update_count()
+        self._sync_height_soon()
         if not self._widgets:
             self.empty_label.show()
+            self.scroll.hide()
             QTimer.singleShot(300, self.hide)
 
     def _on_cancel(self, task_id: str):
         """用户点击取消：无论底层任务是否能真正停止，UI 侧立即标记为已取消并移除。
         （底层任务可能卡在模型请求中不响应取消事件，不能因此让用户无法关闭面板。）"""
         w = self._widgets.get(task_id)
-        # 1. 通知管理器取消（尽力而为，不保证底层线程立即停止）
+        # 1. 通知管理器取消（同时置位 cancel_event，长命令进程树会被真正杀掉）
         try:
             agent_background.bg_manager().cancel(task_id)
         except Exception:
@@ -9662,13 +9900,97 @@ class _BackgroundTaskPanel(QWidget):
                 pass
             self.remove_task(task_id, 3000)
         self._update_count()
+        self._sync_height_soon()
+
+    # ---------- 高度 / 滚动 ----------
+    def _near_top(self) -> bool:
+        """用户是否停在列表顶部（20px 容差）——新任务自动甩到顶部的唯一条件。"""
+        try:
+            sb = self.scroll.verticalScrollBar()
+            return sb.value() <= 20
+        except Exception:
+            return True
+
+    def _scroll_top(self):
+        try:
+            self.scroll.verticalScrollBar().setValue(0)
+        except Exception:
+            pass
+
+    def _on_tick(self):
+        """每秒刷新运行中卡片的耗时（进度实时可见）。"""
+        try:
+            for w in self._widgets.values():
+                if w.status_text() == "running":
+                    w.refresh_elapsed()
+        except Exception:
+            pass
+
+    def _sync_height(self):
+        """按「最多可见 5 张」重算滚动区高度：剩余卡片交给纵向滚动条。"""
+        try:
+            cards = [self._widgets[t] for t in self._order if t in self._widgets]
+            if not cards:
+                self.tasks_container.setMinimumHeight(0)
+                self.scroll.setFixedHeight(0)
+                return
+            spacing = self.tasks_layout.spacing()
+            mg = self.tasks_layout.contentsMargins()
+            card_hs = [max(1, c.sizeHint().height()) for c in cards]
+            visible = cards[:self._MAX_VISIBLE_TASKS]
+            h = sum(card_hs[:self._MAX_VISIBLE_TASKS])
+            h += spacing * max(0, len(visible) - 1) + mg.top() + mg.bottom()
+            # 内容真实总高 → 容器最小高度。
+            # 只设 setWidgetResizable(True) 的话，滚动区会把容器压到 minimumSizeHint，
+            # 卡片被挤扁、"内容比视口高"的判定永远不成立 —— 滚动条就再也不出现。
+            content = sum(card_hs) + spacing * (len(cards) - 1) + mg.top() + mg.bottom()
+            self.tasks_container.setMinimumHeight(int(content))
+            # 硬上限：窗口高度的一半（展开大输出时不至于把输入区顶出屏幕）
+            win_h = 0
+            try:
+                win_h = self.window().height() if self.window() is not None else 0
+            except Exception:
+                win_h = 0
+            cap = (max(self._MIN_PANEL_H, int(win_h * self._MAX_WIN_RATIO))
+                   if win_h > 0 else self._FALLBACK_WIN_H)
+            h = min(h, cap)
+            self.scroll.setFixedHeight(max(self._MIN_PANEL_H, int(h)))
+            # 内容不足 5 张时不出现滚动条（Qt 按需显示），也无残留滚动位置
+            if len(cards) <= self._MAX_VISIBLE_TASKS:
+                self._scroll_top()
+        except Exception:
+            pass
+
+    def _sync_height_soon(self):
+        """布局落地后再校正一次高度：刚插入 / 刚展开时卡片 sizeHint 可能还没刷新，
+        立即算出来的高度偏小，会在下一帧闪一下。"""
+        if self.__dict__.get("_resync_pending"):
+            return
+        self._resync_pending = True
+        QTimer.singleShot(0, self._do_resync)
+
+    def _do_resync(self):
+        self._resync_pending = False
+        try:
+            self._sync_height()
+        except Exception:
+            pass
 
     def _update_count(self):
-        running = sum(1 for w in self._widgets.values()
-                       if w.status_label.text().startswith(_ui("运行中")))
+        """刷新计数；并据运行中任务数启停耗秒定时器。"""
+        running = 0
+        for w in self._widgets.values():
+            if w.status_text() == "running":
+                running += 1
         total = len(self._widgets)
-        self.count_label.setText(_uif("{a0} 运行中 / {a1} 总计", a0=str(running), a1=str(total)))
+        self.count_label.setText(
+            _uif("{a0} 运行中 / {a1} 总计", a0=str(running), a1=str(total)))
         self.title_label.setText(_uif("后台任务 ({a0})", a0=str(total)))
+        if running:
+            if not self._tick.isActive():
+                self._tick.start()
+        elif self._tick.isActive():
+            self._tick.stop()
 
 
 class _StatBar(QWidget):
@@ -9733,43 +10055,30 @@ class _StatBar(QWidget):
                 pass
 
 
-class _AnchorQMenu(QMenu):
-    """带「显示即快照」能力的 QMenu：``aboutToShow`` 时记录自身最终全局几何。
+class _ChipAnchorFilter(QObject):
+    """顶栏用户胶囊移动/缩放 → 让已打开的个人信息面板重新贴合。
 
-    背景：``QMenu.exec(pos)`` 是阻塞调用，菜单在 exec 期间才随平台/光标最终定位；
-    exec 返回时菜单已隐藏，``mapToGlobal`` 得到的是过期值。个人信息面板需要紧贴
-    「个人信息」菜单项右侧固定弹出，必须在菜单可见时就取几何，故单独封装。
+    面板贴在胶囊右缘正下方，而胶囊的宽度会随头像图标异步加载、用户名变化而变，
+    位置会随顶栏公告/会话框变化而移。没有跟随逻辑时面板会错开几个像素。
+    Move/Resize 用 0ms 单次定时器合并，避免布局过程中反复重排。
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, on_change=None):
         super().__init__(parent)
-        self._snapshot = None   # (item_global_QRect, menu_global_QRect)
-        self._target = None     # 需要快照的菜单项（默认为首项）
+        self._on_change = on_change
+        self._armed = False
 
-    def snapshot_of(self, action):
-        """返回该菜单项的显示时快照 ``(item_global, menu_global)``；无则 (None, None)。"""
-        s = self.__dict__.get("_snapshot")
-        if not s or s[0] is None:
-            return None, None
-        return s
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Type.Move, QEvent.Type.Resize) \
+                and self._on_change is not None and not self._armed:
+            self._armed = True
+            QTimer.singleShot(0, self._flush)
+        return False
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._capture()
-
-    def _capture(self):
-        """在菜单可见后抓取首项与整菜单的全局几何（供面板锚定）。"""
+    def _flush(self):
+        self._armed = False
         try:
-            acts = self.actions()
-            if not acts:
-                return
-            target = self.__dict__.get("_target") or acts[0]
-            r = self.actionGeometry(target)
-            if r.isNull():
-                return
-            item_g = QRect(self.mapToGlobal(r.topLeft()), r.size())
-            menu_g = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
-            self._snapshot = (item_g, menu_g)
+            self._on_change()
         except Exception:
             pass
 
@@ -10333,14 +10642,18 @@ class _ProfilePanel(QFrame):
     - 自右侧滑入/滑出，点击面板外或 Esc 收起（由 _PopoverDismissFilter 守卫）。
     """
 
-    PREFERRED_WIDTH = 232   # 紧凑宽度（用户要求缩小面板）
+    #: 首选（最小）宽度：内容再窄也不低于此值，保证紧凑观感、避免开合抖动
+    PREFERRED_WIDTH = 232
+    #: 最大宽度：内容再宽也不超过，超出部分才走省略号 + tooltip
+    MAX_WIDTH = 360
     #: 头像直径（用户要求「再次放大」：44 → 56）
     _AVATAR_PX = 56
     #: 头像描边宽度：QSS 的 border 占用控件**内容区**，
     #: 故控件比圆大 2*_AVATAR_RING，圆形位图才不会被内容区裁掉边缘。
     _AVATAR_RING = 1
-    #: 用户名最大显示宽度（超出省略号 + tooltip），防止长名把面板撑爆。
-    _USERNAME_MAX_PX = 104
+    #: 用户名最多占用的宽度（超出才省略 + tooltip）。英文长名靠它把面板撑宽，
+    #: 而不是被压成「barth…」；真正的上限由 MAX_WIDTH / 可用宽兜底。
+    _USERNAME_MAX_PX = 188
     SLIDE = 16          # 水平滑入位移（px）
     IN_MS = 180
     OUT_MS = 130
@@ -10353,8 +10666,14 @@ class _ProfilePanel(QFrame):
         self._eff = None
         self._anims: list = []
         self._closing = False
+        # 完整文本（不省略）与当前面板宽：宽度先按全文算，再按定稿宽度回填省略预算
+        self._username_full = ""
+        self._values_full: dict = {}
+        self._row_keys: dict = {}
+        self._panel_width = int(self.PREFERRED_WIDTH)
         self._build()
         self.apply_theme()
+        self.apply_width(self._panel_width)
         self.resize(int(self.PREFERRED_WIDTH), max(1, self.sizeHint().height()))
 
     # ---------- 构建 ----------
@@ -10402,8 +10721,9 @@ class _ProfilePanel(QFrame):
         name_row.setSpacing(4)
         self._username = QLabel("-")
         self._username.setObjectName("pfUsername")
-        # 长用户名会把面板首选宽从 232px 顶到 500px+（挤压头像行）→
-        # 限宽 + 省略号居中，完整名放 tooltip。
+        # 用户名按「面板宽度 - 头像 - 签到按钮」的预算显示（见 apply_width）：
+        # 预算够就整串显示，不够才省略并把全名放进 tooltip。上限只做兜底，
+        # 防止极端长名把面板顶到 MAX_WIDTH 之外。
         self._username.setWordWrap(False)
         self._username.setMaximumWidth(self._USERNAME_MAX_PX)
         self._username.setAlignment(Qt.AlignmentFlag.AlignLeft |
@@ -10429,9 +10749,9 @@ class _ProfilePanel(QFrame):
         # 积分（大数字 + 实时指示）
         pts_head = QHBoxLayout()
         pts_head.setSpacing(SPACING_SM)
-        pts_label = QLabel(_ui("积分余额"))
-        pts_label.setObjectName("pfKey")
-        pts_head.addWidget(pts_label)
+        self._pts_label = QLabel(_ui("积分余额"))
+        self._pts_label.setObjectName("pfKey")
+        pts_head.addWidget(self._pts_label)
         pts_head.addStretch(1)
         self._live = QLabel("● " + _ui("实时"))
         self._live.setObjectName("pfLive")
@@ -10454,6 +10774,7 @@ class _ProfilePanel(QFrame):
             k = QLabel(label)
             k.setObjectName("pfKey")
             row.addWidget(k)
+            self._row_keys[key] = k
             row.addStretch(1)
             v = QLabel("-")
             v.setObjectName("pfVal")
@@ -10539,24 +10860,111 @@ class _ProfilePanel(QFrame):
             f"#profilePanel QPushButton#pfCheckinBtn:disabled {{ color: {TEXT_DIM};"
             f" border: 1px solid {border}; background: transparent; }}")
 
-    # ---------- 数据注入 ----------
-    def _set_username(self, name):
-        """设置用户名：超出 ``_USERNAME_MAX_PX`` 用省略号，完整名放 tooltip。
+    # ---------- 尺寸自适应 ----------
+    def _inner_width(self) -> int:
+        """左右内边距 + 边框占掉的宽度（内容可用宽 = 面板宽 - 本值）。"""
+        lay = self.layout()
+        cm = lay.contentsMargins() if lay is not None else None
+        left = cm.left() if cm is not None else 0
+        right = cm.right() if cm is not None else 0
+        return int(left + right + self.frameWidth() * 2)
 
-        只按**固定上限**省略、不依赖控件当前宽度，避免「文本变短 → 宽度变小 →
-        再次省略」的自反馈抖动；限宽同时保证面板首选宽不被长用户名撑爆。
+    def _text_width(self, label, text: str) -> int:
+        """标签在当前字体下显示整串文本所需的宽度（先 polish 保证 QSS 字号生效）。"""
+        try:
+            label.ensurePolished()
+        except Exception:
+            pass
+        return int(label.fontMetrics().horizontalAdvance(text or ""))
+
+    def _row_need_widths(self) -> list:
+        """每一行「不省略任何文字」时所需的最小宽度（不含内边距）。
+
+        这里刻意用**全文**度量：英文长单词（Membership Expires）、长日期
+        （2075-11-07 23:59:59）、长用户名都会如实反映成更大的所需宽度，
+        从而把面板撑宽，而不是被布局压扁/裁掉。
         """
-        text = str(name or "").strip()
-        self.__dict__["_username_full"] = text
+        gap = SPACING_SM
+        need = []
+        # 标题行：标题 + 关闭按钮
+        need.append(self._text_width(self._title, self._title.text()) + gap
+                    + self._close_btn.width())
+        # 头像行：头像 + 间距 + 用户名 + 4 + 签到按钮
+        name_w = min(self._text_width(self._username, self._username_full or "-"),
+                     int(self._USERNAME_MAX_PX))
+        need.append(self._avatar.width() + gap + name_w + 4
+                    + self._checkin_btn.sizeHint().width())
+        # 会员 chip：与用户名同列（起点在头像右侧）
+        need.append(self._avatar.width() + gap
+                    + self._member.sizeHint().width())
+        # 积分标题行 + 积分数字
+        need.append(self._pts_label.sizeHint().width() + gap
+                    + self._live.sizeHint().width())
+        need.append(self._points.sizeHint().width())
+        # 明细行：键名 + 间距 + 值（按全文量）
+        for key, lbl in self._rows.items():
+            need.append(self._row_keys[key].sizeHint().width() + gap
+                        + self._text_width(lbl, self._values_full.get(key) or "-"))
+        # 底部两个按钮并排
+        need.append(self._switch_btn.sizeHint().width() + gap
+                    + self._logout_btn.sizeHint().width())
+        return need
+
+    def content_width(self) -> int:
+        """内容所需的完整面板宽度（已含内边距与边框）。"""
+        widest = max(self._row_need_widths() or [0])
+        return int(self._inner_width() + widest)
+
+    def preferred_width(self, avail: int = 0) -> int:
+        """自适应宽度：内容多宽就多宽，夹在 [PREFERRED_WIDTH, MAX_WIDTH, avail]。"""
+        w = max(int(self.PREFERRED_WIDTH), self.content_width())
+        w = min(w, int(self.MAX_WIDTH))
+        if avail and avail > 0:
+            w = min(w, int(avail))
+        return max(160, int(w))
+
+    def apply_width(self, width: int):
+        """按最终宽度回填「省略预算」：预算够就显示全文，不够才省略（+ tooltip）。
+
+        与 ``preferred_width`` 两步分离是关键：宽度先按全文算出来，这里只负责
+        把用户名与明细值限制在**定稿宽度**的可用空间内。若让文本自己决定宽度，
+        会出现「文本变短 → 控件变窄 → 再次省略」的自反馈抖动。
+        """
+        self._panel_width = max(1, int(width))
+        inner = self._inner_width()
+        gap = SPACING_SM
+        name_budget = (self._panel_width - inner - self._avatar.width() - gap - 4
+                       - self._checkin_btn.sizeHint().width() - 2)
+        self._apply_username(max(24, name_budget))
+        for key, lbl in self._rows.items():
+            budget = (self._panel_width - inner
+                      - self._row_keys[key].sizeHint().width() - gap - 2)
+            self._apply_value(key, lbl, max(24, budget))
+
+    def _apply_username(self, budget: int):
+        text = self._username_full
         if not text:
             self._username.setText("-")
             self._username.setToolTip("")
             return
         fm = self._username.fontMetrics()
-        avail = max(24, int(self._USERNAME_MAX_PX))
-        elided = fm.elidedText(text, Qt.TextElideMode.ElideRight, avail)
+        elided = fm.elidedText(text, Qt.TextElideMode.ElideRight, int(budget))
         self._username.setText(elided)
         self._username.setToolTip(text if elided != text else "")
+
+    def _apply_value(self, key: str, lbl, budget: int):
+        """明细值渲染：放不下时用**中间省略**（日期/ID 的头尾都保留）。"""
+        text = self._values_full.get(key) or "-"
+        fm = lbl.fontMetrics()
+        elided = fm.elidedText(text, Qt.TextElideMode.ElideMiddle, int(budget))
+        lbl.setText(elided)
+        lbl.setToolTip(text if elided != text else "")
+
+    # ---------- 数据注入 ----------
+    def _set_username(self, name):
+        """记录完整用户名并按当前宽度预算渲染（超宽才省略 + tooltip）。"""
+        self._username_full = str(name or "").strip()
+        self.apply_width(self._panel_width or self.PREFERRED_WIDTH)
 
     def set_profile(self, info: dict = None):
         """注入个人信息快照；控件只读展示。
@@ -10565,16 +10973,19 @@ class _ProfilePanel(QFrame):
                membership_expire, user_id}
         """
         info = info or {}
-        self._set_username(info.get("username"))
+        self._username_full = str(info.get("username") or "").strip()
         mt = {"free": _ui("免费版"), "pro": _ui("Pro 会员"), "max": _ui("Max 会员")}
-        self._member.setText(mt.get(info.get("membership_type") or "free",
-                                    info.get("membership_type") or _ui("免费版")))
+        mtype = info.get("membership_type") or "free"
+        mtype_label = mt.get(mtype, mtype or _ui("免费版"))
+        self._member.setText(mtype_label)
         self.set_points(info.get("points"))
-        self._rows["id"].setText(str(info.get("user_id") if info.get("user_id") is not None else "-"))
-        self._rows["membership_type"].setText(
-            mt.get(info.get("membership_type") or "free",
-                   info.get("membership_type") or "-"))
-        self._rows["membership_expire"].setText(str(info.get("membership_expire") or "-"))
+        # 先把「全文」记下来，再由 apply_width 统一按面板宽度决定是否省略
+        uid = info.get("user_id")
+        self._values_full["id"] = str(uid if uid is not None else "-")
+        self._values_full["membership_type"] = mtype_label
+        self._values_full["membership_expire"] = str(
+            info.get("membership_expire") or "-")
+        self.apply_width(self._panel_width or self.PREFERRED_WIDTH)
 
         self.set_checkin_state(info.get("checkin") or {})
 
@@ -10611,12 +11022,11 @@ class _ProfilePanel(QFrame):
             self._member.setText(label)
         except Exception:
             pass
+        # 文案先落到「全文」表里，再按当前宽度统一重排省略（避免长文案被裁）
+        self._values_full["membership_type"] = label
+        self._values_full["membership_expire"] = str(membership_expire or "-")
         try:
-            self._rows["membership_type"].setText(label)
-        except Exception:
-            pass
-        try:
-            self._rows["membership_expire"].setText(str(membership_expire or "-"))
+            self.apply_width(self._panel_width or self.PREFERRED_WIDTH)
         except Exception:
             pass
 
@@ -10797,6 +11207,10 @@ class _ProfilePanel(QFrame):
             except Exception:
                 pass
         self.hide()
+
+    def is_busy(self) -> bool:
+        """是否有在途滑入/滑出动画（宿主据此避免改几何抢动画）。"""
+        return bool(self.__dict__.get("_anims")) or bool(self._closing)
 
     # 关闭请求：由 AgentPanel 接管（卸载失焦守卫等），子类不直接关闭
     def _request_close(self):
@@ -11150,13 +11564,14 @@ def _default_panel_size(w: QWidget) -> tuple:
 
 
 def _panel_mode_setting() -> str:
-    """面板偏好模式（QSettings panel_pref_mode）：attach=贴附主面板 / dock=融入主面板"""
+    """面板偏好模式（QSettings panel_pref_mode）：attach=贴附主面板 / dock=融入主面板
+    （默认设为融入；预览面板固定融入主面板右侧）"""
     try:
         v = str(app_identity.qsettings().value(
-            "panel_pref_mode", "attach"))
+            "panel_pref_mode", "dock"))
     except Exception:
-        v = "attach"
-    return v if v in ("attach", "dock") else "attach"
+        v = "dock"
+    return v if v in ("attach", "dock") else "dock"
 
 
 def _center_dialog_on_screen(w: QWidget) -> None:
@@ -11368,34 +11783,42 @@ class _RoundedFloatWindow(QWidget):
             pass
 
 
-class CodePreviewWindow(_RoundedFloatWindow):
-    """多格式智能预览器（停靠 AI 面板右侧）。
-    - Web：QWebEngineView（默认 Bing 首页，含后退/前进/刷新/地址栏）；
-    - Markdown/Office(docx/pptx/xlsx)：渲染为主题配色的 HTML；
-    - 图片(jpg/png/gif/webp/svg…)：缩放预览；
-    - 文本/代码：语法高亮。
-    未安装 QtWebEngine 时 Web 自动降级为静态页提示。"""
+class CodePreviewWindow(QWidget):
+    """多格式智能预览器（固定融入主面板右侧栏）。
+
+    形态说明（重要）：本面板**不再是独立悬浮窗口** —— 内置多标签浏览器、Bing 首页、
+    地址栏、文件下载管理、顶部拖拽把手与四边/四角 resize 热区已全部移除；预览面板固定
+    「融入主面板」右侧 dock 栏，作为主窗口子控件随主面板同显同隐（见
+    `AgentPanel._dock_panel` / `AgentPanel._sync_dock_layout`）。`browser_*` 工具改走
+    独立外置浏览器（`core/agent_browser.py`），不再占用预览面板。
+
+    保留能力：
+    - Markdown：渲染为主题配色的 HTML；
+    - Office(docx/pptx/xlsx)：WebEngine 保真渲染（懒创建），不可用时降级简化 HTML；
+    - 图片(jpg/png/gif/webp/svg…)：平移 / 缩放预览；
+    - 文本 / 代码：语法高亮；
+    - 视频 / 音乐：QMediaPlayer 播放，视频可全屏沉浸（独立无边框窗口承载）。
+
+    默认隐藏：由顶栏「预览面板」按钮或设置-通用页开关控制是否显示。
+    """
 
     WIDTH = int(280 * 1.5 * 1.5 * 0.7)   # 441
     DEFAULT_SIZE = (WIDTH, 600)          # 默认尺寸（无持久化记录时的兜底）
-    _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
+    _wallpaper_translucent = True   # 壁纸模式透出主窗口壁纸（见 _panel_surface）
+    dock_state = "right"            # 固定融入主面板右侧栏
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         self.setObjectName("codeWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
-        # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
+        # 表面色见 _panel_surface：壁纸模式下透明（透出主窗口壁纸），否则取色板实色
         self.setStyleSheet(f"QWidget#codeWin {{ background: {_panel_surface('BG')}; }}")
-        self.resize(self.WIDTH, 600)   # 宽度可调（右缘拖拽），初始 441
-        self._web_tabs = None     # QTabWidget：多标签浏览器容器（WebEngine 可用时）
-        self._web_err = ""        # Web 引擎创建失败的真实原因（供降级提示展示）
-        self._current_url = "https://www.bing.com/"
+        self.setFixedWidth(self.WIDTH)   # 栏内宽度固定（高度由 dock 栏分配）
         self._manual_mode = False  # 用户是否手动指定了预览模式（False=auto 按扩展名自动路由）
-        self._media_full = False       # 视频是否处于预览面板全屏（融入面板而非独立窗口）
+        self._media_full = False       # 视频是否处于全屏（独立全屏窗口承载，非本面板）
         self._media_ctrl_timer = None  # 全屏控制条自动隐藏定时器
-        self._media_saved = None       # 全屏前保存的窗口/装饰状态（退出时恢复）
+        self._media_full_win = None    # 全屏承载窗口（独立无边框顶层窗口）
+        self._media_saved = None       # 全屏前的布局信息（退出时按原位恢复）
         self._diff_seq = 0             # AI 变更 diff 展示序号（防旧恢复定时器打断新 diff）
         self._diff_path = ""           # 当前 diff 展示的文件路径（同文件自动预览不得覆盖）
         self._diff_until = 0.0         # diff 展示截止时间（time.time()，期间保护 diff 视图）
@@ -11404,9 +11827,9 @@ class CodePreviewWindow(_RoundedFloatWindow):
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(6)
         # 标题栏 + 路径
-        self.title = QLabel(_ui("预览 · Bing 搜索"))
+        self.title = QLabel(_ui("预览"))
         self.title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
-        self.path_lbl = QLabel(_ui("默认展示 Bing 搜索引擎；可在此预览网页 / Markdown / 图片 / Office / 代码"))
+        self.path_lbl = QLabel(_ui("打开文件或由 AI 自动分发文件到此预览"))
         self.path_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
         self.path_lbl.setWordWrap(True)
         for w, tt in ((self.title, Qt.TextInteractionFlag.TextSelectableByMouse),
@@ -11414,15 +11837,13 @@ class CodePreviewWindow(_RoundedFloatWindow):
             w.setTextInteractionFlags(tt)
         lay.addWidget(self.title)
         lay.addWidget(self.path_lbl)
-        # 顶部拖拽把手：自由拖动 + 位置持久化（置于整个面板最上方）
-        self._install_drag_handle()
         # 模式切换行（容器 widget：视频全屏时整体隐藏，仅保留视频+控制条）
         self.mode_row = QWidget()
         mode_row = QHBoxLayout(self.mode_row)
         mode_row.setContentsMargins(0, 0, 0, 0)
         mode_row.setSpacing(6)
         self.mode = _ArrowComboBox()
-        for label, key in (("自动", "auto"), ("Web", "web"), ("Markdown", "md"),
+        for label, key in (("自动", "auto"), ("Markdown", "md"),
                            ("图片", "img"), ("表格 xlsx", "xlsx"), ("文档 docx", "docx"),
                            ("幻灯片 pptx", "pptx"), ("文本/代码", "text"),
                            ("视频/音乐", "media")):
@@ -11438,87 +11859,75 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.open_btn.clicked.connect(self._browse_file)
         mode_row.addWidget(self.open_btn)
         lay.addWidget(self.mode_row)
-        # Web 地址栏（仅 Web 模式显示）
-        self.web_bar = QWidget()
-        web_row = QHBoxLayout(self.web_bar)
-        web_row.setContentsMargins(0, 0, 0, 0)
-        web_row.setSpacing(4)
-        self.web_url = QLineEdit()
-        self.web_url.setPlaceholderText(_ui("输入网址搜索，回车访问"))
-        # 显式主题配色：修复地址栏字体在任意模式下不可见
-        # （默认渲染受 app 级深色 palette 影响，浅色主题下文字与底对比不足）
-        self.web_url.returnPressed.connect(self._go_url)
-        web_row.addWidget(self.web_url, 1)
-        self.go_btn = QPushButton("GO")
-        self.go_btn.setFixedSize(36, 24)
-        self.go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.go_btn.clicked.connect(self._go_url)
-        web_row.addWidget(self.go_btn)
-        self.web_bar.setVisible(False)
-        lay.addWidget(self.web_bar)
-        # 堆叠页
+        # 堆叠页：HTML/Markdown · 文本/代码 · 图片 · 空态 · Office（媒体页惰性追加）
         self.stack = QStackedWidget()
-        self._build_web_page()
-        self._build_html_page()
-        self._build_text_page()
-        self._build_img_page()
-        self._build_empty_page()
+        self._html_index = self._build_html_page()
+        self._text_index = self._build_text_page()
+        self._img_index = self._build_img_page()
+        self._empty_index = self._build_empty_page()
         self._build_office_page()
         lay.addWidget(self.stack, 1)
-        # 「打开…/GO」按钮：显式主题化样式（主色底 + 白字，悬停提亮）。
-        # 不可依赖 app 级 palette/原生风格渲染：主窗口移除后 app palette 不再随
-        # 主题更新，浅色主题下按钮被系统渲染为"白字 + 浅色按钮底"→ 文字不可见
-        # （原深色分支的黑字补丁同样是对原生渲染的猜测）。显式样式与全局主按钮
-        # 语义一致，深浅主题下均清晰可辨。
-        _btn_qss = (f"QPushButton {{ background: {ACCENT}; color: #FFFFFF;"
-                    "border: none; border-radius: 6px; padding: 2px 10px;"
-                    "font-size: 12px; font-weight: 600; }"
-                    f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
-        self.open_btn.setStyleSheet(_btn_qss)
-        self.go_btn.setStyleSheet(_btn_qss)
-        # 默认展示 Bing
-        if agent_ui_ux.web_engine_available():
-            try:
-                from zhuzhu_Copilot.core import agent_browser_web
-                agent_browser_web.wire_downloads(self)
-            except Exception:
-                pass
-        QTimer.singleShot(0, self.show_bing)
-        # 四边/四角拖拽调节大小（独立持久化）+ 持久化尺寸恢复
-        self._install_resize_edges(host=self.parent())
+        # 「打开…」按钮：显式主题化样式（主色底 + 白字，悬停提亮）。
+        # 不可依赖 app 级 palette/原生风格渲染：浅色主题下按钮会被系统渲染成
+        # "白字 + 浅色按钮底"→ 文字不可见（与全局主按钮语义一致，深浅主题均清晰可辨）。
+        self.open_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: #FFFFFF;"
+            "border: none; border-radius: 6px; padding: 2px 10px;"
+            "font-size: 12px; font-weight: 600; }"
+            f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
         self.apply_saved_panel_size()
         self._apply_surface_qss()   # 各页构建完成后统一上控件底色
+        self.clear()
+
+    # ---- 融入主面板（dock）接口：宿主 _dock_panel/_undock_panel/_sync_dock_layout 调用 ----
+    def _set_dock_ui(self, docked: bool):
+        """融入/浮出切换：本面板固定融入右侧栏，无拖拽把手与 resize 热区需要切换。"""
+        pass
+
+    def apply_saved_panel_size(self):
+        """恢复面板宽度（栏内宽度固定）：优先持久化记录，无记录回退 WIDTH。"""
+        w, _h = _load_panel_size(self)
+        self._set_panel_size(w or self.WIDTH, self.height())
+
+    def restore_pre_dock_size(self, w: int, h: int):
+        """浮出后恢复「融入前」尺寸（本面板固定融入右侧，仅宽度有意义）。"""
+        if w and int(w) > 0:
+            self._set_panel_size(int(w), h)
+
+    def _set_panel_size(self, w: int, h: int = None):
+        """应用面板宽高（拖拽/持久化恢复/融入布局）：栏内只固定宽度，高度随栏。"""
+        try:
+            w = int(w)
+            if w > 0 and w != self.width():
+                self.setFixedWidth(w)
+        except Exception:
+            pass
+        self._on_size_changed(w, h)
 
     def _on_size_changed(self, w: int, h: int):
-        """尺寸变化：预留（内部 QStackedWidget/浏览器自适应）；标记已手动调高停用跟随"""
+        """尺寸变化（栏内宽度固定，内容自适应，无需额外重排）"""
         pass
+
+    def _apply_window_round(self):
+        """子控件无原生窗口圆角概念（融入主面板），保留接口以兼容宿主调用。"""
+        pass
+
+    def _media_host(self):
+        """宿主 AgentPanel（含 todos/git/worktree 等子面板）"""
+        h = self.parentWidget()
+        while h is not None and not hasattr(h, "code_win"):
+            h = h.parentWidget()
+        return h
 
     def _apply_surface_qss(self):
         """给预览面板内「带底色」控件统一上主题配色（各页构建完成后调用一次）。
 
-        内容面（标签页 / 内容视图 / 图片区 / Web 视图 / 地址栏）取 _panel_surface /
-        _panel_stroke：壁纸模式下透明 —— 悬浮时窗口自绘壁纸（见 _RoundedFloatWindow
-        .paintEvent）、融入 dock 时透出主窗口壁纸；非壁纸模式回落原始色板实色。
+        内容面（内容视图 / 图片区 / Office 视图）取 _panel_surface / _panel_stroke：
+        壁纸模式下透明 —— 融入 dock 时透出主窗口壁纸；非壁纸模式回落原始色板实色。
         按钮 / 提示芯片 / 媒体控制条保持实色（交互控件与「提示面」，可读性优先）。"""
         surf = _panel_surface("PANEL")
         _bd = _panel_stroke("BORDER")
         _hover = _base_color("HOVER")
-        self.web_url.setStyleSheet(
-            f"QLineEdit {{ background: {surf}; color: {TEXT};"
-            f" border: 1px solid {_bd}; border-radius: 6px;"
-            f" padding: 4px 8px; font-size: 12px; }}"
-            f"QLineEdit:focus {{ border: 1px solid {_bd}; }}"
-            f"QLineEdit::placeholder {{ color: {TEXT_DIM}; }}")
-        if self._web_tabs is not None:
-            self._web_tabs.setStyleSheet(
-                f"QTabWidget {{ background: {surf}; }}"
-                f"QTabWidget::pane {{ background: {surf}; border: 1px solid {_bd}; }}"
-                f"QTabBar {{ background: {surf}; }}"
-                f"QTabBar::tab {{ background: transparent; color: {TEXT_DIM};"
-                f" font-size: 11px; padding: 3px 8px; margin: 1px;"
-                f" border: 1px solid {_bd}; border-radius: 4px; }}"
-                f"QTabBar::tab:selected {{ background: {surf}; color: {TEXT}; }}"
-                f"QTabBar::tab:hover {{ background: {_hover}; }}")
         self.html_view.setStyleSheet(
             f"QTextBrowser {{ background: {surf}; color: {TEXT};"
             f"border: 1px solid {_bd}; border-radius: 6px; }}"
@@ -11577,13 +11986,11 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
 
     def apply_surface_theme(self):
-        """按当前表面色就地刷新本窗口（主题/壁纸透明态变化时调用，**不重建窗口**）。
+        """按当前表面色就地刷新本面板（主题/壁纸透明态变化时由主面板快路径调用，**不重建**）。
 
-        根 QSS 与各内容面都是构造期用 `_panel_surface / _panel_stroke` 拼出来的
-        常量字符串：壁纸开关会改变这些取值（实色 ↔ transparent），改模块级状态
-        不会自动落到已有控件上 —— 因此主面板快路径必须显式回调本方法刷新。
-        模式下拉菜单（self.mode）构造期用了 _HOME_COMBO，壁纸翻转后派生常量变了，
-        此处必须重设，否则首次设置壁纸后下拉本体仍残留旧实色底/边框。
+        根 QSS 与各内容面都是构造期用 `_panel_surface / _panel_stroke` 拼出来的常量
+        字符串：壁纸开关会改变这些取值（实色 ↔ transparent），改模块级状态不会自动
+        落到已有控件上 —— 因此 `_retheme` 快路径必须显式回调本方法刷新。
         """
         try:
             self.setStyleSheet(f"QWidget#codeWin {{ background: {_panel_surface('BG')}; }}")
@@ -11599,324 +12006,6 @@ class CodePreviewWindow(_RoundedFloatWindow):
             pass
 
     # ---- 页面构建 ----
-    def _btn(self, text, slot, tip=""):
-        b = QToolButton()
-        b.setText(text)
-        if tip:
-            b.setToolTip(tip)
-        b.setFixedSize(24, 24)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.setStyleSheet(f"QToolButton {{ background: transparent; border: none;"
-                        f"color: {TEXT}; font-size: 13px; }}"
-                        f"QToolButton:hover {{ background: {HOVER}; }}")
-        b.clicked.connect(slot)
-        return b
-
-    def _build_web_page(self):
-        w = QWidget()
-        vl = QVBoxLayout(w)
-        vl.setContentsMargins(0, 0, 0, 0)
-        vl.setSpacing(0)
-        nav = QHBoxLayout()
-        nav.setSpacing(4)
-        nav.addWidget(self._btn("‹", self._web_back, _ui("后退")))
-        nav.addWidget(self._btn("›", self._web_forward, _ui("前进")))
-        nav.addWidget(self._btn("⟳", self._web_reload, _ui("刷新")))
-        nav.addWidget(self._btn("⌂", self.show_bing, _ui("Bing 首页")))
-        nav.addWidget(self._btn("＋", self._web_new_tab, _ui("新建标签页")))
-        nav.addStretch(1)
-        self.web_info = QLabel("")
-        self.web_info.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
-        nav.addWidget(self.web_info)
-        vl.addLayout(nav)
-        if agent_ui_ux.web_engine_available():
-            try:
-                # 多标签浏览器容器：每个标签都是「感知所有者」的 WebView（见
-                # _make_web_tab）。target=_blank / window.open 等新窗口统一走
-                # createWindow → 被所有者接管为新的标签页，绝不弹系统浏览器。
-                self._web_tabs = QTabWidget()
-                self._web_tabs.setTabsClosable(True)
-                self._web_tabs.setMovable(True)
-                self._web_tabs.setDocumentMode(True)
-                # 标签容器配色见 _apply_surface_qss
-                self._web_tabs.tabCloseRequested.connect(self._web_close_tab)
-                self._web_tabs.currentChanged.connect(self._on_web_tab_changed)
-                # 首个标签页
-                self._web_tabs.addTab(self._make_web_tab(), "Bing")
-                vl.addWidget(self._web_tabs, 1)
-            except Exception as e:
-                self._web_tabs = None
-                self._web_err = f"{type(e).__name__}: {e}"
-        if self._active_web() is None:
-            hint = QTextBrowser()
-            hint.setOpenExternalLinks(True)
-            # 区分「未安装」与「创建失败」：旧构建在打包环境下 find_spec 探测失败
-            # 会误报未安装；这里给出真实原因，避免误导排查方向
-            reason = self._web_err or _ui("未检测到 PyQt6-WebEngine（QtWebEngine）")
-            hint.setHtml(_preview_wrap_html(
-                _html("<p>Web 引擎不可用：{reason}</p>"
-                      "<p>安装 <b>PyQt6-WebEngine</b> 后即可在应用内直接浏览网页。</p>"
-                      "<p>Markdown / 图片 / Office / 代码预览功能不受影响。</p>",
-                      reason=reason),
-                ""))
-            vl.addWidget(hint, 1)
-        self.stack.addWidget(w)
-
-    def _make_web_tab(self):
-        """创建一个托管标签页：连接地址变化回调并标记所有者（供新窗口接管）"""
-        from PyQt6.QtWebEngineWidgets import QWebEngineView as _QWEV
-
-        class _WebTabView(_QWEV):
-            def createWindow(self, _type):
-                view = type(self)(self)
-                view.urlChanged.connect(
-                    lambda url: self._steal_popup(view, url))
-                return view
-
-            def _steal_popup(self, view, url):
-                s = url.toString()
-                if not s or s.startswith("about:"):
-                    view.deleteLater()
-                    return
-                if getattr(view, "_adopted", False):
-                    return
-                view._adopted = True
-                owner = getattr(self, "_owner", None)
-                if owner is not None:
-                    owner._adopt_web_tab(view, s)
-                else:
-                    view.setParent(None)
-
-        view = _WebTabView(self._web_tabs)
-        view._owner = self
-        view._owner_tabs = self._web_tabs   # 供内置浏览器桥列标签/切标签
-        view.urlChanged.connect(lambda u: self._on_web_url(u))
-        return view
-
-    def _active_web(self):
-        """当前活动标签的 Web 视图；WebEngine 不可用或无标签时返回 None"""
-        tw = self._web_tabs
-        if tw is None:
-            return None
-        i = tw.currentIndex()
-        if i < 0:
-            return None
-        return tw.widget(i)
-
-    def _tab_title(self, url: str) -> str:
-        """由 URL 派生简洁标签名"""
-        try:
-            from urllib.parse import urlparse
-            host = urlparse(url).hostname or ""
-            return host[:14] or "标签"
-        except Exception:
-            return "标签"
-
-    def _adopt_web_tab(self, view, url):
-        """把一个新窗口请求接管为浏览器的新标签页"""
-        tw = self._web_tabs
-        if tw is None:
-            view.deleteLater()
-            return
-        view._owner = self
-        view._owner_tabs = tw   # 供内置浏览器桥列标签/切标签
-        try:
-            view.urlChanged.connect(lambda u: self._on_web_url(u))
-        except Exception:
-            pass
-        idx = tw.addTab(view, self._tab_title(url))
-        tw.setCurrentIndex(idx)
-        self.path_lbl.setText(url)
-        self.web_url.setText(url)
-
-    def _web_new_tab(self):
-        """新建标签页并打开 Bing 首页"""
-        tw = self._web_tabs
-        if tw is None:
-            return
-        idx = tw.addTab(self._make_web_tab(), _ui("新标签"))
-        tw.setCurrentIndex(idx)
-        self.show_url("https://www.bing.com/")
-
-    def _web_close_tab(self, idx):
-        """关闭标签页；始终保留至少一个"""
-        tw = self._web_tabs
-        if tw is None:
-            return
-        if tw.count() <= 1:
-            return
-        v = tw.widget(idx)
-        tw.removeTab(idx)
-        if v is not None:
-            v.deleteLater()
-        self._on_web_tab_changed()
-
-    def _on_web_tab_changed(self, *_):
-        """切换标签页时，地址栏/状态同步到当前标签"""
-        v = self._active_web()
-        if v is not None:
-            self._on_web_url(v.url())
-        else:
-            self.web_url.clear()
-            self.web_info.clear()
-
-    # ---- 内置浏览器下载 ----
-    def _download_dir(self) -> str:
-        """下载保存目录：优先工作目录下 downloads；否则用户本地应用数据目录。"""
-        try:
-            from zhuzhu_Copilot.core import agent_tools
-            wd = agent_tools.get_workdir()
-            if wd and os.path.isdir(wd):
-                return os.path.join(wd, "downloads")
-        except Exception:
-            pass
-        return os.path.join(str(app_identity.data_root()), "downloads")
-
-    def _status(self, text: str):
-        """在 Web 状态栏提示（内部浏览器下载/完成/取消信息）"""
-        try:
-            s = str(text)
-            self.web_info.setText(s[:46] + ("…" if len(s) > 46 else ""))
-        except Exception:
-            pass
-
-    def _handle_download(self, item):
-        """内置浏览器文件下载：先弹「保存位置」确认框，确定后才开始下载；取消则中止。
-        避免自动落到工作目录/downloads 造成用户无感知落盘。"""
-        try:
-            item.pause()   # 先暂停，等用户确定保存位置后再正式接收
-            suggested = item.downloadFileName() or item.suggestedFileName() or ""
-            d = self._download_dir()
-            try:
-                os.makedirs(d, exist_ok=True)
-            except Exception:
-                d = os.path.expanduser("~")
-            default_path = os.path.join(d, suggested or "download.bin")
-            save_path, _ = QFileDialog.getSaveFileName(
-                self, _ui("保存下载文件"), default_path)
-            if not save_path:
-                item.cancel()
-                self._status("已取消下载")
-                return
-            target_dir, target_name = os.path.split(save_path)
-            if not target_name:
-                target_name = suggested or os.path.basename(default_path)
-                target_dir = os.path.dirname(save_path) or target_dir
-            item.setDownloadDirectory(target_dir or os.path.expanduser("~"))
-            item.setDownloadFileName(target_name)
-            item.resume()
-            name = target_name or "文件"
-            self._status(f"开始下载：{name} …")
-            try:
-                item.stateChanged.connect(
-                    lambda st, it=item: self._on_download_state(st, it))
-            except Exception:
-                pass
-        except Exception as e:
-            self._status(f"下载失败：{e}")
-            try:
-                item.cancel()
-            except Exception:
-                pass
-
-    def _on_download_state(self, state, item=None):
-        """下载状态变化：完成时弹窗（打开保存位置/运行），取消时提示。"""
-        from PyQt6.QtWebEngineCore import QWebEngineDownloadRequest
-        try:
-            if state == QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
-                path = ""
-                if item is not None:
-                    try:
-                        path = item.downloadFilePath() or ""
-                    except Exception:
-                        path = ""
-                self._status("下载完成")
-                if path:
-                    self._show_download_popup(path)
-            elif state == QWebEngineDownloadRequest.DownloadState.DownloadCancelled:
-                self._status("下载已取消")
-        except Exception:
-            pass
-
-    def _show_download_popup(self, path):
-        """下载完成后弹出小窗：点击「运行」打开文件 /「打开位置」打开保存目录。"""
-        from PyQt6.QtCore import QUrl
-        from PyQt6.QtGui import QDesktopServices
-        from PyQt6.QtWidgets import (
-            QDialog,
-            QHBoxLayout,
-            QLabel,
-            QPushButton,
-            QVBoxLayout,
-        )
-        try:
-            prev = getattr(self, "_dl_popup", None)
-            if prev is not None:
-                try:
-                    prev.close()
-                    prev.deleteLater()
-                except Exception:
-                    pass
-            self._dl_popup = None
-            # 表面色取原始色板（见 _base_color）：下载弹窗是独立弹层窗口，
-            # 壁纸模式下容器色被覆写为 transparent → 透明底渲染成纯黑。
-            _dl_bg = _base_color("PANEL")
-            _dl_bd = _base_color("BORDER")
-            _dl_hover = _base_color("HOVER")
-            dlg = QDialog(self)
-            dlg.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
-                               | Qt.WindowType.Tool)
-            dlg.setObjectName("dlPopup")
-            dlg.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            try:
-                dlg.setStyleSheet(f"QDialog#dlPopup {{ background: {_dl_bg};"
-                                  f"border: 1px solid {_dl_bd}; border-radius: 8px; }}")
-            except Exception:
-                pass
-            lay = QVBoxLayout(dlg)
-            lay.setContentsMargins(12, 10, 12, 12)
-            lay.setSpacing(8)
-            t = QLabel(_uif("下载完成：{a0}", a0=os.path.basename(path) or path))
-            t.setWordWrap(True)
-            t.setStyleSheet(f"color:{TEXT};font-size:12px;")
-            lay.addWidget(t)
-            row = QHBoxLayout()
-            row.setSpacing(6)
-
-            def _run():
-                try:
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-                except Exception:
-                    pass
-                dlg.close()
-
-            def _open_dir():
-                try:
-                    os.startfile(os.path.dirname(path) or path)
-                except Exception:
-                    pass
-                dlg.close()
-
-            for text, fn in (("运行", _run), ("打开位置", _open_dir)):
-                b = QPushButton(text)
-                b.setCursor(Qt.CursorShape.PointingHandCursor)
-                b.setStyleSheet(f"QPushButton {{ background: {_dl_bg}; color: {TEXT};"
-                                f"border: 1px solid {_dl_bd}; border-radius: 5px;"
-                                f"padding: 4px 12px; }}"
-                                f"QPushButton:hover {{ background: {_dl_hover}; }}")
-                b.clicked.connect(fn)
-                row.addWidget(b)
-            lay.addLayout(row)
-            dlg.adjustSize()
-            g = self.frameGeometry()
-            dlg.move(g.right() - dlg.width() - 8, g.y() + 8)
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
-            self._dl_popup = dlg
-            QTimer.singleShot(8000, dlg.close)   # 8s 后自动收起
-        except Exception:
-            pass
     def _build_office_page(self):
         """Office 保真预览页骨架：顶部放映控制条 + 内容占位。
 
@@ -11950,7 +12039,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             b.setFixedHeight(24)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setToolTip(tip)
-            # 取原始色板（见 _base_color）：本窗是独立悬浮窗，transparent 会渲染成纯黑
+            # 取原始色板（见 _base_color）：本面板是子控件，transparent 会渲染异常
             b.setStyleSheet(
                 f"QPushButton {{ background: {_base_color('PANEL')}; color: {TEXT};"
                 f"border: 1px solid {_base_color('BORDER')}; border-radius: 5px;"
@@ -12091,12 +12180,11 @@ class CodePreviewWindow(_RoundedFloatWindow):
         except Exception:
             pass
 
-
     def _build_html_page(self):
         tb = QTextBrowser()
         tb.setOpenExternalLinks(True)
         self.html_view = tb   # 底色见 _apply_surface_qss
-        self.stack.addWidget(tb)
+        return self.stack.addWidget(tb)
 
     def _build_text_page(self):
         self.text = QPlainTextEdit()
@@ -12104,7 +12192,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.text.setFont(QFont("Consolas", 10))
         self._hl = None       # 底色见 _apply_surface_qss
-        self.stack.addWidget(self.text)
+        return self.stack.addWidget(self.text)
 
     def _build_img_page(self):
         sc = QScrollArea()
@@ -12113,13 +12201,13 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.img_label = _ZoomableImageView()
         sc.setWidget(self.img_label)
         self.img_scroll = sc   # 底色见 _apply_surface_qss
-        self.stack.addWidget(sc)
+        return self.stack.addWidget(sc)
 
     def _build_empty_page(self):
         lb = QLabel(_ui("请打开或由 AI 自动分发文件到此预览"))
         lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lb.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-        self.stack.addWidget(lb)
+        return self.stack.addWidget(lb)
 
     # ---- 媒体（视频/音乐）----
     def _ensure_media_page(self) -> bool:
@@ -12128,10 +12216,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         if getattr(self, "_media_built", False):
             return True
         try:
-            self._build_media_page()
-            # 记录媒体页在堆叠中的实际索引（empty 页已在媒体页前插入，
-            # 硬编码索引会错位 → 双击视频停在空白页看似无法播放）
-            self._media_stack_index = self.stack.count() - 1
+            self._build_media_page()   # 内部记录 _media_stack_index
             self._media_built = True
             return True
         except Exception:
@@ -12226,7 +12311,10 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.media_player.playbackStateChanged.connect(self._media_state_changed)
         self.media_player.mediaStatusChanged.connect(self._media_status_changed)
         self.video_view.installEventFilter(self)
-        self.stack.addWidget(w)
+        # 记录页面与布局：全屏时画面/控制条要 reparent 出去，退出时按原位搬回
+        self._media_page = w
+        self._media_page_lay = v
+        self._media_stack_index = self.stack.addWidget(w)
 
     # ---- 媒体公开方法 ----
     def show_media(self, path: str, ext: str = ""):
@@ -12261,7 +12349,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             self.media_holder.setText("")
         else:
             self._media_stage.setCurrentIndex(1)   # 音乐占位
-            self.media_holder.setText(_uif('♪  {a0}\n\n播放中…（支持进度/音量调节）', a0=name))
+            self.media_holder.setText(_uim('♪  {a0}\n\n播放中…（支持进度/音量调节）', a0=name))
         from PyQt6.QtCore import QUrl
         self.media_player.stop()
         self._media_dur = 0          # 切换文件：清空旧时长缓存，等 durationChanged 更新
@@ -12325,7 +12413,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
     def shutdown_media(self):
         """关闭窗口/重建面板前优雅释放播放器，避免 ffmpeg 后台线程析构时序告警。
         （QObject::disconnect: wildcard call ... QFFmpeg::* 多由播放中销毁引起）"""
-        # 视频全屏中先退出，避免窗口重建时残留全屏状态/控制条定时器
+        # 视频全屏中先退出，避免面板隐藏/重建时残留全屏窗口与控制条定时器
         if getattr(self, "_media_full", False):
             try:
                 self._media_exit_fullscreen()
@@ -12384,8 +12472,11 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 pass
 
     def _media_fullscreen(self, *_):
-        """进入 / 退出视频全屏（预览面板自身全屏，视频融入面板而非独立窗口）。
-        全屏时底部控制条移动鼠标唤出、无操作自动隐藏。"""
+        """进入 / 退出视频全屏。
+
+        预览面板已是主窗口子控件，**无法让自身进入全屏** —— 改为把视频画面与控制条
+        reparent 到独立无边框顶层窗口（mediaFullWin）铺满所在屏幕。控制条移动鼠标
+        唤出、无操作 3 秒自动隐藏；双击 / Esc 退出。"""
         if getattr(self, "_media_full", False):
             self._media_exit_fullscreen()
             return
@@ -12394,81 +12485,50 @@ class CodePreviewWindow(_RoundedFloatWindow):
             return
         self._enter_media_fullscreen()
 
-    def _media_host(self):
-        """宿主 AgentPanel（含 todos/git/worktree 等子面板）"""
-        h = self.parentWidget()
-        while h is not None and not hasattr(h, "code_win"):
-            h = h.parentWidget()
-        return h
-
     def _enter_media_fullscreen(self):
-        """预览面板全屏：隐藏非视频装饰与宿主/其它子面板，视频铺满整个屏幕"""
+        """视频全屏：画面 + 控制条移入独立无边框顶层窗口并铺满所在屏幕。"""
         if self._media_full:
             return
+        if getattr(self, "_media_full_win", None) is not None:
+            return
         self._media_full = True
-        # 记录并隐藏装饰（标题/路径/把手/模式行/Web 地址栏），让视频最大化
-        chrome = (self.title, self.path_lbl, getattr(self, "_drag_handle", None),
-                  getattr(self, "mode_row", None), getattr(self, "web_bar", None))
+        win = QWidget(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        win.setObjectName("mediaFullWin")
+        win.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        win.setStyleSheet("QWidget#mediaFullWin { background: #000; border: none; }")
+        fl = QVBoxLayout(win)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(0)
+        lay = getattr(self, "_media_page_lay", None)
+        # 记录退出时的还原信息（用布局索引而非固定位置）
         self._media_saved = {
-            # 用 isHidden()（显式隐藏状态）而非 isVisible()（依赖父链，窗口未显示时误判）
-            "chrome": [(w, not w.isHidden()) for w in chrome if w is not None],
-            "min": (self.minimumWidth(), self.minimumHeight()),
-            "max": (self.maximumWidth(), self.maximumHeight()),
+            "lay": lay,
+            "stage_idx": (lay.indexOf(self._media_stage)
+                          if lay is not None else 0),
         }
-        for w, _ in self._media_saved["chrome"]:
+        # 从媒体页布局取出画面与控制条：removeWidget 不销毁控件
+        if lay is not None:
             try:
-                w.hide()
+                lay.removeWidget(self._media_stage)
+                lay.removeWidget(self.media_ctrl_bar)
             except Exception:
                 pass
-        # 记录并隐藏宿主主面板与其它子面板（todos/git/worktree）：这些是独立
-        # 顶层窗口，会悬浮在全屏视频之上 → 隐藏后才是真正的全屏只显示视频
-        host = self._media_host()
-        if host is not None:
-            self._media_saved["host"] = host
-            vis = []
-            for w in (host, getattr(host, "todos_win", None),
-                      getattr(host, "git_win", None),
-                      getattr(host, "wt_win", None)):
-                if w is not None and w is not self and not w.isHidden():
-                    vis.append(w)
-            self._media_saved["host_vis"] = vis
-            for w in vis:
-                try:
-                    w.hide()
-                except Exception:
-                    pass
-        # 记录并清空根布局边距，让视频铺满整个屏幕
-        _lay = self.layout()
-        if _lay is not None:
-            self._media_saved["margins"] = _lay.contentsMargins()
-            try:
-                _lay.setContentsMargins(0, 0, 0, 0)
-            except Exception:
-                pass
-        # 解除固定尺寸（无边框 Tool 窗口固定 441 宽会阻止全屏）
-        self.setMinimumSize(0, 0)
-        self.setMaximumSize(16777215, 16777215)
-        # 真正全屏：setWindowState 对无边框 Tool 窗口比 showFullScreen 更可靠
-        self.setWindowState(self.windowState() | Qt.WindowState.WindowFullScreen)
-        if not self.isVisible():
-            self.show()
-        # 显式清除圆角蒙版 + 关闭 DWM 圆角：全屏必须完整覆盖屏幕。
-        # 依赖 resizeEvent 里的 isFullScreen() 判断存在时序滞后，
-        # 残留蒙版/DWM 圆角（Win11）都会裁剪边缘导致覆盖不全
-        try:
-            import ctypes
-            hwnd = int(self.winId())
-            if hwnd != 0:
-                ctypes.windll.user32.SetWindowRgn(hwnd, 0, True)
-                try:
-                    corner = ctypes.c_int(1)   # WCP_DONOTROUND
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                        hwnd, 33, ctypes.byref(corner), ctypes.sizeof(corner))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # 圆角蒙版在全屏时由 apply_rounded_window 自动清除（铺满屏幕无需圆角）
+        fl.addWidget(self._media_stage, 1)
+        fl.addWidget(self.media_ctrl_bar)
+        self._media_stage.show()
+        self.media_ctrl_bar.show()
+        self._media_full_win = win
+        # 铺满所在屏幕（frameless Window 上 showFullScreen 比 setWindowState 更直接）
+        scr = self.screen()
+        if scr is None:
+            from PyQt6.QtWidgets import QApplication as _FsApp
+            scr = _FsApp.primaryScreen()
+        if scr is not None:
+            win.setGeometry(scr.geometry())
+        win.showFullScreen()
+        win.raise_()
+        win.activateWindow()
+        win.installEventFilter(self)   # Esc 退出
         self.setMouseTracking(True)
         # QApplication 级监听鼠标移动：Qt 的 MouseMove 事件发往光标下最深层子控件
         # （父窗口收不到子事件；QVideoWidget 原生渲染还会吞掉 video_view 事件），
@@ -12493,9 +12553,11 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 bar.setVisible(show)
             except Exception:
                 pass
+        win = getattr(self, "_media_full_win", None)
+        target = win if win is not None else self
         try:
-            self.setCursor(Qt.CursorShape.ArrowCursor if show
-                           else Qt.CursorShape.BlankCursor)
+            target.setCursor(Qt.CursorShape.ArrowCursor if show
+                             else Qt.CursorShape.BlankCursor)
         except Exception:
             pass
 
@@ -12504,7 +12566,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         # （MouseMove 事件发往光标下最深层子控件，只有 app 级过滤能稳定捕获）。
         # 性能：鼠标连续移动会高频触发本过滤（每帧数十次），仅当控制条当前隐藏或
         # 隐藏计时已到期时才真正刷新，避免重复 setVisible/start 无谓开销。
-        if self._media_full and ev.type() == QEvent.Type.MouseMove:
+        if getattr(self, "_media_full", False) and ev.type() == QEvent.Type.MouseMove:
             bar = getattr(self, "media_ctrl_bar", None)
             shown = bar is not None and bar.isVisible()
             timer_active = (getattr(self, "_media_ctrl_timer", None) is not None
@@ -12535,9 +12597,15 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 if self._media_full:
                     self._media_exit_fullscreen()
                 return True
+        win = getattr(self, "_media_full_win", None)
+        if win is not None and obj is win:
+            if ev.type() == QEvent.Type.KeyPress and ev.key() == Qt.Key.Key_Escape:
+                self._media_exit_fullscreen()
+                return True
         return super().eventFilter(obj, ev)
 
     def _media_exit_fullscreen(self):
+        """退出视频全屏：把画面与控制条搬回媒体页原位，销毁全屏承载窗口。"""
         if not self._media_full:
             return
         self._media_full = False
@@ -12547,97 +12615,52 @@ class CodePreviewWindow(_RoundedFloatWindow):
             except Exception:
                 pass
             self._media_ctrl_timer = None
-        # 恢复宿主主面板与其它子面板（全屏时被隐藏）
+        try:
+            from PyQt6.QtWidgets import QApplication as _NavApp
+            _NavApp.instance().removeEventFilter(self)
+        except Exception:
+            pass
+        # 搬回媒体页原位（先摘再加，保证顺序与全屏前一致）
         saved = self._media_saved or {}
-        for w in saved.get("host_vis", []):
+        lay = saved.get("lay")
+        if lay is not None:
+            for wdg in (self.media_ctrl_bar, self._media_stage):
+                try:
+                    lay.removeWidget(wdg)
+                except Exception:
+                    pass
             try:
-                w.show()
+                lay.insertWidget(max(0, int(saved.get("stage_idx") or 0)),
+                                 self._media_stage, 1)
+            except Exception:
+                lay.addWidget(self._media_stage, 1)
+            lay.addWidget(self.media_ctrl_bar)
+            self._media_stage.show()
+            self.media_ctrl_bar.show()
+        win = getattr(self, "_media_full_win", None)
+        if win is not None:
+            try:
+                win.removeEventFilter(self)
             except Exception:
                 pass
-        try:
-            self.showNormal()
-        except Exception:
-            pass
-        # 兜底清除全屏窗口状态（个别平台 showNormal 可能未完全复位）
-        try:
-            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowFullScreen)
-        except Exception:
-            pass
-        # 恢复装饰可见性
-        saved = self._media_saved or {}
-        for w, vis in saved.get("chrome", []):
             try:
-                w.setVisible(vis)
+                win.close()
             except Exception:
                 pass
-        # 恢复根布局边距
-        _lay = self.layout()
-        if _lay is not None and saved.get("margins") is not None:
             try:
-                _lay.setContentsMargins(saved["margins"])
+                win.deleteLater()
             except Exception:
                 pass
-        # 恢复固定尺寸（预览面板固定宽度）
-        mn = saved.get("min") or (0, 0)
-        mx = saved.get("max") or (16777215, 16777215)
-        try:
-            self.setMinimumSize(*mn)
-            self.setMaximumSize(*mx)
-        except Exception:
-            pass
+        self._media_full_win = None
         self._media_saved = None
-        # 退出全屏后恢复底部播放菜单显示（全屏 3 秒沉浸时被隐藏，必须重新加载）
         self._show_media_ctrl(True)
         try:
             self.unsetCursor()
         except Exception:
             pass
         self.setMouseTracking(False)
-        try:
-            from PyQt6.QtWidgets import QApplication as _NavApp
-            _NavApp.instance().removeEventFilter(self)
-        except Exception:
-            pass
-        # 恢复圆角蒙版 + 请求宿主重新停靠
-        self._apply_window_round()
-        from PyQt6.QtCore import QTimer as _SyncTimer
-        _SyncTimer.singleShot(120, self._host_sync)
-
-    def _host_sync(self):
-        """退出全屏后请求宿主重新停靠预览面板"""
-        try:
-            host = self.parentWidget()
-            while host is not None and not hasattr(host, "_sync_code_win"):
-                host = host.parentWidget()
-            if host is not None and hasattr(host, "_sync_code_win"):
-                host._sync_code_win()
-        except Exception:
-            pass
 
     # ---- 公开方法 ----
-    def show_bing(self):
-        """默认展示 Bing 搜索引擎"""
-        self.title.setText(_ui("预览 · Bing 搜索"))
-        self.path_lbl.setText(_ui("在地址栏输入关键词或网址，回车即用 Bing 搜索"))
-        self._switch_mode("web")
-        self.show_url("https://www.bing.com/")
-
-    def show_url(self, url: str):
-        from PyQt6.QtCore import QUrl
-        self.path_lbl.setText(url)
-        self.web_url.setText(url)
-        view = self._active_web()
-        if view is not None and url:
-            try:
-                view.setUrl(QUrl(url))
-                return
-            except Exception:
-                pass
-        # 无 WebEngine：仅提示，不再转交系统浏览器打开（访问页面一律留在应用内）
-        self.web_info.setText(
-            _uif("Web 引擎不可用：{err}", err=self._web_err) if self._web_err
-            else _ui("Web 引擎不可用"))
-
     def show_markdown(self, md_text: str):
         """Markdown 文本 → 主题 HTML 预览"""
         self.title.setText(_ui("预览 · Markdown"))
@@ -12787,7 +12810,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.html_view.setHtml(_preview_wrap_html(hint + inner, path))
 
     def show_file(self, path: str):
-        """打开并预览任意文件：按扩展名自动路由到 Web/Markdown/图片/Office/文本"""
+        """打开并预览任意文件：按扩展名自动路由到 Markdown/图片/Office/媒体/文本"""
         # AI 变更 diff 展示期间，同文件被引擎自动预览（preview 事件）重刷时
         # 不得覆盖红绿差异视图（3s 后由 _restore_text_view 自动恢复正常）
         if self._diff_protected(str(path)):
@@ -12808,19 +12831,16 @@ class CodePreviewWindow(_RoundedFloatWindow):
         if ext in _MEDIA_EXTS and key in ("auto", "media"):
             self.show_media(path, ext)
             return
-        # 本地 HTML：双击直接用内置 WebView（Web 引擎）渲染，保留脚本与样式
-        if ext in ("html", "htm") and key in ("auto", "web"):
-            if self._active_web() is not None:
-                self.title.setText(_ui("预览 · 本地 HTML 网页"))
-                self._switch_mode("web")
-                try:
-                    from pathlib import Path as _Path
-                    self.show_url(_Path(os.path.abspath(path)).as_uri())
-                except OSError as e:
-                    self.show_text(path, ext)
-                return
-            # 无 Web 引擎：退回纯文本展示源码
-            self.show_text(path, ext)
+        # 本地 HTML：由 QTextBrowser 直接渲染，保留链接可点（内置 WebView 已移除）
+        if ext in ("html", "htm") and key in ("auto", "md"):
+            self.title.setText(_ui("预览 · 本地 HTML"))
+            self._switch_mode("md")
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    self.html_view.setHtml(f.read())
+            except OSError as e:
+                self.html_view.setHtml(_preview_wrap_html(
+                    _html("<p>读取失败: {e}</p>", e=e), path))
             return
         if ext == "md" and key in ("auto", "md"):
             try:
@@ -12862,8 +12882,10 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self.text.verticalScrollBar().setValue(0)
 
     def clear(self):
-        """清空为默认 Bing"""
-        self.show_bing()
+        """清空为默认空态（不再默认打开网页）"""
+        self.title.setText(_ui("预览"))
+        self.path_lbl.setText(_ui("打开文件或由 AI 自动分发文件到此预览"))
+        self._switch_mode("empty")
 
     # ---- 内部 ----
     def _switch_mode(self, key: str):
@@ -12876,70 +12898,31 @@ class CodePreviewWindow(_RoundedFloatWindow):
         self._set_page(self.mode.currentData())
 
     def _set_page(self, key: str):
-        page = key
+        """把堆叠页切到 key 对应的页面（页索引在 __init__ 构建时记录）。
+
+        xlsx/docx/pptx 都落在 Office 保真页（该页内部再按文件类型渲染），
+        媒体页为惰性构建：未播放过媒体时先 _ensure_media_page()。
+        """
         if key in ("xlsx", "docx", "pptx"):
-            page = "md"
-        mapping = {"auto": "md", "web": "web", "md": "md", "img": "img",
-                   "text": "text", "media": "media", "office": "office"}
-        target = mapping.get(page)
-        if target == "office":
-            # Office 保真预览页（WebEngine 懒创建）；页未建时回退 HTML 文本页
+            key = "md"
+        if key == "office":
             idx = getattr(self, "_office_stack_index", None)
             if idx is not None:
                 self.stack.setCurrentIndex(idx)
-                self.web_bar.setVisible(False)
                 return
-            target = "md"
-        if target == "web":
-            self.stack.setCurrentIndex(0)
-            self.web_bar.setVisible(True)
-        elif target == "img":
-            self.stack.setCurrentIndex(3)
-            self.web_bar.setVisible(False)
-        elif target == "media":
-            if self._ensure_media_page():
-                self.stack.setCurrentIndex(getattr(self, "_media_stack_index", 4))
-            else:
+            key = "md"
+        if key == "img":
+            self.stack.setCurrentIndex(self._img_index)
+        elif key == "media":
+            if not self._ensure_media_page():
                 return
-            self.web_bar.setVisible(False)
-        elif target == "text":
-            self.stack.setCurrentIndex(2)
-            self.web_bar.setVisible(False)
+            self.stack.setCurrentIndex(getattr(self, "_media_stack_index", 0))
+        elif key == "text":
+            self.stack.setCurrentIndex(self._text_index)
+        elif key == "empty":
+            self.stack.setCurrentIndex(self._empty_index)
         else:
-            self.stack.setCurrentIndex(1)
-            self.web_bar.setVisible(False)
-        # Web 模式且从未加载时默认 Bing
-        view = self._active_web()
-        if target == "web" and view is not None and not view.url().toString():
-            self.show_url(self._current_url or "https://www.bing.com/")
-
-    def _go_url(self):
-        text = (self.web_url.text() or "").strip()
-        if not text:
-            return
-        url = text if re.match(r"^https?://", text, re.I) else f"https://www.bing.com/search?q={_urlencode(text)}"
-        self.show_url(url)
-
-    def _on_web_url(self, url):
-        s = url.toString()
-        self._current_url = s
-        self.web_url.setText(s)
-        self.web_info.setText(s[:46] + ("…" if len(s) > 46 else ""))
-
-    def _web_back(self):
-        view = self._active_web()
-        if view is not None and view.history().canGoBack():
-            view.back()
-
-    def _web_forward(self):
-        view = self._active_web()
-        if view is not None and view.history().canGoForward():
-            view.forward()
-
-    def _web_reload(self):
-        view = self._active_web()
-        if view is not None:
-            view.reload()
+            self.stack.setCurrentIndex(self._html_index)
 
     def _browse_file(self):
         from PyQt6.QtWidgets import QFileDialog as _FD
@@ -13080,7 +13063,7 @@ class CodePreviewWindow(_RoundedFloatWindow):
             _retry(80)
 
     def showEvent(self, e):
-        """面板显示（尤其 _on_file_diff 先 show_diff 后 show 的场景）且 diff 仍
+        """面板显示（尤其 _on_file_diff 先 show_diff 再 show 的场景）且 diff 仍
         在展示期内时，重新定位滚动到变更行，避免隐藏时首轮滚动全部落空。"""
         super().showEvent(e)
         target = getattr(self, "_diff_scroll_to", None)
@@ -13114,12 +13097,6 @@ class CodePreviewWindow(_RoundedFloatWindow):
                 self._hl = None
         except Exception:
             pass
-
-
-def _urlencode(s: str) -> str:
-    """URL 百分号编码（Bing 搜索查询词）"""
-    from urllib.parse import quote
-    return quote(s, safe="")
 
 
 class TodosWindow(_RoundedFloatWindow):
@@ -14654,6 +14631,7 @@ class AgentPanel(QDialog):
     file_diff_signal = pyqtSignal(str, str, str)  # AI 写/改文件差异(工作线程→主线程): path, old, new
     git_probe_signal = pyqtSignal(str, float)     # git 仓库根/时间戳后台探测完成（→ 主线程更新已知值）
     auth_avatar_bytes = pyqtSignal(bytes)          # 头像下载完成（后台线程 → 主线程设置 QPixmap）
+    net_changed = pyqtSignal(str)                  # 网络状态：后台探测线程 → 主线程更新顶栏图标
 
     # ---------- 微信 ClawBot（主面板：消息接收与回复推送） ----------
     def _wechat_start_polling(self):
@@ -15164,7 +15142,9 @@ class AgentPanel(QDialog):
         self._clock_timer.timeout.connect(self._update_clock)
         self._clock_timer.setInterval(1000)
         self._clock_timer.start()
-        # 顶栏网络状态：每5秒检测一次连通性
+        # 顶栏网络状态：5s 轮询（非阻塞）。真正的探测在后台线程完成，UI 只接收
+        # 结果信号；连续失败自动退避到 30s，避免受限网络里反复探测。
+        self._init_network_status()
         self._net_timer = QTimer(self)
         self._net_timer.timeout.connect(self._check_network)
         self._net_timer.setInterval(5000)
@@ -15199,32 +15179,112 @@ class AgentPanel(QDialog):
         else:
             lbl.setText(now.strftime("%Y年-%m月-%d日-%H:%M:%S"))
 
-    def _check_network(self):
-        """每5秒检测网络连通性，更新顶栏网络状态图标。
+    def _init_network_status(self):
+        """网络状态初始化：状态缓存 + 系统可达性监听（不发起任何网络 I/O）。
 
-        用 socket 连接公共 DNS（8.8.8.8:53 / 223.5.5.5:53）检测，超时 2 秒；
-        比 HTTP 请求轻量，不消耗流量。两个 DNS 任一可达即视为在线。
-        在线：绿色 WiFi 图标；离线：红色 WiFi-off 图标（带斜线）。
+        旧实现每 5s 在 UI 线程里同步 socket 连公共 DNS，网关把 53 端口丢包时
+        一次检测要卡满 4s（2 个目标 × 2s 超时）——界面因此卡到拖动窗口都掉帧。
+        现在探测全部在后台线程，UI 只接收结果信号。
         """
-        import socket
+        self._net_state = net_status.STATE_UNKNOWN
+        self._net_busy = False
+        self._net_busy_since = 0.0
+        self._net_next_due = 0.0
+        self.net_changed.connect(self._apply_net_state)
+        # 系统级可达性（Windows 网络列表管理器）：事件驱动、零 I/O，
+        # 比「连某个 DNS」更能反映「这台机器到底有没有网」。
+        self._nlm = None
+        try:
+            from PyQt6.QtNetwork import QNetworkInformation
+            if QNetworkInformation.loadDefaultBackend():
+                info = QNetworkInformation.instance()
+                if info is not None:
+                    info.reachabilityChanged.connect(self._on_nlm_changed)
+                    self._nlm = info
+        except Exception:
+            self._nlm = None   # 无 QtNetwork 后端：退化为纯端点探测判定
+        self._apply_net_state(net_status.STATE_UNKNOWN)
+        self._net_next_due = 0.0   # 首帧立即探测一次
+
+    def _nlm_state(self):
+        """系统可达性归一化：'online' / 'offline' / None（未知）。"""
+        info = getattr(self, "_nlm", None)
+        if info is None:
+            return None
+        try:
+            from PyQt6.QtNetwork import QNetworkInformation
+            r = info.reachability()
+            if r == QNetworkInformation.Reachability.Online:
+                return "online"
+            if r == QNetworkInformation.Reachability.Offline:
+                return "offline"
+        except Exception:
+            pass
+        return None
+
+    def _on_nlm_changed(self, *_):
+        """系统网络状态变化（插拔网线/连上 WiFi）：立即复核，不等下一次轮询。"""
+        self._check_network(force=True)
+
+    def _check_network(self, force: bool = False):
+        """网络状态轮询入口：只决定「要不要起一个后台探测线程」，绝不做网络 I/O。
+
+        在 UI 线程里连 socket 正是旧实现卡顿的根因：网关丢包时 connect 会一直
+        等到超时，Qt 事件循环被整段占住（每 5s 卡 4s）。这里改为后台线程探测 +
+        信号回主线程，界面永远不会等网络。
+        """
         lbl = getattr(self, "net_label", None)
         if lbl is None:
             return
-        online = False
-        for host, port in (("8.8.8.8", 53), ("223.5.5.5", 53)):
-            try:
-                sock = socket.create_connection((host, port), timeout=2)
-                sock.close()
-                online = True
-                break
-            except Exception:
-                continue
-        if online:
-            lbl.setPixmap(_svg_icon(_WIFI_SVG, 14, "#22C55E").pixmap(14, 14))
-            lbl.setToolTip(_ui("在线"))
+        now = time.monotonic()
+        # 上一轮还没回来就不叠线程（超过 20s 视为异常卡死，允许重开一轮）
+        if self._net_busy and (now - self._net_busy_since) < 20.0:
+            return
+        if not force and now < self._net_next_due:
+            return
+        self._net_busy = True
+        self._net_busy_since = now
+        nlm = self._nlm_state()          # 只在主线程读 Qt 对象，再带进后台线程
+        threading.Thread(target=self._net_probe_worker, args=(nlm,),
+                         daemon=True).start()
+
+    def _net_probe_worker(self, nlm):
+        """后台探测：短超时、只打应用真正依赖的端点；探测失败不等于离线。"""
+        try:
+            probed = net_status.probe()
+            net_status.note_probe(bool(probed))
+            state = net_status.decide(probed, nlm)
+        except Exception:
+            state = net_status.STATE_LIMITED
+        finally:
+            self._net_busy = False
+        try:
+            self.net_changed.emit(state)
+        except RuntimeError:
+            pass   # 面板已销毁
+
+    def _apply_net_state(self, state: str):
+        """主线程更新顶栏图标与提示（后台线程只发信号，绝不直接碰控件）。"""
+        lbl = getattr(self, "net_label", None)
+        if lbl is None:
+            return
+        self._net_state = state
+        if state == net_status.STATE_ONLINE:
+            svg, color, tip = _WIFI_SVG, "#22C55E", _ui("在线")
+        elif state == net_status.STATE_LIMITED:
+            svg, color = _WIFI_SVG, "#F59E0B"
+            tip = _ui("网络受限：系统网络正常，但探测节点不可达（可能被网关/防火墙拦截）")
+        elif state == net_status.STATE_OFFLINE:
+            svg, color, tip = _WIFI_OFF_SVG, "#EF4444", _ui("离线：未检测到可用网络连接")
         else:
-            lbl.setPixmap(_svg_icon(_WIFI_OFF_SVG, 14, "#EF4444").pixmap(14, 14))
-            lbl.setToolTip(_ui("离线"))
+            svg, color, tip = _WIFI_SVG, TEXT_DIM, _ui("正在检测网络…")
+        try:
+            lbl.setPixmap(_svg_icon(svg, 14, color).pixmap(14, 14))
+            lbl.setToolTip(tip)
+        except Exception:
+            pass
+        # 失败退避：受限网络里不必每 5s 打一次洞；成功立即回到 5s
+        self._net_next_due = time.monotonic() + net_status.interval()
 
     # ---------- 系统状态监控（CPU / 内存 / 网速） ----------
     def _init_system_stats(self):
@@ -15538,6 +15598,17 @@ class AgentPanel(QDialog):
         stats_layout.addWidget(self.net_label)
         top.addLayout(stats_layout)
 
+        # 预览面板展开/收起：固定融入主面板右侧栏，默认隐藏；点击即切换
+        self.preview_btn = QPushButton(_line_icon("preview", 18, TEXT_DIM), "")
+        self.preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preview_btn.setAutoDefault(False)
+        self.preview_btn.setFixedSize(34, 34)
+        self.preview_btn.setIconSize(QSize(18, 18))
+        self.preview_btn.setToolTip(_ui("展开预览面板（代码 / 文件 / 媒体预览）"))
+        self.preview_btn.setStyleSheet(_BTN_GHOST)
+        self.preview_btn.clicked.connect(lambda: self._toggle_preview())
+        top.addWidget(self.preview_btn)
+
         # zhuzhu Copilot 入口：点击在其下方丝滑弹出紧凑浮层（应用迁移/卸载 + 防护 +
         # 通用设置 + 工具），浮层由本面板懒创建并托管，见 _ensure_copilot_panel
         self.copilot_btn = QPushButton(_line_icon("apps", 16, TEXT_DIM), "")
@@ -15588,7 +15659,6 @@ class AgentPanel(QDialog):
         self.wt_win = WorktreeWindow(self)
         self.wt_win.file_open_requested.connect(self._open_code_preview)
         self.code_win = CodePreviewWindow(self)
-        self._setup_builtin_browser()
         right = QVBoxLayout()
         right.setSpacing(10)
 
@@ -15808,6 +15878,8 @@ class AgentPanel(QDialog):
         self._pre_dock_sizes = {}
         self._pre_dock_geo = None
         self._apply_panel_mode()
+        # 顶栏「预览面板」按钮初始外观跟随当前启用状态（默认隐藏 → 幽灵态）
+        self._sync_preview_btn()
 
     def _connect_signals(self):
         self.confirm_signal.connect(self._on_confirm)
@@ -16398,7 +16470,7 @@ class AgentPanel(QDialog):
             if (cw is not None and callable(getattr(cw, "is_media_active", None))
                     and cw.is_media_active()):
                 return
-            self._open_code_preview(payload)
+            self._open_code_preview(payload, auto=True)
             return
         if kind == "tool_input":
             # 引擎执行 run_command 前的 confirm 钩子 → 记录命令全文；
@@ -17572,9 +17644,35 @@ class AgentPanel(QDialog):
         return self._wt_enabled() or self._git_enabled() or self._todos_enabled()
 
     def _code_enabled(self) -> bool:
-        """代码预览面板是否启用（设置-通用页开关，默认启用）"""
+        """预览面板是否启用（设置-通用页开关 + 顶栏按钮，默认隐藏）"""
         return str(app_identity.qsettings()
-                   .value("agent_show_code", "1")).strip().lower() in ("1", "true", "yes")
+                   .value("agent_show_preview", "0")).strip().lower() in ("1", "true", "yes")
+
+    def _toggle_preview(self, checked: bool = None):
+        """顶栏「预览面板」按钮 / 设置页开关：展开或收起右侧预览面板。
+        checked=None 表示切换（取反）；写入 QSettings 后立即同步布局与按钮外观。"""
+        want = (not self._code_enabled()) if checked is None else bool(checked)
+        app_identity.qsettings().setValue("agent_show_preview", "1" if want else "0")
+        self._sync_code_win()
+        self._apply_reserve()
+        self._sync_preview_btn()
+
+    def _sync_preview_btn(self):
+        """顶栏预览按钮外观随面板显示状态切换：展开=主色描边高亮，收起=幽灵按钮"""
+        btn = getattr(self, "preview_btn", None)
+        if btn is None:
+            return
+        on = self._code_enabled()
+        try:
+            btn.setIcon(_line_icon("preview", 18, ACCENT if on else TEXT_DIM))
+            btn.setStyleSheet(
+                f"QPushButton {{ background: transparent; color: {ACCENT if on else TEXT_DIM};"
+                f"border: 1px solid {ACCENT if on else BORDER};"
+                f"border-radius: {RADIUS_SM}px; }}"
+                f"QPushButton:hover {{ border-color: {ACCENT_HOVER};"
+                f"color: {ACCENT if on else TEXT}; background: {HOVER}; }}")
+        except Exception:
+            pass
 
     def _apply_reserve(self):
         """最大化/全屏时让主面板内容为左右停靠面板让位：左侧给工作树/git/todos
@@ -17590,7 +17688,9 @@ class AgentPanel(QDialog):
         # dock（融入主面板）模式下子面板已嵌入主窗口内部，无需再为外部浮窗让位，
         # 否则根布局 margin 与 dock 栏宽度叠加会把中间对话区严重挤压
         left = self._PANEL_COL if (fullscreen and not docked and self._side_panels_active()) else 0
-        right = self._CODE_COL if (fullscreen and not docked and self._code_enabled()) else 0
+        # 预览面板固定融入主面板右侧栏（dock 内子控件），最大化/全屏时不再为外部
+        # 浮窗预留右侧空间 —— 否则 dock 栏宽与预留 margin 叠加会挤压对话区。
+        right = 0
         try:
             cur = root.contentsMargins()
             if (cur.left(), cur.right()) != (left, right):
@@ -17781,6 +17881,9 @@ class AgentPanel(QDialog):
         self._apply_reserve()   # 最大化/还原时根布局左右边距
         # 底部输入行等比缩放（随窗口高度变化，全屏自动放大）
         self._apply_bottom_scale()
+        # 个人信息面板挂在用户胶囊下方：窗口尺寸变化后重新贴合（打开时才做）
+        if self.__dict__.get("_profile_panel_open"):
+            self._refit_profile_panel()
         # 气泡宽度同步（轻量 setter）；文本/截图重渲染交给防抖定时器合并。
         # 宽度未变化（仅高度变动）时直接跳过，避免最大化↔正常来回切换时反复遍历气泡
         mw = self._bubble_max_width()
@@ -18285,7 +18388,10 @@ class AgentPanel(QDialog):
         out = []
         for i in range(lay.count()):
             w = lay.itemAt(i).widget()
-            if w is not None and isinstance(w, _RoundedFloatWindow):
+            # 鸭子类型而非 isinstance：预览面板现为普通 QWidget（固定融入右侧栏），
+            # 只有具备 dock_state 的停靠面板才参与栏内排序。
+            if w is not None and getattr(w, "dock_state", None) in (
+                    "float", "left", "right"):
                 out.append(w)
         return out
 
@@ -18412,8 +18518,11 @@ class AgentPanel(QDialog):
                     col.setFixedWidth(max(widths or [280]))
                 except Exception:
                     pass
-                has = any(p.dock_state == side for p in
-                          (self.todos_win, self.git_win, self.wt_win, self.code_win))
+                # 右栏只有「已融入且未隐藏」时才占宽：预览面板默认隐藏 → 右栏宽度归 0
+                has = any(getattr(p, "dock_state", None) == side and not p.isHidden()
+                          for p in (self.todos_win, self.git_win,
+                                    self.wt_win, self.code_win)
+                          if p is not None)
                 col.setVisible(has)
                 col.layout().activate()
             # 非 dock 侧/未融入的面板：解除封顶，避免残留上限影响贴附模式
@@ -18496,7 +18605,8 @@ class AgentPanel(QDialog):
                     self._dock_panel(self.code_win, "right")
                 self._apply_dock_min_size()   # 放宽主面板最小宽，保证内容区自适应
             else:
-                for name in ("todos_win", "git_win", "wt_win", "code_win"):
+                # 预览面板不在其列：它固定「融入主面板」右侧栏（贴附样式已删除）
+                for name in ("todos_win", "git_win", "wt_win"):
                     p = getattr(self, name, None)
                     if p is not None and p.dock_state != "float":
                         self._undock_panel(p)
@@ -18517,7 +18627,7 @@ class AgentPanel(QDialog):
         if not self.isVisible():
             return
         self._pre_dock_sizes = dict(getattr(self, "_pre_dock_sizes", None) or {})
-        for name in ("todos_win", "git_win", "wt_win", "code_win"):
+        for name in ("todos_win", "git_win", "wt_win"):
             p = getattr(self, name, None)
             if p is None or getattr(p, "dock_state", "float") != "float":
                 continue
@@ -18573,7 +18683,7 @@ class AgentPanel(QDialog):
         """四面板是否整体处于给定模式（attach=全部 float / dock=全部已融入）"""
         try:
             states = [getattr(getattr(self, n, None), "dock_state", "float")
-                      for n in ("todos_win", "git_win", "wt_win", "code_win")]
+                      for n in ("todos_win", "git_win", "wt_win")]
             if mode == "dock":
                 return bool(states) and all(s in ("left", "right") for s in states)
             return bool(states) and all(s == "float" for s in states)
@@ -18970,97 +19080,24 @@ class AgentPanel(QDialog):
             ww.refresh()
 
     def _sync_code_win(self):
-        """代码预览面板定位：停靠 AI 面板右侧、顶部与面板齐平，高度随面板。
-        最大化/全屏时 AI 面板占满屏幕，改锚定屏幕右缘的预留空间（_apply_reserve
-        已把内容左移让位），保证预览面板可见；非最大化贴在面板右侧。
-        AI 置 _ai_managed=True 时完全接管（同 _sync_todos_win）。"""
-        if self._panel_minimized:
-            return
+        """预览面板显示/隐藏同步：固定融入主面板右侧栏（dock_state="right"），
+        位置与高度由 dock 布局统一管理，这里只负责「启用则显示、停用则隐藏」。
+        隐藏前若仍在播放媒体，先优雅释放播放器（避免后台 ffmpeg 线程告警）。"""
         cw = getattr(self, "code_win", None)
         if cw is None:
             return
-        if cw.dock_state != "float":
-            return   # 已融入主面板：位置由 dock 布局管理，不做停靠定位
-        if getattr(cw, "_ai_managed", False):
-            if (not cw.isVisible() and getattr(cw, "_ai_was_visible", False)):
-                cw.show()
-                cw.raise_()
-                cw._ai_was_visible = False
-            return
-        if getattr(cw, "_media_full", False):
-            # 视频全屏中：宿主不干预定位，避免把全屏预览面板拉回停靠位置
-            cw.raise_()
-            return
-        if getattr(cw, "_user_moved", False):
-            # 用户手动拖走：只保证可见与置于前台，不强制归位且不再跟随主面板高度
-            if not cw.isVisible():
-                cw.show()
-            cw.raise_()
-            return
-        if not self._code_enabled():
-            cw.hide()
-            return
-        base = self.mapToGlobal(self.rect().topLeft())
-        # 高度跟随主面板：用户手动拖过高度（_manual_h）后保持其自定义高度
-        if not (getattr(cw, "_manual_h", 0) or 0):
-            cw.setFixedHeight(self.height())
-        # 用实际窗口宽度定位：_GlassCode 为 setFixedWidth(540) 且无 WIDTH 属性，
-        # 旧逻辑 getattr(cw,"WIDTH",441) 取到默认 441 会导致 code_win 定位偏右超屏、
-        # 远离主面板（右缘超出屏幕）。改用 cw.width() 使面板完整在屏内、贴近主面板。
-        cw_width = cw.width() if (cw is not None and cw.width() > 0) \
-            else getattr(cw, "WIDTH", 441)
-        if self._is_fullscreen():
-            scr = self.screen()
-            g = scr.availableGeometry() if scr else None
-            if g is not None and g.width() > 0:
-                # 最大化：右缘对齐基础上向左 10px 靠近主面板，再往右平移 3px
-                # 缓解对主面板右侧的遮挡（净向左 7px）
-                x = g.right() - cw_width - 5 - 10 + 3
-            else:
-                x = base.x() + self.width() + 5
-            x = max(0, x)
+        if getattr(cw, "dock_state", None) != "right":
+            self._dock_panel(cw, "right")
+        if self._code_enabled():
+            cw.show()
         else:
-            x = base.x() + self.width() + 5
-        self._place_owned(cw, x, base.y())
-
-    def _setup_builtin_browser(self):
-        """AI browser_* 工具在内置多标签 WebView 内操作（QtWebEngine 可用时装配）。
-        未装配（无 WebEngine）时回退为独立外部浏览器实例。"""
-        self._builtin_browser = None
-        if not agent_ui_ux.web_engine_available():
-            return
-        from zhuzhu_Copilot.core import agent_tools as _at
-        from zhuzhu_Copilot.core.agent_browser_web import (
-            BuiltinBrowser,
-            BuiltinBrowserController,
-        )
-        bb = BuiltinBrowser()
-
-        def _provider():
-            cw = getattr(self, "code_win", None)
-            return cw._active_web() if cw is not None else None
-
-        def _ensure():
-            cw = getattr(self, "code_win", None)
-            if cw is None:
-                return
-            try:
-                cw.show()
-                cw.raise_()
-                cw._switch_mode("web")
-            except Exception:
-                pass
-            try:
-                self._sync_code_win()
-            except Exception:
-                pass
-
-        bb.attach(_provider, _ensure)
-        try:
-            _at.register_builtin_browser(BuiltinBrowserController(bb))
-            self._builtin_browser = bb
-        except Exception:
-            pass
+            if callable(getattr(cw, "is_media_active", None)) and cw.is_media_active():
+                try:
+                    cw.shutdown_media()
+                except Exception:
+                    pass
+            cw.hide()
+        self._sync_dock_layout()
 
     def _on_ai_file_changed(self, path: str, old_text: str, new_text: str):
         """文件变更观察者回调（可被引擎/工作线程调用）：转发到主线程处理"""
@@ -19075,6 +19112,9 @@ class AgentPanel(QDialog):
         try:
             cw = getattr(self, "code_win", None)
             if cw is None or not callable(getattr(cw, "show_diff", None)):
+                return
+            # 预览面板默认隐藏：AI 变更不强行展开面板（用户随时可右上角展开查看）
+            if not self._code_enabled():
                 return
             # 预览面板正在播放媒体时不打断：跳过差异跳转，保持媒体播放
             if callable(getattr(cw, "is_media_active", None)) and cw.is_media_active():
@@ -19100,20 +19140,26 @@ class AgentPanel(QDialog):
             logging.getLogger("zhuzhu_Copilot.ui_ux").warning(
                 "_on_file_diff 异常: %s", e)
 
-    def _open_code_preview(self, path: str):
-        """双击工作树文件 → 在右侧代码预览器打开并显示"""
+    def _open_code_preview(self, path: str, auto: bool = False):
+        """打开文件预览（融入右侧栏）。
+
+        auto=False：用户双击工作树文件 —— 明确意图，面板隐藏时自动展开；
+        auto=True ：AI preview 事件自动预览 —— 面板隐藏时不打扰用户。
+        """
         cw = getattr(self, "code_win", None)
         if cw is None or not path or not callable(getattr(cw, "show_file", None)):
             return
+        if auto and not self._code_enabled():
+            return
         cw.show_file(path)
         if getattr(cw, "_ai_managed", False):
-            # AI 接管：用户双击预览是明确意图，仍显示并抬升，但不重定位
+            # AI 接管：仍显示并抬升，但不重定位
             cw.show()
             cw.raise_()
             return
         if not self._code_enabled():
-            return
-        self._sync_code_win()
+            self._toggle_preview(True)
+        self._sync_dock_layout()
         cw.show()
         cw.raise_()
 
@@ -22383,7 +22429,7 @@ class AgentPanel(QDialog):
     _AUTH_PAD_R = 12
 
     def _build_auth_user_bar(self, top):
-        """顶栏齿轮右侧用户区域：未登录=登录按钮；已登录=头像+用户名，点击弹菜单。"""
+        """顶栏齿轮右侧用户区域：未登录=登录按钮；已登录=头像+用户名，点击直开个人信息面板。"""
         from zhuzhu_Copilot.core.auth_client import get_auth_client
         auth = get_auth_client()
         self._auth = auth
@@ -22398,7 +22444,7 @@ class AgentPanel(QDialog):
         self._auth_login_btn.setStyleSheet(_BTN_GHOST)
         self._auth_login_btn.clicked.connect(auth.login_with_browser)
         bl.addWidget(self._auth_login_btn)
-        # 已登录：头像图标 + 用户名的扁平按钮（点击弹菜单）
+        # 已登录：头像图标 + 用户名的扁平按钮（点击直接开合个人信息面板，无中间菜单）
         self._auth_user_btn = QPushButton()
         self._auth_user_btn.setFlat(True)
         self._auth_user_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -22412,7 +22458,14 @@ class AgentPanel(QDialog):
             f" border-radius: {self._AUTH_CHIP_H // 2}px; }}"
             f"QPushButton:hover {{ background: {HOVER}; }}")
         self._auth_user_btn.setFixedHeight(self._AUTH_CHIP_H)
-        self._auth_user_btn.clicked.connect(self._auth_user_menu)
+        self._auth_user_btn.clicked.connect(self._auth_user_click)
+        # 胶囊移动/缩放（头像异步加载、公告出现、窗口缩放）→ 面板跟随重新贴合
+        self._auth_chip_filter = _ChipAnchorFilter(
+            self, self._refit_profile_panel)
+        self._auth_user_btn.installEventFilter(self._auth_chip_filter)
+        # 顶栏重排（公告出现/消失、会话框变宽）时整条用户区会平移，
+        # 胶囊自身不产生 Move 事件 —— 故整条 bar 也挂同一个守卫。
+        bar.installEventFilter(self._auth_chip_filter)
         bl.addWidget(self._auth_user_btn)
         # 头像**原图**（未裁剪、未缩放）。顶栏胶囊需要 32px 圆形带透明间距的小图标，
         # 但个人信息面板要 56px 大圆 —— 若从顶栏那个小图标反向放大，会既模糊又因
@@ -22709,6 +22762,7 @@ class AgentPanel(QDialog):
                 panel = self.__dict__.get("_profile_panel")
                 if panel is not None and self.__dict__.get("_profile_panel_open"):
                     panel.set_profile(self._profile_panel_data())
+                    self._refit_profile_panel()
             except Exception:
                 pass
 
@@ -22727,55 +22781,16 @@ class AgentPanel(QDialog):
         # 图标到位后重算按钮宽度（此时才知道图标真的存在）
         self._sync_auth_user_btn_size()
 
-    def _auth_user_menu(self):
-        """点击用户区域弹出：个人信息 / 切换账号 / 退出登录。"""
-        auth = getattr(self, "_auth", None)
-        if auth is None:
-            return
-        m = _AnchorQMenu(self)
-        m.setMinimumWidth(132)   # 固定菜单宽：右缘恒定 → 个人信息面板 x 恒定不漂移
-        act_info = m.addAction(_ui("个人信息"))
-        m.addSeparator()
-        act_switch = m.addAction(_ui("切换账号"))
-        act_out = m.addAction(_ui("退出登录"))
-        m._target = act_info
-        # 锚点：面板固定紧贴「个人信息」菜单项右侧（水平取菜单右缘、垂直对齐该项）。
-        # 关键一：菜单弹出位置固定在用户按钮下方（而非 ``QCursor.pos()``），这样面板的
-        # 绝对位置不随鼠标点击位置漂移——同一按钮点开两次落在完全相同的位置。
-        # 关键二：菜单在 ``exec`` 期间才最终定位，必须在菜单**显示时**就快照一次全局
-        # 几何；exec 返回后菜单已隐藏，此时再算会得到过期/错位的值（历史 bug）。
-        menu_pos = self._auth_menu_anchor_pos()
-        act = m.exec(menu_pos)
-        if act == act_info:
-            item_g, menu_g = m.snapshot_of(act_info)
-            anchor = None
-            if item_g is not None and not item_g.isNull():
-                anchor = {"item": item_g, "menu": menu_g}
-            else:
-                # 极端兜底（菜单未能显示/无快照）：按按钮右侧固定落位
-                try:
-                    br = QRect(self._auth_user_btn.mapToGlobal(QPoint(0, 0)),
-                               self._auth_user_btn.size())
-                    pseudo_menu = QRect(br.right() + 1, br.bottom() + 1, 120, 95)
-                    item_g = QRect(pseudo_menu.x() + 5, pseudo_menu.y() + 5,
-                                   pseudo_menu.width() - 10, 24)
-                    anchor = {"item": item_g, "menu": pseudo_menu}
-                except Exception:
-                    anchor = None
-            self.toggle_profile_panel(anchor)
-        elif act == act_switch:
-            auth.switch_account()
-        elif act == act_out:
-            auth.logout()
+    def _auth_user_click(self):
+        """点击顶栏用户胶囊（头像 + 用户名）→ 直接开合个人信息面板。
 
-    def _auth_menu_anchor_pos(self) -> QPoint:
-        """用户菜单的固定弹出点：按钮左下角（不跟随鼠标，保证面板位置稳定）。"""
-        try:
-            btn = self._auth_user_btn
-            br = QRect(btn.mapToGlobal(QPoint(0, 0)), btn.size())
-            return QPoint(br.left(), br.bottom() + 2)
-        except Exception:
-            return QCursor.pos()
+        旧版先弹「个人信息 / 切换账号 / 退出登录」菜单，再经菜单项才进面板；
+        用户要求去掉这层中间菜单：一次点击直达面板。切换账号 / 退出登录本来
+        就是面板底部的按钮，菜单属于纯冗余的一跳。
+        """
+        if getattr(self, "_auth", None) is None:
+            return
+        self.toggle_profile_panel()
 
     # ---------- 个人信息侧边面板 ----------
     def _ensure_profile_panel(self):
@@ -22818,12 +22833,13 @@ class AgentPanel(QDialog):
         return panel
 
     def _profile_panel_size(self, panel) -> tuple:
-        """面板尺寸（宽, 高）。
+        """面板尺寸（宽, 高）：宽度按内容自适应，高度随宽度求。
 
-        宽度取「首选宽 / 内容所需宽 的较大者」再夹到可用宽内：
-        固定 232px 时，像 ``2075-11-07 23:59:59`` 这类较长的值会被右对齐的
-        QLabel 从**左侧裁掉**（显示成 ``75-11-07 23:59:59``），
-        用户 ID ``41`` 也会变成 ``1``。改成按内容自适应后不会再截断。
+        宽度 = clamp(内容所需宽, PREFERRED_WIDTH, MAX_WIDTH)，再夹进宿主可用宽。
+        内容所需宽由面板自己量（``preferred_width``）：用户名、会员到期这类值
+        都按**全文**参与计算 —— 英文长单词 / 长用户名因此把面板撑宽，而不是被
+        裁掉或挤压（旧版固定 232px 时 ``2075-11-07 23:59:59`` 会被右对齐的
+        QLabel 从左侧裁成 ``75-11-07 23:59:59``，用户 ID ``41`` 变成 ``1``）。
         """
         margin = SPACING_SM
         try:
@@ -22831,10 +22847,10 @@ class AgentPanel(QDialog):
         except Exception:
             avail = int(panel.PREFERRED_WIDTH)
         try:
-            need = int(panel.sizeHint().width())
+            w = int(panel.preferred_width(avail))
         except Exception:
-            need = int(panel.PREFERRED_WIDTH)
-        w = max(180, min(max(int(panel.PREFERRED_WIDTH), need), avail))
+            w = int(panel.PREFERRED_WIDTH)
+        w = max(160, w)
         h = 0
         lay = panel.layout()
         try:
@@ -22851,57 +22867,60 @@ class AgentPanel(QDialog):
             pass
         return int(w), max(1, int(h))
 
+    #: 面板与用户胶囊之间的垂直间距（贴边但不粘连）
+    _PROFILE_GAP = 6
+
     def _profile_panel_geometry(self, panel, anchor_global=None) -> QRect:
-        """面板位置：紧贴「个人信息」弹出菜单的右侧、与该项垂直对齐。
+        """面板位置：挂在用户胶囊（头像 + 用户名）正下方，右缘与胶囊右缘垂直对齐。
 
-        anchor_global 由 _auth_user_menu 传入，形如
-        ``{"item": <个人信息项的全局 QRect>, "menu": <整个菜单的全局 QRect>}``
-        （也兼容旧的单个 QRect：此时按该项右侧定位并留 6px 间距）。
+        - 水平：面板**右缘** = 胶囊右缘 → 面板整体向左展开。旧版挂在弹出菜单
+          右侧（胶囊再往右 132px 起），位置偏右、易盖住顶栏右侧统计区，也和
+          「点谁就弹在谁下面」的直觉不符；
+        - 垂直：面板顶边 = 胶囊底边 + ``_PROFILE_GAP``，正下方落下，与胶囊同轴。
 
-        定位规则：面板左边缘 = 菜单右边缘（紧贴、无间距），
-        顶边与「个人信息」菜单项对齐，从而观感就是「紧挨着弹出菜单右侧的固定位置」。
-        未提供锚点时退化为贴主面板右侧竖排。
-        面板是主面板的子控件（会被父边界裁剪），横/纵方向都夹在主面板可视区内。
+        anchor_global 可选：传一个全局 QRect（自定义 UI 包把面板挂到别的触发
+        控件下），也兼容旧的 ``{"item": ..., "menu": ...}`` 字典；不传则默认取
+        顶栏用户胶囊。面板是主面板的子控件，横纵都夹在可视区内；下方空间不足
+        时自动翻到胶囊上方。
         """
         w, h = self._profile_panel_size(panel)
         margin = SPACING_SM
 
-        item_g = menu_g = None
-        if isinstance(anchor_global, dict):
-            item_g = anchor_global.get("item")
-            menu_g = anchor_global.get("menu")
-        elif isinstance(anchor_global, QRect):
-            item_g = anchor_global
-
-        if item_g is not None and not item_g.isNull():
+        ref = None
+        if isinstance(anchor_global, QRect) and not anchor_global.isNull():
+            ref = QRect(anchor_global)
+        elif isinstance(anchor_global, dict):
+            for key in ("item", "menu"):
+                g = anchor_global.get(key)
+                if isinstance(g, QRect) and not g.isNull():
+                    ref = QRect(g)
+                    break
+        if ref is None:
             try:
-                item_tl = self.mapFromGlobal(item_g.topLeft())
-                # 水平：紧贴菜单右边缘（无间距）；有菜单矩形时用它，否则用菜单项右缘
-                if menu_g is not None and not menu_g.isNull():
-                    menu_tl = self.mapFromGlobal(menu_g.topLeft())
-                    x = int(menu_tl.x() + menu_g.width())   # 紧贴菜单右侧，间距 0
-                else:
-                    x = int(item_tl.x() + item_g.width() + 6)
-                y = int(item_tl.y())
+                btn = self._auth_user_btn
+                ref = QRect(btn.mapToGlobal(QPoint(0, 0)), btn.size())
             except Exception:
-                x, y = margin, margin
-            # 右侧空间不足时：改贴到菜单/菜单项左侧（同样紧贴）
-            if x + w > self.width() - margin:
-                try:
-                    if menu_g is not None and not menu_g.isNull():
-                        x = int(menu_tl.x() - w)
-                    else:
-                        x = int(item_tl.x() - w - 6)
-                except Exception:
-                    pass
-            # 最终夹回面板可视区
-            x = max(margin, min(x, max(margin, self.width() - w - margin)))
-            y = max(margin, min(y, max(margin, self.height() - h - margin)))
-            return QRect(int(x), int(y), w, h)
+                ref = None
+        if ref is None:
+            # 极端兜底（无胶囊可用）：贴主面板右上角
+            return QRect(max(margin, self.width() - w - margin), margin, w, h)
 
-        # 退化：贴主面板右侧竖排、垂直居中（固定位置）
-        x = max(margin, self.width() - w - margin)
-        y = max(margin, (self.height() - h) // 2)
+        try:
+            tl = self.mapFromGlobal(ref.topLeft())
+            rx, ry = int(tl.x()), int(tl.y())
+            rw, rh = int(ref.width()), int(ref.height())
+        except Exception:
+            rx, ry, rw, rh = margin, margin, 1, 1
+
+        x = rx + rw - w                       # 右缘对齐 → 向左展开
+        y = ry + rh + self._PROFILE_GAP       # 正下方落下
+        # 左右越界：夹回面板可视区（窄窗时仍完整可见）
+        x = max(margin, min(x, max(margin, self.width() - w - margin)))
+        # 下方放不下：翻到胶囊上方；再放不下则夹回可视区
+        if y + h > self.height() - margin:
+            up = ry - self._PROFILE_GAP - h
+            y = up if up >= margin else max(
+                margin, min(y, max(margin, self.height() - h - margin)))
         return QRect(int(x), int(y), w, h)
 
     def _profile_panel_attach(self, on: bool):
@@ -22920,6 +22939,28 @@ class AgentPanel(QDialog):
         except Exception:
             return
         self._profile_dismiss_on = bool(on)
+
+    def _refit_profile_panel(self):
+        """内容变化（会员 / 头像 / 用户名 / 窗口缩放）后重算尺寸与位置（无动画）。
+
+        只在面板已打开、可见且无在途动画时执行：动画期间改几何会和滑入/滑出
+        抢位置，出现「弹一半跳一下」的观感。
+        """
+        panel = self.__dict__.get("_profile_panel")
+        if panel is None or not self.__dict__.get("_profile_panel_open"):
+            return
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(panel) or not panel.isVisible():
+                return
+            if panel.is_busy():
+                return
+            w, h = self._profile_panel_size(panel)
+            panel.apply_width(w)
+            panel.resize(w, h)
+            panel.setGeometry(self._profile_panel_geometry(panel))
+        except Exception:
+            pass
 
     def _profile_panel_data(self) -> dict:
         """汇总个人信息快照（登录态 / 头像 / 会员 / 服务器）。"""
@@ -22949,7 +22990,8 @@ class AgentPanel(QDialog):
     def open_profile_panel(self, anchor_global=None):
         """打开个人信息侧边面板（先注入最新数据再算位置，避免首帧跳变）。
 
-        anchor_global：可选，「个人信息」菜单项的全局矩形；传入时面板贴其右侧弹出。
+        anchor_global：可选，触发控件的全局矩形；传入时面板挂到它正下方
+        （右缘对齐），不传则默认挂到顶栏用户胶囊下方。
         """
         try:
             panel = self._ensure_profile_panel()
@@ -22957,6 +22999,7 @@ class AgentPanel(QDialog):
             panel.set_profile(self._profile_panel_data())
             panel.apply_theme()
             _w, _h = self._profile_panel_size(panel)
+            panel.apply_width(_w)   # 宽度定稿后再回填省略预算（用户名 / 明细值）
             panel.resize(_w, _h)
             panel.slide_in(self._profile_panel_geometry(panel, anchor_global))
             self._profile_panel_open = True
@@ -23023,6 +23066,8 @@ class AgentPanel(QDialog):
                 panel.set_membership(mtype, mexpire)
             except Exception:
                 pass
+            # 会员名 / 到期日可能变长（Free → Max Member）→ 重算面板宽度
+            self._refit_profile_panel()
         # 2) 会员与积分页的会员类型标签
         try:
             lbl = getattr(self, "_memb_type_label", None)
@@ -23051,6 +23096,8 @@ class AgentPanel(QDialog):
                 return
             # 积分已变但签到状态未回填时，保留按钮可用性判断（reward 由服务端给）
             panel.set_checkin_state(state)
+            # 按钮文案会变（签到 → 已签到 / 签到 +5），宽度随之变 → 重算面板
+            self._refit_profile_panel()
         except Exception:
             pass
 
@@ -23067,6 +23114,7 @@ class AgentPanel(QDialog):
                     "reward": d.get("points_added"),
                     "total_days": d.get("total_days"),
                 })
+                self._refit_profile_panel()
             except Exception:
                 pass
         try:
@@ -23437,11 +23485,10 @@ class AgentPanel(QDialog):
             pname = p.get("name", "服务商")
             for x in p.get("models") or []:
                 label = x.rsplit("/", 1)[-1] if x else x   # 去供应商/组织前缀
-                # 品牌矢量图标：模型名优先识别（聚合平台同挂多家模型时各归各家）；
-                # 用前景主色注入：深色模式近白、浅色模式近黑，随主题切换重建
+                # 品牌矢量图标：模型名优先识别（聚合平台同挂多家模型时各归各家）
                 brand = brand_icons.brand_for(x, pname, p.get("base_url", ""))
                 self.model_combo.addItem(
-                    brand_icons.brand_icon(brand, 16, TEXT), label, (pname, x))
+                    brand_icons.brand_icon(brand, 16, TEXT_DIM), label, (pname, x))
                 self.model_combo.setItemData(
                     self.model_combo.count() - 1, f"{pname} · {x}",
                     Qt.ItemDataRole.ToolTipRole)
@@ -26050,13 +26097,19 @@ class AgentPanel(QDialog):
             pass
 
     def _handle_bg_result(self, name: str, text: str):
-        """处理后台任务流式输出：on_result 的 name 为 [bg:task_id] 格式。"""
+        """处理后台任务流式输出：on_result 的 name 为 [bg:task_id] 格式。
+
+        只做增量追加、**不改状态**：
+        - 走 panel.append_output（卡片缺失时兜底补建），"后台任务已启动"状态通知
+          万一漏匹配，输出也不会整段丢失；
+        - 不再 update_task(tid, "running", ...)：任务完成后才到的零头输出会把
+          已完成的任务"翻活"回运行中（原来就是这么实现的）。"""
         try:
             if name and name.startswith("[bg:") and name.endswith("]"):
                 tid = name[4:-1]
                 panel = getattr(self, "bg_task_panel", None)
-                if panel is not None and tid in panel._widgets:
-                    panel.update_task(tid, "running", output=text)
+                if panel is not None:
+                    panel.append_output(tid, text)
         except Exception:
             pass
 
