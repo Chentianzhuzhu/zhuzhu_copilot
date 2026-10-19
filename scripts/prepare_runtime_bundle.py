@@ -75,10 +75,40 @@ def _download_runtime(version: str, name: str, dest: Path):
         agent_runtime._enable_site(dest)
 
 
+def _prune_webengine() -> None:
+    """从沙盒 Python 站点包中剔除 QtWebEngine（应用已整体移除该模块）。
+
+    沙盒运行时只需支撑 AI 执行的普通 Python 脚本；若历史 pip 安装把
+    PyQt6-WebEngine 带入 bundle，会被整目录打进安装包（实测约 287MB）。
+    按文件名匹配统一清理，不依赖固定路径清单。
+    """
+    site = BUNDLE_ROOT / "python" / "Lib" / "site-packages"
+    if not site.is_dir():
+        return
+    removed = 0
+    for p in sorted(site.rglob("*"), key=lambda x: len(x.parts), reverse=True):
+        if not p.exists():
+            continue
+        name = p.name.lower()
+        if "webengine" not in name:
+            continue
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        _report(f"[清理] 沙盒运行时剔除 QtWebEngine 文件 {removed} 个")
+
+
 def main():
     BUNDLE_ROOT.mkdir(parents=True, exist_ok=True)
     _prepare_node()
     _prepare_python()
+    _prune_webengine()
     size = sum(f.stat().st_size for f in BUNDLE_ROOT.rglob("*") if f.is_file())
     _report(f"完成：{BUNDLE_ROOT}（{size / 1024 / 1024:.1f} MB）")
 

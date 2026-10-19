@@ -3290,7 +3290,7 @@ class _AgentSettingsDialog(QDialog):
                 f"QLineEdit:focus {{ border: 1px solid {self._BORDER}; }}")
             return edit
 
-        self.proxy_host_edit = _proxy_lineedit("proxy_host", "SSH 服务器 IP / 域名，如 122.228.216.138")
+        self.proxy_host_edit = _proxy_lineedit("proxy_host", "SSH 服务器 IP / 域名，如 198.51.100.10")
         self.proxy_port_edit = _proxy_lineedit("proxy_port", "端口，如 22")
         self.proxy_user_edit = _proxy_lineedit("proxy_user", "SSH 用户名")
         self.proxy_pass_edit = _proxy_lineedit("proxy_pass", "SSH 密码", echo=True)

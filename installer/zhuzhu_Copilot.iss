@@ -113,7 +113,7 @@ Source: "..\build\certs\zhutianliang.cer"; DestDir: "{tmp}"; Flags: dontcopy
 ; 本应用为 x64，但精简系统常把 32 位运行库一并裁掉，装上以防系统侧组件异常。
 Source: "..\build\redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "..\build\redist\vc_redist.x86.exe"; DestDir: "{tmp}"; Flags: dontcopy
-; d3dcompiler_47.dll（精简 Win10/11 常缺，QtWebEngine/Chromium shader 编译必需）：
+; d3dcompiler_47.dll（精简 Win10/11 常缺，Qt D3D11 RHI 编译 shader 必需）：
 ; 系统缺失时补装到 System32；应用 _internal 目录内同时随包携带一份，双保险。
 Source: "..\build\redist\d3dcompiler_47.dll"; DestDir: "{tmp}"; Flags: dontcopy
 
@@ -141,7 +141,7 @@ Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore TrustedPublis
 ; 2. 系统缺 VC++ 运行库时自动静默安装，保证主程序/卸载器正常加载（x64 + x86）
 Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx64}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x64.exe'); Check: not VCInstalled64
 Filename: "{tmp}\vc_redist.x86.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx86}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x86.exe'); Check: not VCInstalled32
-; 3. 系统缺 d3dcompiler_47.dll 时补装到 System32（QtWebEngine 渲染必需）
+; 3. 系统缺 d3dcompiler_47.dll 时补装到 System32（Qt D3D11 渲染必需）
 Filename: "{sys}\cmd.exe"; Parameters: "/c copy /y ""{tmp}\d3dcompiler_47.dll"" ""{sysnative}\d3dcompiler_47.dll"""; StatusMsg: "{cm:TInstallD3D}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('d3dcompiler_47.dll'); Check: not D3DCompilerInstalled
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:TLaunchApp}"; Flags: nowait postinstall skipifsilent runascurrentuser
 

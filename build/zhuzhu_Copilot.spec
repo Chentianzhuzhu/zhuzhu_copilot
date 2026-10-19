@@ -36,7 +36,7 @@ _ui_modules = [
 _runtime_datas = [(_os.path.join(_root, 'build/runtime_bundle/runtime'), 'runtime')]
 if not _os.path.isdir(_os.path.join(_root, 'build/runtime_bundle/runtime')):
     _runtime_datas = []
-# d3dcompiler_47.dll：精简 Win10/11 常被裁剪，Chromium/QtWebEngine 编译 shader 必需。
+# d3dcompiler_47.dll：精简 Win10/11 常被裁剪，Qt D3D11 RHI 编译 shader 必需。
 # 随应用目录分发（Windows DLL 搜索顺序：exe 目录优先于 System32），缺系统组件也能启动。
 # 由 build_release.ps1 / build_setup.bat 从本机 System32 复制到 build/redist/。
 _d3d_path = _os.path.join(_root, 'build/redist/d3dcompiler_47.dll')
@@ -124,11 +124,6 @@ a = Analysis(
         # 漏声明会表现为「语音输入静默失效（ImportError 被兜住）」，显式声明防遗漏。
         'websockets.sync.client',
         'websockets.sync',
-        # 内置浏览器（CodePreviewWindow/AI browser 工具）依赖 QtWebEngine：
-        # 取消 excludes 排除后会经 PyInstaller 官方 hook 自动收集 QtWebEngineProcess、
-        # 资源包(resources.pak/locales)与相关 Qt 模块，这里显式声明防遗漏。
-        'PyQt6.QtWebEngineCore',
-        'PyQt6.QtWebEngineWidgets',
         # 预览面板媒体播放（视频/音乐）：QMediaPlayer + QVideoWidget，
         # 需显式收集 QtMultimedia 模块及其 ffmpeg/windows 解码后端插件
         'PyQt6.QtMultimedia',
@@ -153,13 +148,16 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[_os.path.join(_root, 'scripts/rthook_qt_dll_path.py')],
     # 运行环境性能优化：排除确定未使用的重型 Qt 模块与内置库，减小体积、加快启动。
-    # QtWebEngineCore/Widgets 不再排除——内置浏览器/CodePreviewWindow 依赖它（详见 hiddenimports）
+    # QtWebEngine 整体移除（约 180MB）：PPT 全屏放映、Office 保真预览、网页预览
+    # 均已内置降级分支（QTextBrowser/静态渲染），剔除后包体显著缩小。
     excludes=[
         'tkinter', 'PyQt6.QtQuick', 'PyQt6.QtQml', 'PyQt6.Qt3DCore', 'PyQt6.Qt3DRender',
         'PyQt6.QtCharts', 'PyQt6.QtDataVisualization', 'PyQt6.QtPdf',
         'PyQt6.QtBluetooth', 'PyQt6.QtNfc', 'PyQt6.QtSerialPort',
         'PyQt6.QtWebSockets', 'PyQt6.QtDesigner', 'PyQt6.QtHelp',
         'PyQt6.QtSql', 'PyQt6.QtXml', 'PyQt6.QtTest', 'PyQt6.QtDBus',
+        'PyQt6.QtWebEngineCore', 'PyQt6.QtWebEngineWidgets', 'PyQt6.QtWebEngineQuick',
+        'PyQt6.QtWebChannel', 'PyQt6.QtPositioning',
         'numpy', 'pandas', 'scipy', 'matplotlib', 'sklearn', 'torch',
     ],
     win_no_prefer_redirects=False,
@@ -171,6 +169,17 @@ a = Analysis(
 # 性能优化：应用未使用 QTranslator，剔除全部 Qt 翻译文件(.qm)，
 # 减小体积、加快安装解压与目录扫描
 a.datas = [d for d in a.datas if not d[0].endswith('.qm')]
+
+# QtWebEngine 二次剔除：PyQt6 的 hook 会整目录收集 Qt6/bin 下的 Qt DLL，
+# excludes 只对 Python 模块生效，拦不住已收集的二进制（实测残留
+# Qt6WebEngineCore.dll 等约 390MB）。这里按文件名统一过滤 binaries + datas，
+# 同时清掉沙盒运行时（runtime_bundle）里可能混入的 WebEngine 副本。
+import re as _re
+_QTWEB = _re.compile(r'webengine', _re.IGNORECASE)
+a.binaries = [b for b in a.binaries
+              if not _QTWEB.search(_os.path.basename(b[0]))]
+a.datas = [d for d in a.datas
+           if not _QTWEB.search(d[0].replace('\\', '/'))]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

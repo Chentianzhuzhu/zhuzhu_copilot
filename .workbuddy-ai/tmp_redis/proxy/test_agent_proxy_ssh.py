@@ -1,20 +1,31 @@
-"""agent_proxy SSH 隧道回退端到端测试（真实服务器 122.228.216.138）。
+"""agent_proxy SSH 隧道回退端到端测试。
+
+凭据只从环境变量读取，不在仓库中保存任何服务器地址或密码：
+  WB_PROXY_HOST / WB_PROXY_PORT / WB_PROXY_USER / WB_PROXY_PASS
+未设置时跳过需要真实服务器的用例（B/E），只跑纯逻辑用例（A/C/D）。
 
 用例：
   A. 直连成功 → 不走 SSH（urllib 原路径）
   B. 直连失败 → 回退 SSH 隧道 → 请求成功
   C. 代理未启用 → 直连失败直接抛错
   D. 回退目标为本机地址 → 不走 SSH
-  E. SSH 隧道多域名实测（github / pypi / cloudflare / python）
+  E. SSH 隧道多域名实测（pypi / cloudflare / python）
 """
+import os
 import sys
 import types
 
 SRC = r"C:\Users\zhuzhu\Desktop\zhuzhu Copilot\src"
 sys.path.insert(0, SRC)
 
-CFG = {"proxy_enabled": "1", "proxy_host": "122.228.216.138", "proxy_port": "22",
-       "proxy_user": "root", "proxy_pass": "SyPbFW4SToAj7BYU"}
+CFG = {
+    "proxy_enabled": "1",
+    "proxy_host": os.environ.get("WB_PROXY_HOST", ""),
+    "proxy_port": os.environ.get("WB_PROXY_PORT", "22"),
+    "proxy_user": os.environ.get("WB_PROXY_USER", ""),
+    "proxy_pass": os.environ.get("WB_PROXY_PASS", ""),
+}
+HAS_SERVER = bool(CFG["proxy_host"] and CFG["proxy_user"])
 fake = types.ModuleType("zhuzhu_Copilot.core.agent_skills")
 fake.settings_view = lambda: CFG
 fake.cap_enabled = lambda key: True
@@ -112,8 +123,14 @@ def case_e():
 
 if __name__ == "__main__":
     case_a()
-    case_b()
+    if HAS_SERVER:
+        case_b()
+    else:
+        print("B skipped: set WB_PROXY_HOST/WB_PROXY_USER/WB_PROXY_PASS to run")
     case_c()
     case_d()
-    case_e()
+    if HAS_SERVER:
+        case_e()
+    else:
+        print("E skipped: no SSH server configured")
     print("ALL CASES DONE")

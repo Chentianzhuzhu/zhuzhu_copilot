@@ -433,7 +433,7 @@ try {
                 Copy-Item $srcD3d $d3d -Force
                 Write-Ok '已从 System32 提取 d3dcompiler_47.dll'
             } else {
-                Write-Warn 'System32 无 d3dcompiler_47.dll（精简系统上 QtWebEngine 可能异常）'
+                Write-Warn 'System32 无 d3dcompiler_47.dll（精简系统上 Qt D3D11 渲染可能异常）'
             }
         }
     }
