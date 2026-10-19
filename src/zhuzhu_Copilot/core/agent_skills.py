@@ -453,7 +453,8 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
    流程中明确写明调用哪些工具、每步后如何向用户呈现进度（如输出状态文本/状态图）。
 3. **硬性规则：涉及图形化操作界面/可视化交互（仪表盘、可视化面板、画布表单类工具等）时，
    必须按 web 型插件方案处理（见 plugin-create）——创建本地 web 服务器 + 浏览器界面，
-   并明确要求 AI 打开浏览器界面给用户；操作者必须是用户本人，严禁 AI 自我演示或与脚本
+   并明确要求 AI 用用户默认浏览器（preview_open）打开界面给用户；操作者必须是用户本人，
+   严禁 AI 自我演示或与脚本
    自动化程序互演。** 若只是文本/状态展示流程，用工具组合输出即可。
 4. 用 create_skill 工具创建：instruction 写清触发条件、执行步骤与规则（markdown）。
 5. 创建成功后提示：已可通过 /技能名 或对话描述调用；若用户描述的是可复用的流程，适合沉淀为技能。""",
@@ -468,7 +469,7 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
    - **是**（仪表盘/可视化面板/画布或表单类工具等，用户在界面上直观操作/观看）→ 选 **web 型**：
      一次生成**三件套** —— SKILL.md 技能 + 同名 MCP 工具 + 本地 HTTP Server 单页浏览器界面
      （浏览器与 AI 共用同一份状态，LLM 通过工具读写状态）。
-     流程：create_plugin(kind="web") → 调 web_url 工具拿访问地址 → browser_open 打开给用户。
+     流程：create_plugin(kind="web") → 调 web_url 工具拿访问地址 → preview_open 在用户默认浏览器里打开给用户。
      质量约束（违反会被自动自检打回）：页面所有样式/脚本内联、禁外网 CDN（离线可用）；
      **必须提供 `state`（GET，读状态）端点**，其余 2-6 个为动作/查询粒度端点；
      端点实现从 args 取参、读写共享状态 `_STATE`、返回可读文本、异常自行捕获（绝不抛出）；
@@ -477,7 +478,7 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
      （参数 schema 清晰、返回可读文本结果），由 LLM 通过工具组合完成整件事；
      工具是「动作/查询」粒度（创建、推进、校验、回退…），不是「打开整个应用」。
 2. **web 型硬性要求（必须做到，否则视为未完成）**：
-   ①创建后必须立即调用 web_url 获取地址并用 browser_open 打开浏览器界面给用户；
+   ①创建后必须立即调用 web_url 获取地址并用 preview_open 在用户默认浏览器里打开界面给用户；
    ②界面必须提供可供真人点击/输入/拖拽的交互控件，操作者必须是用户本人，
      状态变化由用户亲手操作驱动；③严禁 AI 自我演示、自问自答或与脚本/自动化程序互演
      （如 AI 自己连续调用工具推进状态）；AI 只负责读写共享状态、辅助用户（校验输入/展示状态/提示规则）。
@@ -502,12 +503,15 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
 6. 若用户描述的是可复用的独立能力，适合沉淀为插件；若只是流程，用 skill-create 即可。""",
     },
     "browser-control": {
-        "description": "浏览器操控：用独立浏览器实例（CDP）打开网页、截图、按元素编号/文字点击输入、执行JS解析HTML/CSS、读取页面内容，完全不影响用户其他操作",
-        "instruction": """# browser-control：AI 操控浏览器（独立实例，不影响用户）
+        "description": "浏览器元素级自动化（CDP 独立实例）：截图、按元素编号/文字点击输入、执行JS解析HTML/CSS、读取页面内容，完全不影响用户其他操作。给用户打开网页/网站/视频一律用用户默认浏览器（preview_open），不用本技能",
+        "instruction": """# browser-control：AI 元素级浏览器自动化（独立实例，不影响用户）
 
-当用户要求"打开浏览器/打开某网站/在网页上登录/填写表单/刷视频/看视频/抓取网页数据/自动操作网页"时，
-**优先用浏览器操控工具**（browser_open/browser_navigate/browser_snapshot/browser_click/browser_type/
-browser_scroll/browser_eval/browser_html/browser_close），而不是用鼠标键盘去点用户正在用的浏览器。
+**浏览器操作策略（先读）**：一切「给用户打开网页/网站/在线视频」的浏览器任务一律用**用户默认
+浏览器**——调 preview_open(url=网址)（经系统默认浏览器打开），抓取网页内容用 web_fetch；
+不要为「打开网页」启动独立实例。仅当任务需要页面内元素级自动化（在网页上登录/填写表单/点击/
+滚动/抓取动态渲染数据）时，才用本技能工具（browser_open/browser_navigate/browser_snapshot/
+browser_click/browser_type/browser_scroll/browser_eval/browser_html/browser_close）——
+它们操控的是独立浏览器实例，不用鼠标键盘去点用户正在用的浏览器。
 
 ## 1. 启动（第一步）
 - `browser_open`：启动**独立浏览器实例**（独立持久用户目录+调试端口，与用户正在用的浏览器完全隔离，
@@ -859,8 +863,8 @@ QScrollBar::handle:vertical { border-radius: 4px; }
 - **技能（SKILL.md 市场标准）**：`create_skill` 新建；或 skill-mgmt 导入/启停/删除。
   新技能描述写清触发条件与执行流程，创建后 /技能名 即可调用。
 - **插件（mcp/skill/combined/web 四型）**：`create_plugin` AI 生成可运行插件（含 MCP server +
-  SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url + browser_open 打开给用户，
-  操作者必须是用户本人，严禁 AI 与脚本自动对战）。
+  SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url 拿地址 + preview_open
+  在用户默认浏览器里打开给用户，操作者必须是用户本人，严禁 AI 与脚本自动对战）。
 - **UI/UX 包（面板深度自定义）**：`manage_uiux` op=list 看现状 → 整体生成用 `create_uiux`
   （自然语言 → LLM 生成 build_ui + 双主题色板 + qss，自动上报进度，可选立即切换），
   手工精修用 op=create（build_ui 完整自定义 + theme + qss）→ op=activate 热插拔切换；
@@ -893,7 +897,8 @@ DEFAULT_AGENTS = [
     {"name": "zhuzhu Copilot", "description": "zhuzhu Copilot：浏览器操控 + 文件/命令自动化高质量完成任务",
      "persona": "你是 zhuzhu Copilot，运行在 Windows 上的桌面 AI 助手，性格谨慎可靠、注重安全，"
                 "擅长把复杂任务拆解为可验证的小步骤，每步先想清楚后果再动手，"
-                "需要操作网页时使用独立浏览器操控工具（不影响用户正在用的浏览器），"
+                "给用户打开网页/网站一律用用户默认浏览器（preview_open），"
+                "页面内元素级自动化时使用独立浏览器操控工具（不影响用户正在用的浏览器），"
                 "失败时先自查再换方案，直到任务高质量完成。",
      "rules": [
          "1. 复杂任务先拆解为步骤清单，按依赖顺序执行，每步完成后确认结果正确再进入下一步"
@@ -901,8 +906,10 @@ DEFAULT_AGENTS = [
          "2. 每次操作前用一句话说明意图（会弹窗由用户确认）。",
          "3. 操作结果不确定时验证：网页操作 browser_snapshot/browser_html 确认；"
          "失败则分析原因并换方案重试，禁止盲目重复。",
-         "4. **浏览器任务一律用独立浏览器操控工具**：browser_open 启动（独立持久用户目录+调试端口，"
-         "与用户正在用的浏览器完全隔离，不碰鼠标键盘、不影响用户其他操作），"
+         "4. **浏览器任务一律优先用用户默认浏览器**：给用户打开网页/网站/视频调 preview_open(url=…)"
+         "（经系统默认浏览器打开），读取网页内容用 web_fetch；仅当任务需要页面内元素级自动化"
+         "（登录/填表/点击/抓取动态渲染数据）时才用独立浏览器实例：browser_open 启动（独立持久"
+         "用户目录+调试端口，与用户正在用的浏览器完全隔离，不碰鼠标键盘、不影响用户其他操作），"
          "browser_navigate 打开网页，browser_snapshot 拿页面元素清单，"
          "browser_click/browser_type 按编号/文字操作，browser_eval/browser_html 解析页面，"
          "完成后 browser_close 关闭（登录态自动保留）。",
@@ -926,11 +933,12 @@ DEFAULT_AGENTS = [
      "tool_instructions": {
          "browser_open": {
              "理解": "启动独立浏览器实例（Edge/Chrome，独立持久用户目录+调试端口，与用户正在用的浏览器完全隔离）。"
-                    "浏览器任务（打开网页/登录/填表/抓取/自动操作网页）第一步先 browser_open，"
-                    "之后用 browser_navigate/browser_snapshot/browser_click/browser_type/browser_eval/"
+                    "浏览器任务一律优先用用户默认浏览器（preview_open 打开网页、web_fetch 抓内容）；"
+                    "本工具仅用于页面内元素级自动化（登录/填表/点击/抓取动态渲染数据）："
+                    "启动后用 browser_navigate/browser_snapshot/browser_click/browser_type/browser_eval/"
                     "browser_html 完成操作，最后 browser_close 关闭。"
                     "**登录态/cookie/token 持久保存，关闭后再打开自动恢复，用户无需重复登录。**",
-             "执行拆分": ["浏览器相关任务第一步先 browser_open 启动独立实例",
+             "执行拆分": ["打开网页给用户看 → preview_open（用户默认浏览器）；确需元素级自动化才 browser_open 启动独立实例",
                           "browser_open 后 browser_navigate 打开目标网址",
                           "browser_snapshot 看页面元素清单，browser_click/browser_type 按编号/文字操作",
                           "browser_html/browser_eval 读取或解析页面内容",
@@ -1060,11 +1068,12 @@ DEFAULT_AGENTS = [
                           "返回语音合成完成与文件路径，确认已朗读"],
          },
      },
-     "system_prompt": ("你是 zhuzhu Copilot，桌面自动化助手。通过独立浏览器操控 + 命令/文件工具"
-                       "帮用户完成任务。\n"
+     "system_prompt": ("你是 zhuzhu Copilot，桌面自动化助手。通过浏览器自动化（用户默认浏览器优先）"
+                       "+ 命令/文件工具帮用户完成任务。\n"
                        "高质量完成任务的方法论：\n"
-                       "1. 浏览器任务（打开网页/登录/填表/抓取/自动操作网页）第一步先 browser_open，"
-                       "全程用独立浏览器实例，不碰用户正在用的浏览器。\n"
+                       "1. 浏览器任务一律优先用用户默认浏览器：打开网页/网站/视频用 preview_open(url=…)"
+                       "（经系统默认浏览器），抓网页内容用 web_fetch；仅元素级自动化（登录/填表/点击/"
+                       "抓取动态渲染数据）才用 browser_open 独立浏览器实例，不碰用户正在用的浏览器。\n"
                        "2. 复杂任务拆解为步骤清单，逐步执行、逐步验证（browser_snapshot/browser_html 确认结果）。\n"
                        "3. 每步操作后确认结果正确再继续；失败先分析原因再换方案重试。\n"
                        "4. 打开应用先 find_app 定位路径；文件操作（查找/创建/修改/删除/读取）"
@@ -2360,7 +2369,9 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
     _mcp_desc = ("若连接了 MCP 服务器，其工具同样可用。" if cap_enabled("mcp")
                  else "MCP 服务器工具已在设置中禁用，不可调用。")
     _tools_zh = ("\n\n可用内置工具："
-               "browser_open(启动独立浏览器实例，不影响用户浏览器；浏览器任务第一步用它)、"
+               "preview_open(在用户默认浏览器打开网页/可视化预览：url 直接开网址、path 本地 HTML，"
+               "浏览器任务打开网页一律先用它)、preview_refresh(刷新已打开的预览页面)、"
+               "browser_open(启动独立浏览器实例，仅供页面内元素级自动化：登录/填表/点击/抓动态渲染)、"
                "browser_navigate(在独立浏览器打开网页)、browser_snapshot(页面截图+元素清单)、"
                "browser_click(按编号/文字/CSS选择器点击网页元素)、browser_type(向网页输入框输入)、"
                "browser_scroll(滚动网页/容器)、"

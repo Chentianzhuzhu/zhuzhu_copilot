@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
+from app.redis_client import redis_l2, points_cache_key
 from app.services.ws_manager import ws_manager
 
 
@@ -360,8 +361,8 @@ async def confirm_order(
         },
     )
 
-    # 清除积分缓存
-    await redis.delete(f"points_cache:{user_id}")
+    # 清除积分缓存（L2 远程共享节点）
+    await redis_l2.delete(points_cache_key(user_id))
 
     # WebSocket 推送
     await ws_manager.send_to_user(user_id, {

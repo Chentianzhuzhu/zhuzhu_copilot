@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     # 指向远程缓存节点时使用 api_app 账号（见 outputs/redis_api_integration.md）。
     redis_user: str = ""
 
+    # L2 远程共享缓存节点（积分余额缓存/原子扣减等正确性敏感 + 跨机共享数据）。
+    # redis_l2_host 留空 = 未启用 L2，redis_l2 回落本机 redis_url（行为与旧版一致）。
+    redis_l2_host: str = ""
+    redis_l2_port: int = 6379
+    redis_l2_db: int = 0
+    redis_l2_user: str = ""
+    redis_l2_password: str = ""
+
     # JWT
     jwt_secret: str = "default_secret_change_in_production"
     jwt_algorithm: str = "HS256"
@@ -75,6 +83,17 @@ class Settings(BaseSettings):
         if self.redis_password:
             return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
+    @property
+    def redis_l2_url(self) -> str:
+        if not self.redis_l2_host:
+            # 未启用 L2：与本机 redis 同一实例，业务代码无需分支判断
+            return self.redis_url
+        if self.redis_l2_user and self.redis_l2_password:
+            return f"redis://{self.redis_l2_user}:{self.redis_l2_password}@{self.redis_l2_host}:{self.redis_l2_port}/{self.redis_l2_db}"
+        if self.redis_l2_password:
+            return f"redis://:{self.redis_l2_password}@{self.redis_l2_host}:{self.redis_l2_port}/{self.redis_l2_db}"
+        return f"redis://{self.redis_l2_host}:{self.redis_l2_port}/{self.redis_l2_db}"
 
     @property
     def cors_origin_list(self) -> list:

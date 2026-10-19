@@ -9,7 +9,7 @@ from PIL import Image
 
 from app.config import settings
 from app.database import get_db
-from app.redis_client import get_redis
+from app.redis_client import get_redis, redis_l2, points_cache_key
 from app.core.deps import get_current_admin
 from app.core.security import (verify_password, create_admin_jwt, decode_jwt,
                                hash_password, hash_answer)
@@ -226,7 +226,7 @@ async def create_user(
         )
 
     await db.commit()
-    await redis.delete(f"points_cache:{user_id}")
+    await redis_l2.delete(points_cache_key(user_id))
 
     return {"code": 0, "data": {
         "id": user_id, "username": username,
@@ -541,7 +541,7 @@ async def batch_adjust_points(
                  "detail": req.detail or "管理员批量调整"},
             )
             try:
-                await redis.delete(f"points_cache:{uid}")
+                await redis_l2.delete(points_cache_key(uid))
             except Exception:
                 pass
             changed[uid] = (new_balance, delta)
@@ -680,8 +680,8 @@ async def adjust_points(
         },
     )
 
-    # 清除积分缓存
-    await redis.delete(f"points_cache:{user_id}")
+    # 清除积分缓存（L2 远程共享节点）
+    await redis_l2.delete(points_cache_key(user_id))
 
     # WebSocket 推送
     await ws_manager.send_to_user(user_id, {

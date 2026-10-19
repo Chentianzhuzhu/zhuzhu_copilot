@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
+from app.redis_client import redis_l2, points_cache_key
 from app.services.ws_manager import ws_manager
 
 # 等级 → 每日签到积分（可在 system_config 用 checkin_reward_<tier> 覆盖）
@@ -166,8 +167,8 @@ async def check_in(
          "detail": f"每日签到({today_str}) 等级:{tier}"},
     )
 
-    # 清积分缓存
-    await redis.delete(f"points_cache:{user_id}")
+    # 清积分缓存（L2 远程共享节点）
+    await redis_l2.delete(points_cache_key(user_id))
 
     new_points_result = await db.execute(
         text("SELECT points FROM users WHERE id = :uid"), {"uid": user_id}

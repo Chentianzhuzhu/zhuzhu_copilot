@@ -33,8 +33,8 @@ description: 深度自定义总入口（Cordis 一切皆可替换/热插拔）�
 - **技能（SKILL.md 市场标准）**：`create_skill` 新建；或 skill-mgmt 导入/启停/删除。
   新技能描述写清触发条件与执行流程，创建后 /技能名 即可调用。
 - **插件（mcp/skill/combined/web 四型）**：`create_plugin` AI 生成可运行插件（含 MCP server +
-  SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url + browser_open 打开给用户，
-  操作者必须是用户本人，严禁 AI 与脚本自动对战）。
+  SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url 拿地址 + preview_open
+  在用户默认浏览器里打开给用户，操作者必须是用户本人，严禁 AI 与脚本自动对战）。
 - **外观（背景图）**：`set_app_background` 设置全局背景图（本地路径 / 图片网址 / 先
   generate_image 再传路径）、适配方式（cover/contain/stretch/tile）、高斯模糊
   （blur，px）与压暗强度（dim，%），即时生效；设了背景后主界面容器底色自动透明。

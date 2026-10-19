@@ -736,7 +736,7 @@ def create_plugin_from_nl(description: str, kind: str = "combined", on_status=No
         lines.append(f"技能: /{name} 或对话描述即可调用")
     if kind == "web":
         lines.append("浏览器界面: 先调用 web_url 工具获取访问地址，"
-                     "再用 browser_open 打开给用户（浏览器与 AI 共用同一份状态）。"
+                     "再用 preview_open 在用户默认浏览器里打开给用户（浏览器与 AI 共用同一份状态）。"
                      "操作者必须是用户本人，严禁 AI 自我演示或与脚本 AI 自动对战")
         lines.append("自检可用 web_fetch(url=\"http://127.0.0.1:<端口>/\") 复验页面与 "
                      "/api/<端点>（本地回环地址已放开，可直接抓取）。")
@@ -975,8 +975,8 @@ def _ai_generate_spec(desc: str, kind: str) -> dict:
             "为「需要图形化/可视化交互」的能力而生（如仪表盘、可视化面板、画布/表单类交互工具等）"
             "——AI 生成一个本地 HTTP 服务：用户在浏览器里直观操作/观看，LLM 通过同名 MCP 工具"
             "操控同一份共享状态。\n"
-            "**硬性要求：①插件创建后，AI 必须立即调用 web_url 获取地址并用 browser_open 在浏览器里"
-            "打开界面给用户；②图形化界面的操作者必须是用户本人——界面必须提供可供真人点击/输入/拖拽"
+            "**硬性要求：①插件创建后，AI 必须立即调用 web_url 获取地址并用 preview_open 在用户"
+            "默认浏览器里打开界面给用户；②图形化界面的操作者必须是用户本人——界面必须提供可供真人点击/输入/拖拽"
             "的交互控件（按钮/表单/画布等），状态变化由用户操作驱动；③严禁 AI 自我演示、自问自答或与脚本/"
             "自动化程序互演，AI 只负责通过 MCP 工具读写共享状态、辅助用户（如校验输入、"
             "展示状态、提示规则），状态推进必须由用户亲手在浏览器里完成。**\n"
@@ -996,7 +996,7 @@ def _ai_generate_spec(desc: str, kind: str) -> dict:
             '  "name": "插件名（英文，字母数字下划线连字符，≤50字符，小写）",\n'
             '  "summary": "一句话用途简介（中文）",\n'
             '  "skill_md": "（必填）该插件的 SKILL.md 正文（含 frontmatter 的 name/description，'
-            '中文）：写清何时使用本插件、先 web_url+browser_open 打开界面给用户、'
+            '中文）：写清何时使用本插件、先 web_url+preview_open（用户默认浏览器）打开界面给用户、'
             '严禁 AI 自我演示/与脚本互演、以及可用的 MCP 工具与浏览器操作如何配合",\n'
             '  "web_page": "（必填）完整单页 HTML 字符串（UTF-8，标题用插件名；操作界面直接用 '
             '<div>/<table>/canvas 绘制；页面内 JS 用 fetch 调用同源 /api/<端点名> 完成状态读写与操作；'
@@ -1299,7 +1299,7 @@ def _assemble_web_server_py(name: str, web_page: str, api: list) -> str:
     架构：AI 生成的单页 HTML（_PAGE）由 HTTP / 提供；API 端点与 MCP 工具共用同一批
     _HANDLERS（操作模块级 _STATE 共享状态）——浏览器（/api/<端点>）与 LLM
     （MCP tools/call）操控同一份状态。端口启动时自动分配（bind 0），
-    自动注入 web_url 工具返回浏览器访问地址（AI 用 browser_open 打开给用户）。
+    自动注入 web_url 工具返回浏览器访问地址（AI 用 preview_open 在用户默认浏览器里打开给用户）。
     """
     impls, handlers, tools_entries, api_methods = [], [], [], []
     for i, e in enumerate(api or []):
@@ -1382,7 +1382,7 @@ _API_METHODS = {{
 
 TOOLS = [
 {tools_txt}
-    {{"name": "web_url", "description": "返回该插件的浏览器访问地址，用 browser_open 打开给用户",
+    {{"name": "web_url", "description": "返回该插件的浏览器访问地址，用 preview_open 在用户默认浏览器里打开给用户",
       "inputSchema": {{"type": "object", "properties": {{}}}}}},
 ]
 

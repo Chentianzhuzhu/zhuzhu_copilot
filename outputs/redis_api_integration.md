@@ -313,9 +313,29 @@ systemctl restart auth-server
 
 ---
 
-## 九、遗留事项
+## 九、正式启用记录（2026-10-19）
 
-1. **积分对账任务**：需在业务服务器建定时任务比对 MySQL 与 Redis 余额，可另行提供脚本。
+L2 已上线（L1/L2 混合架构，区别于第八节讨论的"整体切换"）：
+
+**启用范围**
+- **远程节点接管**：积分余额缓存 + 原子扣减（key `points:cache:{uid}`，由旧名 `points_cache:{uid}` 统一迁移以匹配 `~points:*` ACL 前缀）
+- **仍在本机**：会话、登录限流、登录 state、pub/sub、管理员会话——强热路径不受 39ms RTT 影响
+
+**代码变更**（本地与服务器同步，备份在服务器 `/www/auth-server/.bak_l2_<时间戳>/`）
+- `app/config.py`：新增 `redis_l2_*` 配置；`redis_l2_host` 为空时 L2 回落本机（**回滚 = 删 .env 里 5 行 REDIS_L2_* 再重启**）
+- `app/redis_client.py`：新增 `redis_l2` 客户端 + `points_cache_key()` helper
+- `app/services/points_service.py`：扣减改为 Lua 原子脚本（查余额+校验+扣减+刷 TTL 一次往返），**修复旧版 GET→DECRBY 非原子导致的高并发负余额漏洞**
+- `order_service.py` / `checkin_service.py` / `admin.py`：清积分缓存改删 L2
+
+**上线验证**
+- 20 路并发扣 50（余额 700）：恰好成功 14 次、余额精确 0、无负数
+- 服务重启后 21 个线上请求全部 200，无错误日志
+- 会话/pubsub 热路径行为不变（`.env` 主 Redis 配置未动）
+
+## 十、遗留事项
+
+1. **积分对账任务**：MySQL 与 Redis(L2) 余额比对，可另行提供脚本（现在更有意义：L2 成为余额缓存的权威层）。
 2. **消息队列**：远程节点 `appendonly no`（纯缓存定位），若要存不能丢的队列数据需先改 AOF。
 3. **本机 Redis 无密码**：app 服务器上的 127.0.0.1 Redis 未设密码，仅监听回环所以风险可控，建议加 `requirepass`。
 4. 应用服务器磁盘已用 73%（27G/40G），暂无需处理，留意增长。
+5. **加第二台应用服务器时**：会话 `session:*` 也迁到 L2（代码只需改 `.env` 的 REDIS_L2 并调整 `redis_url` 指向），积分已就绪。

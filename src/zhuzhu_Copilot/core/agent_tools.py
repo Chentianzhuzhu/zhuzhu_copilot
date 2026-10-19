@@ -773,9 +773,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_open",
-            "description": "打开并接管独立浏览器，浏览器任务（打开网页/登录/填表/抓取/自动操作网页）"
-                           "第一步先 browser_open，之后用 browser_navigate/browser_snapshot/browser_click/"
-                           "browser_type/browser_eval/browser_html 完成操作。",
+            "description": "启动独立浏览器实例（CDP 元素级自动化专用）。**浏览器任务一律优先用"
+                           "用户默认浏览器**：给用户打开网页/网站/视频用 preview_open(url=…)（经系统"
+                           "默认浏览器打开），读取网页内容用 web_fetch；本工具仅在任务需要页面内"
+                           "元素级自动化（登录/填表/点击/抓取动态渲染数据）时使用。启动后用 "
+                           "browser_navigate/browser_snapshot/browser_click/browser_type/"
+                           "browser_eval/browser_html 完成操作。",
             "parameters": {"type": "object",
                            "properties": {
                                "engine": {"type": "string",
@@ -926,12 +929,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "preview_open",
-            "description": "在你的浏览器里打开可视化预览（页面/原型/图表/报告等产物的展示）。"
+            "description": "在**用户默认浏览器**里打开可视化预览（页面/原型/图表/报告等产物的展示）。"
                            "凡是「要不要把结果展示给用户看」的判断都由你按任务内容决定："
                            "只要产出了适合可视化查看的东西（HTML 页面、原型、图表、仪表盘、"
                            "排版报告、网页效果），收尾前就应当调用本工具展示，不要只贴在对话里。"
                            "本地 HTML 产物传 path（推荐，支持刷新与自动跟随文件变化）；"
-                           "也可传 url 直接打开网址，或传 html 给一段 HTML 内容。",
+                           "也可传 url 用默认浏览器直接打开网址（**打开网页/网站类浏览器任务的"
+                           "默认途径**），或传 html 给一段 HTML 内容。",
             "parameters": {"type": "object",
                            "properties": {
                                "path": {"type": "string",
@@ -1610,7 +1614,8 @@ TOOLS = [
                            "需要图形化/可视化交互的能力（仪表盘/可视化面板/画布表单类工具）应选 web 型："
                            "一次生成**三件套** —— SKILL.md 技能 + MCP 工具 + 本地 HTTP Server 浏览器界面"
                            "（用户在浏览器直观操作，LLM 通过同名 MCP 工具操控同一份状态）。"
-                           "web 型创建后必须立即调用 web_url + browser_open 把浏览器界面打开给用户；"
+                           "web 型创建后必须立即调用 web_url 获取地址并用 preview_open 在用户"
+                           "默认浏览器里打开界面给用户；"
                            "操作者必须是用户本人，严禁 AI 自我演示、自问自答或与脚本/"
                            "自动化程序互演；可用 web_fetch(\"http://127.0.0.1:<端口>/\") 复验本地页面"
                            "（本地回环/内网地址已放开，可直接抓取）。设计时优先把能力拆成 LLM 可以直接"

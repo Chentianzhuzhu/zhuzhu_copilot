@@ -47,15 +47,31 @@ def load_api_key() -> str:
     return ""
 
 
+def _read_config_file() -> dict:
+    """读取 tts.json；文件不存在 / 为空 / 损坏（如写入中断留下的全 0 字节）一律返回 {}。
+
+    与 agent_asr._read_config 同策略：配置损坏绝不能让保存/朗读功能崩掉。
+    """
+    try:
+        if CONFIG_FILE.exists():
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
 def save_config(api_key: str = "", target_model: str = DEFAULT_TARGET_MODEL,
                 voice_id: str = "", preferred_name: str = "", auto_read: bool = True,
                 speech_rate: float = 1.0, voice_angry_id: str = "") -> bool:
     """保存 TTS 配置到独立文件 tts.json（设置面板写入，避免被 settings.json 覆写）
-    voice_id 为默认音色（正常/高兴），voice_angry_id 为生气/怀疑专用音色。"""
+    voice_id 为默认音色（正常/高兴），voice_angry_id 为生气/怀疑专用音色。
+
+    原有配置损坏时按全新配置处理（不抛 JSONDecodeError 中断保存）；
+    写入采用"临时文件 + os.replace"原子替换，避免写入中断再次留下半截/全 0 文件。
+    """
     try:
-        data = {}
-        if CONFIG_FILE.exists():
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        data = _read_config_file()
         data["api_key"] = api_key or data.get("api_key", "")
         data["target_model"] = target_model or data.get("target_model", DEFAULT_TARGET_MODEL)
         data["voice_id"] = voice_id or data.get("voice_id", "")
@@ -64,7 +80,9 @@ def save_config(api_key: str = "", target_model: str = DEFAULT_TARGET_MODEL,
         data["auto_read"] = bool(auto_read)
         data["speech_rate"] = float(speech_rate or 1.0)
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, CONFIG_FILE)
         return True
     except OSError:
         return False
@@ -75,8 +93,7 @@ def load_config() -> dict:
     data = {"target_model": DEFAULT_TARGET_MODEL, "voice_id": "", "voice_angry_id": "",
             "preferred_name": "", "auto_read": True, "speech_rate": 1.0}
     try:
-        if CONFIG_FILE.exists():
-            data.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
+        data.update(_read_config_file())
     except Exception:
         pass
     return data

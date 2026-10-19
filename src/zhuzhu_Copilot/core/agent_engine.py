@@ -2,8 +2,9 @@
 
 - 流式输出：LLM 逐 token 回调（UI 实时显示）
 - 工具调用：内置工具 + MCP 工具；每个工具执行前回调 confirm（UI 弹窗每步确认）
-- 浏览器：AI 用 browser_open/navigate/snapshot/click 等独立浏览器工具操控网页，
-  browser_snapshot 返回的页面截图作为视觉输入
+- 浏览器：给用户打开网页/网站一律用用户默认浏览器（preview_open，经系统默认浏览器）；
+  仅元素级自动化（登录/填表/点击/抓动态渲染）用 browser_open/navigate/snapshot/click 等
+  独立浏览器工具操控网页，browser_snapshot 返回的页面截图作为视觉输入
 - 沙盒：危险工具即使批准也由 agent_tools 硬拒绝
 - tokens：发送前预计算（estimate），响应后累计实际 usage
 """

@@ -225,6 +225,9 @@ _INPUT_CARET_BASE_ALPHA = 0.70
 # 输入框描边（自定义背景下）：淡灰。用它而不是主题描边色，是为了在花背景上立住
 # 输入框边界；不用纯黑是为了不和纯黑文字/光标粘连（详见 _input_border）。
 _INPUT_CARET_BORDER = "#E3E8F0"
+# 输入框圆角半径（px）：QSS（_input_qss）与语音遮罩裁剪（_VoiceOverlay.paintEvent）
+# 共用同一来源 —— 遮罩要与输入框边框圆角贴合，半径分开写必然漂移。
+_INPUT_RADIUS = 10
 
 # 全局滚动条滑块不透明度：淡灰极简，滑块压到 30% 半透明（悬停提亮到 55% 保持可辨）
 _SCROLLBAR_OPACITY = 0.30
@@ -562,7 +565,7 @@ def _input_qss() -> str:
     border = _input_border()
     return (f"QPlainTextEdit {{ background: {_input_bg()}; color: {_input_fg()};"
             f" border: 1px solid {border};"
-            "border-radius: 10px; padding: 5px 10px; font-size: 14px; }}"
+            f"border-radius: {_INPUT_RADIUS}px; padding: 5px 10px; font-size: 14px; }}"
             f"QPlainTextEdit:focus {{ border: 1px solid {border}; }}")
 
 
@@ -612,6 +615,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     global CODE_BG
     global ICON_GRAY
     global _BTN_GHOST, _BTN_COMPACT, _BTN_GHOST_ACCENT, _BTN_PRIMARY, _BTN_DIM
+    global _BTN_GHOST_FRAMED
     global _QCOMBO, _HOME_COMBO, _BTN_ICON, _BTN_DANGER
     global _THEME_VERSION, _LAST_PALETTE
     # 幂等：色板与上次一致则跳过，避免 _THEME_VERSION 无谓自增 + QSS 重复生成
@@ -657,6 +661,16 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                     f"font-size: {FONT_SMALL}px; }}"
                     f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
                     f"background: {HOVER}; }}")
+    # 顶栏「清空对话」等删除类入口的 ghost：描边与同排其他 ghost 按钮（_BTN_GHOST）
+    # 同源取当前主题 BORDER 色，保证四个按钮描边颜色一致（壁纸透明态下 BORDER 被
+    # 覆写为 transparent 时也随同排一起失去轮廓，保持整排观感统一）；
+    # hover 仍用主题强调色提示可交互。
+    _BTN_GHOST_FRAMED = (f"QPushButton {{ background: transparent; color: {TEXT_DIM};"
+                         f"border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
+                         f"padding: {SPACING_SM}px {SPACING_MD}px;"
+                         f"font-size: {FONT_SMALL}px; font-weight: 600; }}"
+                         f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
+                         f"background: {HOVER}; }}")
     _BTN_GHOST_ACCENT = (f"QPushButton {{ background: transparent; color: {ACCENT_HOVER};"
                          f"border: 1px solid {BORDER_SOFT}; border-radius: {RADIUS_SM}px;"
                          f"padding: {SPACING_SM}px {SPACING_MD}px;"
@@ -11968,19 +11982,28 @@ class CodePreviewWindow(QWidget):
             f"QScrollArea > QWidget > QWidget {{ background: {surf}; }}"
             + _scrollbar_css(6, 3, both=True))
         self.img_label.setStyleSheet(f"background: {surf};")
-        # 提示芯片：「提示面」保持实色底（与 Tooltip 同策略，可读性优先）
+        # 提示芯片：随面板透明（用户要求预览面板在自定义背景下的底色/边框全透明；
+        # 非壁纸模式回落原始色板实色，可读性不受影响）
         self._office_loading.setStyleSheet(
             f"color: {TEXT}; font-size: 12px; padding: 3px 8px;"
-            f"background: {_base_color('PANEL')};"
-            f" border: 1px solid {_base_color('BORDER')}; border-radius: 5px;")
+            f"background: {_panel_surface('PANEL')};"
+            f" border: 1px solid {_panel_stroke('BORDER')}; border-radius: 5px;")
         web = getattr(self, "office_web", None)          # 懒建：未预览 Office 时为 None
         if web is not None:
             web.setStyleSheet(f"QWebEngineView {{ background: {surf}; border: none; }}")
+            # WebEngine 的页面底色不走 QSS（默认纯白）：壁纸模式改透明，让文档
+            # 内容区以外的部分透出壁纸（文档本体自带白底不受影响）；
+            # 非壁纸模式显式回白色，透明态翻转后不至于残留透明页底。
+            try:
+                web.page().setBackgroundColor(
+                    QColor(0, 0, 0, 0) if _feedback_boosted() else QColor("#FFFFFF"))
+            except Exception:
+                pass
         bar = getattr(self, "media_ctrl_bar", None)      # 懒建：未播放媒体时为 None
         if bar is not None:
-            # 媒体控制条：按钮/滑杆所在交互条，保持实色底
+            # 媒体控制条：按钮/滑杆所在交互条，随面板透明（同提示芯片策略）
             bar.setStyleSheet(
-                f"background: {_base_color('PANEL')}; border-radius: 6px;")
+                f"background: {_panel_surface('PANEL')}; border-radius: 6px;")
         # Office 放映控制条那排按钮：统一重设为当前主题配色（按钮保持实色底），
         # 避免残留旧主题深色。
         for b in getattr(self, "_slide_btns", None) or ():
@@ -14641,7 +14664,7 @@ class _CuteBubble(QLabel):
 
 
 class _VoiceOverlay(QWidget):
-    """语音输入遮罩：盖在输入框上的一层深蓝渐变，亮度与条形频谱跟随说话音量。
+    """语音输入遮罩：盖在输入框上的一层深蓝渐变，亮度与平滑声波跟随说话音量。
 
     设计要点
     --------
@@ -14651,6 +14674,8 @@ class _VoiceOverlay(QWidget):
       （缓慢退去）。线性对称的话，环境噪声一停遮罩就"闪崩"，观感很吵。
     - **不订内容高度**：高度始终贴合输入框（``_sync_geometry`` 写满父控件），
       输入框因多行内容被 ``_auto_height`` 拉高时遮罩跟着变高，不会露半边。
+    - **圆角贴合**：paintEvent 按输入框圆角（_INPUT_RADIUS）裁剪绘制区域，
+      遮罩四角与输入框边框圆角严丝合缝，不顶出直角。
     - 自己画（``paintEvent`` + ``WA_NoSystemBackground``），不靠 QSS：
       QSS 无法表达"渐变透明度随每帧变化"。
     """
@@ -14762,6 +14787,11 @@ class _VoiceOverlay(QWidget):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            # 圆角贴合：与输入框同半径（_INPUT_RADIUS）裁剪，遮罩不顶出直角
+            clip = QPainterPath()
+            clip.addRoundedRect(0.0, 0.0, float(w), float(h),
+                                float(_INPUT_RADIUS), float(_INPUT_RADIUS))
+            painter.setClipPath(clip)
             # 底：深蓝，透明度随音量 70 → 205。压暗但不遮死文字，
             # 录音中用户仍能看清已识别的文字。
             top = QColor(16, 42, 102, int(70 + 135 * lv))
@@ -15823,7 +15853,7 @@ class AgentPanel(QDialog):
         clear_btn.setIconSize(QSize(18, 18))
         clear_btn.setToolTip(_ui("清空上下文并永久删除该对话（二次弹窗确认，不可恢复）"))
         clear_btn.setAutoDefault(False)
-        clear_btn.setStyleSheet(_BTN_GHOST)
+        clear_btn.setStyleSheet(_BTN_GHOST_FRAMED)   # 删除类入口：固定淡灰描边（见皮肤注释）
         clear_btn.clicked.connect(self._clear_chat)
         top.addWidget(clear_btn)
 

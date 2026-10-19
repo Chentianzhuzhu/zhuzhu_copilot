@@ -4426,7 +4426,7 @@ def tool_control(args: dict) -> str:
 
 def tool_web_url(args: dict) -> str:
     return (f"可视化界面: http://127.0.0.1:{_STATE['web_port']}/ —— "
-            "请用 browser_open 打开给用户，用户可在该界面实时观看操控画面、查看操作日志，"
+            "请用 preview_open 在用户默认浏览器里打开给用户，用户可在该界面实时观看操控画面、查看操作日志，"
             "并可一键「接管 / 暂停 / 恢复」。")
 
 
@@ -4938,7 +4938,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "description": "on/off/state（默认 state）"}}}},
     {"name": "web_url", "description":
-        "返回本地可视化界面的访问地址（用 browser_open 打开给用户实时观看操控过程与日志）。",
+        "返回本地可视化界面的访问地址（用 preview_open 在用户默认浏览器里打开给用户，实时观看操控过程与日志）。",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
 

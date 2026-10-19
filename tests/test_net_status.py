@@ -132,13 +132,32 @@ def test_host_port_skips_local():
 def test_default_targets_never_include_public_dns(monkeypatch):
     """回归：公共 DNS（含 Cloudflare 1.1.1.1）不得再作为连通性判据。"""
     monkeypatch.setattr(net_status, "_proxy_endpoint", lambda: None)
-    monkeypatch.setattr(net_status, "_update_server_endpoint", lambda: ("update.example.com", 443))
     monkeypatch.setattr(net_status, "_model_endpoints", lambda: [("api.example.com", 443)])
     targets = net_status.default_targets(force_refresh=True)
-    # 模型 API 优先：更新服务器常挂 Cloudflare，被网关封掉不代表模型不可用
-    assert targets == [("api.example.com", 443), ("update.example.com", 443)]
-    banned = {"1.1.1.1", "8.8.8.8", "223.5.5.5", "9.9.9.9"}
+    assert targets == [("api.example.com", 443)]
+    banned = {"1.1.1.1", "1.0.0.1", "8.8.8.8", "223.5.5.5", "9.9.9.9"}
     assert not banned & {h for h, _ in targets}
+
+
+def test_default_targets_exclude_update_server(monkeypatch):
+    """回归：更新服务器（挂 Cloudflare）不参与连通性判定（企业网封 CF 会拖慢探测）。"""
+    monkeypatch.setattr(net_status, "_proxy_endpoint", lambda: None)
+    monkeypatch.setattr(net_status, "_model_endpoints", lambda: [])
+    net_status._update_server_endpoint = lambda: ("update.example.com", 443)
+    targets = net_status.default_targets(force_refresh=True)
+    assert targets == []
+    assert ("update.example.com", 443) not in targets
+
+
+def test_probe_filters_cloudflare_dns_even_when_passed_directly():
+    """回归：即使调用方直接传 CF 公共 DNS，probe 也必须一票否决。"""
+    assert net_status._is_banned(("1.1.1.1", 53))
+    assert net_status._is_banned(("1.0.0.1", 853))
+    assert net_status._is_banned(("2606:4700:4700::1111", 53))
+    assert net_status._is_banned(("ONE.ONE.ONE.ONE", 443))   # 大小写不敏感
+    assert not net_status._is_banned(("api.example.com", 443))
+    # 直接传入 CF 节点 → 过滤后无目标 → 返回 None（不是 False/离线证据）
+    assert net_status.probe([("1.1.1.1", 53), ("1.0.0.1", 443)], timeout=0.1, budget=0.2) is None
 
 
 def test_probe_budget_holds_even_when_dns_hangs(monkeypatch):

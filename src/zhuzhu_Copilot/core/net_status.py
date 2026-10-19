@@ -17,8 +17,11 @@
 现在的三条原则
 --------------
 1. **UI 线程零 I/O**：探测只在后台线程跑，UI 只读缓存结果。
-2. **只探测应用真正要用的服务**（系统代理 / 更新服务器 / 模型 API）；
+2. **只探测应用真正要用的服务**（系统代理 / 模型 API）；
    公共 DNS 不再参与判定，探测失败也不再直接等于离线。
+   **Cloudflare 节点一律排除**：CF 公共 DNS（1.1.1.1 等）被企业网关整段封锁是
+   常态，挂 CF 的更新服务器同样如此 —— 探测它们只会白耗预算、拖慢退避，还让
+   企业网用户看到假的「受限/离线」。
 3. **多信号三态**：应用自身请求成功 > 服务端点可达 > 系统链路状态，
    最终给出 ``online`` / ``limited`` / ``offline``，把「探测被网关拦截」
    如实说成「受限」，而不是谎报「离线」。
@@ -96,6 +99,23 @@ def interval(fail_count: int | None = None) -> float:
 
 
 # ---------------------------------------------------------------- 探测目标
+# Cloudflare 公共 DNS 与其他一票否决的节点：企业网封锁 CF 网段是常态，探测它们
+# 只会拖慢探测/退避并造成误判（用户要求：连通性检测不 ping 任何 CF 相关节点）。
+# 按主机名/IP 一票否决，端口无关（53/853/443 都不给探）。
+_BANNED_HOSTS = frozenset({
+    "1.1.1.1", "1.0.0.1",                       # Cloudflare DNS（IPv4）
+    "2606:4700:4700::1111", "2606:4700:4700::1001",   # Cloudflare DNS（IPv6）
+    "one.one.one.one", "cloudflare-dns.com",     # 上述 IP 的域名形式
+})
+
+
+def _is_banned(hp) -> bool:
+    """该 (host, port) 是否属于一票否决的探测目标（Cloudflare 公共 DNS 等）。"""
+    if not hp:
+        return False
+    return str(hp[0]).strip().lower() in _BANNED_HOSTS
+
+
 def _host_port(url: str):
     """从 URL 里取 (host, port)；本机地址返回 None（探测本机说明不了外网状态）。"""
     try:
@@ -169,13 +189,17 @@ def _model_endpoints():
 
 
 def default_targets(force_refresh: bool = False) -> list:
-    """本轮要探测的 (host, port) 列表：代理 → 模型 API → 更新服务器。
+    """本轮要探测的 (host, port) 列表：代理 → 模型 API。
 
-    刻意**不含公共 DNS**（8.8.8.8 / 223.5.5.5 / 1.1.1.1）：它们被企业网关
+    刻意**不含公共 DNS**（8.8.8.8 / 223.5.5.5 / 1.1.1.1 等）：它们被企业网关
     拦截是常态，而且与应用能不能工作没有必然关系——正是旧实现误报离线的根源。
 
-    模型 API 排在更新服务器之前：更新服务器常挂 Cloudflare，被企业网关整段
-    封掉的情况不少见，而「模型能不能用」才是用户真正关心的连通性。
+    刻意**不含更新服务器**：它挂在 Cloudflare 后面（见 update_check.py），企业网
+    封锁 CF 网段时探测它只会白耗预算、拖慢退避节奏（用户要求：连通性检测不碰
+    任何 Cloudflare 相关节点）。更新可达性由 update_check 自己的轮询与退避负责。
+
+    `_update_server_endpoint` 保留不删：update_check / 排障日志仍可能用到它的
+    解析逻辑，只是连通性判定不再依赖。
     """
     global _targets_cache
     now = time.monotonic()
@@ -184,8 +208,8 @@ def default_targets(force_refresh: bool = False) -> list:
         if cached and not force_refresh and (now - ts) < TARGETS_TTL:
             return list(cached)
     targets: list = []
-    for hp in (_proxy_endpoint(), *_model_endpoints(), _update_server_endpoint()):
-        if hp and hp not in targets:
+    for hp in (_proxy_endpoint(), *_model_endpoints()):
+        if hp and hp not in targets and not _is_banned(hp):
             targets.append(hp)
     with _LOCK:
         _targets_cache = (now, list(targets))
@@ -227,7 +251,8 @@ def probe(targets=None, timeout: float = PROBE_TIMEOUT,
     """
     if targets is None:
         targets = default_targets()
-    targets = list(targets)
+    # 一票否决兜底：即使调用方直接传目标，也绝不允许探测 Cloudflare 公共 DNS
+    targets = [hp for hp in list(targets) if not _is_banned(hp)]
     if not targets:
         return None
     box: dict = {}

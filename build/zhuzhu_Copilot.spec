@@ -119,6 +119,11 @@ a = Analysis(
         'zhuzhu_Copilot.utils.helpers',
         # TTS 自动朗读播放器（函数内动态 import pygame，显式声明防打包遗漏）
         'pygame',
+        # 语音输入（core/agent_asr.py 函数内动态 import websockets.sync.client）：
+        # 账号系统的 WS 用的是异步 websockets，同步子模块不会被其牵连收集，
+        # 漏声明会表现为「语音输入静默失效（ImportError 被兜住）」，显式声明防遗漏。
+        'websockets.sync.client',
+        'websockets.sync',
         # 内置浏览器（CodePreviewWindow/AI browser 工具）依赖 QtWebEngine：
         # 取消 excludes 排除后会经 PyInstaller 官方 hook 自动收集 QtWebEngineProcess、
         # 资源包(resources.pak/locales)与相关 Qt 模块，这里显式声明防遗漏。
@@ -135,6 +140,10 @@ a = Analysis(
         'win32con',
         # agent_panel 的 _svg_icon 渲染 Lucide SVG 矢量图标依赖 QtSvg
         'PyQt6.QtSvg',
+        # 顶栏网络状态用 QNetworkInformation（Windows 网络列表管理器）判断系统可达性：
+        # 在 ui/agent_panel.py 函数内导入，且该模块会被 Cython 编译为 .pyd，
+        # PyInstaller 无法分析其内部导入，必须显式声明，否则打包后静默退化为纯探测。
+        'PyQt6.QtNetwork',
         # win32com 为动态包，需完整收集子模块（快捷方式 TargetPath 读取依赖）
         *collect_submodules('win32com'),
         # 三件套图片依赖：docx/pptx/openpyxl 的 add_picture/add_image 运行时 import PIL，显式声明确保随包

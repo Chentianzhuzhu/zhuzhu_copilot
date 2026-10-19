@@ -91,7 +91,7 @@
 | `login_lock:{ip}` | STRING | 300s | IP登录锁定标记 |
 | `register_ip:{ip}` | STRING | 永久(MySQL持久化) | IP注册标记 |
 | `session:{token}` | HASH | 86400s | 会话：user_id, username, avatar |
-| `points_cache:{user_id}` | STRING | 300s | 积分缓存 |
+| `points:cache:{user_id}` ⚠L2 | STRING | 300s | 积分缓存（远程共享节点，前缀满足 api_app ACL） |
 | `ws_user:{user_id}` | SET | - | 用户WebSocket连接ID集合 |
 | `admin_session:{token}` | HASH | 7200s | 管理员会话 |
 | `login_state:{state}` | STRING(json) | 600s | 登录握手 state（防 CSRF/重放；登录/注册阶段非破坏性校验） |
