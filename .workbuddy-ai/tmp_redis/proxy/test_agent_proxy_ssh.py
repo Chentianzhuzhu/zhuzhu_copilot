@@ -1,0 +1,119 @@
+"""agent_proxy SSH 隧道回退端到端测试（真实服务器 122.228.216.138）。
+
+用例：
+  A. 直连成功 → 不走 SSH（urllib 原路径）
+  B. 直连失败 → 回退 SSH 隧道 → 请求成功
+  C. 代理未启用 → 直连失败直接抛错
+  D. 回退目标为本机地址 → 不走 SSH
+  E. SSH 隧道多域名实测（github / pypi / cloudflare / python）
+"""
+import sys
+import types
+
+SRC = r"C:\Users\zhuzhu\Desktop\zhuzhu Copilot\src"
+sys.path.insert(0, SRC)
+
+CFG = {"proxy_enabled": "1", "proxy_host": "122.228.216.138", "proxy_port": "22",
+       "proxy_user": "root", "proxy_pass": "SyPbFW4SToAj7BYU"}
+fake = types.ModuleType("zhuzhu_Copilot.core.agent_skills")
+fake.settings_view = lambda: CFG
+fake.cap_enabled = lambda key: True
+pkg = types.ModuleType("zhuzhu_Copilot")
+pkg.__path__ = []
+core = types.ModuleType("zhuzhu_Copilot.core")
+core.__path__ = [SRC + r"\zhuzhu_Copilot\core"]
+sys.modules["zhuzhu_Copilot"] = pkg
+sys.modules["zhuzhu_Copilot.core"] = core
+sys.modules["zhuzhu_Copilot.core.agent_skills"] = fake
+
+from zhuzhu_Copilot.core import agent_proxy  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+UA = {"User-Agent": "zhuzhu-copilot-proxy-test"}
+real_urlopen = urllib.request.urlopen
+
+
+def case_a():
+    # 用国内必通的站点验证直连成功路径不触发 SSH 回退
+    req = urllib.request.Request("https://www.baidu.com", headers=UA)
+    with agent_proxy.urlopen(req, timeout=20) as resp:
+        assert resp.status == 200, resp.status
+    assert not agent_proxy.last_fallback(), "direct-ok should not engage fallback"
+    print("A direct-ok: 200 (no fallback engaged)")
+
+
+def case_b():
+    def boom(req, timeout=None, **k):
+        raise urllib.error.URLError("simulated direct failure")
+    urllib.request.urlopen = boom
+    try:
+        req = urllib.request.Request("https://api.github.com", headers=UA)
+        with agent_proxy.urlopen(req, timeout=25) as resp:
+            assert resp.status == 200, resp.status
+            body = resp.read()
+        assert b"current_user_url" in body, "unexpected body"
+        print("B direct-fail -> SSH fallback: 200, body ok")
+        print("  last_fallback:", agent_proxy.last_fallback())
+    finally:
+        urllib.request.urlopen = real_urlopen
+
+
+def case_c():
+    def boom(req, timeout=None, **k):
+        raise urllib.error.URLError("simulated direct failure")
+    urllib.request.urlopen = boom
+    try:
+        CFG["proxy_enabled"] = "0"
+        req = urllib.request.Request("https://api.github.com", headers=UA)
+        agent_proxy.urlopen(req, timeout=3)
+        print("C disabled: UNEXPECTED success")
+    except urllib.error.URLError as e:
+        print("C disabled -> direct error raised as-is:", e)
+    finally:
+        urllib.request.urlopen = real_urlopen
+        CFG["proxy_enabled"] = "1"
+
+
+def case_d():
+    def boom(req, timeout=None, **k):
+        raise urllib.error.URLError("simulated direct failure")
+    urllib.request.urlopen = boom
+    try:
+        req = urllib.request.Request("http://127.0.0.1:59999/", headers=UA)
+        agent_proxy.urlopen(req, timeout=2)
+        print("D loopback: UNEXPECTED success")
+    except (urllib.error.URLError, OSError) as e:
+        print("D loopback -> no proxy attempted:", type(e).__name__)
+    finally:
+        urllib.request.urlopen = real_urlopen
+
+
+def case_e():
+    targets = [
+        ("https://pypi.org/simple/", b"pypi"),
+        ("https://www.cloudflare.com/cdn-cgi/trace", b"fl="),
+        ("https://www.python.org/", b"python"),
+    ]
+    for url, marker in targets:
+        def boom(req, timeout=None, **k):
+            raise urllib.error.URLError("simulated direct failure")
+        urllib.request.urlopen = boom
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with agent_proxy.urlopen(req, timeout=25) as resp:
+                body = resp.read(2048)
+                ok = resp.status == 200 and (not marker or marker in body.lower())
+                print(f"E {url}: status={resp.status} marker={'hit' if ok else 'MISS'}")
+                assert ok, f"unexpected response for {url}"
+        finally:
+            urllib.request.urlopen = real_urlopen
+
+
+if __name__ == "__main__":
+    case_a()
+    case_b()
+    case_c()
+    case_d()
+    case_e()
+    print("ALL CASES DONE")

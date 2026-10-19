@@ -130,7 +130,9 @@ class DownloadTask:
         if headers:
             h.update(headers)
         req = urllib.request.Request(self.url, method=method, headers=h)
-        return urllib.request.urlopen(req, timeout=_TIMEOUT)
+        # agent_proxy：直连失败且配置了代理时自动经代理重试（GitHub 等下载源被拦截的场景）
+        from zhuzhu_Copilot.core import agent_proxy
+        return agent_proxy.urlopen(req, timeout=_TIMEOUT)
 
     def _probe_head(self) -> bool:
         """HEAD 探测大小与 Range 支持"""

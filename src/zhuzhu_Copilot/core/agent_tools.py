@@ -4385,12 +4385,14 @@ def _http_request(url: str, timeout: int = 15, max_bytes: int = 512 * 1024,
         hdrs.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     # 网络抖动 / 5xx / 429 自动指数退避重试（最多 2 次），提升联网任务成功率；
-    # 4xx（403/404 等）与业务性错误不重试，避免无意义重复请求
+    # 4xx（403/404 等）与业务性错误不重试，避免无意义重复请求。
+    # agent_proxy.urlopen：直连失败时经 SSH 隧道回退（GitHub/Cloudflare 等被拦截的场景）。
+    from zhuzhu_Copilot.core import agent_proxy
     import time as _time
     raw, charset = None, None
     for _attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with agent_proxy.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read(max_bytes + 1)
                 # 编码探测 1：响应头 Content-Type charset
                 charset = None

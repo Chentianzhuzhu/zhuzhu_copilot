@@ -18,3 +18,5 @@ pygame>=2.5
 # 账号系统：WebSocket 长连接（积分推送/强制下线）；httpx 保留为后续异步请求预留
 websockets>=12.0
 httpx>=0.27
+# 网络代理回退：SSH 隧道（应用内请求直连失败时经 SSH 中转 GitHub/Cloudflare 等）
+paramiko>=3.4

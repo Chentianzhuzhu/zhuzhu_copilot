@@ -3254,6 +3254,65 @@ class _AgentSettingsDialog(QDialog):
             "padding: 6px 10px; font-size: 13px; }}"
             f"QPlainTextEdit:focus {{ border: 1px solid {self._BORDER}; }}")
         lay.addWidget(self.disable_tools_edit)
+        # 网络代理回退：直连更新服务器/GitHub 等失败时经 SSH 隧道中转（settings proxy_*）
+        proxy_lbl = QLabel(_ui("网络代理（SSH 隧道，直连失败自动中转）"))
+        proxy_lbl.setStyleSheet(
+            f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
+        lay.addWidget(proxy_lbl)
+        self.proxy_check = QCheckBox(_ui("启用 SSH 隧道回退（直连失败时经 SSH 中转一次）"))
+        self.proxy_check.setChecked(
+            str(s.get("proxy_enabled", "0")).strip().lower() in ("1", "true", "on", "yes"))
+        self.proxy_check.setToolTip(_ui(
+            "开启后，模型请求/网页抓取/更新/下载遇到直连超时或被拦截时，"
+            "自动经下方 SSH 服务器中转重试；直连正常时不经过隧道，不影响现有网络路径"))
+        self.proxy_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
+        lay.addWidget(self.proxy_check)
+        proxy_sub = QLabel(_ui(
+            "填入 SSH 服务器的 IP、端口、用户名与密码。应用内网络请求直连失败时自动经此"
+            " SSH 隧道中转，覆盖 GitHub / Cloudflare / npm / PyPI 等开发者平台与更新服务器。"))
+        proxy_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        proxy_sub.setWordWrap(True)
+        lay.addWidget(proxy_sub)
+        proxy_grid = QGridLayout()
+        proxy_grid.setHorizontalSpacing(8)
+        proxy_grid.setVerticalSpacing(6)
+
+        def _proxy_lineedit(key: str, placeholder: str, echo=False):
+            edit = QLineEdit()
+            edit.setPlaceholderText(_uim(placeholder))
+            if echo:
+                edit.setEchoMode(QLineEdit.EchoMode.Password)
+            edit.setText(str(s.get(key, "") or ""))
+            edit.setStyleSheet(
+                f"QLineEdit {{ background: {self._PANEL}; color: {self._TEXT};"
+                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                "padding: 6px 10px; font-size: 13px; }}"
+                f"QLineEdit:focus {{ border: 1px solid {self._BORDER}; }}")
+            return edit
+
+        self.proxy_host_edit = _proxy_lineedit("proxy_host", "SSH 服务器 IP / 域名，如 122.228.216.138")
+        self.proxy_port_edit = _proxy_lineedit("proxy_port", "端口，如 22")
+        self.proxy_user_edit = _proxy_lineedit("proxy_user", "SSH 用户名")
+        self.proxy_pass_edit = _proxy_lineedit("proxy_pass", "SSH 密码", echo=True)
+        _ph1 = QLabel(_ui("地址"))
+        _ph1.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        _ph2 = QLabel(_ui("端口"))
+        _ph2.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        _ph3 = QLabel(_ui("用户名"))
+        _ph3.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        _ph4 = QLabel(_ui("密码"))
+        _ph4.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        proxy_grid.addWidget(_ph1, 0, 0)
+        proxy_grid.addWidget(self.proxy_host_edit, 0, 1)
+        proxy_grid.addWidget(_ph2, 0, 2)
+        proxy_grid.addWidget(self.proxy_port_edit, 0, 3)
+        proxy_grid.addWidget(_ph3, 1, 0)
+        proxy_grid.addWidget(self.proxy_user_edit, 1, 1)
+        proxy_grid.addWidget(_ph4, 1, 2)
+        proxy_grid.addWidget(self.proxy_pass_edit, 1, 3)
+        proxy_grid.setColumnStretch(1, 1)
+        proxy_grid.setColumnStretch(3, 1)
+        lay.addLayout(proxy_grid)
         # 趣味互动：AI 随机截屏分析屏幕并弹出俏皮锐评气泡（涉及周期性全屏截图，默认开启）
         fun_lbl = QLabel(_ui("趣味互动"))
         fun_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
@@ -7013,6 +7072,12 @@ class _AgentSettingsDialog(QDialog):
             "disabled_tools": [ln.strip().lower() for ln in
                                self.disable_tools_edit.toPlainText().splitlines()
                                if ln.strip()],
+            # 网络代理回退：保存后 agent_proxy 下次请求即按新配置生效（save_settings 已失效缓存）
+            "proxy_enabled": "1" if self.proxy_check.isChecked() else "0",
+            "proxy_host": self.proxy_host_edit.text().strip(),
+            "proxy_port": self.proxy_port_edit.text().strip(),
+            "proxy_user": self.proxy_user_edit.text().strip(),
+            "proxy_pass": self.proxy_pass_edit.text(),
             "model": model,
         }
         # 执行模式：写入 QSettings 并即时生效（保存成功与否的判定之外）

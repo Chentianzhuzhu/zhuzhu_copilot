@@ -195,8 +195,10 @@ def close_idle() -> None:
 
 
 def _urlopen(req, timeout: float):
-    import urllib.request as _ur
-    resp = _ur.urlopen(req, timeout=timeout)   # 必须关键字：urlopen 第二位置参数是 data
+    # agent_proxy.urlopen：直连优先，连接层失败时经 SSH 隧道回退一次
+    # （LLM API 在企业网/被拦截环境下的兜底通路）
+    from zhuzhu_Copilot.core import agent_proxy
+    resp = agent_proxy.urlopen(req, timeout)
     _note_traffic()
     return resp
 

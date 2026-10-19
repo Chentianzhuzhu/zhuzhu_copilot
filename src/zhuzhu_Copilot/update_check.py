@@ -6,6 +6,7 @@
 3. 内置默认服务器 DEFAULT_SERVER（保证首次启动必检）
 """
 from zhuzhu_Copilot import app_identity
+from zhuzhu_Copilot.core import agent_proxy
 import json
 import os
 import threading
@@ -112,7 +113,8 @@ class UpdateChecker(QObject):
                 "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                "AppleWebKit/537.36 (KHTML, like Gecko) "
                                "Chrome/126.0 Safari/537.36 zhuzhuCopilot")})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            # agent_proxy：直连失败且配置了代理时自动经代理重试一次（Cloudflare 被网关拦截的场景）
+            with agent_proxy.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             # 服务器已响应：这是「网络在线」的硬证据，顺手回填给顶栏状态
             try:
