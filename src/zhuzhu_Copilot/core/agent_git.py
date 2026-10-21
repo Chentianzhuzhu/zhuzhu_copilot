@@ -190,22 +190,6 @@ def _run(args: list, timeout: int = 60) -> tuple:
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
-def branch_upstreams() -> dict:
-    """本地分支 → 远程跟踪分支（未推送的分支不出现在结果里）。
-
-    例：{"main": "origin/main"}。用于界面上的 origin/分支名 胶囊，
-    以及判断某个分支是否已经推送到远端。
-    """
-    lines = _git(["for-each-ref", "refs/heads",
-                  "--format=%(refname:short)%09%(upstream:short)"])
-    out = {}
-    for ln in lines:
-        parts = ln.split("\t")
-        if len(parts) >= 2 and parts[1].strip():
-            out[parts[0]] = parts[1].strip()
-    return out
-
-
 def list_commits_with_stats(ref: str = "", limit: int = None) -> list:
     """提交历史 + 每条提交的变更行数：add/del。
 
@@ -255,6 +239,34 @@ def list_commits_with_stats(ref: str = "", limit: int = None) -> list:
                     pass
     if cur is not None:
         out.append(cur)
+    return out
+
+
+def branch_push_state() -> dict:
+    """本地分支的推送状态：
+    {branch: {"upstream": "origin/main", "head": 短哈希,
+              "upstream_hash": 短哈希, "pushed": bool}}。
+
+    pushed=True 仅当分支头与上游头完全一致（没有待推送提交）——
+    界面据此决定是否标注 origin/xxx：分支领先远程时不标注。
+    """
+    lines = _git(["for-each-ref", "refs/heads",
+                  "--format=%(refname:short)%09%(objectname:short)%09"
+                  "%(upstream:short)"])
+    out = {}
+    for ln in lines:
+        parts = ln.split("\t")
+        if len(parts) < 2:
+            continue
+        branch, head = parts[0], parts[1]
+        upstream = parts[2].strip() if len(parts) > 2 else ""
+        st = {"upstream": upstream, "head": head,
+              "upstream_hash": "", "pushed": False}
+        if upstream:
+            uh = _git(["rev-parse", "--short", upstream])
+            st["upstream_hash"] = uh[0].strip() if uh else ""
+            st["pushed"] = bool(st["upstream_hash"]) and st["upstream_hash"] == head
+        out[branch] = st
     return out
 
 

@@ -13688,7 +13688,7 @@ class _HtmlListDelegate(QStyledItemDelegate):
     """将 QListWidgetItem 的 UserRole(HTML) 渲染为多行富文本，支持多色/多行。
     用于 git 面板分支/提交列表：分支名、哈希、作者、说明可用不同颜色区分。
 
-    CHIP_ROLE 存放可选的胶囊文字（如 origin/main）：在卡片右下角绘制
+    CHIP_ROLE 存放可选的胶囊文字（如 origin/main）：在卡片右上角绘制
     圆角胶囊。富文本本身不支持 border-radius，所以胶囊走 QPainter 绘制。
     """
 
@@ -13730,14 +13730,22 @@ class _HtmlListDelegate(QStyledItemDelegate):
 
     @staticmethod
     def _paint_chip(painter, option, card: QRectF, text: str):
-        """卡片右下角的圆角胶囊（远程跟踪分支等短标签）。"""
-        fm = option.fontMetrics
-        w = fm.horizontalAdvance(text) + 16
-        h = fm.height() + 2
-        # 放在第二行（哈希行）右侧：哈希很短，右侧留白足够，不与文案重叠
-        cr = QRectF(card.right() - w - 6, card.top() + 19, w, h)
+        """卡片右上角的圆角胶囊（远程跟踪分支标签）。
+
+        字体单独加大加粗（列表正文 11px），对齐用 AlignCenter：
+        胶囊高度由字体高度 + 固定内边距决定，圆角半径恒为高度一半，
+        不随文本长度变形，文字也不会被横向挤压。
+        """
+        font = QFont(option.font)
+        font.setPixelSize(11)
+        font.setBold(True)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        h = fm.height() + 6
+        w = fm.horizontalAdvance(text) + 18
+        cr = QRectF(card.right() - w - 6, card.top() + 5, w, h)
         painter.setPen(QPen(QColor(ACCENT), 1))
         col = QColor(ACCENT)
         col.setAlpha(30)
@@ -13823,10 +13831,6 @@ class GitLogWindow(_RoundedFloatWindow):
         title = QLabel(_ui("Git 面板"))
         title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
         head.addWidget(title)
-        # 当前分支已推送的远程跟踪分支：圆形胶囊（富文本不支持圆角，用 QSS 实现）
-        self.branch_chip = QLabel("")
-        self.branch_chip.setVisible(False)
-        head.addWidget(self.branch_chip)
         head.addStretch(1)
         self.branch_btn = QPushButton(_ui("分支"))
         self.commit_btn = QPushButton(_ui("提交"))
@@ -13909,12 +13913,6 @@ class GitLogWindow(_RoundedFloatWindow):
             f"QListWidget {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
             f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 6px; padding: 4px; }}"
             + _scrollbar_css(6, 3, both=True))
-        c = QColor(ACCENT)
-        self.branch_chip.setStyleSheet(
-            f"QLabel {{ color: {ACCENT};"
-            f"background: rgba({c.red()},{c.green()},{c.blue()},30);"
-            f"border: 1px solid {ACCENT}; border-radius: 8px;"
-            "padding: 1px 8px; font-size: 10px; font-weight: 600; }}")
         self.msg_edit.setStyleSheet(
             f"QLineEdit {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
             f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 5px;"
@@ -14027,14 +14025,13 @@ class GitLogWindow(_RoundedFloatWindow):
                     payload["error"] = _ui("（当前工作目录不是 Git 仓库）")
                 else:
                     payload["current"] = agent_git.current_branch()
-                    ups = agent_git.branch_upstreams()
-                    payload["upstream"] = ups.get(payload["current"], "")
+                    states = agent_git.branch_push_state()
+                    payload["push_state"] = states
                     if view == "commit":
                         # 查看指定分支的提交（不切换工作区）；先只取列表（毫秒级）
                         payload["rows"] = agent_git.list_commits(ref=scope_ref)
                     else:
                         payload["rows"] = agent_git.list_branches()
-                        payload["upstreams"] = ups
             except Exception as e:
                 payload["error"] = _uif("（读取失败：{err}）", err=str(e))
             try:
@@ -14064,8 +14061,15 @@ class GitLogWindow(_RoundedFloatWindow):
         """主线程装载后台线程取回的 git 数据（切视图期间视图可能已变，按最新视图重建）。"""
         # 第二阶段：变更行数统计到达（列表早已显示）——就地更新条目，不重建列表
         if payload and payload.get("phase") == "stats":
+            cur_wd = ""
+            try:
+                from zhuzhu_Copilot.core import agent_tools
+                cur_wd = agent_tools.get_workdir()
+            except Exception:
+                pass
             if (payload.get("view") == self._view
-                    and payload.get("scope") == self._scope_ref):
+                    and payload.get("scope") == self._scope_ref
+                    and payload.get("workdir") == cur_wd):
                 self._apply_stats(payload.get("stats") or {})
             return
         self._busy = False
@@ -14089,10 +14093,8 @@ class GitLogWindow(_RoundedFloatWindow):
             self._pending_refresh = False
             self.refresh()
             return
-        up = payload.get("upstream") or ""
         self._cur_branch = payload.get("current") or ""
-        self.branch_chip.setText(up)
-        self.branch_chip.setVisible(bool(up))
+        states = payload.get("push_state") or {}
         self.list.clear()
         error = payload.get("error")
         if error:
@@ -14100,12 +14102,19 @@ class GitLogWindow(_RoundedFloatWindow):
             return
         rows = payload.get("rows") or []
         if self._view == "commit":
-            self._fill_commits(rows)
+            # 只有「分支头 == 上游头」（没有待推送提交）时才标注 origin/xxx，
+            # 且只标在上游指向的那条提交上
+            st = states.get(self._scope_ref or self._cur_branch) or {}
+            pushed = bool(st.get("pushed"))
+            self._fill_commits(
+                rows,
+                st.get("upstream_hash", "") if pushed else "",
+                st.get("upstream", ""))
         else:
-            self._fill_branches(rows, payload.get("upstreams") or {})
+            self._fill_branches(rows, states)
 
-    def _fill_branches(self, branches: list, upstreams: dict = None):
-        upstreams = upstreams or {}
+    def _fill_branches(self, branches: list, states: dict = None):
+        states = states or {}
         if not branches:
             self.list.addItem(self._make_item(_ui("（无本地分支）"), 40))
             return
@@ -14124,13 +14133,16 @@ class GitLogWindow(_RoundedFloatWindow):
                 f'<div style="color:{TEXT_DIM};font-size:10px;">'
                 f'{_esc(b["author"])} · {_esc(b["date"])}</div>'
                 f'<div style="color:{TEXT};font-size:11px;">{_esc(b["subject"])}</div>')
-            # 已推送的分支带远程跟踪分支胶囊（origin/xxx），未推送的为空
-            it = self._make_item(html, chip=upstreams.get(b["branch"], ""),
-                                 data=b["branch"])
+            # 仅当分支已完全推送（没有待推送提交）时，分支名右上角标 origin/xxx
+            st = states.get(b["branch"]) or {}
+            chip = st.get("upstream", "") if st.get("pushed") else ""
+            it = self._make_item(html, chip=chip, data=b["branch"])
+            remote = st.get("upstream") or _ui("（未推送）")
+            if st.get("upstream") and not st.get("pushed"):
+                remote += _ui("（有未推送提交）")
             it.setToolTip(_uif(
                 '分支: {a0}\n远程: {a1}\n作者: {a2}\n时间: {a3}\n单击查看提交，双击切换',
-                a0=b['branch'], a1=upstreams.get(b["branch"], "（未推送）"),
-                a2=b['author'], a3=b['date']))
+                a0=b['branch'], a1=remote, a2=b['author'], a3=b['date']))
             self.list.addItem(it)
 
     @staticmethod
@@ -14146,7 +14158,8 @@ class GitLogWindow(_RoundedFloatWindow):
                 f'<div style="color:{TEXT_DIM};font-size:10px;">'
                 f'{_esc(c["author"])} · {_esc(c["date"])}</div>')
 
-    def _fill_commits(self, commits: list):
+    def _fill_commits(self, commits: list, pushed_hash: str = "",
+                      pushed_chip: str = ""):
         self._commit_by_hash = {c["hash"]: c for c in commits}
         self._commit_items = {}
         # 正在查看非当前分支的提交：首行标注范围，避免与当前分支历史混淆
@@ -14163,8 +14176,10 @@ class GitLogWindow(_RoundedFloatWindow):
         self.list.setUpdatesEnabled(False)
         try:
             for c in commits:
+                # 只在上游指向的那条提交上标 origin/xxx（即最近一次成功推送的提交）
+                chip = pushed_chip if (pushed_hash and c["hash"] == pushed_hash) else ""
                 # 自动按渲染高度计项高（long subject/author 换行后不遮挡作者时间行）
-                it = self._make_item(self._commit_html(c))
+                it = self._make_item(self._commit_html(c), chip=chip)
                 self._commit_items[c["hash"]] = it
                 self.list.addItem(it)
         finally:

@@ -65,7 +65,7 @@ try:
 except Exception:
     pass
 
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont, QFontDatabase, QIcon, QColor, QPainter
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
@@ -140,17 +140,36 @@ class SplashWindow(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # 标题：zhuzhu Copilot
+        # 标题：zhuzhu Copilot + 圆角「Agent」徽章
         # 上下两条等分 stretch → 标题在整窗高度上真正居中；
         # 署名**不进布局**：一旦进布局它就占掉底部空间，标题会被挤得整体偏上。
         lay.addStretch(1)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title_row.addStretch(1)
         title = QLabel("zhuzhu Copilot")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setFixedHeight(38)
+        title.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         title.setStyleSheet(
             f"color: {self._title_c}; font-size: {SPLASH_TITLE_PX}px; font-weight: 700;"
             "font-family: 'Microsoft YaHei UI','Segoe UI'; letter-spacing: 1px;"
             "background: transparent;")
-        lay.addWidget(title)
+        title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # Agent 徽章：深色模式白底黑字（与主标题同色），浅色模式黑底白字
+        agent_bg = self._title_c if mode == "dark" else "#000000"
+        agent_fg = "#000000" if mode == "dark" else "#FFFFFF"
+        agent = QLabel("Agent")
+        agent.setFixedHeight(34)
+        agent.setMinimumWidth(78)
+        agent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        agent.setStyleSheet(
+            f"color: {agent_fg}; background: {agent_bg}; border-radius: 17px;"
+            "font-size: 19px; font-weight: 700; padding: 0 12px;"
+            "font-family: 'Microsoft YaHei UI','Segoe UI';")
+        title_row.addWidget(agent, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        lay.addLayout(title_row)
 
         lay.addStretch(1)
 
