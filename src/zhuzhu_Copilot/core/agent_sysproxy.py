@@ -108,22 +108,34 @@ def mark_applied(port: int) -> None:
     _save_snapshot_doc(doc)
 
 
-def enable(port: int) -> bool:
-    """把系统代理指向 127.0.0.1:port（http/https/socks 三协议同端口）。"""
+def enable(port: int, bypass=()) -> bool:
+    """把系统代理指向 127.0.0.1:port（http/https/socks 三协议同端口）。
+
+    bypass 中的域名会追加到 ProxyOverride，让 WinINET 应用直接绕过本机代理；
+    本地转发器自身也会按同一列表重新判断（双保险）。
+    """
     if sys.platform != "win32":
         return False
     save_snapshot()
     cur = _read_values()
     override = (cur.get("ProxyOverride") or [None, None])[0] or ""
-    if "<local>" not in override:
-        override = (override + ";<local>").lstrip(";")
+    parts = [x for x in override.split(";") if x]
+    for p in bypass or ():
+        p = str(p).strip().lower()
+        if not p or p[0].isdigit() or "*" in p or "/" in p:
+            continue                     # IP 前缀/CIDR/通配由本机转发器判断
+        for pat in (p, "*." + p):
+            if pat not in parts:
+                parts.append(pat)
+    if "<local>" not in parts:
+        parts.append("<local>")
     _write_values({
         "ProxyEnable": [1, 4],                       # REG_DWORD
         "ProxyServer": [
             f"http=127.0.0.1:{port};https=127.0.0.1:{port};socks=127.0.0.1:{port}",
             1,                                        # REG_SZ
         ],
-        "ProxyOverride": [override, 1],
+        "ProxyOverride": [";".join(parts), 1],
     })
     mark_applied(port)
     _notify()

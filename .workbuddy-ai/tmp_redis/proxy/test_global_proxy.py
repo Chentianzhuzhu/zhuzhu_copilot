@@ -59,6 +59,16 @@ def http_get_via_tls(tls_sock, host, path="/"):
 def case_routing():
     assert agent_proxy.route_host("github.com") == "ssh", "global -> ssh"
     assert agent_proxy.route_host("127.0.0.1") == "direct", "loopback direct"
+    assert agent_proxy.route_host("192.168.10.23") == "direct", "private ip direct"
+    assert agent_proxy.route_host("long.weixin.qq.com") == "direct", "default bypass wechat"
+    assert agent_proxy.route_host("api.github.com") == "ssh", "github not bypassed"
+    # 自定义 IP 前缀排除
+    CFG["proxy_bypass"] = agent_proxy.DEFAULT_BYPASS + ",117.190."
+    assert agent_proxy.route_host("117.190.80.35") == "direct", "ip prefix bypass"
+    # 显式清空排除 -> 全部走代理
+    CFG["proxy_bypass"] = ""
+    assert agent_proxy.route_host("long.weixin.qq.com") == "ssh", "empty bypass -> ssh"
+    del CFG["proxy_bypass"]
     CFG["proxy_mode"] = "fallback"
     assert agent_proxy.route_host("api.github.com") == "ssh", "domain rule -> ssh"
     assert agent_proxy.route_host("www.baidu.com") == "direct", "fallback non-match -> direct"
@@ -138,9 +148,11 @@ def case_sysproxy():
     agent_sysproxy._KEY = key
     agent_sysproxy._snapshot_path = lambda: tmp
     try:
-        assert agent_sysproxy.enable(12345) is True
+        assert agent_sysproxy.enable(12345, ["weixin.qq.com", "192.168."]) is True
         assert agent_sysproxy.is_pointing_to(12345)
         assert tmp.is_file(), "snapshot written"
+        ov = agent_sysproxy._read_values()["ProxyOverride"][0]
+        assert "*.weixin.qq.com" in ov and "<local>" in ov, ov
         assert agent_sysproxy.restore() is True
         assert not agent_sysproxy.is_pointing_to(12345)
         assert not tmp.exists(), "snapshot removed"
@@ -160,7 +172,7 @@ def case_service():
 
     class FakeSys:
         @staticmethod
-        def enable(port):
+        def enable(port, bypass=()):
             calls["enable"].append(port)
             return True
 

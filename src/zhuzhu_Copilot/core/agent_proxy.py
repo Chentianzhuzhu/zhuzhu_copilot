@@ -16,6 +16,8 @@ settings.json 键（设置页「网络代理」区域写入）：
                  "fallback"     回退：仅直连失败时经代理
   proxy_domains  逗号/换行分隔的域名片段，命中即强制走代理
                  （如 github.com 命中 api.github.com 与 github.com 的所有 URL）
+  proxy_bypass   直连排除列表（域名片段或 IP 前缀），命中即不代理；
+                 未配置时使用 DEFAULT_BYPASS（微信/腾讯系国内服务）
   proxy_host     SSH 服务器 IP/域名
   proxy_port     SSH 端口（数字字符串，默认 22）
   proxy_user     SSH 用户名
@@ -25,14 +27,16 @@ settings.json 键（设置页「网络代理」区域写入）：
 约定：
   * HTTPError（服务端已应答，包括 403/407）不触发回退——网络通、业务层
     拒绝不是代理能解决的问题；
-  * 全局模式：目标一律经隧道；回退模式：直连优先，连接层失败后经隧道重试一次，
-    命中 proxy_domains 的域名在回退模式下始终优先走隧道；
-  * 本机地址（localhost / 127.* / ::1）永不走代理；
+  * 全局模式：未命中排除列表的目标一律经隧道；回退模式：直连优先，连接层
+    失败后经隧道重试一次，命中 proxy_domains 的域名始终优先走隧道；
+  * 本机/内网地址（localhost、127.*、10.*、172.16-31.*、192.168.*、169.254.*）
+    永不走代理；
   * 应用内请求绕过系统代理（系统代理指向本机转发器，避免自环）；
   * SSH Transport 全局复用，断连自动重建。
 """
 
 import http.client
+import ipaddress
 import re
 import socket
 import ssl
@@ -44,6 +48,15 @@ from io import BytesIO
 from urllib.parse import urljoin, urlsplit
 
 _MAX_REDIRECTS = 5
+
+# 默认真·直连排除：国内 IM / 腾讯系服务。机房 IP 访问微信长连接域名会被
+# 重置 TLS（实测 long/short.weixin.qq.com），因此默认不代理这些域名。
+# 用户可在设置页「直连排除」中覆盖（写入 proxy_bypass）。
+DEFAULT_BYPASS = (
+    "weixin.qq.com,wechat.com,wx.qq.com,weixinbridge.com,"
+    "qpic.cn,gtimg.cn,tenpay.com,servicewechat.com,"
+    "wechatpay.cn,weixinpay.com"
+)
 
 _SSH_LOCK = threading.Lock()
 _SSH_TRANSPORT = None          # paramiko.Transport 全局复用
@@ -80,8 +93,13 @@ def _ssh_config():
         "pass": pwd,
         "mode": "fallback" if mode == "fallback" else "global",
         "domains": _domain_patterns(s),
+        "bypass": bypass_patterns(s),
         "local_port": int(local_port) if local_port.isdigit() else 10808,
     }
+
+
+def _split_patterns(raw: str) -> list:
+    return [p.strip().lower() for p in re.split(r"[\s,;]+", raw or "") if p.strip()]
 
 
 def _domain_patterns(settings=None) -> list:
@@ -93,7 +111,19 @@ def _domain_patterns(settings=None) -> list:
         raw = str(settings.get("proxy_domains", "") or "")
     except Exception:
         return []
-    return [p.strip().lower() for p in re.split(r"[\s,;]+", raw) if p.strip()]
+    return _split_patterns(raw)
+
+
+def bypass_patterns(settings=None) -> list:
+    """解析 proxy_bypass；键缺失时用 DEFAULT_BYPASS，显式置空则全部走代理。"""
+    try:
+        if settings is None:
+            from zhuzhu_Copilot.core import agent_skills
+            settings = agent_skills.settings_view()
+        raw = settings.get("proxy_bypass")
+    except Exception:
+        return _split_patterns(DEFAULT_BYPASS)
+    return _split_patterns(DEFAULT_BYPASS if raw is None else str(raw))
 
 
 def domain_matched(host, patterns=None) -> bool:
@@ -105,11 +135,47 @@ def domain_matched(host, patterns=None) -> bool:
     return any(p in h for p in pats)
 
 
+def _is_private_host(host) -> bool:
+    """本机 / 内网 / 局域网主机名：永不走代理。"""
+    if not host:
+        return True
+    h = host.lower()
+    if h in ("localhost", "::1") or h.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return "." not in h              # 单标签主机名视为局域网名
+    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+
+
+def bypassed(host, patterns=None) -> bool:
+    """命中直连排除：内网地址、IP 前缀/CIDR、域名片段。"""
+    if _is_private_host(host):
+        return True
+    h = (host or "").lower()
+    pats = bypass_patterns() if patterns is None else patterns
+    if not pats:
+        return False
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return any(p in h for p in pats)
+    for p in pats:
+        try:
+            if ip in ipaddress.ip_network(p, strict=False):
+                return True
+        except ValueError:
+            if h.startswith(p.rstrip("*")):
+                return True
+    return False
+
+
 def route_host(host) -> str:
-    """返回 "ssh" 或 "direct"：本机/未启用走直连；全局一律隧道；
+    """返回 "ssh" 或 "direct"：本机/排除列表走直连；全局其余走隧道；
     回退模式仅域名命中项走隧道（其余直连，失败时由 urlopen 再回退）。"""
     cfg = _ssh_config()
-    if not cfg or _is_direct_host(host):
+    if not cfg or bypassed(host, cfg["bypass"]):
         return "direct"
     if cfg["mode"] == "global":
         return "ssh"
@@ -446,8 +512,9 @@ def urlopen(req, timeout):
     target = urlsplit(getattr(req, "full_url", "") or "")
     host = target.hostname
     cfg = _ssh_config()
+    force_direct = cfg is None or bypassed(host, (cfg or {}).get("bypass"))
     prefer_ssh = False
-    if cfg is not None and not _is_direct_host(host):
+    if cfg is not None and not force_direct:
         prefer_ssh = (cfg["mode"] == "global"
                       or domain_matched(host, cfg["domains"]))
 
@@ -465,8 +532,8 @@ def urlopen(req, timeout):
     except urllib.error.HTTPError:
         raise
     except (urllib.error.URLError, OSError, TimeoutError) as direct_exc:
-        if prefer_ssh or _is_direct_host(host) or cfg is None:
-            raise
+        if prefer_ssh or force_direct:
+            raise                          # 已指定直连 / 已尝试过两条路径
         try:
             return _via_ssh_proxy(req, target, timeout)
         except urllib.error.HTTPError:

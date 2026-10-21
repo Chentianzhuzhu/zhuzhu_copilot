@@ -3338,6 +3338,21 @@ class _AgentSettingsDialog(QDialog):
         self.proxy_domains_edit = _proxy_lineedit(
             "proxy_domains", "强制走代理的域名，逗号分隔，如 github.com")
         lay.addWidget(self.proxy_domains_edit)
+        # 直连排除：命中的域名/内网地址不走代理（默认含微信/腾讯系，避免长连接被重置）
+        _bypass_val = s.get("proxy_bypass")
+        if _bypass_val is None:
+            from zhuzhu_Copilot.core.agent_proxy import DEFAULT_BYPASS
+            _bypass_val = DEFAULT_BYPASS
+        self.proxy_bypass_edit = QLineEdit()
+        self.proxy_bypass_edit.setPlaceholderText(
+            _uim("直连排除（域名或 IP 前缀），如 weixin.qq.com,192.168."))
+        self.proxy_bypass_edit.setText(str(_bypass_val or ""))
+        self.proxy_bypass_edit.setStyleSheet(
+            f"QLineEdit {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+            "padding: 6px 10px; font-size: 13px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {self._BORDER}; }}")
+        lay.addWidget(self.proxy_bypass_edit)
         self.proxy_status_lbl = QLabel("")
         self.proxy_status_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         self.proxy_status_lbl.setWordWrap(True)
@@ -7127,6 +7142,7 @@ class _AgentSettingsDialog(QDialog):
             "proxy_enabled": "1" if self.proxy_check.isChecked() else "0",
             "proxy_mode": self.proxy_mode_combo.currentData() or "global",
             "proxy_domains": self.proxy_domains_edit.text().strip(),
+            "proxy_bypass": self.proxy_bypass_edit.text().strip(),
             "proxy_host": self.proxy_host_edit.text().strip(),
             "proxy_port": self.proxy_port_edit.text().strip(),
             "proxy_user": self.proxy_user_edit.text().strip(),

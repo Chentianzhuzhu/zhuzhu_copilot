@@ -39,7 +39,7 @@ def apply() -> dict:
                 srv = LocalProxyServer(0)      # 端口被占用：改用临时端口
                 srv.start()
             _server = srv
-        agent_sysproxy.enable(_server.port)
+        agent_sysproxy.enable(_server.port, cfg.get("bypass") or ())
         return status_locked()
 
 

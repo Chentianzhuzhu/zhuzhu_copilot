@@ -26,14 +26,14 @@ import zhuzhu_Copilot.core as _core  # noqa: E402
 sys.modules["zhuzhu_Copilot.core.agent_skills"] = fake
 _core.agent_skills = fake
 
-from zhuzhu_Copilot.core import agent_sysproxy  # noqa: E402
+from zhuzhu_Copilot.core import agent_proxy, agent_sysproxy  # noqa: E402
 from zhuzhu_Copilot.core.agent_proxy_local import LocalProxyServer  # noqa: E402
 
 before = agent_sysproxy._read_values()
 srv = LocalProxyServer(0)
 srv.start()
 try:
-    assert agent_sysproxy.enable(srv.port), "enable system proxy"
+    assert agent_sysproxy.enable(srv.port, agent_proxy.bypass_patterns()), "enable system proxy"
     assert agent_sysproxy.is_pointing_to(srv.port), agent_sysproxy.current_server()
     req = urllib.request.Request(
         "https://api.github.com", headers={"User-Agent": "sysproxy-e2e"})
