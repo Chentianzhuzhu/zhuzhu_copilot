@@ -2342,3 +2342,133 @@ def test_long_press_and_drag_also_confirm_before_pressing(monkeypatch):
     assert mod.do_long_press(500, 500, 0.25) is False
     assert mod.do_drag(100, 100, 400, 300, duration=0.2) is False
     assert sent == [], "起点确认不到时不能按下"
+
+
+# ---------- 高级鼠标动作 / 回车发送 / 吸附增强 / 随包插件升级 ----------
+
+def test_click_action_maps_advanced_mouse_gestures():
+    """click 是统一入口：action 必须能映射到拖拽/滑动/长按/拖选/双击/右键。
+
+    模型最容易犯的错不是「不会拖」，而是「忘了还有 drag 工具」于是拆成点击+移动+点击。
+    统一入口后，这些名字都要能认出来。
+    """
+    mod = _load_module()
+    assert mod._click_action({}) == "click"
+    assert mod._click_action({"action": "double"}) == "double"
+    assert mod._click_action({"action": "double_click"}) == "double"
+    assert mod._click_action({"action": "right"}) == "right"
+    assert mod._click_action({"action": "long-press"}) == "long_press"
+    assert mod._click_action({"action": "drag"}) == "drag"
+    assert mod._click_action({"action": "swipe"}) == "swipe"
+    assert mod._click_action({"action": "select"}) == "select"
+    assert mod._click_action({"action": "no_such_action"}) == "click"
+
+
+def test_click_drag_reuses_start_point_and_swipe_stays_drag_semantics():
+    """action=drag 允许只传 x/y 起点 + x2/y2 终点，不用记两套参数名。"""
+    mod = _load_module()
+    got = mod._as_drag_args({"x": 10, "y": 20, "x2": 30, "y2": 40})
+    assert (got["x1"], got["y1"], got["x2"], got["y2"]) == (10, 20, 30, 40)
+
+
+def test_type_text_submit_presses_enter_after_typing(monkeypatch):
+    """type_text(submit=true) 输入完直接回车发送，不再让模型去点发送按钮。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_guard", lambda name: "")
+    monkeypatch.setattr(mod, "_ensure_input_target", lambda args, action: "")
+    monkeypatch.setattr(mod, "_input_target_hwnd", lambda args: 42)
+    monkeypatch.setattr(mod, "foreground_window", lambda: 42)
+    monkeypatch.setattr(mod, "window_title", lambda h: "微信")
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    typed, keys = [], []
+    monkeypatch.setattr(mod, "do_type_text", lambda t, interval=0.012: typed.append(t))
+    monkeypatch.setattr(mod, "do_key", lambda k: keys.append(k))
+    out = mod._HANDLERS["type_text"]({"text": "你好", "submit": True})
+    assert typed == ["你好"], "文本必须先完整输入"
+    assert keys == ["enter"], "submit=true 时必须补一个 Enter"
+    assert "Enter" in out and "发送" in out
+
+
+def test_type_text_without_submit_never_presses_enter(monkeypatch):
+    """默认不发送：require 只输入文本时绝不能被回车误发出去。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_guard", lambda name: "")
+    monkeypatch.setattr(mod, "_ensure_input_target", lambda args, action: "")
+    monkeypatch.setattr(mod, "_input_target_hwnd", lambda args: 42)
+    monkeypatch.setattr(mod, "foreground_window", lambda: 42)
+    monkeypatch.setattr(mod, "window_title", lambda h: "记事本")
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "do_type_text", lambda t, interval=0.012: None)
+    keys = []
+    monkeypatch.setattr(mod, "do_key", lambda k: keys.append(k))
+    mod._HANDLERS["type_text"]({"text": "草稿"})
+    assert keys == [], "没传 submit 时不得发送"
+
+
+def test_merge_components_joins_fragments_of_one_target():
+    """被高光切开的同一控件碎片要并回一整块，否则中心会落在半块上。"""
+    mod = _load_module()
+    a = {"area": 60, "minx": 100, "miny": 200, "maxx": 109, "maxy": 205}
+    b = {"area": 50, "minx": 111, "miny": 200, "maxx": 119, "maxy": 205}
+    far = {"area": 40, "minx": 200, "miny": 200, "maxx": 209, "maxy": 205}
+    out = mod._merge_components([a, b, far])
+    assert len(out) == 2, "相邻碎片合并，远离的不合并"
+    merged = min(out, key=lambda c: c["minx"])
+    assert (merged["minx"], merged["maxx"]) == (100, 119)
+    assert merged["area"] == 110
+
+
+def test_snap_core_widens_search_when_default_reach_misses(monkeypatch):
+    """默认半径内没找到元素时自动扩大一次，而不是直接放弃吸附。"""
+    mod = _load_module()
+    seen = []
+
+    def _fake(x, y, reach=88, max_shift=None, cands=None):
+        seen.append(reach)
+        if reach >= 40:
+            return 105, 106, "扩大后命中", ""
+        return int(x), int(y), "", ""
+
+    monkeypatch.setattr(mod, "_snap_region", _fake)
+    sx, sy, note, _ruler = mod._snap_core(100, 100, 16)
+    assert (sx, sy) == (105, 106)
+    assert seen == [16, 40]
+    assert "扩大" in note
+
+
+def test_shipped_plugin_update_replaces_old_version_and_drops_obsolete_files(
+        tmp_path, monkeypatch):
+    """随包插件升级：revision 变大就覆盖同步，并删除 obsolete_files 里的历史文件。
+
+    真实踩过的坑：ensure_shipped_plugins 以前「目录已存在就跳过」，导致用户运行目录
+    永远停在旧版本（仍在用已删掉的 uia.py 元素工具）。
+    """
+    shipped, installed = tmp_path / "shipped", tmp_path / "installed"
+    src, dst = shipped / "demo", installed / "demo"
+    src.mkdir(parents=True)
+    dst.mkdir(parents=True)
+    (src / "plugin.json").write_text(
+        json.dumps({"name": "demo", "revision": 2, "obsolete_files": ["uia.py"]}),
+        encoding="utf-8")
+    (src / "server.py").write_text("NEW", encoding="utf-8")
+    (dst / "plugin.json").write_text(json.dumps({"name": "demo", "revision": 1}),
+                                     encoding="utf-8")
+    (dst / "server.py").write_text("OLD", encoding="utf-8")
+    (dst / "uia.py").write_text("legacy", encoding="utf-8")
+    (dst / "user_notes.txt").write_text("keep", encoding="utf-8")
+    cache = dst / "__pycache__"
+    cache.mkdir()
+    (cache / "uia.pyc").write_bytes(b"x")
+    monkeypatch.setattr(agent_plugins, "plugins_dir", lambda: installed)
+    monkeypatch.setattr(agent_plugins, "_shipped_plugins_dir", lambda: shipped)
+    monkeypatch.setattr(agent_plugins, "_register_shipped_plugin", lambda name: None)
+    monkeypatch.setattr(agent_plugins, "invalidate_index", lambda: None)
+    agent_plugins.ensure_shipped_plugins()
+    assert (dst / "server.py").read_text(encoding="utf-8") == "NEW"
+    assert not (dst / "uia.py").exists(), "obsolete_files 必须被删除"
+    assert not cache.exists(), "旧字节码缓存必须清掉"
+    assert (dst / "user_notes.txt").read_text(encoding="utf-8") == "keep", \
+        "用户自己加的文件不能被覆盖删除"
+    assert json.loads((dst / "plugin.json").read_text(encoding="utf-8"))["revision"] == 2

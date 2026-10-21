@@ -62,8 +62,8 @@ def _shipped_plugins_dir() -> Path:
 
 
 def ensure_shipped_plugins() -> None:
-    """随包分发插件：用户插件目录缺失同名插件时整体复制（含 plugin.json/SKILL.md/server.py/examples）。
-    已存在的同名插件不覆盖，保持一致策略；复制完成后登记 MCP 与技能（combined 型）。"""
+    """随包分发插件：缺失时整体复制，已安装但随包 revision 更新时按版本覆盖同步。
+    复制/同步完成后登记 MCP 与技能（combined 型）。"""
     root = plugins_dir()
     shipped = _shipped_plugins_dir()
     if not shipped.is_dir():
@@ -74,6 +74,9 @@ def ensure_shipped_plugins() -> None:
         name = d.name
         target = root / name
         if target.is_dir():
+            if _update_shipped_plugin(d, target):
+                _register_shipped_plugin(name)
+                invalidate_index()
             continue
         try:
             shutil.copytree(d, target)
@@ -81,6 +84,56 @@ def ensure_shipped_plugins() -> None:
             continue
         _register_shipped_plugin(name)
         invalidate_index()   # 新落盘插件要立刻出现在来源索引里（否则升级后本会话看不到它）
+
+
+def _plugin_meta(d: Path) -> dict:
+    """读插件目录的 plugin.json（缺失/损坏返回空 dict）。"""
+    try:
+        data = json.loads((d / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _plugin_revision(meta: dict) -> int:
+    try:
+        return int(meta.get("revision") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _update_shipped_plugin(src: Path, dst: Path) -> bool:
+    """把随包插件同步到已安装目录，返回是否有变更。
+
+    只在随包 revision **更大**时同步（相等或缺失视为同版本，跳过）：
+    覆盖随包提供的文件，不碰用户自己加的文件；再删除 plugin.json 的
+    obsolete_files 里声明的历史文件（例如已并入 server.py 的 uia.py），
+    并清掉 __pycache__，避免旧模块的字节码继续被加载。
+    """
+    new, old = _plugin_meta(src), _plugin_meta(dst)
+    if _plugin_revision(new) <= _plugin_revision(old):
+        return False
+    changed = False
+    for f in src.iterdir():
+        if not f.is_file():
+            continue
+        try:
+            shutil.copy2(f, dst / f.name)
+            changed = True
+        except OSError:
+            continue
+    for rel in new.get("obsolete_files") or []:
+        p = dst / str(rel)
+        try:
+            if p.is_file():
+                p.unlink()
+                changed = True
+        except OSError:
+            continue
+    cache = dst / "__pycache__"
+    if cache.is_dir():
+        shutil.rmtree(cache, ignore_errors=True)
+    return changed
 
 
 def _register_shipped_plugin(name: str) -> None:

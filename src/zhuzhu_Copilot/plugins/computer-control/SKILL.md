@@ -17,6 +17,27 @@ description: 电脑操控：AI 直接操控 Windows 桌面（open_app 一键打�
 > 附近那个控件的几何中心（纯像素连通域判定，不依赖控件树，故自绘界面同样有效）。
 > 拿不准时先 `refine_point` 看图确认再点。
 
+## 最短路径（先读这里）
+
+**切应用 / 发消息这类高频任务，按这张表走，别绕路：**
+
+| 想做的事 | 一步到位的做法 |
+| --- | --- |
+| 动手之前 | `screen_shot(mode="full")` 看一眼任务栏和当前前台，别猜坐标 |
+| 切到已在运行的应用 | `taskbar_open(name="微信")` 看状态 → 图标在就 `taskbar_open(index=N)` 直接点 |
+| 图标不在任务栏可见区 | `taskbar_open(where="panel")` 展开右侧「↑」，再按编号点 |
+| 应用根本没在运行 | `open_app(name="微信")`（只在任务栏和面板都没有时才用） |
+| 在聊天框发一条消息 | `click` 输入框 → `type_text(text="…", submit=true)`（**自动回车发送，不要再移鼠标点发送按钮**） |
+| 拖拽 / 滑动 / 长按 | 全部用 `click(action="drag" / "swipe" / "long_press", …)`，不要拆成「点击+移动+点击」 |
+| 组合键 | `key_press(key="ctrl+shift+s")`、`key_press(key="win+ctrl+d")`、`key_press(key="ctrl++")`（放大） |
+
+三条铁律：
+
+1. **先 `screen_shot(mode="full")` 看一眼，再决定点哪里** —— 不要靠猜坐标。
+2. **已经在前台就不要再切**：`taskbar_open(name="…")` / `open_app` 的返回会直接告诉你
+   「已在最前」，此时立刻截图开始操作，**不要反复调 open_app / manage_window 置顶**。
+3. **输入完要发送就用 `submit=true`**，把鼠标移过去点发送按钮既慢又容易点偏。
+
 ## 何时使用
 
 - 用户要求「帮我操作电脑/点开某个软件/在界面上完成某件事」，且内置工具（文件、命令、浏览器）无法完成时。
@@ -186,9 +207,15 @@ taskbar_open(where="panel", chevron=7) # 自动认错「↑」时，用编号指
 3. `screen_shot(mode="window", hwnd=…)`：**建立坐标基准** —— 之后所有坐标都以这张图为准；
 4. 需要看清细节就 `zoom_in(局部)`，把目标位置量准（小目标务必放大到接近 1:1）；
 5. 动手前用 `refine_point(x, y)` 把坐标**吸附到控件中心**并看对照图确认；
-6. 行动：`click` / `drag` / `type_text` / `scroll` / `key_press` …
-   拿不准坐标链路就先 `verify_point`；想自动判断是否点生效就传 `verify=true`；
-   操作三维视口/画布/时间轴这类内容区时传 `snap=false`；
+6. 行动：`click` / `type_text` / `scroll` / `key_press` …
+   - **鼠标动作统一走 `click` 的 `action`**：`click(action="drag", x, y, x2, y2)` 拖拽、
+     `action="swipe"` 滑动、`action="long_press"` 长按、`action="select"` 拖选、
+     `action="double"` 双击、`action="right"` 右键。**不要**把拖拽拆成「按下+移动+松开」；
+   - **发消息用 `type_text(text="…", submit=true)`**：输入完成自动回车发送，不必再点发送按钮；
+   - **组合键直接写在 `key_press(key=…)` 里**：`ctrl+shift+s`、`win+ctrl+d`、`alt+f4`、
+     `ctrl++`（放大）、`ctrl+-`（缩小）；
+   - 拿不准坐标链路就先 `verify_point`；想自动判断是否点生效就传 `verify=true`；
+     操作三维视口/画布/时间轴这类内容区时传 `snap=false`；
 7. **行动后必须重新 `screen_shot` 验证**（对话框是否弹出、内容是否输入正确），再进行下一步。
 
 **坐标约定**：`click`/`drag`/`screen_shot`/`zoom_in`/`verify_point`/`refine_point` 的 x/y

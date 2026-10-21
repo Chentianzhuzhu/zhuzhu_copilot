@@ -853,6 +853,11 @@ SNAP_BG_DIST = 18           # 与背景色的色差（|dR|+|dG|+|dB|）超过它
                             # 调低带来的「把渐变/阴影当元素」风险由「触边界即淘汰」+
                             # 面积上限 + 距离闸门共同兜住（渐变块必然触边界，会被淘汰）。
 SNAP_MIN_SPAN = 4           # 候选外接矩形的最小边长
+SNAP_MERGE_GAP = 2          # 相邻碎片间距 ≤ 它就并成同一个目标：图标会被高光/抗锯齿
+                            # 切成两三块，按碎片中心吸附会偏到碎片上；2px 能合并笔画缝隙，
+                            # 又远小于并排按钮之间的间距（一般 ≥6px），不会误并隔壁按钮
+SNAP_MERGE_OVERLAP = 2      # 合并时另一轴至少要重叠这么多像素：只合并“同一块”的碎片，
+                            # 避免斜对角的两个噪点被并成一个假大块
 
 # ---- 横向内容带（列表行）检测 ----------------------------------------------
 # 为什么需要它：连通域算法只懂「离估计点最近的那一块」，**没有「行」的概念**。
@@ -999,6 +1004,48 @@ def _components_from_mask(is_fg: bytearray, w: int, h: int) -> list:
     return out
 
 
+def _merge_components(comps: list, gap: int = SNAP_MERGE_GAP,
+                      overlap: int = SNAP_MERGE_OVERLAP) -> list:
+    """把同一目标被高光/抗锯齿切开的碎片并回一整块（按外接矩形相邻关系）。
+
+    为什么必须合并：任务栏图标、扁平按钮上的图标常被高光切成 2~4 块，连通域会得到
+    好几个小矩形；取其中任一块的中心都可能落偏。合并后的外接矩形才是这个目标真正的
+    可见范围，中心也才稳。
+
+    只合并「一轴间距 ≤ gap 且另一轴至少重叠 overlap 像素」的碎片：并排按钮之间的缝隙
+    通常 ≥6px，不会被并到一起；斜对角的两点也不满足重叠条件，不会拼出假目标。
+    """
+    if len(comps) < 2:
+        return comps
+    out = [dict(c) for c in comps]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(out)):
+            a = out[i]
+            for j in range(i + 1, len(out)):
+                b = out[j]
+                h_gap = max(b["minx"] - a["maxx"], a["minx"] - b["maxx"]) - 1
+                v_gap = max(b["miny"] - a["maxy"], a["miny"] - b["maxy"]) - 1
+                h_ov = min(a["maxx"], b["maxx"]) - max(a["minx"], b["minx"]) + 1
+                v_ov = min(a["maxy"], b["maxy"]) - max(a["miny"], b["miny"]) + 1
+                near_x = h_gap <= gap and v_ov >= overlap
+                near_y = v_gap <= gap and h_ov >= overlap
+                if not (near_x or near_y):
+                    continue
+                out[i] = {"area": a["area"] + b["area"],
+                          "minx": min(a["minx"], b["minx"]),
+                          "miny": min(a["miny"], b["miny"]),
+                          "maxx": max(a["maxx"], b["maxx"]),
+                          "maxy": max(a["maxy"], b["maxy"])}
+                del out[j]
+                merged = True
+                break
+            if merged:
+                break
+    return out
+
+
 def _fg_bands(bits: bytes, w: int, h: int, bg, tol: int,
               merge_gap: int = SNAP_BAND_MERGE_GAP,
               min_pixels: int = SNAP_BAND_MIN_PIXELS,
@@ -1141,9 +1188,11 @@ def _fill_candidates(out: list, comps: list, bands: list, usable, x, y, lx, ly,
         out.append(c)
 
 
-def _snap_core(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
-               max_shift=None, cands=None) -> tuple:
-    """把 (x,y) 吸附到「离它最近的那个界面元素」的中心，返回 (sx, sy, note, ruler)。
+def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
+                 max_shift=None, cands=None) -> tuple:
+    """单次吸附（固定搜索半径）：把 (x,y) 吸附到附近最可信的元素中心。
+
+    返回 (sx, sy, note, ruler)。`_snap_core` 会在本函数找不到目标时自动扩大半径重试。
 
     传了 cands（一个 list）时，额外把区域里所有**像控件**的目标按「离估计点由近到远」
     填进去，每项含 kind（"行"/"块"）、屏幕坐标中心 (x,y)、尺寸 (w,h)、外接矩形 box
@@ -1168,7 +1217,9 @@ def _snap_core(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
          元素之间的背景缝隙自然把它们分开）；
       4. 淘汰不像控件的连通域：面积过小（噪点/笔画）、面积过大（背景/整块面板）、
          **外接矩形触到区域边界**（真实尺寸未知 ⇒ 中心不可信）、边长过小；
-      5. 在幸存候选里挑**离 (x,y) 最近**的一个，吸附到它的外接矩形中心。
+      5. 在幸存候选里按可信度挑一个：**估计点落在其中的候选优先**，其次按到候选
+         外接矩形的距离、再到中心距离、最后偏向更大的块（同距离时按钮块胜过零碎笔画），
+         吸附到它的外接矩形中心。
 
     保守原则：任何一步不成立就**放弃吸附、原样返回**。宁可不动，也不能把点击带到
     别的地方 —— 这正是它敢默认开启的原因。
@@ -1212,7 +1263,8 @@ def _snap_core(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
 
     # 掩码只构造一次，连通域与行带共用（区域 176×176 时这是最大的一笔可省开销）
     mask = _fg_mask(bits, w, h, bg, SNAP_BG_DIST)
-    comps = _components_from_mask(mask, w, h)
+    # 先并回被高光/抗锯齿切开的同一目标碎片，再判断可用性：按碎片中心吸附会偏
+    comps = _merge_components(_components_from_mask(mask, w, h))
     bands = _bands_from_mask(mask, w, h)
     band = _pick_band(bands, ly, h)
     ruler = [{"y": y0 + (b["ymin"] + b["ymax"] + 1) // 2,
@@ -1255,7 +1307,7 @@ def _snap_core(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
             how += "；该行内容离估计点较远，x 保持你给的位置（整行都可点，这是安全的）"
         return sx, sy, f"{how}。由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。", ruler
 
-    # ---- 连通域模式：没有像样的「行」时（按钮、图标、视口内元素）按最近元素吸附 ----
+    # ---- 连通域模式：没有像样的「行」时（按钮、图标、视口内元素）按可信度吸附 ----
     if not comps:
         return x, y, "", ruler
     best = None
@@ -1268,8 +1320,17 @@ def _snap_core(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         dist = (dx * dx + dy * dy) ** 0.5
         if dist > near_cap:
             continue
-        if best is None or dist < best[0]:
-            best = (dist, c)
+        inside = (c["minx"] <= lx <= c["maxx"] and c["miny"] <= ly <= c["maxy"])
+        cx = (c["minx"] + c["maxx"]) / 2.0
+        cy = (c["miny"] + c["maxy"]) / 2.0
+        cdist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
+        area = (c["maxx"] - c["minx"] + 1) * (c["maxy"] - c["miny"] + 1)
+        # 排序键：点在候选内优先；其次离外接矩形近；再其次中心近；同距离时大块优先
+        # （按钮整体胜过按钮上零碎的文字笔画）；最后用坐标兜底，保证确定性。
+        key = (0 if inside else 1, round(dist, 3), round(cdist, 3), -area,
+               c["miny"], c["minx"])
+        if best is None or key < best[0]:
+            best = (key, c, inside)
     if best is None:
         return x, y, "", ruler
 
@@ -1286,6 +1347,33 @@ def _snap_core(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
     return sx, sy, (f"已吸附到元素中心：{c['maxx'] - c['minx'] + 1}×"
                     f"{c['maxy'] - c['miny'] + 1}px 的连通域，"
                     f"由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。"), ruler
+
+
+def _snap_core(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
+               max_shift=None, cands=None) -> tuple:
+    """吸附总入口：先在给定半径内找，找不到再自动扩大半径重试一次。
+
+    为什么要自动扩大：模型给出的坐标偶尔会偏出默认 88px（尤其是整屏缩略图上估算
+    的小图标）。过去这种情况直接放弃吸附、按原坐标点 —— 结果就是「点了没反应」。
+    现在用同一套算法在更大的区域里再找一次，能把这类偏差救回来；仍找不到则原样返回，
+    保守原则不变。refine_point 传 cands 时不做扩张（编号菜单需要稳定的同一片区域）。
+    """
+    try:
+        base = max(16, min(int(reach), SNAP_REACH_MAX))
+    except (TypeError, ValueError):
+        base = SNAP_REACH_DEFAULT
+    sx, sy, note, ruler = _snap_region(x, y, base, max_shift, cands)
+    if cands is not None or (sx, sy) != (int(x), int(y)):
+        return sx, sy, note, ruler
+    wider = min(SNAP_REACH_MAX, max(base * 2, base + 24))
+    if wider <= base:
+        return sx, sy, note, ruler
+    sx2, sy2, note2, ruler2 = _snap_region(x, y, wider, max_shift)
+    if (sx2, sy2) == (int(x), int(y)):
+        return sx, sy, note, ruler
+    return (sx2, sy2,
+            f"默认搜索半径 {base}px 内没有可信元素，已扩大到 {wider}px 找到并吸附。"
+            + (note2 or ""), ruler2 or ruler)
 
 
 def _snap_to_element(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
@@ -1806,6 +1894,29 @@ def _taskbar_strip_png(gx: int, sy: int, gw: int, sh: int, tw: int, boxes: list,
         user32.ReleaseDC(0, dc)
 
 
+def _app_state_hint(name: str) -> str:
+    """按应用名判断它当前处于什么状态，给出一句话行动建议。
+
+    目的很直接：**别让模型为了「切到某个应用」反复调 open_app / manage_window 置顶**。
+    已经在前台就直说「不用再切」，在后台就说「点任务栏图标一步到位」。
+    """
+    if not name:
+        return ""
+    hwnd, title, how = _find_app_window(_app_keys(name))
+    if not hwnd:
+        return (f"「{name}」当前**没有运行中的窗口** —— 任务栏上它的图标是未启动的固定图标，"
+                f"点下去会启动（要等 1~2 秒再截图）；也可以直接用 open_app(name=\"{name}\")。")
+    label = f"窗口 [{hwnd}] {title or '（无标题）'}"
+    if foreground_window() == hwnd:
+        return (f"「{name}」**已经在最前**（{label}）—— 不要再调 open_app / manage_window "
+                f"去置顶，直接 screen_shot 开始操作即可。")
+    if window_state(hwnd).get("minimized"):
+        return (f"「{name}」**正在运行但已最小化**（{label}）—— 点它的任务栏图标就能一步恢复，"
+                f"不要用 open_app / manage_window 反复置顶。")
+    return (f"「{name}」**正在运行但在后台**（{label}）—— 直接点它的任务栏图标切过去即可，"
+            f"不要反复调 open_app / manage_window 置顶。")
+
+
 def _taskbar_band_flow(args: dict) -> list:
     """任务栏本体：扫描 → 编号 → （可选）按编号点击。"""
     index = _num(args.get("index"), 0)
@@ -1832,6 +1943,10 @@ def _taskbar_band_flow(args: dict) -> list:
             + (f"你要找的是「{name}」——" if name else "")
             + f"共识别出 {len(slots)} 个图标槽位（下图已用青色方框编号）：")
     lines = [head] + _taskbar_slot_lines(slots, gx, gw, pick=index)
+    hint = _app_state_hint(name)
+    if hint:
+        lines.append("")
+        lines.append("状态：" + hint)
     lines.append("")
     lines.append("怎么用：")
     lines.append("  ① 在图上认出你要的那个图标 → "
@@ -1844,8 +1959,8 @@ def _taskbar_band_flow(args: dict) -> list:
     lines.append("注意：右侧托盘区（输入法/音量/网络/时钟）和最左区（开始菜单/小组件）"
                  "也在编号里 —— 别点错区域。")
     lines.append("下一步：确认图标不在任务栏上时，用 taskbar_open(where=\"panel\") 展开"
-                 "右侧「↑」面板找（后台运行的图标常藏在那里），"
-                 "或直接 open_app(name=\"…\")。")
+                 "右侧「↑」面板找（后台运行的图标常藏在那里）；"
+                 "只有确认应用**根本没在运行**才用 open_app(name=\"…\")。")
 
     click_note = ""
     if target is not None:
@@ -1999,6 +2114,10 @@ def _taskbar_panel_flow(args: dict) -> list:
              + (f"。你要找的是「{name}」——在图上认出它的编号。" if name else "。")]
     lines += _taskbar_slot_lines(shown, ox, cw, pick=index, show_zone=False,
                                  running_note=False)
+    hint = _app_state_hint(name)
+    if hint:
+        lines.append("")
+        lines.append("状态：" + hint)
     if len(pslots) > len(shown):
         lines.append(f"  （另有 {len(pslots) - len(shown)} 个未列出，"
                      f"可用 zoom_in 放大面板区域后按坐标点。）")
@@ -2421,7 +2540,7 @@ def do_long_press(x: int, y: int, duration: float, mode: str = "auto"):
     """
     duration = max(0.2, min(float(duration), LONG_PRESS_MAX_S))
     if _touch_allowed(mode) and _touch_long_press(x, y, duration):
-        return
+        return True
     _move_human(x, y)
     with _Injecting():
         if not _settle_at(x, y):
@@ -2452,7 +2571,7 @@ def do_drag(x1: int, y1: int, x2: int, y2: int, duration: float, hold: float = 0
     """
     if _touch_allowed(mode) and _touch_drag(x1, y1, x2, y2, duration, hold):
         time.sleep(DRAG_SETTLE_S)
-        return
+        return True
     steps = max(int(duration / 0.02), DRAG_MIN_STEPS)
     _move_human(x1, y1)
     with _Injecting():
@@ -2481,11 +2600,13 @@ def do_swipe(x1: int, y1: int, x2: int, y2: int, duration: float, mode: str = "a
     """
     if _touch_allowed(mode) and _touch_swipe(x1, y1, x2, y2, duration):
         time.sleep(DRAG_SETTLE_S)
-        return
+        return True
     steps = max(int(duration / 0.012), 10)
     _move_human(x1, y1)
     with _Injecting():
-        _move_absolute(x1, y1)
+        if not _settle_at(x1, y1):
+            _log("sys", f"滑动取消：起点 ({x1},{y1}) 回读不一致（光标被真实鼠标抢走），已放弃按键")
+            return False
         _send_mouse(MOUSEEVENTF_LEFTDOWN)
         time.sleep(0.02)
         for i in range(1, steps + 1):
@@ -2496,6 +2617,7 @@ def do_swipe(x1: int, y1: int, x2: int, y2: int, duration: float, mode: str = "a
         _move_absolute(x2, y2)
         time.sleep(DRAG_SETTLE_S)
         _send_mouse(MOUSEEVENTF_LEFTUP)
+    return True
 
 
 def do_scroll(delta: int):
@@ -2538,17 +2660,26 @@ def _unicode_units(ch: str) -> list:
 _MODIFIERS = {"ctrl": 0x11, "control": 0x11, "shift": 0x10, "alt": 0x12,
               "win": 0x5B, "windows": 0x5B, "meta": 0x5B}
 _KEYS = {"enter": 0x0D, "return": 0x0D, "tab": 0x09, "esc": 0x1B, "escape": 0x1B,
-         "space": 0x20, "backspace": 0x08, "delete": 0x2E, "del": 0x2E,
+         "space": 0x20, "backspace": 0x08, "delete": 0x2E, "del": 0x2E, "ins": 0x2D,
          "insert": 0x2D, "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
-         "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "capslock": 0x14,
-         "printscreen": 0x2C, "apps": 0x5D, "menu": 0x5D,
+         "pgup": 0x21, "pgdn": 0x22, "up": 0x26, "down": 0x28, "left": 0x25,
+         "right": 0x27, "arrowup": 0x26, "arrowdown": 0x28, "arrowleft": 0x25,
+         "arrowright": 0x27, "capslock": 0x14, "printscreen": 0x2C,
+         "apps": 0x5D, "menu": 0x5D,
          "+": 0xBB, "=": 0xBB, "-": 0xBD, "minus": 0xBD, ".": 0xBE, ",": 0xBC,
          "/": 0xBF, ";": 0xBA, "'": 0xDE, "[": 0xDB, "]": 0xDD, "\\": 0xDC, "`": 0xC0}
 
 
 def key_vk(name: str) -> int:
-    """键名 → 虚拟键码（字母/数字/修饰键/F1-F24/常用键名）。未知键名抛 ValueError。"""
-    n = str(name or "").strip().lower()
+    """键名 → 虚拟键码（字母/数字/修饰键/F1-F24/常用键名）。未知键名抛 ValueError。
+
+    - 名字里的空格/下划线会被忽略：`page up`、`page_up`、`PAGEUP` 等价；
+    - `-` 单独作为键名时仍表示减号键（先判特殊键，再做归一化）。
+    """
+    raw = str(name or "").strip()
+    if raw in ("-", "+"):
+        return _KEYS[raw]
+    n = re.sub(r"[\s_]+", "", raw.lower())
     if len(n) == 1 and (n.isalpha() or n.isdigit()):
         return ord(n.upper())
     if n in _MODIFIERS:
@@ -2561,8 +2692,21 @@ def key_vk(name: str) -> int:
 
 
 def do_key(key: str):
-    """按键/组合键：'enter'、'f5'、'ctrl+c'、'win+ctrl+d'。"""
-    parts = [p.strip() for p in str(key or "").split("+") if p.strip()]
+    """按键/组合键：'enter'、'f5'、'ctrl+c'、'win+ctrl+d'、'ctrl++'（放大）。
+
+    `+` 本身也是键名，所以不能简单 split('+')：`ctrl++` / `ctrl+shift++` 的末尾
+    两个加号表示「按住修饰键再按加号键」，需要单独还原，否则会被解析成只按修饰键。
+    """
+    raw = str(key or "").strip()
+    if not raw:
+        raise ValueError("按键为空")
+    if raw in ("+", "-"):
+        parts = [raw]
+    elif raw.endswith("++"):
+        head = raw[:-2].strip()
+        parts = ([p for p in re.split(r"\s*\+\s*", head) if p] if head else []) + ["+"]
+    else:
+        parts = [p.strip() for p in raw.split("+") if p.strip()]
     if not parts:
         raise ValueError("按键为空")
     mods = [key_vk(p) for p in parts[:-1]]
@@ -4175,7 +4319,47 @@ def _apply_snap(args: dict, x: int, y: int, default_on: bool = True) -> tuple:
     return _snap_to_element(x, y, reach)
 
 
+_CLICK_ACTIONS = {
+    "": "click", "click": "click", "tap": "click", "left": "click",
+    "double": "double", "double_click": "double", "dblclick": "double",
+    "right": "right", "right_click": "right", "context": "right",
+    "long": "long_press", "long_press": "long_press",
+    "drag": "drag", "swipe": "swipe", "select": "select",
+}
+
+
+def _click_action(args: dict) -> str:
+    """click 工具的高级动作：把 action 归一化到 click/double/right/long_press/drag/swipe/select。
+    未知值回落 click（工具描述里已列出合法值，宁可当普通点击也不报错卡住流程）。"""
+    a = str((args or {}).get("action") or "").strip().lower().replace("-", "_")
+    return _CLICK_ACTIONS.get(a, "click")
+
+
+def _as_drag_args(args: dict) -> dict:
+    """把统一 click 的 x/y 起点写法映射成 drag/swipe/select 需要的 x1/y1。
+    同时兼容旧调用方直接传 x1/y1。"""
+    out = dict(args or {})
+    if out.get("x1") is None and out.get("x") is not None:
+        out["x1"] = out.get("x")
+    if out.get("y1") is None and out.get("y") is not None:
+        out["y1"] = out.get("y")
+    return out
+
+
 def tool_click(args: dict) -> str:
+    """统一点击入口：普通点击 / 双击 / 右键 / 长按 / 拖拽 / 滑动 / 拖选。
+
+    为什么把这些动作并进 click：模型在任务里最常犯的错不是「不会拖拽」，而是
+    「忘记还有 drag 工具」—— 于是把拖拽拆成点击+移动+点击，行为完全不对。
+    一个 click 工具带 action，模型只需记住一个入口；底层仍走各自经过精度验证的
+    注入实现（do_click/do_long_press/do_drag/do_swipe），不是另写一套。
+    """
+    action = _click_action(args)
+    if action == "long_press":
+        return tool_long_press(args)
+    if action in ("drag", "swipe", "select"):
+        fn = {"drag": tool_drag, "swipe": tool_swipe, "select": tool_select}[action]
+        return fn(_as_drag_args(args))
     reason = _guard("click")
     if reason:
         return reason
@@ -4183,6 +4367,12 @@ def tool_click(args: dict) -> str:
     x, y, snap_note = _apply_snap(args, x, y)
     button = str(args.get("button") or "left").strip().lower()
     clicks = max(1, min(_num(args.get("clicks"), 1), 3))
+    if action == "right":
+        button = "right"
+        clicks = 1
+    elif action == "double":
+        button = "left"
+        clicks = 2
     verify = _bool(args.get("verify"), False)
     pre = _ensure_click_target(x, y, args)
     # 生效校验要拿目标窗口做「整窗指纹」：显式 hwnd 优先，其次最近一次窗口截图的那个
@@ -4205,11 +4395,20 @@ def tool_click(args: dict) -> str:
             f"({ax - x:+d},{ay - y:+d})px —— 注入链路有偏差（多屏归一化 / DPI 缩放），"
             f"请先用 verify_point 自检坐标链路，不要盲目重试。")
     vtext = _click_verify(x, y, before, hwnd)
-    _log("ai", f"点击 {x},{y}（{button}×{clicks}，鼠标注入），落点 ({ax},{ay})")
+    label = {"right": "右键", "double": "双击"}.get(action, "点击")
+    _log("ai", f"{label} {x},{y}（{button}×{clicks}，鼠标注入），落点 ({ax},{ay})")
     _refresh_env()
-    return (f"已点击 ({x},{y}) {button}×{clicks}（屏幕物理坐标，鼠标注入）。"
+    return (f"已{label} ({x},{y}) {button}×{clicks}（屏幕物理坐标，鼠标注入）。"
             + _join_notes(snap_note, pre, land, vtext)
             + "请重新 screen_shot 验证结果。")
+
+
+def _inject_lost_note(x: int, y: int) -> str:
+    """注入动作（拖拽/滑动/长按/拖选）被真实鼠标覆盖时的统一告警文案。"""
+    return (f"⚠ **动作没有执行**：光标无法稳定停在 ({x},{y})（当前在 {_cursor_pos()}），"
+            f"通常说明**用户正在用真实鼠标**，注入被实时覆盖了。"
+            f"请先请用户停手，或 control(action=\"status\") 查看接管状态；"
+            f"**不要重复重试同一坐标**。")
 
 
 def tool_long_press(args: dict) -> str:
@@ -4220,7 +4419,10 @@ def tool_long_press(args: dict) -> str:
     x, y, snap_note = _apply_snap(args, x, y)
     dur = max(0.2, float(_num(args.get("duration"), int(DEFAULT_LONG_PRESS_S * 1000)) / 1000.0))
     pre = _ensure_click_target(x, y, args)
-    do_long_press(x, y, dur, mode=_input_mode(args))
+    ok = do_long_press(x, y, dur, mode=_input_mode(args))
+    if not ok:
+        _refresh_env()
+        return _inject_lost_note(x, y)
     _log("ai", f"长按 {x},{y}（{dur:.1f}s，鼠标注入）")
     _refresh_env()
     return (f"已长按 ({x},{y}) {dur:.1f}s。" + _join_notes(snap_note, pre)
@@ -4239,7 +4441,9 @@ def tool_drag(args: dict) -> str:
     x2, y2, n2 = _apply_snap(args, x2, y2)
     dur = max(0.1, _num(args.get("duration"), 500) / 1000.0)
     pre = _ensure_click_target(x1, y1, args)
-    do_drag(x1, y1, x2, y2, dur, mode=_input_mode(args))
+    if not do_drag(x1, y1, x2, y2, dur, mode=_input_mode(args)):
+        _refresh_env()
+        return _inject_lost_note(x1, y1)
     _log("ai", f"拖拽 ({x1},{y1}) → ({x2},{y2})")
     _refresh_env()
     return (f"已从 ({x1},{y1}) 拖拽到 ({x2},{y2})。"
@@ -4257,7 +4461,9 @@ def tool_swipe(args: dict) -> str:
     x2, y2, n2 = _apply_snap(args, x2, y2, default_on=False)
     dur = max(0.08, _num(args.get("duration"), 260) / 1000.0)
     pre = _ensure_click_target(x1, y1, args)
-    do_swipe(x1, y1, x2, y2, dur, mode=_input_mode(args))
+    if not do_swipe(x1, y1, x2, y2, dur, mode=_input_mode(args)):
+        _refresh_env()
+        return _inject_lost_note(x1, y1)
     _log("ai", f"滑动 ({x1},{y1}) → ({x2},{y2})")
     _refresh_env()
     if _touch_allowed(_input_mode(args)):
@@ -4278,7 +4484,9 @@ def tool_select(args: dict) -> str:
     x1, y1, n1 = _apply_snap(args, x1, y1, default_on=False)
     x2, y2, n2 = _apply_snap(args, x2, y2, default_on=False)
     pre = _ensure_click_target(x1, y1, args)
-    do_drag(x1, y1, x2, y2, max(0.2, _num(args.get("duration"), 420) / 1000.0), hold=0.05)
+    if not do_drag(x1, y1, x2, y2, max(0.2, _num(args.get("duration"), 420) / 1000.0), hold=0.05):
+        _refresh_env()
+        return _inject_lost_note(x1, y1)
     _log("ai", f"选择区域 ({x1},{y1}) → ({x2},{y2})")
     _refresh_env()
     return (f"已拖选区域 ({x1},{y1}) → ({x2},{y2})，随后可用 copy 复制选中内容。"
@@ -4315,7 +4523,13 @@ def tool_type_text(args: dict) -> str:
     tgt = _input_target_hwnd(args)
     fg = foreground_window()
     do_type_text(text)
-    _log("ai", f"输入文本（{len(text)} 字符）：{text[:60]}")
+    # 发送：输入完直接回车，省掉「移动鼠标去点发送按钮」这一步（也避免点偏）。
+    # 先停一下让输入法/输入框把上屏处理完，否则回车可能被当成输入法候选上屏。
+    submit = _bool(args.get("submit"), False)
+    if submit:
+        time.sleep(max(0.08, _num(args.get("submit_delay"), 120) / 1000.0))
+        do_key("enter")
+    _log("ai", f"输入文本（{len(text)} 字符）" + ("并回车发送" if submit else "") + f"：{text[:60]}")
     _refresh_env()
     # 关于「文字到底进了哪里」：**不做整窗像素比对** —— 实测输入一个字符只让窗口
     # 指纹变化 1~2 个采样点，与光标闪烁同量级，据此报警必然是误报，反而会害模型
@@ -4324,7 +4538,9 @@ def tool_type_text(args: dict) -> str:
     if tgt and fg != tgt:
         where = (f"⚠ 注入时前台窗口是「{window_title(fg) or fg}」而不是目标窗口"
                  f"「{window_title(tgt) or tgt}」—— 请立刻截图核对文字去了哪里，不要重复输入")
-    return (f"已输入 {len(text)} 个字符（{where}）。" + _join_notes(note)
+    return (f"已输入 {len(text)} 个字符（{where}）"
+            + ("，并按 Enter 发送（无需再移动鼠标点发送按钮）" if submit else "")
+            + "。" + _join_notes(note)
             + "请重新 screen_shot 确认输入是否正确。")
 
 
@@ -4614,11 +4830,13 @@ def tool_open_app(args: dict) -> str:
             f"{'已在前台' if ok else '⚠ 不在前台'}")
     body = "\n".join(f"  · {s}" for s in steps)
     if not ok:
-        head += ("\n（系统拒绝了置顶，后续坐标点击有落到别的窗口上的风险 —— 请让用户"
-                 "手动切一下，或先处理抢焦点的窗口。）")
+        head += ("\n（系统拒绝了置顶，后续坐标点击有落到别的窗口上的风险 —— 先用 "
+                 "taskbar_open(index=N) 点一下它的任务栏图标（通常一步就能切过去），"
+                 "还不行再请用户手动切一下。）")
     return (f"{head}\n{body}\n"
             f"下一步：用 screen_shot(mode=\"window\", hwnd={hwnd}) 建立坐标基准，"
-            f"再用 zoom_in 放大细看、click 按坐标点击 —— **不要**再重复 list_windows 找窗口。")
+            f"再用 zoom_in 放大细看、click 按坐标点击 —— **不要**再重复 list_windows 找窗口，"
+            f"也**不要**再调 open_app/manage_window 反复置顶。")
 
 
 def tool_manage_window(args: dict) -> str:
@@ -4768,19 +4986,26 @@ TOOLS = [
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
          "required": ["x", "y"]}},
     {"name": "click", "description":
-        "点击指定位置（有触控驱动的设备走真实触控 tap）。x/y 为当前截图基准坐标；"
-        "button=left/right/middle；clicks=点击次数（1-3）。"
+        "鼠标操作统一入口（x/y 为当前截图基准坐标）。用 action 选动作（只需记住这一个工具）："
+        "click=单击（默认）/double=双击/right=右键/long_press=长按（可呼出上下文菜单）/"
+        "drag=拖拽（起点 x,y → 终点 x2,y2，移动文件、拖滑块、拖窗口）/swipe=快速滑动（滚列表、翻页）/"
+        "select=拖选文本或区域（随后可用 copy）。"
         "**默认会自动做元素吸附**：把坐标修正到附近那个控件的几何中心（纯像素连通域判定，"
         "不依赖控件树，对 Blender 等自绘界面同样有效），返回值里会说明有没有吸附、位移多少。"
-        "想点一个精确像素（如三维视口里的某点）传 snap=false。",
+        "想点一个精确像素（如三维视口里的某点）传 snap=false。"
+        "拖拽与滑动动作顺带支持 duration（毫秒）与 input=touch。",
      "inputSchema": {"type": "object", "properties": {
-         "x": {"type": "integer", "description": "x 坐标（截图基准）"},
-         "y": {"type": "integer", "description": "y 坐标（截图基准）"},
+         "x": {"type": "integer", "description": "x 坐标（截图基准）；action=drag/swipe/select 时为起点"},
+         "y": {"type": "integer", "description": "y 坐标（截图基准）；action=drag/swipe/select 时为起点"},
+         "action": {"type": "string", "description": "click（默认）/double/right/long_press/drag/swipe/select"},
+         "x2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 x（截图基准）"},
+         "y2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 y（截图基准）"},
+         "duration": {"type": "integer", "description": "长按时长/拖拽时长/滑动时长毫秒（长按默认 800、拖拽 500、滑动 260）"},
          "button": {"type": "string", "description": "left（默认）/right/middle"},
-         "clicks": {"type": "integer", "description": "点击次数，默认 1"},
+         "clicks": {"type": "integer", "description": "点击次数，默认 1（action=double 时自动为 2）"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（触控优先的界面才用，实测落点偏差不可控）"},
          "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告界面是否真的响应了（默认 false）"},
-         "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素传 false）"},
+         "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"},
          "title": {"type": "string", "description": "目标窗口标题片段（可选；填了就在该窗口内点击，并自动把它激活置顶）"},
@@ -4848,12 +5073,15 @@ TOOLS = [
          "required": ["delta"]}},
     {"name": "type_text", "description":
         "输入文本（Unicode 注入，支持中文/符号；先点击输入框使其获得焦点再调用）。"
+        "**发消息别再去点发送按钮**：传 submit=true 就会在输入完成后自动按 Enter 发送。"
         "**注入前会确保目标窗口在最前**：抢不到焦点就拒绝执行，避免文字打进别的应用"
         "（例如 AI 助手自己的输入框）。",
      "inputSchema": {"type": "object", "properties": {
          "title": {"type": "string", "description": "目标窗口标题片段（可选；注入前会确保它在最前，避免文字打进别的应用）"},
          "hwnd": {"type": "integer", "description": "目标窗口句柄（可选，来自 list_windows）"},
-         "text": {"type": "string", "description": "要输入的文本"}},
+         "text": {"type": "string", "description": "要输入的文本"},
+         "submit": {"type": "boolean", "description": "输入完成后自动按 Enter 发送（默认 false；聊天/搜索框发消息时传 true，无需移动鼠标点发送按钮）"},
+         "submit_delay": {"type": "integer", "description": "输入完成到按 Enter 之间的等待毫秒，默认 120（输入法上屏慢时可加大）"}},
          "required": ["text"]}},
     {"name": "key_press", "description":
         "按键/组合键：enter、tab、esc、backspace、f5、ctrl+c、ctrl+shift+s、win+ctrl+d 等。"
@@ -4915,13 +5143,14 @@ TOOLS = [
          "index": {"type": "integer", "description": "要点第几个槽位（从 1 开始，编号见返回的图与表）；不填=只扫描并列编号，不点击"},
          "where": {"type": "string", "description": "taskbar=任务栏本体（默认）；panel=先展开右侧「↑」隐藏图标/后台应用面板，再在面板里定位"},
          "chevron": {"type": "integer", "description": "where=panel 时可显式指定「↑」按钮是任务栏里的第几个槽位（自动识别不准时用）"},
-         "name": {"type": "string", "description": "要找的应用名（可选，仅用于文案与日志）"},
+         "name": {"type": "string", "description": "要找的应用名（可选）：填了会额外回报它当前是已在最前 / 在后台 / 已最小化 / 没运行，避免你反复置顶"},
          "timeout": {"type": "integer", "description": "点击后等待前台切换的毫秒数，默认 250（启动慢的应用可加大）"}}}},
     {"name": "manage_window", "description":
         "窗口/应用管理：state 列出窗口（含最小化标记）；"
-        "activate/focus 切到前台并实测校验（点击前用它避免点错窗口）；"
+        "activate/focus 切到前台并实测校验；"
         "maximize/minimize/restore 调整显示状态；move 移动或改尺寸；close 关闭；"
-        "wait 等待某标题窗口出现（弹窗延迟弹出时用，比固定 sleep 可靠）。",
+        "wait 等待某标题窗口出现（弹窗延迟弹出时用，比固定 sleep 可靠）。"
+        "**切到已在运行的应用请优先用 taskbar_open(index=N)，不要反复调本工具置顶。**",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "description":
                     "state/list/activate/focus/maximize/minimize/restore/move/close/wait"},
@@ -5097,7 +5326,6 @@ label.sw{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none
   </div>
   <div class="chips">
     <span class="chip" id="chipAura">光环：待命</span>
-    <span class="chip" id="chipElements">元素识别：—</span>
     <span class="chip" id="chipContainer">容器：前台桌面</span>
     <span class="chip" id="chipInput">输入：—</span>
     <span class="chip" id="chipState">状态：待命</span>
@@ -5162,10 +5390,6 @@ label.sw{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none
     var au=el("chipAura");
     au.textContent="光环："+(s.aura?"显示中":"待命");
     au.className="chip"+(s.aura?" on":"");
-    var el2=el("chipElements");
-    el2.textContent="元素识别："+(/不可用/.test(s.elements||"")?"不可用":"可用");
-    el2.className="chip"+(/不可用/.test(s.elements||"")?" warn":" on");
-    el2.title=s.elements||"";
     el("chipContainer").textContent="容器："+(s.container==="virtual_desktop"?"独立虚拟桌面":"前台桌面");
     el("chipContainer").className="chip"+(s.container==="virtual_desktop"?" on":"");
     el("chipInput").textContent="输入："+(s.input==="touch"?"触控":"鼠标");
