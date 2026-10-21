@@ -258,6 +258,16 @@ def list_commits_with_stats(ref: str = "", limit: int = None) -> list:
     return out
 
 
+def commit_stats(ref: str = "", limit: int = 100) -> dict:
+    """最近 limit 条提交的变更行数：{hash: (add, del)}。
+
+    每条提交都要计算 diff，全量历史会耗时数秒到数十秒（实测 164 条约 8s）。
+    界面先用 list_commits 秒出列表，再在后台补这批统计，避免首屏等待。
+    """
+    return {r["hash"]: (r.get("add") or 0, r.get("del") or 0)
+            for r in list_commits_with_stats(ref=ref, limit=limit)}
+
+
 def status_entries() -> list:
     """工作区改动清单：[{code, path}]。
 

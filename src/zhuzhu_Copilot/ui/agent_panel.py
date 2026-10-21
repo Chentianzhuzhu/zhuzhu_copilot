@@ -13134,6 +13134,11 @@ class CodePreviewWindow(QWidget):
             return
         name = os.path.basename(path)
         ext = os.path.splitext(path)[1].lstrip(".").lower()
+        # 切到别的文件前先落盘：图片/Office/媒体等分支不使用代码编辑器，
+        # 不会触发自动保存，未保存的编辑会随视图切换丢失。
+        if str(path) != self._edit_path:
+            self._save_timer.stop()
+            self._save_code_now()
         self.path_lbl.setText(path)
         # 手动指定过模式则按所选类型渲染；否则（auto）按扩展名自动路由
         key = self.mode.currentData() if self._manual_mode else "auto"
@@ -13771,16 +13776,18 @@ class _HtmlListDelegate(QStyledItemDelegate):
 
 
 class GitLogWindow(_RoundedFloatWindow):
-    """Git 只读图形面板：展示仓库分支 / 提交历史，带颜色标识。
+    """Git 图形面板：展示仓库分支 / 提交历史，带颜色标识。
     顶部「分支 / 提交」切换；当前分支高亮、哈希/时间用不同颜色区分。
     无边框 + Tool（不占任务栏），非置顶、不可拖动；位于 todos 下方 10px。
-    仅只读展示，不提供任何 push/pull/checkout 等写操作。
+    写操作仅在用户显式点击时执行（双击分支 checkout、暂存/提交/推送），
+    全部走 agent_git，失败信息原样展示在状态行。
     git 数据获取放后台线程（起子进程可能耗时）；完成后通过 data_ready 信号
     回主线程填充，避免设置工作目录时阻塞 UI 造成卡死。"""
 
     WIDTH = 280   # 与 todos / worktree 面板同宽
     DEFAULT_SIZE = (WIDTH, 320)
     HEIGHT_MIN = 120   # 融入栏内最小高度（余量吸收者，避免被压成一条缝）
+    STATS_LIMIT = 100  # 行数统计的提交条数上限（每条要算一次 diff，全量会很慢）
     _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
     data_ready = pyqtSignal(object)   # 后台线程 → 主线程：装载的 git 视图数据
@@ -13956,10 +13963,13 @@ class GitLogWindow(_RoundedFloatWindow):
         except Exception:
             pass
 
-    def _set_view(self, view: str, do_refresh: bool = True):
+    def _set_view(self, view: str, do_refresh: bool = True, keep_scope: bool = False):
         self._view = view
-        if view == "branch":
-            self._scope_ref = ""      # 回到分支列表即退出「查看某分支提交」模式
+        if view == "branch" or not keep_scope:
+            # 「分支」回列表；手动点「提交」回到当前分支历史。
+            # 单击分支查看该分支提交时传 keep_scope=True，保留 _scope_ref。
+            self._scope_ref = ""
+        self.list.clear()          # 切视图后旧列表不再适用，立即清空显示加载态
         active = (f"QPushButton {{ background:{ACCENT}; color:#FFFFFF;"
                   f"border:none;border-radius:5px;padding:0 8px;"
                   f"font-size:11px;font-weight:700; }}"
@@ -14020,9 +14030,8 @@ class GitLogWindow(_RoundedFloatWindow):
                     ups = agent_git.branch_upstreams()
                     payload["upstream"] = ups.get(payload["current"], "")
                     if view == "commit":
-                        # 查看指定分支的提交（不切换工作区）
-                        payload["rows"] = agent_git.list_commits_with_stats(
-                            ref=scope_ref)
+                        # 查看指定分支的提交（不切换工作区）；先只取列表（毫秒级）
+                        payload["rows"] = agent_git.list_commits(ref=scope_ref)
                     else:
                         payload["rows"] = agent_git.list_branches()
                         payload["upstreams"] = ups
@@ -14034,6 +14043,18 @@ class GitLogWindow(_RoundedFloatWindow):
                 # 面板已随主题重建/会话切换销毁（后台线程仍在跑）：信号目标已
                 # 死，静默丢弃即可——向已删除控件 emit 会把异常抛进线程
                 # excepthook 弹错误提示（切主题时报错的次要来源）
+                return
+            if payload.get("error") or view != "commit":
+                return
+            # 第二阶段：变更行数统计。每条提交都要算 diff（164 条约 8s），
+            # 单独补发，列表不必等它；超量历史只统计最近的 STATS_LIMIT 条。
+            try:
+                stats = agent_git.commit_stats(ref=scope_ref, limit=self.STATS_LIMIT)
+                self.data_ready.emit({"view": view, "phase": "stats",
+                                      "scope": scope_ref,
+                                      "workdir": payload["workdir"],
+                                      "stats": stats})
+            except RuntimeError:
                 pass
 
         th = threading.Thread(target=_load, daemon=True)
@@ -14041,6 +14062,12 @@ class GitLogWindow(_RoundedFloatWindow):
 
     def _on_data_ready(self, payload):
         """主线程装载后台线程取回的 git 数据（切视图期间视图可能已变，按最新视图重建）。"""
+        # 第二阶段：变更行数统计到达（列表早已显示）——就地更新条目，不重建列表
+        if payload and payload.get("phase") == "stats":
+            if (payload.get("view") == self._view
+                    and payload.get("scope") == self._scope_ref):
+                self._apply_stats(payload.get("stats") or {})
+            return
         self._busy = False
         # 视图在后台加载期间被切换：忽略过期响应，重取当前视图
         if not payload or payload.get("view") != self._view:
@@ -14106,7 +14133,22 @@ class GitLogWindow(_RoundedFloatWindow):
                 a2=b['author'], a3=b['date']))
             self.list.addItem(it)
 
+    @staticmethod
+    def _commit_html(c: dict, add=None, dele=None) -> str:
+        """单条提交的富文本：哈希行右侧附 +N/-M（统计未到达时不显示）。"""
+        stats = ""
+        if add or dele:
+            stats = (f' <span style="color:{OK};font-size:10px;">+{add or 0}</span>'
+                     f' <span style="color:{ERR};font-size:10px;">-{dele or 0}</span>')
+        return (f'<div style="color:{ACCENT};font-family:Consolas;font-size:11px;">'
+                f'{_esc(c["hash"])}{stats}</div>'
+                f'<div style="color:{TEXT};font-size:11px;">{_esc(c["subject"])}</div>'
+                f'<div style="color:{TEXT_DIM};font-size:10px;">'
+                f'{_esc(c["author"])} · {_esc(c["date"])}</div>')
+
     def _fill_commits(self, commits: list):
+        self._commit_by_hash = {c["hash"]: c for c in commits}
+        self._commit_items = {}
         # 正在查看非当前分支的提交：首行标注范围，避免与当前分支历史混淆
         if self._scope_ref:
             scope = self._make_item(
@@ -14121,19 +14163,27 @@ class GitLogWindow(_RoundedFloatWindow):
         self.list.setUpdatesEnabled(False)
         try:
             for c in commits:
-                add, dele = c.get("add") or 0, c.get("del") or 0
-                # 变更行数紧跟在哈希行右侧：哈希只有 7 位，留白足够，不额外占一行高
-                stats = (f' <span style="color:{OK};font-size:10px;">+{add}</span>'
-                         f' <span style="color:{ERR};font-size:10px;">-{dele}</span>'
-                         if (add or dele) else "")
-                html = (
-                    f'<div style="color:{ACCENT};font-family:Consolas;font-size:11px;">'
-                    f'{_esc(c["hash"])}{stats}</div>'
-                    f'<div style="color:{TEXT};font-size:11px;">{_esc(c["subject"])}</div>'
-                    f'<div style="color:{TEXT_DIM};font-size:10px;">'
-                    f'{_esc(c["author"])} · {_esc(c["date"])}</div>')
                 # 自动按渲染高度计项高（long subject/author 换行后不遮挡作者时间行）
-                self.list.addItem(self._make_item(html))
+                it = self._make_item(self._commit_html(c))
+                self._commit_items[c["hash"]] = it
+                self.list.addItem(it)
+        finally:
+            self.list.setUpdatesEnabled(True)
+            self.list.viewport().update()
+
+    def _apply_stats(self, stats: dict):
+        """第二阶段：把变更行数补到已显示的提交条目上（只改文本，不重建列表）。"""
+        if not stats or not getattr(self, "_commit_items", None):
+            return
+        self.list.setUpdatesEnabled(False)
+        try:
+            for h, it in self._commit_items.items():
+                pair = stats.get(h)
+                c = self._commit_by_hash.get(h)
+                if not pair or c is None:
+                    continue
+                it.setData(Qt.ItemDataRole.UserRole,
+                           self._commit_html(c, pair[0], pair[1]))
         finally:
             self.list.setUpdatesEnabled(True)
             self.list.viewport().update()
@@ -14162,7 +14212,7 @@ class GitLogWindow(_RoundedFloatWindow):
         if not agent_git.is_git_repo():
             return
         self._scope_ref = branch
-        self._set_view("commit")
+        self._set_view("commit", keep_scope=True)
 
     def _on_item_double_clicked(self, item):
         """双击分支：真正切换到该分支（工作区会变）。"""
