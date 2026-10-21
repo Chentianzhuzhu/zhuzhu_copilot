@@ -88,9 +88,9 @@ SPLASH_SUB_INSET_Y = 10
 # 标题字号（单一数据源：调大小只改这里）
 SPLASH_TITLE_PX = 30
 # 「Agent」徽章高度与圆角半径（单一数据源）：
-# 半径 = 高度一半 * 0.7，即在全圆角基础上把弧度减小 30%
+# 半径 = 高度一半 * 0.63，即全圆角基础上先减 30%（0.7）、再减 10%（×0.9）
 SPLASH_BADGE_H = 34
-SPLASH_BADGE_RADIUS = round(SPLASH_BADGE_H / 2 * 0.7)
+SPLASH_BADGE_RADIUS = round(SPLASH_BADGE_H / 2 * 0.63)
 
 # 面板首帧之后再预热 Copilot 浮层（延迟 ms）：
 # 预热会在主线程创建浮层/托盘并做首次应用扫描（实测约 1.4s），放在面板显示前会让

@@ -11503,6 +11503,9 @@ class _PanelResizeSlot(QWidget):
 
     _EDGE = 6
     _CORNER = 14
+    # 拖动上限（子面板默认 1600x1400；主窗口用子类放大上限，兼容 4K 屏）
+    MAX_W = 1600
+    MAX_H = 1400
 
     def __init__(self, panel: QWidget, host, mode: str):
         super().__init__(panel)
@@ -11566,8 +11569,8 @@ class _PanelResizeSlot(QWidget):
             r.setTop(r.top() + dy)
         elif mode in ("B", "BL", "BR"):
             r.setBottom(r.bottom() + dy)
-        nw = max(_PanelResizeSlot._EDGE + 40, min(1600, r.width()))
-        nh = max(120, min(1400, r.height()))
+        nw = max(_PanelResizeSlot._EDGE + 40, min(self.MAX_W, r.width()))
+        nh = max(120, min(self.MAX_H, r.height()))
         # 左边/上边联动平移：保持右侧/底部贴附边缘不动
         nx, ny = p.x(), p.y()
         if mode in ("L", "TL", "BL"):
@@ -11597,6 +11600,13 @@ class _PanelResizeSlot(QWidget):
             e.accept()
             return
         super().mouseReleaseEvent(e)
+
+
+class _MainResizeSlot(_PanelResizeSlot):
+    """主窗口的 resize 热区：去掉子面板的尺寸上限（主窗口可占满 4K 屏）。"""
+
+    MAX_W = 100000
+    MAX_H = 100000
 
 
 class _PanelResizeGrip(QWidget):
@@ -15543,6 +15553,154 @@ class _VoiceOverlay(QWidget):
             painter.end()
 
 
+class _TrafficDot(QWidget):
+    """窗口左上角的实心圆控制点（红=关闭 / 黄=最大化·恢复 / 绿=最小化）。
+
+    自绘而非 QSS：QSS 画圆依赖 border-radius，透明底窗口（自绘圆角）上的
+    小圆容易出现锯齿；这里用 QPainter 抗锯齿直接画椭圆，Win10/Win11 观感一致。
+    """
+
+    SIZE = 12
+
+    def __init__(self, color: str, tooltip: str, on_click, parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self._on_click = on_click
+        self._hover = False
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(tooltip)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        # 必须接受按下：QWidget 默认忽略事件会冒泡到标题栏，标题栏随即接管拖动
+        # 并抢走后续松开事件，圆点就永远收不到 click（关闭/最大化失效）。
+        if e.button() == Qt.MouseButton.LeftButton:
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        # 只有「按下与松开都在圆内」才算点击，避免拖动窗口时误触关闭
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(e.position().toPoint())):
+            self._on_click()
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = QColor(self._color)
+        if self._hover:
+            c = c.lighter(118)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c)
+        p.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
+        p.end()
+
+
+class _TitleBar(QWidget):
+    """自绘标题栏：左侧红黄绿控制点，右侧应用图标 + 名称 + Agent 徽章。
+
+    替代被移除的 Windows 原生标题栏（原生标题栏在 Win10/Win11 的圆角与配色
+    不一致）。拖动走 startSystemMove()，保留贴靠/多屏等系统行为；圆点自身
+    不参与拖动，双击标题栏切换最大化/还原。
+    """
+
+    HEIGHT = 26
+    BADGE_H = 16
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self._panel = panel
+        self._press = None
+        self.setFixedHeight(self.HEIGHT)
+        self.setObjectName("agentTitleBar")
+
+        lay = QHBoxLayout(self)
+        # 左右各留 8px：最大化还原后根布局左右边距会被清零（_apply_reserve），
+        # 徽章/圆点不加内缩会贴在窗口左右缘
+        lay.setContentsMargins(8, 2, 8, 2)
+        lay.setSpacing(8)
+        self.close_dot = _TrafficDot("#FF5F57", _ui("关闭"), panel.close, self)
+        self.max_dot = _TrafficDot("#FEBC2E", _ui("最大化"), panel._toggle_max_restore, self)
+        self.min_dot = _TrafficDot("#28C840", _ui("最小化"), panel.showMinimized, self)
+        for d in (self.close_dot, self.max_dot, self.min_dot):
+            lay.addWidget(d, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch(1)
+
+        icon = QLabel(self)
+        icon.setPixmap(QIcon(_app_icon_path()).pixmap(16, 16))
+        icon.setFixedSize(16, 16)
+        icon.setToolTip(_ui("zhuzhu Copilot"))
+        lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        name = QLabel("zhuzhu Copilot", self)
+        name.setStyleSheet(
+            f"color: {TEXT}; font-size: 12px; font-weight: 700; background: transparent;")
+        lay.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # Agent 徽章：沿用启动页样式，深浅色自动反色（深色白底黑字 / 浅色黑底白字）
+        if _resolve_theme() == "dark":
+            bg, fg = "#F5F5F5", "#000000"
+        else:
+            bg, fg = "#000000", "#FFFFFF"
+        badge = QLabel("Agent", self)
+        badge.setFixedHeight(self.BADGE_H)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setStyleSheet(
+            f"color: {fg}; background: {bg};"
+            f"border-radius: {round(self.BADGE_H / 2 * 0.63)}px;"
+            "font-size: 10px; font-weight: 700; padding: 0 7px;")
+        lay.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def sync_window_state(self):
+        """最大化/还原后更新黄点提示（图标本身保持三枚实心圆）"""
+        self.max_dot.setToolTip(
+            _ui("恢复") if self._panel.isMaximized() else _ui("最大化"))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press = e.globalPosition().toPoint()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._press is None or not (e.buttons() & Qt.MouseButton.LeftButton):
+            return super().mouseMoveEvent(e)
+        # 超过 5px 才交给系统拖动：短按仍会作为双击/单击事件派发
+        if (e.globalPosition().toPoint() - self._press).manhattanLength() < 5:
+            return
+        wh = self._panel.windowHandle()
+        self._press = None
+        if wh is not None:
+            wh.startSystemMove()
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        self._press = None
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._panel._toggle_max_restore()
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+
 class AgentPanel(QDialog):
     confirm_signal = pyqtSignal(str, str, str, str)  # sid, name, args_json, risk
     eval_signal = pyqtSignal(str)          # agnes-2.5-flash 任务难度评估结果（后台线程 → 主线程）
@@ -15565,6 +15723,9 @@ class AgentPanel(QDialog):
     voice_level_signal = pyqtSignal(float)  # 当前音量 0~1 → 遮罩波动
     voice_state_signal = pyqtSignal(str)    # 会话状态：connecting / recording / finished
     voice_error_signal = pyqtSignal(str)    # 失败原因（触发后会话结束）
+
+    # 主面板圆角半径（单一数据源）：无边框自绘窗口，最大化/全屏时归零
+    _WINDOW_RADIUS = 18
 
     # ---------- 微信 ClawBot（主面板：消息接收与回复推送） ----------
     def _wechat_start_polling(self):
@@ -15772,11 +15933,12 @@ class AgentPanel(QDialog):
         self._resize_timer.setInterval(160)
         self._resize_timer.timeout.connect(self._rebuild_bubbles_after_resize)
         self._input_placeholder = "/ for commad @ for agent"
-        self.setWindowFlags(self.windowFlags()
-                            | Qt.WindowType.Window
-                            | Qt.WindowType.WindowMinMaxButtonsHint
-                            | Qt.WindowType.WindowMaximizeButtonHint
-                            | Qt.WindowType.WindowMinimizeButtonHint)
+        # 无边框自绘窗口：圆角由 QSS（border-radius）+ 透明底自绘，Win10/Win11 一致；
+        # 原生标题栏已移除，关闭/最大化/最小化由自绘红黄绿圆点接管（见 _TitleBar）
+        self.setWindowFlags(Qt.WindowType.Window
+                            | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setObjectName("agentMainPanel")
         # 优先应用包主题色板：在控件创建前更新模块级颜色常量，
         # 避免 _build_ui 内 createPreviewWidget 等函数用到旧色板。
         try:
@@ -15795,6 +15957,8 @@ class AgentPanel(QDialog):
                       f"stop:0 {_base_color('BG')}, stop:1 {_base_color('BG_BOTTOM')})")
         self.setStyleSheet(
             f"QDialog {{ background: {_dialog_bg}; }}"
+            # 仅主面板自身切圆角（子弹窗保持方角，见 _panel_root_qss 说明）
+            + self._root_radius_qss()
             + _QCOMBO
             # 滚动条主题自适应（轨道用背景色、滑块用边框色），避免浅色模式残留纯黑轨道
             + _scrollbar_css(8, 4, both=True))
@@ -15947,6 +16111,7 @@ class AgentPanel(QDialog):
         self._action_anim_angle = 0
 
         self._build_ui()
+        self._install_window_resize_slots()   # 无边框窗口：四边/四角缩放热区
         self._apply_side_scrollbars()    # 启动即按当前主题补齐侧栏滚动条样式
         # AI 写/改文件 → 预览面板差异高亮观察者（幂等注册，常驻实例）
         try:
@@ -16408,6 +16573,8 @@ class AgentPanel(QDialog):
         self.build_default_ui()
         self._ensure_custom_btn_bar()   # 注册的自定义按钮与 UI/UX 解耦，恒渲染
         self._ensure_ext_panels(rescan=rescan_ext)   # 扩展面板（插件/工作流/代码注册）恒挂载
+        # 重建控件后把缩放热区重新抬到最上层（新建控件的堆叠顺序高于旧热区）
+        self._repin_window_resize_slots()
 
     def build_default_ui(self):
         """内置面板构建（顶部栏 / 消息区 / 输入区一次成型）。"""
@@ -16415,6 +16582,11 @@ class AgentPanel(QDialog):
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
         self._root_lay = root   # 保留根布局引用：最大化时左移边距为左侧三面板腾出空间
+
+        # 自绘标题栏（替代已移除的 Windows 原生标题栏）：左上红黄绿控制点，
+        # 右上应用图标 + 名称 + Agent 徽章。主题切换重建 UI 时会重新创建。
+        self._title_bar = _TitleBar(self)
+        root.addWidget(self._title_bar)
 
         # 顶栏：标题 + Agent/会话/模式 + MCP + tokens + 清空（随窗口宽度自适应，宽窗完整/窄窗紧凑）
         top = QHBoxLayout()
@@ -18663,16 +18835,68 @@ class AgentPanel(QDialog):
             return False
 
     def _apply_window_round(self):
-        """主面板圆角：无边框模式下应用 SetWindowRgn（影响 DWM 窗口形状）。
-        配合 paintEvent 绘制圆角背景，确保四角真正圆角化。
-        拖动结束后补套圆角，修复启动时/切换主题后面板方角问题。"""
+        """主面板圆角套用。
+
+        自绘圆角模式（WA_TranslucentBackground，见 __init__）下不再使用系统
+        DWM/RGN 蒙版：DWM 只在 Win11 生效、Win10 走 SetWindowRgn 会产生锯齿，
+        两者观感不一致。圆角改由 QSS border-radius + paintEvent 裁剪承担。
+        仅当透明底被外部关闭时才回退到系统蒙版。"""
+        if self.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
+            return
         if not self._panel_frameless():
             return
         try:
             from zhuzhu_Copilot.core import agent_ui_ux
-            agent_ui_ux.apply_rounded_window(self, 18)
+            agent_ui_ux.apply_rounded_window(self, self._WINDOW_RADIUS)
         except Exception:
             pass
+
+    def _install_window_resize_slots(self):
+        """无边框主窗口失去系统缩放边框 → 用 8 个透明热区接管四边/四角缩放。
+
+        热区是普通子控件（与四个停靠面板同一套实现）；host=None 表示不写面板
+        尺寸持久化，只改本窗口大小。最大化/全屏时隐藏（见 _sync_window_chrome）。
+        """
+        if getattr(self, "_win_slots", None):
+            return
+        self._win_slots = [_MainResizeSlot(self, None, m)
+                           for m in _PanelResizeGrip.MODES]
+        self._repin_window_resize_slots()
+
+    def _repin_window_resize_slots(self):
+        for s in (getattr(self, "_win_slots", None) or []):
+            try:
+                s.repin()
+                s.raise_()
+            except RuntimeError:
+                pass
+
+    def _toggle_max_restore(self):
+        """黄点/双击标题栏：最大化与还原切换（不进入全屏）。"""
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _sync_window_chrome(self):
+        """最大化/还原后同步自绘窗口饰件：圆角半径、黄点提示、缩放热区。"""
+        try:
+            _set_qss_once(self, self._panel_root_qss())
+        except Exception:
+            pass
+        tb = self.__dict__.get("_title_bar")
+        if tb is not None:
+            try:
+                tb.sync_window_state()
+            except RuntimeError:
+                pass
+        full = self._is_fullscreen()
+        for s in (getattr(self, "_win_slots", None) or []):
+            try:
+                s.setVisible(not full)
+            except RuntimeError:
+                pass
+        self.update()
 
     def _bubble_min_width(self) -> int:
         """聊天气泡最小宽度：全屏时至少覆盖半页宽（不超过最大宽度）"""
@@ -18807,23 +19031,37 @@ class AgentPanel(QDialog):
         except Exception:
             super().paintEvent(event)   # 无法建立画笔（销毁中等异常路径）
             return
+        # 自绘圆角：壁纸/背景一律裁进圆角路径。窗口已设 WA_TranslucentBackground，
+        # 路径外的像素保持透明 —— Win10 与 Win11 圆角效果一致，不依赖系统
+        # DWM（仅 Win11 支持）或 SetWindowRgn（硬裁剪、有锯齿）的差异。
+        r = 0 if self._is_fullscreen() else self._WINDOW_RADIUS
+        if r > 0:
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), r, r)
+            painter.setClipPath(path)
         try:
             done = app_wallpaper.paint(painter, self.rect(), _base_color("BG"))
         except Exception:
             done = False
-        finally:
-            try:
-                painter.end()
-            except Exception:
-                pass
         if not done:
-            super().paintEvent(event)
+            # 透明底窗口（WA_TranslucentBackground）下 Qt 不绘制 QSS 背景
+            # （WA_NoSystemBackground），必须自绘主题渐变 —— 否则窗口内部全透明。
+            grad = QLinearGradient(0, 0, 0, self.height())
+            grad.setColorAt(0.0, QColor(_base_color("BG")))
+            grad.setColorAt(1.0, QColor(_base_color("BG_BOTTOM")))
+            painter.fillRect(self.rect(), grad)
+        try:
+            painter.end()
+        except Exception:
+            pass
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         # 无边框模式：窗口本身切圆角；系统标题栏模式不清蒙版（setMask 会破坏
         # 原生标题栏/阴影/缩放，需由系统圆角承载）。
         self._apply_window_round()
+        # 缩放热区贴合窗口新尺寸（最大化时已在 _sync_window_chrome 中隐藏）
+        self._repin_window_resize_slots()
         # 最大化/还原触发的是 resize 而非 move → 也同步 4 个子面板位置；
         # 多来源反复触发合并为一次，避免每次 resize 都 4×move+raise 造成闪烁
         self._request_side_sync(0)
@@ -20409,6 +20647,8 @@ class AgentPanel(QDialog):
                 except Exception:
                     pass
                 return
+            # 恢复/最大化/还原：圆角半径、黄点提示、缩放热区随状态同步
+            self._sync_window_chrome()
             # 恢复/最大化/还原：重新定位显示子面板（合并为一次）
             self._request_side_sync(0)
 
@@ -26218,16 +26458,25 @@ class AgentPanel(QDialog):
                     AgentPanel._clear_layout(sub)
                     sub.deleteLater()
 
-    @staticmethod
-    def _panel_root_qss() -> str:
+    def _root_radius_qss(self) -> str:
+        """主面板自身的圆角规则（只匹配本窗口，不影响级联到子弹窗的 QDialog 规则）。
+
+        最大化/全屏时半径归零：铺满屏幕的窗口不需要、也不应显示圆角。
+        """
+        r = 0 if self._is_fullscreen() else self._WINDOW_RADIUS
+        return f"QDialog#{self.objectName()} {{ border-radius: {r}px; }}"
+
+    def _panel_root_qss(self) -> str:
         """面板根样式表（背景渐变 + 下拉 + 主题自适应滚动条），__init__ 与 _retheme 共用，
         保证就地重建时根背景/边框随新主题立即刷新。"""
         # 取原始色板：本规则同时级联到面板的各个子弹窗（祖先样式表优先于
         # 应用级），transparent 底会让子弹窗渲染成纯黑；主面板壁纸由
-        # paintEvent 绘制，不受本规则影响。
+        # paintEvent 绘制，不受本规则影响。子弹窗保持方角，只有主面板走
+        # _root_radius_qss 的自绘圆角（透明底 + QSS 圆角裁剪）。
         return (f"QDialog {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
                 f"stop:0 {_base_color('BG')}, stop:1 {_base_color('BG_BOTTOM')});"
                 " border-radius: 0px; }}"
+                + self._root_radius_qss()
                 + _QCOMBO
                 + _scrollbar_css(8, 4, both=True))
 
