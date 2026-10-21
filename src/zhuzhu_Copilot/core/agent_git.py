@@ -1,5 +1,8 @@
-"""沙盒 worktree 的 Git 只读查询：供 AI 面板 git 图形面板展示分支/时间/作者。
-仅做只读查询，不提供任何 push/pull/checkout 等写操作（由 UI 层约束）。"""
+"""沙盒 worktree 的 Git 查询与操作：供 AI 面板 Git 图形面板使用。
+
+只读查询（分支/提交/远程跟踪分支/行数统计）与用户显式触发的写操作
+（checkout / add / commit / push）都集中在此，UI 只负责展示与确认。
+所有命令均为参数列表调用，不经 shell，提交说明不会被解释。"""
 
 import os
 import subprocess
@@ -51,7 +54,7 @@ def _git_exe() -> str:
     return "git"
 
 
-def _git(args: list, allow_partial: bool = False) -> list:
+def _git(args: list, allow_partial: bool = False, timeout: int = 20) -> list:
     """在 git 仓库根目录执行只读 git 查询，失败返回 []
 
     allow_partial=True 时：命令非零退出但已有输出也照用（git log 遍历历史时若遇到
@@ -66,7 +69,7 @@ def _git(args: list, allow_partial: bool = False) -> list:
         # 显式按 UTF-8 解码并容错，避免 p.stdout 为 None 导致后续崩溃
         p = subprocess.run([_git_exe(), "-C", d] + args,
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=20,
+                           errors="replace", timeout=timeout,
                            creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception:
         return []
@@ -102,18 +105,19 @@ def list_branches() -> list:
     return out
 
 
-def list_commits(limit: int = None) -> list:
-    """返回提交历史（按时间倒序）：[{hash, author, date, subject}]。只读，不跨分支。
+def list_commits(limit: int = None, ref: str = "") -> list:
+    """返回提交历史（按时间倒序）：[{hash, author, date, subject}]。
+    ref 为空时取当前 HEAD；传入分支名可查看该分支历史（不切换工作区）。
     limit=None 返回全部提交（Git 面板要求显示完整历史）；
     传入正整数时钳制到 1~100000 条（供需要限量的调用方使用，防止超大仓库一次性拉取）。"""
     if not is_git_repo():
         return []
-    if limit is None:
-        args = ["log", "--pretty=format:%h%x09%an%x09%ad%x09%s", "--date=short"]
-    else:
-        k = max(1, min(int(limit), 100000))
-        args = ["log", "--max-count=%d" % k,
-                "--pretty=format:%h%x09%an%x09%ad%x09%s", "--date=short"]
+    args = ["log"]
+    if limit is not None:
+        args.append("--max-count=%d" % max(1, min(int(limit), 100000)))
+    args += ["--pretty=format:%h%x09%an%x09%ad%x09%s", "--date=short"]
+    if ref:
+        args.append(ref)
     lines = _git(args, allow_partial=True)   # 历史断裂时也显示已读到的提交（见 _git）
     out = []
     for ln in lines:
@@ -161,3 +165,149 @@ def repo_mtime() -> float:
         except OSError:
             pass
     return latest
+
+
+# ---------------- 写操作与远程分支 ----------------
+
+def _run(args: list, timeout: int = 60) -> tuple:
+    """执行任意 git 命令（含写操作），返回 (returncode, stdout, stderr)。
+
+    与 _git 的区别：不吞掉错误信息 —— checkout/commit/push 失败时要把
+    git 的原始 stderr 交给界面展示（例如「本地改动会被覆盖」、认证失败原因）。
+    """
+    d = _git_root()
+    if not d:
+        return 1, "", "not a git repository"
+    try:
+        p = subprocess.run([_git_exe(), "-C", d] + args,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return 1, "", "timeout"
+    except Exception as e:
+        return 1, "", str(e)
+    return p.returncode, p.stdout or "", p.stderr or ""
+
+
+def branch_upstreams() -> dict:
+    """本地分支 → 远程跟踪分支（未推送的分支不出现在结果里）。
+
+    例：{"main": "origin/main"}。用于界面上的 origin/分支名 胶囊，
+    以及判断某个分支是否已经推送到远端。
+    """
+    lines = _git(["for-each-ref", "refs/heads",
+                  "--format=%(refname:short)%09%(upstream:short)"])
+    out = {}
+    for ln in lines:
+        parts = ln.split("\t")
+        if len(parts) >= 2 and parts[1].strip():
+            out[parts[0]] = parts[1].strip()
+    return out
+
+
+def list_commits_with_stats(ref: str = "", limit: int = None) -> list:
+    """提交历史 + 每条提交的变更行数：add/del。
+
+    一次 git log --numstat 拿全量与统计，避免为每条提交单独起进程。
+    大仓库首次解析可能较慢（后台线程执行，界面不阻塞）；超时则回退为
+    不带统计的 list_commits，保证列表仍可用。
+    """
+    if not is_git_repo():
+        return []
+    args = ["log", "--numstat", "--no-renames",
+            "--pretty=format:\x01%h%x09%an%x09%ad%x09%s", "--date=short"]
+    if limit is not None:
+        args.append("--max-count=%d" % max(1, min(int(limit), 100000)))
+    if ref:
+        args.append(ref)
+    lines = _git(args, allow_partial=True, timeout=60)
+    if not lines:
+        return list_commits(limit=limit, ref=ref)
+    out, cur = [], None
+    for ln in lines:
+        if ln.startswith("\x01"):
+            if cur is not None:
+                out.append(cur)
+            parts = ln[1:].split("\t")
+            if len(parts) < 3:
+                cur = None
+                continue
+            cur = {
+                "hash": parts[0],
+                "author": parts[1],
+                "date": parts[2],
+                "subject": parts[3] if len(parts) > 3 else "",
+                "add": 0,
+                "del": 0,
+            }
+        elif cur is not None and ln.strip():
+            cols = ln.split("\t")
+            if len(cols) >= 3:
+                # 二进制文件的行数是 "-"，int() 失败即忽略
+                try:
+                    cur["add"] += int(cols[0])
+                except ValueError:
+                    pass
+                try:
+                    cur["del"] += int(cols[1])
+                except ValueError:
+                    pass
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def status_entries() -> list:
+    """工作区改动清单：[{code, path}]。
+
+    code 为 git porcelain 的两字符状态（如 " M"、"??"、"A "）。
+    路径取最后一个字段，兼容重命名 "old -> new" 形式。
+    """
+    lines = _git(["status", "--porcelain"])
+    out = []
+    for ln in lines:
+        if len(ln) < 4:
+            continue
+        code, path = ln[:2], ln[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        out.append({"code": code, "path": path})
+    return out
+
+
+def checkout(branch: str) -> tuple:
+    """切换分支，返回 (ok, 说明)。失败时说明为 git 原始错误（如本地改动会被覆盖）。"""
+    branch = (branch or "").strip()
+    if not branch:
+        return False, "分支名为空"
+    rc, out, err = _run(["checkout", branch], timeout=120)
+    if rc == 0:
+        return True, (out or err).strip()
+    return False, (err or out).strip() or "切换失败"
+
+
+def stage(paths: list) -> tuple:
+    """暂存指定文件，返回 (ok, 说明)。"""
+    paths = [p for p in (paths or []) if p]
+    if not paths:
+        return False, "未选择文件"
+    rc, out, err = _run(["add", "--"] + paths, timeout=120)
+    return rc == 0, (err or out).strip()
+
+
+def commit(message: str) -> tuple:
+    """用给定说明提交已暂存内容，返回 (ok, 说明)。"""
+    msg = (message or "").strip()
+    if not msg:
+        return False, "提交说明不能为空"
+    rc, out, err = _run(["commit", "-m", msg], timeout=180)
+    return rc == 0, (err or out).strip()
+
+
+def push() -> tuple:
+    """推送当前分支；无 upstream 时自动 push -u origin HEAD。"""
+    rc, _out, _err = _run(["rev-parse", "--abbrev-ref", "@{upstream}"], timeout=20)
+    args = ["push"] if rc == 0 else ["push", "-u", "origin", "HEAD"]
+    rc, out, err = _run(args, timeout=300)
+    return rc == 0, (err or out).strip()

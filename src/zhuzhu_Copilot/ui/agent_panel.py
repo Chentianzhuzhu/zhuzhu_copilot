@@ -1561,6 +1561,16 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
         p.drawLine(QPointF(s * 0.24, s * 0.60), QPointF(s * 0.24, s * 0.40))
         p.drawArc(QRectF(s * 0.56, s * 0.34, s * 0.22, s * 0.32), 0, 180 * 16)
         p.drawArc(QRectF(s * 0.62, s * 0.28, s * 0.22, s * 0.44), 0, 180 * 16)
+    elif kind == "undo":        # 撤销（左弯箭头）
+        p.drawArc(QRectF(s * 0.26, s * 0.30, s * 0.48, s * 0.42),
+                  30 * 16, 210 * 16)
+        p.drawLine(QPointF(s * 0.24, s * 0.38), QPointF(s * 0.36, s * 0.30))
+        p.drawLine(QPointF(s * 0.24, s * 0.38), QPointF(s * 0.34, s * 0.48))
+    elif kind == "redo":        # 重做（右弯箭头，与 undo 镜像）
+        p.drawArc(QRectF(s * 0.26, s * 0.30, s * 0.48, s * 0.42),
+                  -60 * 16, 210 * 16)
+        p.drawLine(QPointF(s * 0.76, s * 0.38), QPointF(s * 0.64, s * 0.30))
+        p.drawLine(QPointF(s * 0.76, s * 0.38), QPointF(s * 0.66, s * 0.48))
     elif kind == "chart":       # 统计（坐标轴 + 三根柱，与 token/上下文统计入口一致）
         p.drawLine(QPointF(s * 0.18, s * 0.14), QPointF(s * 0.18, s * 0.84))
         p.drawLine(QPointF(s * 0.18, s * 0.84), QPointF(s * 0.88, s * 0.84))
@@ -11963,6 +11973,97 @@ class _RoundedFloatWindow(QWidget):
             pass
 
 
+def _decode_text(raw: bytes) -> tuple:
+    """解码源文件内容，返回 (文本, 编码)。
+
+    顺序 UTF-8(BOM) → UTF-8 → GBK：编辑保存时按同一编码写回，
+    避免把中文 Windows 的 GBK 源文件改存成 UTF-8 造成整文件 diff。
+    """
+    for enc in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "replace"), "utf-8"
+
+
+class _LineNumberArea(QWidget):
+    """代码编辑器的左侧行号栏：只负责尺寸，绘制委托给编辑器。"""
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        self._editor = editor
+
+    def sizeHint(self):
+        return QSize(self._editor.line_number_area_width(), 0)
+
+    def paintEvent(self, event):
+        self._editor.paint_line_numbers(event)
+
+
+class _CodeEditor(QPlainTextEdit):
+    """带行号栏的代码编辑器：行号随滚动同步，宽度按总行数位数自适应。
+
+    QPlainTextEdit 的 viewportMargin 左侧留出行号区，行号由本类直接绘制；
+    这样行号与正文共用同一滚动/折行计算，不会出现行号与代码错位。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._line_area = _LineNumberArea(self)
+        self.blockCountChanged.connect(self._refresh_line_area_width)
+        self.updateRequest.connect(self._on_update_request)
+        self._refresh_line_area_width()
+
+    def line_number_area_width(self) -> int:
+        digits = max(2, len(str(max(1, self.blockCount()))))
+        return 8 + self.fontMetrics().horizontalAdvance("9") * digits
+
+    def _refresh_line_area_width(self, *_):
+        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+        self._update_line_area_geometry()
+
+    def _update_line_area_geometry(self):
+        # 以视口实际位置定位行号栏：编辑器 QSS 带 padding 时，contentsRect 不含内边距，
+        # 用它会让行号整体比正文高出一截；viewport 的 top 与正文首行严格对齐。
+        vp = self.viewport().geometry()
+        w = self.line_number_area_width()
+        self._line_area.setGeometry(QRect(vp.left() - w, vp.top(), w, vp.height()))
+
+    def _on_update_request(self, rect, dy):
+        if dy:
+            self._line_area.scroll(0, dy)
+        else:
+            self._line_area.update(0, rect.y(), self._line_area.width(),
+                                   rect.height())
+        if rect.contains(self.viewport().rect()):
+            self._refresh_line_area_width()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_line_area_geometry()
+
+    def paint_line_numbers(self, event):
+        painter = QPainter(self._line_area)
+        painter.fillRect(event.rect(), QColor(_panel_surface("PANEL")))
+        painter.setFont(self.font())
+        block = self.firstVisibleBlock()
+        number = block.blockNumber()
+        top = int(self.blockBoundingGeometry(block)
+                  .translated(self.contentOffset()).top())
+        bottom = top + int(self.blockBoundingRect(block).height())
+        line_h = self.fontMetrics().height()
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                painter.setPen(QColor(TEXT_DIM))
+                painter.drawText(0, top, self._line_area.width() - 6, line_h,
+                                 Qt.AlignmentFlag.AlignRight, str(number + 1))
+            block = block.next()
+            top = bottom
+            bottom = top + int(self.blockBoundingRect(block).height())
+            number += 1
+
+
 class CodePreviewWindow(QWidget):
     """多格式智能预览器（固定融入主面板右侧栏）。
 
@@ -11984,6 +12085,7 @@ class CodePreviewWindow(QWidget):
 
     WIDTH = int(280 * 1.5 * 1.5 * 0.7)   # 441
     DEFAULT_SIZE = (WIDTH, 600)          # 默认尺寸（无持久化记录时的兜底）
+    SAVE_DELAY_MS = 800                  # 停止输入多久后自动保存（防抖）
     _wallpaper_translucent = True   # 壁纸模式透出主窗口壁纸（见 _panel_surface）
     dock_state = "right"            # 固定融入主面板右侧栏
 
@@ -12038,6 +12140,23 @@ class CodePreviewWindow(QWidget):
         self.open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_btn.clicked.connect(self._browse_file)
         mode_row.addWidget(self.open_btn)
+        # 撤销 / 重做：仅作用于文本/代码编辑页（QPlainTextEdit 自带撤销栈）
+        self.undo_btn = QPushButton()
+        self.undo_btn.setIcon(_line_icon("undo", 15, TEXT))
+        self.undo_btn.setToolTip(_ui("撤销上一步 (Ctrl+Z)"))
+        self.undo_btn.setFixedSize(26, 26)
+        self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.undo_btn.setStyleSheet(_BTN_ICON)
+        self.undo_btn.clicked.connect(self._undo_code)
+        mode_row.addWidget(self.undo_btn)
+        self.redo_btn = QPushButton()
+        self.redo_btn.setIcon(_line_icon("redo", 15, TEXT))
+        self.redo_btn.setToolTip(_ui("重做下一步 (Ctrl+Y)"))
+        self.redo_btn.setFixedSize(26, 26)
+        self.redo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.redo_btn.setStyleSheet(_BTN_ICON)
+        self.redo_btn.clicked.connect(self._redo_code)
+        mode_row.addWidget(self.redo_btn)
         lay.addWidget(self.mode_row)
         # 堆叠页：HTML/Markdown · 文本/代码 · 图片 · 空态 · Office（媒体页惰性追加）
         self.stack = QStackedWidget()
@@ -12376,11 +12495,20 @@ class CodePreviewWindow(QWidget):
         return self.stack.addWidget(tb)
 
     def _build_text_page(self):
-        self.text = QPlainTextEdit()
+        self.text = _CodeEditor()
         self.text.setReadOnly(True)
         self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.text.setFont(QFont("Consolas", 10))
+        self.text.textChanged.connect(self._on_code_changed)
         self._hl = None       # 底色见 _apply_surface_qss
+        # 编辑态：当前可编辑文件、原文件编码、是否有待保存修改
+        self._edit_path = ""
+        self._edit_encoding = "utf-8"
+        self._dirty = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(self.SAVE_DELAY_MS)
+        self._save_timer.timeout.connect(self._save_code_now)
         return self.stack.addWidget(self.text)
 
     def _build_img_page(self):
@@ -13046,9 +13174,17 @@ class CodePreviewWindow(QWidget):
         self.show_text(path, ext)
 
     def show_text(self, path: str, ext: str = ""):
+        # 同一文件正在编辑且有待保存的输入：保留用户内容，不用磁盘版本覆盖
+        if path and path == self._edit_path and self._dirty:
+            return
+        self._save_timer.stop()
+        self._save_code_now()          # 切换文件前先把上一份改动落盘
         self.title.setText(_uif("预览 · {name}", name=os.path.basename(path)))
         self._switch_mode("text")
+        self._edit_path = ""
+        self._dirty = False
         if _is_binary(path):
+            self.text.setReadOnly(True)
             self.text.setPlainText(_ui("二进制文件：请用「图片」模式或对应 Office 阅读器打开"))
             self._hl = None
             return
@@ -13057,21 +13193,60 @@ class CodePreviewWindow(QWidget):
         try:
             size = os.path.getsize(path)
             truncated = size > READ_LIMIT
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read(READ_LIMIT + 1)
-            if truncated:
-                content = (content[:READ_LIMIT]
-                           + "\n\n…（文件过大，仅显示前 1MB）")
+            with open(path, "rb") as f:
+                raw = f.read(READ_LIMIT + 1)
         except OSError as e:
+            self.text.setReadOnly(True)
             self.text.setPlainText(_uif("读取失败: {a0}", a0=e))
             self._hl = None
             return
+        content, enc = _decode_text(raw)
+        if truncated:
+            content = content[:READ_LIMIT] + "\n\n…（文件过大，仅显示前 1MB）"
         self.text.setPlainText(content)
+        self.text.document().setModified(False)
+        self._edit_encoding = enc
+        self._edit_path = "" if truncated else str(path)
+        self.text.setReadOnly(bool(truncated))
         self._hl = None if truncated else _CodeHighlighter(self.text.document(), ext)
         self.text.verticalScrollBar().setValue(0)
 
+    # ---- 代码编辑：自动保存 / 撤销重做 ----
+    def _on_code_changed(self):
+        if not self._edit_path or self.text.isReadOnly():
+            return
+        self._dirty = True
+        self._save_timer.start()
+
+    def _save_code_now(self):
+        """把编辑后的内容写回磁盘（保留原文件编码与换行符）。"""
+        if not self._dirty or not self._edit_path:
+            return
+        path, enc = self._edit_path, self._edit_encoding
+        try:
+            with open(path, "w", encoding=enc, newline="") as f:
+                f.write(self.text.toPlainText())
+        except OSError as e:
+            self.path_lbl.setText(_uif("保存失败：{err}", err=str(e)))
+            return
+        self._dirty = False
+        self.path_lbl.setText(_uif("{path} · 已保存", path=path))
+
+    def _undo_code(self):
+        if not self.text.isReadOnly():
+            self.text.undo()
+
+    def _redo_code(self):
+        if not self.text.isReadOnly():
+            self.text.redo()
+
     def clear(self):
         """清空为默认空态（不再默认打开网页）"""
+        self._save_timer.stop()
+        self._save_code_now()          # 离开前落盘，避免自动保存被取消后丢改动
+        self._edit_path = ""
+        self._dirty = False
+        self.text.setReadOnly(True)
         self.title.setText(_ui("预览"))
         self.path_lbl.setText(_ui("打开文件或由 AI 自动分发文件到此预览"))
         self._switch_mode("empty")
@@ -13131,6 +13306,13 @@ class CodePreviewWindow(QWidget):
         走 show_file）时不覆盖差异视图，保证红绿高亮完整展示后恢复正常。
         """
         import logging
+        # 差异视图是只读快照：先落盘用户编辑并退出编辑态，否则 setPlainText
+        # 会被自动保存当成用户输入，把 diff 文本写回源文件。
+        self._save_timer.stop()
+        self._save_code_now()
+        self._edit_path = ""
+        self._dirty = False
+        self.text.setReadOnly(True)
         self._diff_seq = getattr(self, "_diff_seq", 0) + 1
         seq = self._diff_seq
         try:
@@ -13499,7 +13681,13 @@ class TodosWindow(_RoundedFloatWindow):
 
 class _HtmlListDelegate(QStyledItemDelegate):
     """将 QListWidgetItem 的 UserRole(HTML) 渲染为多行富文本，支持多色/多行。
-    用于 git 面板分支/提交列表：分支名、哈希、作者、说明可用不同颜色区分。"""
+    用于 git 面板分支/提交列表：分支名、哈希、作者、说明可用不同颜色区分。
+
+    CHIP_ROLE 存放可选的胶囊文字（如 origin/main）：在卡片右下角绘制
+    圆角胶囊。富文本本身不支持 border-radius，所以胶囊走 QPainter 绘制。
+    """
+
+    CHIP_ROLE = Qt.ItemDataRole.UserRole + 2
 
     def __init__(self, max_w: int = 0, parent=None):
         super().__init__(parent)
@@ -13529,6 +13717,29 @@ class _HtmlListDelegate(QStyledItemDelegate):
         doc.setTextWidth(max(1, r.width() - 8))
         painter.translate(r.left() + 4, r.top() + 4)
         doc.documentLayout().draw(painter, QAbstractTextDocumentLayout.PaintContext())
+        painter.translate(-(r.left() + 4), -(r.top() + 4))
+        chip = index.data(self.CHIP_ROLE)
+        if chip:
+            self._paint_chip(painter, option, r, str(chip))
+        painter.restore()
+
+    @staticmethod
+    def _paint_chip(painter, option, card: QRectF, text: str):
+        """卡片右下角的圆角胶囊（远程跟踪分支等短标签）。"""
+        fm = option.fontMetrics
+        w = fm.horizontalAdvance(text) + 16
+        h = fm.height() + 2
+        # 放在第二行（哈希行）右侧：哈希很短，右侧留白足够，不与文案重叠
+        cr = QRectF(card.right() - w - 6, card.top() + 19, w, h)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(ACCENT), 1))
+        col = QColor(ACCENT)
+        col.setAlpha(30)
+        painter.setBrush(col)
+        painter.drawRoundedRect(cr, h / 2, h / 2)
+        painter.setPen(QColor(ACCENT))
+        painter.drawText(cr, Qt.AlignmentFlag.AlignCenter, text)
         painter.restore()
 
     def sizeHint(self, option, index):
@@ -13573,6 +13784,7 @@ class GitLogWindow(_RoundedFloatWindow):
     _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
     data_ready = pyqtSignal(object)   # 后台线程 → 主线程：装载的 git 视图数据
+    op_done = pyqtSignal(object)      # 后台线程 → 主线程：checkout/commit/push 结果
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -13586,10 +13798,14 @@ class GitLogWindow(_RoundedFloatWindow):
         # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
         self.setStyleSheet(f"QWidget#gitLogWin {{ background: {_panel_surface('BG')}; }}")
         self._view = "commit"   # commit / branch，默认提交历史（最新在上、最旧在下）
+        self._scope_ref = ""    # 非空：正在查看该分支的提交（不切换工作区）
         self.resize(self.WIDTH, 320)   # 宽高均可调（四边/四角拖拽，独立持久化）
         self._busy = False      # 后台加载进行中（防止连续切换重复起线程）
         self._pending_refresh = False  # 忙碌期间的刷新请求：加载完成后补一次（防切目录刷新被吞）
         self.data_ready.connect(self._on_data_ready)
+        self.op_done.connect(self._on_op_done)
+        self._op_running = False       # 写操作进行中（避免重复点击）
+        self._cur_branch = ""          # 当前所在分支（双击同名分支时不再 checkout）
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
@@ -13600,6 +13816,10 @@ class GitLogWindow(_RoundedFloatWindow):
         title = QLabel(_ui("Git 面板"))
         title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
         head.addWidget(title)
+        # 当前分支已推送的远程跟踪分支：圆形胶囊（富文本不支持圆角，用 QSS 实现）
+        self.branch_chip = QLabel("")
+        self.branch_chip.setVisible(False)
+        head.addWidget(self.branch_chip)
         head.addStretch(1)
         self.branch_btn = QPushButton(_ui("分支"))
         self.commit_btn = QPushButton(_ui("提交"))
@@ -13615,8 +13835,48 @@ class GitLogWindow(_RoundedFloatWindow):
         self.list = QListWidget()
         self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.list.setItemDelegate(_HtmlListDelegate(self.WIDTH - 40, self.list))
-        self._apply_surface_qss()      # 列表底 + 滚动条（构建/换肤共用同一来源，见下）
         lay.addWidget(self.list, 1)
+
+        # 单击分支 → 延迟查看该分支提交；双击 → 真正切换工作区分支
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(250)
+        self._click_timer.timeout.connect(self._view_clicked_branch)
+        self._clicked_branch = ""
+        self.list.itemClicked.connect(self._on_item_clicked)
+        self.list.itemDoubleClicked.connect(self._on_item_double_clicked)
+
+        # 提交说明 + 操作区（暂存 / 提交 / 推送）
+        self.msg_edit = QLineEdit()
+        self.msg_edit.setPlaceholderText(_ui("提交说明"))
+        self.msg_edit.setFixedHeight(24)
+        self.msg_edit.setStyleSheet(
+            f"QLineEdit {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 5px;"
+            "padding: 2px 6px; font-size: 11px; }")
+        lay.addWidget(self.msg_edit)
+        ops = QHBoxLayout()
+        ops.setSpacing(5)
+        self.stage_btn = QPushButton(_ui("暂存"))
+        self.commit_action_btn = QPushButton(_ui("提交"))
+        self.push_btn = QPushButton(_ui("推送"))
+        for b in (self.stage_btn, self.commit_action_btn, self.push_btn):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFixedHeight(22)
+            ops.addWidget(b, 1)
+        self.stage_btn.setToolTip(_ui("选择改动文件并暂存"))
+        self.commit_action_btn.setToolTip(_ui("用上方说明提交已暂存内容"))
+        self.push_btn.setToolTip(_ui("推送当前分支到远程"))
+        self.stage_btn.clicked.connect(self._choose_and_stage)
+        self.commit_action_btn.clicked.connect(self._commit_staged)
+        self.push_btn.clicked.connect(self._push_branch)
+        lay.addLayout(ops)
+        self.op_status = QLabel("")
+        self.op_status.setWordWrap(True)
+        self.op_status.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
+        lay.addWidget(self.op_status)
+        # 控件齐备后再统一下发主题样式（列表底 + 滚动条 + 胶囊 + 操作区）
+        self._apply_surface_qss()
         self._set_view(self._view, do_refresh=False)
         # 顶部拖拽把手：自由拖动 + 位置持久化 + 融入主面板（置于整个面板最上方）
         self._install_drag_handle()
@@ -13642,6 +13902,24 @@ class GitLogWindow(_RoundedFloatWindow):
             f"QListWidget {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
             f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 6px; padding: 4px; }}"
             + _scrollbar_css(6, 3, both=True))
+        c = QColor(ACCENT)
+        self.branch_chip.setStyleSheet(
+            f"QLabel {{ color: {ACCENT};"
+            f"background: rgba({c.red()},{c.green()},{c.blue()},30);"
+            f"border: 1px solid {ACCENT}; border-radius: 8px;"
+            "padding: 1px 8px; font-size: 10px; font-weight: 600; }}")
+        self.msg_edit.setStyleSheet(
+            f"QLineEdit {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 5px;"
+            "padding: 2px 6px; font-size: 11px; }")
+        for b in (self.stage_btn, self.commit_action_btn, self.push_btn):
+            b.setStyleSheet(
+                f"QPushButton {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
+                f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 5px;"
+                "font-size: 11px; padding: 0 4px; }"
+                f"QPushButton:hover {{ color: {ACCENT}; border-color: {ACCENT}; }}"
+                f"QPushButton:disabled {{ color: {TEXT_DIM}; }}")
+        self.op_status.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
 
     def apply_surface_theme(self):
         """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
@@ -13680,6 +13958,8 @@ class GitLogWindow(_RoundedFloatWindow):
 
     def _set_view(self, view: str, do_refresh: bool = True):
         self._view = view
+        if view == "branch":
+            self._scope_ref = ""      # 回到分支列表即退出「查看某分支提交」模式
         active = (f"QPushButton {{ background:{ACCENT}; color:#FFFFFF;"
                   f"border:none;border-radius:5px;padding:0 8px;"
                   f"font-size:11px;font-weight:700; }}"
@@ -13693,7 +13973,8 @@ class GitLogWindow(_RoundedFloatWindow):
         if do_refresh:
             self.refresh()
 
-    def _make_item(self, html: str, height: int = None) -> QListWidgetItem:
+    def _make_item(self, html: str, height: int = None,
+                   chip: str = "", data=None) -> QListWidgetItem:
         # 纯文本占位（无 HTML 标签）包一层主题文字色：深色模式下为白字，
         # 否则 _HtmlListDelegate 用 QTextDocument 默认黑色渲染，深色底上看不清
         if not html.lstrip().startswith("<"):
@@ -13704,6 +13985,10 @@ class GitLogWindow(_RoundedFloatWindow):
         # 行高与渲染内容完全一致（行高裁决在 delegate.sizeHint，见其注释）
         it.setFont(self.list.font())
         it.setData(Qt.ItemDataRole.UserRole, html)
+        if chip:
+            it.setData(_HtmlListDelegate.CHIP_ROLE, chip)
+        if data is not None:
+            it.setData(Qt.ItemDataRole.UserRole + 3, data)
         it.setSizeHint(QSize(self.WIDTH - 40, height or 40))
         return it
 
@@ -13711,6 +13996,7 @@ class GitLogWindow(_RoundedFloatWindow):
         """异步刷新 git 面板：后台线程取数据（git 子进程），主线程填充，避免卡死。
         连续触发（切视图/切目录）复用单线程，数据装载通过 data_ready 信号返回。"""
         view = self._view
+        scope_ref = self._scope_ref      # 主线程捕获，后台线程只读快照
         if self._busy:
             # 上一次后台加载未完成：本次视图在完成后由 _on_data_ready 补一次刷新，
             # 避免切目录期间刷新的请求被吞导致面板长期停留在旧目录内容。
@@ -13729,10 +14015,17 @@ class GitLogWindow(_RoundedFloatWindow):
             try:
                 if not agent_git.is_git_repo():
                     payload["error"] = _ui("（当前工作目录不是 Git 仓库）")
-                elif view == "commit":
-                    payload["rows"] = agent_git.list_commits()
                 else:
-                    payload["rows"] = agent_git.list_branches()
+                    payload["current"] = agent_git.current_branch()
+                    ups = agent_git.branch_upstreams()
+                    payload["upstream"] = ups.get(payload["current"], "")
+                    if view == "commit":
+                        # 查看指定分支的提交（不切换工作区）
+                        payload["rows"] = agent_git.list_commits_with_stats(
+                            ref=scope_ref)
+                    else:
+                        payload["rows"] = agent_git.list_branches()
+                        payload["upstreams"] = ups
             except Exception as e:
                 payload["error"] = _uif("（读取失败：{err}）", err=str(e))
             try:
@@ -13769,6 +14062,10 @@ class GitLogWindow(_RoundedFloatWindow):
             self._pending_refresh = False
             self.refresh()
             return
+        up = payload.get("upstream") or ""
+        self._cur_branch = payload.get("current") or ""
+        self.branch_chip.setText(up)
+        self.branch_chip.setVisible(bool(up))
         self.list.clear()
         error = payload.get("error")
         if error:
@@ -13778,9 +14075,10 @@ class GitLogWindow(_RoundedFloatWindow):
         if self._view == "commit":
             self._fill_commits(rows)
         else:
-            self._fill_branches(rows)
+            self._fill_branches(rows, payload.get("upstreams") or {})
 
-    def _fill_branches(self, branches: list):
+    def _fill_branches(self, branches: list, upstreams: dict = None):
+        upstreams = upstreams or {}
         if not branches:
             self.list.addItem(self._make_item(_ui("（无本地分支）"), 40))
             return
@@ -13799,11 +14097,23 @@ class GitLogWindow(_RoundedFloatWindow):
                 f'<div style="color:{TEXT_DIM};font-size:10px;">'
                 f'{_esc(b["author"])} · {_esc(b["date"])}</div>'
                 f'<div style="color:{TEXT};font-size:11px;">{_esc(b["subject"])}</div>')
-            it = self._make_item(html)
-            it.setToolTip(_uif('分支: {a0}\n作者: {a1}\n时间: {a2}', a0=b['branch'], a1=b['author'], a2=b['date']))
+            # 已推送的分支带远程跟踪分支胶囊（origin/xxx），未推送的为空
+            it = self._make_item(html, chip=upstreams.get(b["branch"], ""),
+                                 data=b["branch"])
+            it.setToolTip(_uif(
+                '分支: {a0}\n远程: {a1}\n作者: {a2}\n时间: {a3}\n单击查看提交，双击切换',
+                a0=b['branch'], a1=upstreams.get(b["branch"], "（未推送）"),
+                a2=b['author'], a3=b['date']))
             self.list.addItem(it)
 
     def _fill_commits(self, commits: list):
+        # 正在查看非当前分支的提交：首行标注范围，避免与当前分支历史混淆
+        if self._scope_ref:
+            scope = self._make_item(
+                f'<div style="color:{ACCENT_HOVER};font-size:11px;">'
+                f'{_uif("查看 {a0} 的提交（未切换工作区）", a0=self._scope_ref)}</div>',
+                26)
+            self.list.addItem(scope)
         if not commits:
             self.list.addItem(self._make_item(_ui("（暂无提交记录）"), 40))
             return
@@ -13811,9 +14121,14 @@ class GitLogWindow(_RoundedFloatWindow):
         self.list.setUpdatesEnabled(False)
         try:
             for c in commits:
+                add, dele = c.get("add") or 0, c.get("del") or 0
+                # 变更行数紧跟在哈希行右侧：哈希只有 7 位，留白足够，不额外占一行高
+                stats = (f' <span style="color:{OK};font-size:10px;">+{add}</span>'
+                         f' <span style="color:{ERR};font-size:10px;">-{dele}</span>'
+                         if (add or dele) else "")
                 html = (
                     f'<div style="color:{ACCENT};font-family:Consolas;font-size:11px;">'
-                    f'{_esc(c["hash"])}</div>'
+                    f'{_esc(c["hash"])}{stats}</div>'
                     f'<div style="color:{TEXT};font-size:11px;">{_esc(c["subject"])}</div>'
                     f'<div style="color:{TEXT_DIM};font-size:10px;">'
                     f'{_esc(c["author"])} · {_esc(c["date"])}</div>')
@@ -13822,6 +14137,204 @@ class GitLogWindow(_RoundedFloatWindow):
         finally:
             self.list.setUpdatesEnabled(True)
             self.list.viewport().update()
+
+    # ---------------- 分支交互（单击查看提交 / 双击切换） ----------------
+
+    @staticmethod
+    def _item_branch(item) -> str:
+        """列表项携带的分支名（仅分支视图设置；提交项为 None）"""
+        return str(item.data(Qt.ItemDataRole.UserRole + 3) or "") if item else ""
+
+    def _on_item_clicked(self, item):
+        """单击分支：延迟 250ms 执行，双击时由 _on_item_double_clicked 取消，
+        避免「双击切换」先触发一次「查看提交」造成视图闪跳。"""
+        if self._view != "branch" or self._op_running:
+            return
+        self._clicked_branch = self._item_branch(item)
+        if self._clicked_branch:
+            self._click_timer.start()
+
+    def _view_clicked_branch(self):
+        branch, self._clicked_branch = self._clicked_branch, ""
+        if not branch or self._view != "branch":
+            return
+        from zhuzhu_Copilot.core import agent_git
+        if not agent_git.is_git_repo():
+            return
+        self._scope_ref = branch
+        self._set_view("commit")
+
+    def _on_item_double_clicked(self, item):
+        """双击分支：真正切换到该分支（工作区会变）。"""
+        if self._view != "branch" or self._op_running:
+            return
+        self._click_timer.stop()          # 取消单击的「查看提交」
+        self._clicked_branch = ""
+        branch = self._item_branch(item)
+        if not branch or branch == self._cur_branch:
+            return
+        from zhuzhu_Copilot.core import agent_git
+        self._run_op(
+            "checkout", lambda: agent_git.checkout(branch),
+            _uif("正在切换到 {a0}…", a0=branch))
+
+    # ---------------- 暂存 / 提交 / 推送 ----------------
+
+    def _choose_and_stage(self):
+        """暂存：弹出改动清单让用户勾选，再 git add 勾选项。"""
+        if self._op_running:
+            return
+        from zhuzhu_Copilot.core import agent_git
+        rows = agent_git.status_entries()
+        if not rows:
+            self._set_op_status(_ui("没有可暂存的改动"), OK)
+            return
+        dlg = _StageFilesDialog(rows, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        paths = dlg.selected_paths()
+        if not paths:
+            self._set_op_status(_ui("未选择文件"), ERR)
+            return
+        self._run_op("stage", lambda: agent_git.stage(paths),
+                     _uif("正在暂存 {n} 个文件…", n=len(paths)))
+
+    def _commit_staged(self):
+        if self._op_running:
+            return
+        msg = self.msg_edit.text().strip()
+        if not msg:
+            self._set_op_status(_ui("请填写提交说明"), ERR)
+            self.msg_edit.setFocus()
+            return
+        from zhuzhu_Copilot.core import agent_git
+        self._run_op("commit", lambda: agent_git.commit(msg), _ui("正在提交…"))
+
+    def _push_branch(self):
+        if self._op_running:
+            return
+        from zhuzhu_Copilot.core import agent_git
+        self._run_op("push", agent_git.push, _ui("正在推送…"))
+
+    def _run_op(self, kind: str, fn, running_text: str):
+        """后台执行写操作：git 子进程（push 可能数十秒）不能阻塞界面。"""
+        if self._op_running:
+            return
+        self._op_running = True
+        self._set_op_status(running_text, "")
+        for b in (self.stage_btn, self.commit_action_btn, self.push_btn):
+            b.setEnabled(False)
+
+        def _work():
+            try:
+                ok, msg = fn()
+            except Exception as e:
+                ok, msg = False, str(e)
+            try:
+                self.op_done.emit({"kind": kind, "ok": ok, "msg": msg})
+            except RuntimeError:
+                pass            # 面板已销毁：信号目标已死，静默丢弃
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_op_done(self, payload):
+        payload = payload or {}
+        self._op_running = False
+        for b in (self.stage_btn, self.commit_action_btn, self.push_btn):
+            b.setEnabled(True)
+        kind, ok = payload.get("kind", ""), bool(payload.get("ok"))
+        msg = (payload.get("msg") or "").strip()
+        if not ok:
+            self._set_op_status(_uif("失败：{a0}", a0=msg or _ui("未知错误")), ERR)
+            return
+        if kind == "checkout":
+            self._scope_ref = ""          # 换了分支：退出「查看其它分支提交」
+            self._set_op_status(msg or _ui("已切换分支"), OK)
+            self._set_view("branch")
+        elif kind == "commit":
+            self.msg_edit.clear()
+            self._scope_ref = ""
+            self._set_op_status(_ui("提交成功"), OK)
+            self._set_view("commit")
+        elif kind == "push":
+            self._set_op_status(_ui("推送完成"), OK)
+            self.refresh()
+        else:
+            self._set_op_status(msg or _ui("已暂存"), OK)
+
+    def _set_op_status(self, text: str, color: str = None):
+        """操作结果行：只显示首行并限长，git 的完整输出常有多行/极长。"""
+        first = (text or "").strip().splitlines()
+        s = first[0] if first else ""
+        if len(s) > 120:
+            s = s[:119] + "…"
+        self.op_status.setText(s)
+        self.op_status.setStyleSheet(
+            f"color: {color or TEXT_DIM}; font-size: 10px;")
+
+
+class _StageFilesDialog(QDialog):
+    """暂存文件选择：列出 git status 改动，默认全选，返回勾选的路径。"""
+
+    def __init__(self, rows: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_ui("选择要暂存的改动文件"))
+        self.resize(440, 380)
+        self._rows = rows
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+        self.list = QListWidget()
+        self.list.setStyleSheet(
+            f"QListWidget {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 6px;"
+            "padding: 4px; }"
+            + _scrollbar_css(6, 3, both=True)
+            + f"QListWidget::item {{ padding: 3px 2px; }}")
+        for r in rows:
+            it = QListWidgetItem(f"{r['code'].strip() or '?'}  {r['path']}")
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked)      # 默认全选
+            it.setToolTip(r["path"])
+            self.list.addItem(it)
+        lay.addWidget(self.list, 1)
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        self.all_btn = QPushButton(_ui("全选"))
+        self.none_btn = QPushButton(_ui("全不选"))
+        self.ok_btn = QPushButton(_ui("暂存选中"))
+        self.cancel_btn = QPushButton(_ui("取消"))
+        self.all_btn.clicked.connect(lambda: self._check_all(True))
+        self.none_btn.clicked.connect(lambda: self._check_all(False))
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_qss = (
+            f"QPushButton {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 5px;"
+            "font-size: 11px; padding: 3px 10px; }"
+            f"QPushButton:hover {{ color: {ACCENT}; border-color: {ACCENT}; }}")
+        self.ok_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: #FFFFFF; border: none;"
+            "border-radius: 5px; font-size: 11px; font-weight: 700; padding: 3px 12px; }"
+            f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
+        for b in (self.all_btn, self.none_btn, self.cancel_btn):
+            b.setStyleSheet(btn_qss)
+        bar.addWidget(self.all_btn)
+        bar.addWidget(self.none_btn)
+        bar.addStretch(1)
+        bar.addWidget(self.cancel_btn)
+        bar.addWidget(self.ok_btn)
+        lay.addLayout(bar)
+
+    def _check_all(self, checked: bool):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(state)
+
+    def selected_paths(self) -> list:
+        return [r["path"] for i, r in enumerate(self._rows)
+                if i < self.list.count()
+                and self.list.item(i).checkState() == Qt.CheckState.Checked]
 
 
 class _ContentSelectionDelegate(QStyledItemDelegate):
