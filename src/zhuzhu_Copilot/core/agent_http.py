@@ -195,7 +195,7 @@ def close_idle() -> None:
 
 
 def _urlopen(req, timeout: float):
-    # agent_proxy.urlopen：直连优先，连接层失败时经 SSH 隧道回退一次
+    # agent_proxy.urlopen：按全局/回退模式与域名规则选择 SSH 隧道或直连
     # （LLM API 在企业网/被拦截环境下的兜底通路）
     from zhuzhu_Copilot.core import agent_proxy
     resp = agent_proxy.urlopen(req, timeout)

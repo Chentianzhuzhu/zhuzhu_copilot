@@ -3254,25 +3254,46 @@ class _AgentSettingsDialog(QDialog):
             "padding: 6px 10px; font-size: 13px; }}"
             f"QPlainTextEdit:focus {{ border: 1px solid {self._BORDER}; }}")
         lay.addWidget(self.disable_tools_edit)
-        # 网络代理回退：直连更新服务器/GitHub 等失败时经 SSH 隧道中转（settings proxy_*）
-        proxy_lbl = QLabel(_ui("网络代理（SSH 隧道，直连失败自动中转）"))
+        # 网络代理：全局（系统代理指向本机转发器）或回退（仅失败时经 SSH 隧道）
+        # 配置项：settings proxy_*（见 core/agent_proxy.py 顶部说明）
+        proxy_lbl = QLabel(_ui("网络代理（SSH 隧道）"))
         proxy_lbl.setStyleSheet(
             f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
         lay.addWidget(proxy_lbl)
-        self.proxy_check = QCheckBox(_ui("启用 SSH 隧道回退（直连失败时经 SSH 中转一次）"))
+        self.proxy_check = QCheckBox(_ui("启用网络代理"))
         self.proxy_check.setChecked(
             str(s.get("proxy_enabled", "0")).strip().lower() in ("1", "true", "on", "yes"))
         self.proxy_check.setToolTip(_ui(
-            "开启后，模型请求/网页抓取/更新/下载遇到直连超时或被拦截时，"
-            "自动经下方 SSH 服务器中转重试；直连正常时不经过隧道，不影响现有网络路径"))
+            "全局模式：启动本机 SOCKS5/HTTP 转发器并把系统代理指向它，"
+            "系统内所有应用流量经 SSH 隧道中转；"
+            "回退模式：仅本应用的网络请求在直连失败时经 SSH 隧道重试"))
         self.proxy_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.proxy_check)
         proxy_sub = QLabel(_ui(
-            "填入 SSH 服务器的 IP、端口、用户名与密码。应用内网络请求直连失败时自动经此"
-            " SSH 隧道中转，覆盖 GitHub / Cloudflare / npm / PyPI 等开发者平台与更新服务器。"))
+            "填入 SSH 服务器的 IP、端口、用户名与密码。全局模式下系统代理将指向"
+            "本机转发器（浏览器等应用生效）；回退模式仅影响本应用。"))
         proxy_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         proxy_sub.setWordWrap(True)
         lay.addWidget(proxy_sub)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        mode_lbl = QLabel(_ui("模式"))
+        mode_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        self.proxy_mode_combo = QComboBox()
+        self.proxy_mode_combo.addItem(_ui("全局（所有应用流量经代理）"), "global")
+        self.proxy_mode_combo.addItem(_ui("回退（仅直连失败时中转）"), "fallback")
+        _mode = str(s.get("proxy_mode", "global")).strip().lower()
+        self.proxy_mode_combo.setCurrentIndex(1 if _mode == "fallback" else 0)
+        self.proxy_mode_combo.setStyleSheet(
+            f"QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+            "padding: 5px 10px; font-size: 13px; }"
+            f"QComboBox QAbstractItemView {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"selection-background-color: {self._BORDER}; }}")
+        mode_row.addWidget(mode_lbl)
+        mode_row.addWidget(self.proxy_mode_combo, 1)
+        lay.addLayout(mode_row)
         proxy_grid = QGridLayout()
         proxy_grid.setHorizontalSpacing(8)
         proxy_grid.setVerticalSpacing(6)
@@ -3313,6 +3334,15 @@ class _AgentSettingsDialog(QDialog):
         proxy_grid.setColumnStretch(1, 1)
         proxy_grid.setColumnStretch(3, 1)
         lay.addLayout(proxy_grid)
+        # 自定义域名：命中片段的目标强制走代理（全局模式下等价于全部走代理）
+        self.proxy_domains_edit = _proxy_lineedit(
+            "proxy_domains", "强制走代理的域名，逗号分隔，如 github.com")
+        lay.addWidget(self.proxy_domains_edit)
+        self.proxy_status_lbl = QLabel("")
+        self.proxy_status_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        self.proxy_status_lbl.setWordWrap(True)
+        lay.addWidget(self.proxy_status_lbl)
+        self._refresh_proxy_status()
         # 趣味互动：AI 随机截屏分析屏幕并弹出俏皮锐评气泡（涉及周期性全屏截图，默认开启）
         fun_lbl = QLabel(_ui("趣味互动"))
         fun_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
@@ -7022,6 +7052,26 @@ class _AgentSettingsDialog(QDialog):
             hint.setText(" · ".join(_ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS)
                          + _ui("（未声明时按模型类型自动映射思考强度）"))
 
+    def _refresh_proxy_status(self, *_):
+        """刷新代理运行状态（本机转发端口 / 系统代理指向）。"""
+        try:
+            from zhuzhu_Copilot.core import agent_proxy_service
+            st = agent_proxy_service.status()
+            if st.get("active"):
+                text = _ui("运行中：本机转发 127.0.0.1:{port} · 系统代理已接管").format(
+                    port=st.get("port", 0))
+            elif st.get("enabled") and st.get("mode") == "fallback":
+                text = _ui("回退模式：仅直连失败时经 SSH 隧道中转")
+            elif st.get("enabled"):
+                text = _ui("已启用，尚未启动转发（请检查服务器地址/用户名）")
+            else:
+                text = _ui("未启用")
+            if st.get("last_error"):
+                text += " · " + _ui("最近错误：") + str(st["last_error"])
+            self.proxy_status_lbl.setText(text)
+        except Exception as e:
+            self.proxy_status_lbl.setText(_ui("状态读取失败：") + type(e).__name__)
+
     def _save(self, *_):
         # 懒加载页面后保存：先补齐全部页面，确保读取到所有页控件的当前状态
         self._ensure_all_pages()
@@ -7072,8 +7122,11 @@ class _AgentSettingsDialog(QDialog):
             "disabled_tools": [ln.strip().lower() for ln in
                                self.disable_tools_edit.toPlainText().splitlines()
                                if ln.strip()],
-            # 网络代理回退：保存后 agent_proxy 下次请求即按新配置生效（save_settings 已失效缓存）
+            # 网络代理：保存后 agent_proxy 下次请求即按新配置路由；全局模式由
+            # agent_proxy_service 启停本机转发器并接管系统代理
             "proxy_enabled": "1" if self.proxy_check.isChecked() else "0",
+            "proxy_mode": self.proxy_mode_combo.currentData() or "global",
+            "proxy_domains": self.proxy_domains_edit.text().strip(),
             "proxy_host": self.proxy_host_edit.text().strip(),
             "proxy_port": self.proxy_port_edit.text().strip(),
             "proxy_user": self.proxy_user_edit.text().strip(),
@@ -7102,6 +7155,13 @@ class _AgentSettingsDialog(QDialog):
         except Exception:
             pass
         if agent_skills.save_settings(data):
+            # 网络代理即时生效：全局模式启停本机转发器并接管/还原系统代理
+            try:
+                from zhuzhu_Copilot.core import agent_proxy_service
+                agent_proxy_service.apply()
+                self._refresh_proxy_status()
+            except Exception:
+                pass
             # 保存 MCP 服务器配置；成功后触发后台重连
             mcp_ok = agent_skills.save_mcp_servers(self._mcp_servers)
             p = self.parent()

@@ -1,4 +1,4 @@
-"""应用级网络代理回退：直连优先，连不上时经 SSH 隧道中转。
+"""应用网络代理：全局（所有流量经 SSH 隧道）或回退（仅失败时中转）。
 
 场景：更新服务器（Cloudflare 后面）/ 插件与更新包下载（GitHub 等开发者
 平台）在部分网络环境直连超时或被网关拦截，而服务端 SSH 可以到达。
@@ -12,20 +12,28 @@
 
 settings.json 键（设置页「网络代理」区域写入）：
   proxy_enabled  "1"/"0"        总开关（默认关）
+  proxy_mode     "global"       全局：所有流量经代理（默认）
+                 "fallback"     回退：仅直连失败时经代理
+  proxy_domains  逗号/换行分隔的域名片段，命中即强制走代理
+                 （如 github.com 命中 api.github.com 与 github.com 的所有 URL）
   proxy_host     SSH 服务器 IP/域名
   proxy_port     SSH 端口（数字字符串，默认 22）
   proxy_user     SSH 用户名
   proxy_pass     SSH 密码
+  proxy_local_port  本地 SOCKS5/HTTP 代理端口（默认 10808）
 
 约定：
   * HTTPError（服务端已应答，包括 403/407）不触发回退——网络通、业务层
     拒绝不是代理能解决的问题；
-  * 回退仅针对连接层失败（URLError / OSError / 超时），且只重试一次；
+  * 全局模式：目标一律经隧道；回退模式：直连优先，连接层失败后经隧道重试一次，
+    命中 proxy_domains 的域名在回退模式下始终优先走隧道；
   * 本机地址（localhost / 127.* / ::1）永不走代理；
+  * 应用内请求绕过系统代理（系统代理指向本机转发器，避免自环）；
   * SSH Transport 全局复用，断连自动重建。
 """
 
 import http.client
+import re
 import socket
 import ssl
 import threading
@@ -49,7 +57,7 @@ def _is_direct_host(host) -> bool:
 
 
 def _ssh_config():
-    """读取 settings 的 SSH 代理配置，返回 (host, port, user, pwd)；未启用返回 None。"""
+    """读取 settings 的代理配置；未启用或信息不全返回 None。"""
     try:
         from zhuzhu_Copilot.core import agent_skills
         s = agent_skills.settings_view()
@@ -63,7 +71,54 @@ def _ssh_config():
     pwd = str(s.get("proxy_pass", ""))
     if not host or not port_str.isdigit() or not user:
         return None
-    return host, int(port_str), user, pwd
+    mode = str(s.get("proxy_mode", "global")).strip().lower()
+    local_port = str(s.get("proxy_local_port", "10808")).strip() or "10808"
+    return {
+        "host": host,
+        "port": int(port_str),
+        "user": user,
+        "pass": pwd,
+        "mode": "fallback" if mode == "fallback" else "global",
+        "domains": _domain_patterns(s),
+        "local_port": int(local_port) if local_port.isdigit() else 10808,
+    }
+
+
+def _domain_patterns(settings=None) -> list:
+    """解析 proxy_domains：逗号/分号/空白分隔，统一小写。"""
+    try:
+        if settings is None:
+            from zhuzhu_Copilot.core import agent_skills
+            settings = agent_skills.settings_view()
+        raw = str(settings.get("proxy_domains", "") or "")
+    except Exception:
+        return []
+    return [p.strip().lower() for p in re.split(r"[\s,;]+", raw) if p.strip()]
+
+
+def domain_matched(host, patterns=None) -> bool:
+    """域名片段匹配：host 含任一片段即命中（如 github.com 命中 api.github.com）。"""
+    h = (host or "").lower()
+    if not h:
+        return False
+    pats = _domain_patterns() if patterns is None else patterns
+    return any(p in h for p in pats)
+
+
+def route_host(host) -> str:
+    """返回 "ssh" 或 "direct"：本机/未启用走直连；全局一律隧道；
+    回退模式仅域名命中项走隧道（其余直连，失败时由 urlopen 再回退）。"""
+    cfg = _ssh_config()
+    if not cfg or _is_direct_host(host):
+        return "direct"
+    if cfg["mode"] == "global":
+        return "ssh"
+    return "ssh" if domain_matched(host, cfg["domains"]) else "direct"
+
+
+def config():
+    """当前生效的代理配置（供本地转发器/状态展示读取）。"""
+    return _ssh_config()
 
 
 def _get_ssh_transport():
@@ -72,7 +127,6 @@ def _get_ssh_transport():
     cfg = _ssh_config()
     if not cfg:
         raise RuntimeError("proxy not configured")
-    host, port, user, pwd = cfg
     with _SSH_LOCK:
         if _SSH_TRANSPORT is not None:
             try:
@@ -86,10 +140,10 @@ def _get_ssh_transport():
                 pass
             _SSH_TRANSPORT = None
         import paramiko
-        sock = socket.create_connection((host, port), 15)
+        sock = socket.create_connection((cfg["host"], cfg["port"]), 15)
         t = paramiko.Transport(sock)
         try:
-            t.connect(username=user, password=pwd)
+            t.connect(username=cfg["user"], password=cfg["pass"])
         except Exception:
             t.close()
             raise
@@ -102,6 +156,11 @@ def _open_direct_tunnel(target_host: str, target_port: int, timeout: float):
     t = _get_ssh_transport()
     return t.open_channel("direct-tcpip", (target_host, target_port),
                           ("127.0.0.1", 0), timeout=timeout)
+
+
+def open_channel(host: str, port: int, timeout: float = 15):
+    """公开的 SSH 转发通道（本地 SOCKS5/HTTP 转发器使用）。"""
+    return _open_direct_tunnel(host, port, timeout)
 
 
 class _SSLSocketWrapper:
@@ -366,22 +425,52 @@ def _note_traffic() -> None:
         pass
 
 
-def urlopen(req, timeout, _fallback_done: bool = False):
-    """urllib.request.urlopen 的透明替代：直连失败时按配置经 SSH 隧道重试一次。"""
-    try:
-        return urllib.request.urlopen(req, timeout=timeout)
-    except urllib.error.HTTPError:
-        raise                              # 服务端已应答：网络通，不回退
-    except (urllib.error.URLError, OSError, TimeoutError) as direct_exc:
-        if _fallback_done or not _ssh_config():
-            raise
-        target = urlsplit(getattr(req, "full_url", "") or "")
-        if _is_direct_host(target.hostname):
-            raise                          # 本机地址不走代理
+_NO_PROXY_OPENER = None
+
+
+def _direct_open(req, timeout):
+    """直连请求：显式禁用系统代理，避免与本地转发器形成自环。"""
+    global _NO_PROXY_OPENER
+    if _NO_PROXY_OPENER is None:
+        _NO_PROXY_OPENER = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}))
+    return _NO_PROXY_OPENER.open(req, timeout=timeout)
+
+
+def urlopen(req, timeout):
+    """urllib.request.urlopen 的替代：按 proxy_mode/域名规则选择隧道或直连。
+
+    全局模式：目标一律经 SSH 隧道（本机地址除外），隧道失败直接报错；
+    回退模式：直连优先，连接层失败后经隧道重试一次；命中域名的目标优先隧道。
+    """
+    target = urlsplit(getattr(req, "full_url", "") or "")
+    host = target.hostname
+    cfg = _ssh_config()
+    prefer_ssh = False
+    if cfg is not None and not _is_direct_host(host):
+        prefer_ssh = (cfg["mode"] == "global"
+                      or domain_matched(host, cfg["domains"]))
+
+    if prefer_ssh:
         try:
             return _via_ssh_proxy(req, target, timeout)
         except urllib.error.HTTPError:
-            raise                          # 经代理已到服务端：以代理路径的应答为准
+            raise                          # 服务端已应答：以隧道路径的应答为准
+        except Exception:
+            if cfg["mode"] == "global":
+                raise                      # 全局模式不做直连回退
+            # 回退模式：命中域名优先隧道，隧道不通时允许回落直连
+    try:
+        return _direct_open(req, timeout)
+    except urllib.error.HTTPError:
+        raise
+    except (urllib.error.URLError, OSError, TimeoutError) as direct_exc:
+        if prefer_ssh or _is_direct_host(host) or cfg is None:
+            raise
+        try:
+            return _via_ssh_proxy(req, target, timeout)
+        except urllib.error.HTTPError:
+            raise
         except Exception:
             raise direct_exc               # 代理也不通：以直连的原始错误为准
 

@@ -4386,7 +4386,7 @@ def _http_request(url: str, timeout: int = 15, max_bytes: int = 512 * 1024,
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     # 网络抖动 / 5xx / 429 自动指数退避重试（最多 2 次），提升联网任务成功率；
     # 4xx（403/404 等）与业务性错误不重试，避免无意义重复请求。
-    # agent_proxy.urlopen：直连失败时经 SSH 隧道回退（GitHub/Cloudflare 等被拦截的场景）。
+    # agent_proxy.urlopen：按全局/回退模式与域名规则选择 SSH 隧道或直连
     from zhuzhu_Copilot.core import agent_proxy
     import time as _time
     raw, charset = None, None

@@ -1,5 +1,6 @@
 import sys
 import os
+import atexit
 import ctypes
 import faulthandler
 import multiprocessing
@@ -428,6 +429,18 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("zhuzhu Copilot")
     app.setApplicationDisplayName("zhuzhu Copilot")
+
+    # 网络代理生命周期：全局模式启动本机 SOCKS5/HTTP 转发器并接管系统代理；
+    # 退出（正常/异常）时还原用户原有系统代理，避免残留导致断网。
+    # 放到后台线程：首次加载/解密 settings 约 0.7s，不能阻塞启动动画。
+    try:
+        from zhuzhu_Copilot.core import agent_proxy_service
+        threading.Thread(target=agent_proxy_service.start_if_enabled,
+                         daemon=True, name="proxy_start").start()
+        app.aboutToQuit.connect(agent_proxy_service.shutdown)
+        atexit.register(agent_proxy_service.shutdown)
+    except Exception:
+        pass
 
     # 确保默认 UI/UX 包与主题持久化（仅首次写入，已存在则不覆盖用户选择）
     _qs = app_identity.qsettings()
