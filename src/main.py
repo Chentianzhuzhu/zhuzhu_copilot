@@ -87,6 +87,10 @@ SPLASH_SUB_INSET_X = 14
 SPLASH_SUB_INSET_Y = 10
 # 标题字号（单一数据源：调大小只改这里）
 SPLASH_TITLE_PX = 30
+# 「Agent」徽章高度与圆角半径（单一数据源）：
+# 半径 = 高度一半 * 0.7，即在全圆角基础上把弧度减小 30%
+SPLASH_BADGE_H = 34
+SPLASH_BADGE_RADIUS = round(SPLASH_BADGE_H / 2 * 0.7)
 
 # 面板首帧之后再预热 Copilot 浮层（延迟 ms）：
 # 预热会在主线程创建浮层/托盘并做首次应用扫描（实测约 1.4s），放在面板显示前会让
@@ -160,11 +164,12 @@ class SplashWindow(QWidget):
         agent_bg = self._title_c if mode == "dark" else "#000000"
         agent_fg = "#000000" if mode == "dark" else "#FFFFFF"
         agent = QLabel("Agent")
-        agent.setFixedHeight(34)
+        agent.setFixedHeight(SPLASH_BADGE_H)
         agent.setMinimumWidth(78)
         agent.setAlignment(Qt.AlignmentFlag.AlignCenter)
         agent.setStyleSheet(
-            f"color: {agent_fg}; background: {agent_bg}; border-radius: 17px;"
+            f"color: {agent_fg}; background: {agent_bg};"
+            f"border-radius: {SPLASH_BADGE_RADIUS}px;"
             "font-size: 19px; font-weight: 700; padding: 0 12px;"
             "font-family: 'Microsoft YaHei UI','Segoe UI';")
         title_row.addWidget(agent, 0, Qt.AlignmentFlag.AlignVCenter)
