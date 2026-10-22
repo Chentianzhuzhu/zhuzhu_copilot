@@ -57,6 +57,7 @@ from PyQt6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QFont,
+    QFontMetrics,
     QIcon,
     QImage,
     QImageReader,
@@ -15620,7 +15621,9 @@ class _TitleBar(QWidget):
     """
 
     HEIGHT = 26
-    BADGE_H = 16
+    BADGE_H = 20
+    BADGE_FONT_PX = 12
+    BADGE_PAD_X = 9
 
     def __init__(self, panel, parent=None):
         super().__init__(parent)
@@ -15651,18 +15654,25 @@ class _TitleBar(QWidget):
             f"color: {TEXT}; font-size: 12px; font-weight: 700; background: transparent;")
         lay.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # Agent 徽章：沿用启动页样式，深浅色自动反色（深色白底黑字 / 浅色黑底白字）
+        # Agent 徽章：沿用启动页样式，深浅色自动反色（深色白底黑字 / 浅色黑底白字）。
+        # 字体显式用 Segoe UI：默认中文字体的拉丁字形在 12px 下偏扁宽，看起来像被横向
+        # 拉伸；尺寸按字形实际宽度 + 对称内边距固定，文字必然水平/垂直居中。
         if _resolve_theme() == "dark":
             bg, fg = "#F5F5F5", "#000000"
         else:
             bg, fg = "#000000", "#FFFFFF"
+        badge_font = QFont("Segoe UI")
+        badge_font.setPixelSize(self.BADGE_FONT_PX)
+        badge_font.setWeight(QFont.Weight.Bold)
         badge = QLabel("Agent", self)
-        badge.setFixedHeight(self.BADGE_H)
+        badge.setFont(badge_font)
+        badge.setFixedSize(
+            QFontMetrics(badge_font).horizontalAdvance("Agent") + self.BADGE_PAD_X * 2,
+            self.BADGE_H)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setStyleSheet(
             f"color: {fg}; background: {bg};"
-            f"border-radius: {round(self.BADGE_H / 2 * 0.63)}px;"
-            "font-size: 10px; font-weight: 700; padding: 0 7px;")
+            f"border-radius: {round(self.BADGE_H / 2 * 0.63)}px;")
         lay.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def sync_window_state(self):
