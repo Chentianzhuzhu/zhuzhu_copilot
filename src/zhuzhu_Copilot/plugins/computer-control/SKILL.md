@@ -27,16 +27,18 @@ description: 电脑操控：AI 直接操控 Windows 桌面（open_app 一键打�
 | 切到已在运行的应用 | `taskbar_open(name="微信")` 看状态 → 图标在就 `taskbar_open(index=N)` 直接点 |
 | 图标不在任务栏可见区 | `taskbar_open(where="panel")` 展开右侧「↑」，再按编号点 |
 | 应用根本没在运行 | `open_app(name="微信")`（只在任务栏和面板都没有时才用） |
-| 在聊天框发一条消息 | `click` 输入框 → `type_text(text="…", submit=true)`（**自动回车发送，不要再移鼠标点发送按钮**） |
+| 在聊天框发一条消息 | 焦点已在输入框 → 直接 `type_text(text="…", submit=true)`；不在就先点一下输入框（**自动回车发送，不要点发送按钮**） |
 | 拖拽 / 滑动 / 长按 | 全部用 `click(action="drag" / "swipe" / "long_press", …)`，不要拆成「点击+移动+点击」 |
 | 组合键 | `key_press(key="ctrl+shift+s")`、`key_press(key="win+ctrl+d")`、`key_press(key="ctrl++")`（放大） |
 
 三条铁律：
 
-1. **先 `screen_shot(mode="full")` 看一眼，再决定点哪里** —— 不要靠猜坐标。
+1. **先 `screen_shot(mode="full")` 看一眼任务栏和当前前台，再决定点哪里** —— 不要靠猜坐标。
+   **调出已在运行的应用，优先点任务栏底部那个图标**（`taskbar_open(index=N)`），不要先 `open_app`。
 2. **已经在前台就不要再切**：`taskbar_open(name="…")` / `open_app` 的返回会直接告诉你
    「已在最前」，此时立刻截图开始操作，**不要反复调 open_app / manage_window 置顶**。
-3. **输入完要发送就用 `submit=true`**，把鼠标移过去点发送按钮既慢又容易点偏。
+3. **先看焦点再打字**：焦点已经在输入框（`screen_info` 的「键盘焦点」会说明）就直接
+   `type_text(..., submit=true)`，**不要再点输入框**；焦点不在才点一下输入框。
 
 ## 何时使用
 
@@ -514,11 +516,14 @@ open_app(name="微信")             # ④ 都没有 → 启动/恢复并置顶�
 
 ### 第 2 步：发消息
 
-1. `screen_shot(mode="window", hwnd=微信hwnd)` → 读出底部输入框的位置 → `click` 点它；
-   （拿不准坐标链路就 `verify_point` 先自检一次）
-2. `type_text("你好")` —— 微信支持中文输入；
-3. `key_press(key="enter")` 发送（**注意**：微信默认 Enter 是发送，
-   若用户设置成 Ctrl+Enter 发送，则改用 `key_press(key="ctrl+enter")`）；
+1. **先看焦点**：`screen_info` 的「键盘焦点」一行会直接说焦点是不是在输入框里。
+   - **已在输入框 → 直接 `type_text("你好", submit=true)`**，不要再去点输入框
+     （多点一次可能点偏、或把焦点挪走，反而发不出去）；
+   - 不在输入框 → `screen_shot` 读出底部输入框位置 → `click` 点它 →
+     截图确认光标已经在输入框里；
+2. `type_text("你好", submit=true)` —— 输入完成自动按 Enter 发送；
+3. 少数应用把发送键改成 Ctrl+Enter：此时用 `type_text("你好")` +
+   `key_press(key="ctrl+enter")`；
 4. `screen_shot(mode="window", hwnd=微信hwnd)` 确认**消息气泡已出现在右侧**。
 
 ### 第 3 步：把桌面文件发给「第三个人」
@@ -556,6 +561,22 @@ open_app(name="微信")             # ④ 都没有 → 启动/恢复并置顶�
 - 界面上**同一处失败不要连试两次以上**：第二次失败就说明前提错了
   （坐标基准过期 / 窗口没激活 / 认错了会话），先重新 `screen_shot` 或 `ask_user`；
 - 发送类动作**不可逆**（消息发出去就收不回）——发送前务必确认「当前会话是不是目标那个人」。
+
+### 另一个例子：打开 QQ 给某人发消息（最短路径）
+
+用户说「打开 QQ 给 XXX 发消息」时，照这个顺序走，通常 3~4 次工具调用就完成：
+
+1. `screen_shot(mode="full")` 看一眼任务栏：QQ 图标在就 `taskbar_open(index=N)`
+   —— **优先点任务栏图标把窗口调出来**，不要先 `open_app`、更不要反复 `manage_window` 置顶；
+   图标不在可见区就 `taskbar_open(where="panel")`；
+2. 窗口起来后 `screen_info` 看「键盘焦点」：
+   - **已在输入框 → 直接跳到第 3 步**，不要再点输入框；
+   - 不在 → `screen_shot(mode="window")` 找到搜索框/输入框，`click` 一次并截图确认光标在里面；
+3. 用户给的是人名：在搜索框 `type_text("XXX")` → 选中搜索结果第一行进入会话
+   （或直接在会话列表里点那个人，截图确认右侧标题是 XXX）；
+4. `type_text("要说的话", submit=true)` —— **输入完自动按 Enter 发送**，
+   不要再移动鼠标去点发送按钮；
+5. `screen_shot` 确认消息已出现在会话里。
 
 ## 屏幕边缘彩色光环（用户提示）
 

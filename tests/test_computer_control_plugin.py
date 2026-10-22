@@ -2381,6 +2381,10 @@ def test_type_text_submit_presses_enter_after_typing(monkeypatch):
     monkeypatch.setattr(mod, "window_title", lambda h: "微信")
     monkeypatch.setattr(mod, "_log", lambda who, text: None)
     monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    note = "键盘焦点已在可输入控件（类名 Edit）—— 直接 type_text 输入即可，**不要再点击输入框**。"
+    monkeypatch.setattr(mod, "focus_state", lambda hwnd=0: {
+        "ok": True, "focus": 7, "cls": "Edit", "caret": True,
+        "editable": True, "note": note})
     typed, keys = [], []
     monkeypatch.setattr(mod, "do_type_text", lambda t, interval=0.012: typed.append(t))
     monkeypatch.setattr(mod, "do_key", lambda k: keys.append(k))
@@ -2388,10 +2392,11 @@ def test_type_text_submit_presses_enter_after_typing(monkeypatch):
     assert typed == ["你好"], "文本必须先完整输入"
     assert keys == ["enter"], "submit=true 时必须补一个 Enter"
     assert "Enter" in out and "发送" in out
+    assert "不要再点击输入框" in out, "焦点已在输入框时必须明确告诉模型直接输入"
 
 
 def test_type_text_without_submit_never_presses_enter(monkeypatch):
-    """默认不发送：require 只输入文本时绝不能被回车误发出去。"""
+    """默认不发送：只输入文本时绝不能被回车误发出去。"""
     mod = _load_module()
     monkeypatch.setattr(mod, "_guard", lambda name: "")
     monkeypatch.setattr(mod, "_ensure_input_target", lambda args, action: "")
@@ -2400,11 +2405,26 @@ def test_type_text_without_submit_never_presses_enter(monkeypatch):
     monkeypatch.setattr(mod, "window_title", lambda h: "记事本")
     monkeypatch.setattr(mod, "_log", lambda who, text: None)
     monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "focus_state", lambda hwnd=0: {
+        "ok": False, "focus": 0, "cls": "", "caret": False,
+        "editable": False, "note": ""})
     monkeypatch.setattr(mod, "do_type_text", lambda t, interval=0.012: None)
     keys = []
     monkeypatch.setattr(mod, "do_key", lambda k: keys.append(k))
     mod._HANDLERS["type_text"]({"text": "草稿"})
     assert keys == [], "没传 submit 时不得发送"
+
+
+def test_focus_detection_recognises_editable_controls():
+    """焦点判定只看类名/插入点，用于决定「要不要再点输入框」；判错不影响注入。"""
+    mod = _load_module()
+    assert mod._editable_class("Edit")
+    assert mod._editable_class("RichEdit50W")
+    assert mod._editable_class("Chrome_RenderWidgetHostHWND")
+    assert mod._editable_class("Windows.UI.Core.CoreWindow")
+    assert not mod._editable_class("Shell_TrayWnd")
+    assert not mod._editable_class("")
+    assert not mod._editable_class("Button")
 
 
 def test_merge_components_joins_fragments_of_one_target():

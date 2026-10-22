@@ -187,6 +187,15 @@ class BITMAPINFOHEADER(ctypes.Structure):
                 ("biClrImportant", wintypes.DWORD)]
 
 
+class GUITHREADINFO(ctypes.Structure):
+    """GetGUIThreadInfo 的返回结构（用来判断键盘焦点此刻落在哪个控件上）。"""
+    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+                ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
+                ("rcCaret", wintypes.RECT)]
+
+
 def _bind_win32():
     """声明函数原型：指针/句柄参数在 64 位下必须显式声明，否则 ctypes 按 c_int 截断。"""
     u, g, k = user32, gdi32, kernel32
@@ -213,6 +222,8 @@ def _bind_win32():
     u.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
     u.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
     u.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    u.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.POINTER(GUITHREADINFO))
+    u.GetGUIThreadInfo.restype = wintypes.BOOL
     u.SetWindowsHookExW.restype = wintypes.HHOOK
     u.SetWindowsHookExW.argtypes = (ctypes.c_int, ctypes.c_void_p, wintypes.HMODULE, wintypes.DWORD)
     u.CallNextHookEx.restype = LRESULT
@@ -3031,6 +3042,67 @@ def window_state(hwnd: int) -> dict:
             "foreground": foreground_window() == hwnd}
 
 
+# 输入控件类名特征：Win32 原生 Edit/RichEdit、浏览器渲染层、UWP 文本框、
+# Scintilla/代码编辑器等。只用来判断「焦点是不是已经在能打字的地方」，
+# 不参与定位，因此不需要覆盖所有框架 —— 判错时只影响提示文案，不影响注入。
+EDITABLE_CLASS_HINTS = ("edit", "richedit", "textbox", "textfield", "textinput",
+                        "scintilla", "chrome_widgetwin", "chrome_renderwidget",
+                        "mozilla", "gecko", "windows.ui.core.corewindow")
+
+
+def _editable_class(cls: str) -> bool:
+    """类名是否像一个可输入控件（纯字符串判断，便于单测）。"""
+    c = str(cls or "").lower()
+    return any(h in c for h in EDITABLE_CLASS_HINTS)
+
+
+def focus_state(hwnd: int = 0) -> dict:
+    """取窗口所在线程当前的键盘焦点（纯 Win32，不读控件树）。
+
+    用途：用户说「光标已经在输入框上，直接输入回车」时，判断要不要再点输入框。
+    `hwndFocus` 是接收键盘输入的控件；`hwndCaret`/`rcCaret` 有值说明光标在一个
+    文本插入点里 —— 对自绘输入框（微信/QQ/Electron）比类名更可靠。
+
+    返回 {ok, focus, cls, caret, editable, note}；任何一步取不到都返回 ok=False，
+    调用方按「未知」处理，绝不因此拒绝输入。
+    """
+    hwnd = int(hwnd or 0) or int(foreground_window() or 0)
+    empty = {"ok": False, "focus": 0, "cls": "", "caret": False,
+             "editable": False, "note": ""}
+    if not hwnd:
+        return empty
+    tid = int(user32.GetWindowThreadProcessId(hwnd, None) or 0)
+    if not tid:
+        return empty
+    gti = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    if not user32.GetGUIThreadInfo(tid, ctypes.byref(gti)):
+        return empty
+    focus = int(gti.hwndFocus or 0)
+    cls = win32_class_name(focus) if focus else ""
+    # rcCaret 非空 = 当前有一个真实文本插入点（自绘输入框也能命中）
+    caret = bool(gti.hwndCaret and (gti.rcCaret.right > gti.rcCaret.left
+                                    or gti.rcCaret.bottom > gti.rcCaret.top))
+    editable = bool(focus) and (_editable_class(cls) or caret)
+    note = ""
+    if editable:
+        note = (f"键盘焦点已在可输入控件（类名 {cls or '未知'}"
+                + ("，检测到文本插入点" if caret else "")
+                + "）—— 直接 type_text 输入即可，**不要再点击输入框**。")
+    elif focus:
+        note = (f"键盘焦点在控件「{cls or focus}」，看起来不是文本输入框 —— "
+                f"如要发消息，先点一下输入框再 type_text，或直接截图确认光标位置。")
+    return {"ok": True, "focus": focus, "cls": cls, "caret": caret,
+            "editable": editable, "note": note}
+
+
+def _focus_line() -> str:
+    """screen_info 用的一行焦点说明：告诉模型「现在能不能直接打字」。"""
+    fs = focus_state(foreground_window())
+    if not fs.get("ok"):
+        return "取不到（可直接 type_text，插件按前台窗口注入）"
+    return fs.get("note") or "当前没有焦点控件"
+
+
 def activate_window(hwnd: int) -> bool:
     """把窗口提到前台（先恢复最小化，再置顶）。
 
@@ -3862,6 +3934,7 @@ def tool_screen_info(args: dict) -> str:
         f"操控容器: {'独立虚拟桌面' if _STATE['container'] == 'virtual_desktop' else '用户前台桌面'}",
         f"鼠标位置: {_STATE['cursor'][0]}, {_STATE['cursor'][1]}",
         f"前台窗口: {_STATE['foreground']['title'] or '(无)'}",
+        f"键盘焦点: {_focus_line()}",
         f"接管状态: {'已被用户接管/暂停（操控被拒绝）' if _interrupted() else '正常'}"
         + f"；操控会话剩余 {remain}s（每次工具调用自动延长）",
         f"可视化界面: http://127.0.0.1:{_STATE['web_port']}/",
@@ -4522,6 +4595,9 @@ def tool_type_text(args: dict) -> str:
     note = _ensure_input_target(args, "输入文本")
     tgt = _input_target_hwnd(args)
     fg = foreground_window()
+    # 焦点自检：光标已经在输入框里时**直接输入**，不要让模型再去点一次输入框
+    # （多点一下可能把焦点挪走，或点偏到别的控件上）。
+    fs = focus_state(tgt or fg)
     do_type_text(text)
     # 发送：输入完直接回车，省掉「移动鼠标去点发送按钮」这一步（也避免点偏）。
     # 先停一下让输入法/输入框把上屏处理完，否则回车可能被当成输入法候选上屏。
@@ -4540,7 +4616,7 @@ def tool_type_text(args: dict) -> str:
                  f"「{window_title(tgt) or tgt}」—— 请立刻截图核对文字去了哪里，不要重复输入")
     return (f"已输入 {len(text)} 个字符（{where}）"
             + ("，并按 Enter 发送（无需再移动鼠标点发送按钮）" if submit else "")
-            + "。" + _join_notes(note)
+            + "。" + _join_notes(note, fs.get("note") or "")
             + "请重新 screen_shot 确认输入是否正确。")
 
 
@@ -5072,8 +5148,10 @@ TOOLS = [
          "y": {"type": "integer", "description": "可选：滚动前把指针移到此处（截图基准 y）"}},
          "required": ["delta"]}},
     {"name": "type_text", "description":
-        "输入文本（Unicode 注入，支持中文/符号；先点击输入框使其获得焦点再调用）。"
-        "**发消息别再去点发送按钮**：传 submit=true 就会在输入完成后自动按 Enter 发送。"
+        "输入文本（Unicode 注入，支持中文/符号）。"
+        "**焦点自动识别**：如果键盘焦点已经在输入框里（类名/文本插入点判定），"
+        "就直接输入，**不要再点击输入框**；返回里会说明当前焦点是不是可输入控件。"
+        "**发消息别再去点发送按钮**：传 submit=true 会在输入完成后自动按 Enter 发送。"
         "**注入前会确保目标窗口在最前**：抢不到焦点就拒绝执行，避免文字打进别的应用"
         "（例如 AI 助手自己的输入框）。",
      "inputSchema": {"type": "object", "properties": {
