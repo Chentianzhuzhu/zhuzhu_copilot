@@ -15696,6 +15696,8 @@ class AgentPanel(QDialog):
 
     # 主面板圆角半径（单一数据源）：无边框自绘窗口，最大化/全屏时归零
     _WINDOW_RADIUS = 18
+    _TOP_SNAP_PX = 2   # 拖动时光标进入屏幕顶端 2px 内即最大化（Windows 贴顶语义）
+    _BOUNCE_PX = 18    # 从最小化恢复时的弹跳幅度（像素）
 
     # ---------- 微信 ClawBot（主面板：消息接收与回复推送） ----------
     def _wechat_start_polling(self):
@@ -15909,7 +15911,11 @@ class AgentPanel(QDialog):
                             | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("agentMainPanel")
-        self._drag_press = None   # 顶部区域拖窗起点（窗口坐标外的全局坐标）
+        self._drag_press = None   # 顶部区域拖窗起点（全局坐标）
+        self._drag_local = QPoint()   # 按下点在窗口内的位置（最大化拖出时按比例还原）
+        self._drag_origin = QPoint()  # 拖窗开始时窗口左上角
+        self._dragging = False
+        self._was_minimized = False   # 用于识别「任务栏图标把窗口恢复」→ 弹跳动画
         # 优先应用包主题色板：在控件创建前更新模块级颜色常量，
         # 避免 _build_ui 内 createPreviewWidget 等函数用到旧色板。
         try:
@@ -18849,6 +18855,23 @@ class AgentPanel(QDialog):
         else:
             self.showMaximized()
 
+    def _bounce_after_restore(self):
+        """从最小化恢复时的弹跳动画（点任务栏图标 / 再次点绿点唤起）。
+
+        用窗口 y 位移做 OutBounce 衰减：先落回原位下方 _BOUNCE_PX，再弹回原位。
+        最大化/全屏铺满屏幕没有可视弹跳空间，直接跳过。
+        """
+        if self.isMaximized() or self.isFullScreen():
+            return
+        g = self.geometry()
+        anim = QPropertyAnimation(self, b"pos", self)
+        anim.setDuration(360)
+        anim.setStartValue(QPoint(g.x(), g.y() + self._BOUNCE_PX))
+        anim.setEndValue(g.topLeft())
+        anim.setEasingCurve(QEasingCurve.Type.OutBounce)
+        self._bounce_anim = anim   # 持有引用，避免动画对象被回收后中途停止
+        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
     def _top_drag_band_bottom(self) -> int:
         """顶部可拖拽区域的下边界（窗口坐标），0 表示区域尚未就绪。
 
@@ -18865,16 +18888,33 @@ class AgentPanel(QDialog):
             bottom = max(bottom, title.geometry().bottom())
         return bottom + 1 if bottom > 0 else 0
 
-    def _start_window_move(self):
-        """交给系统开始拖动窗口：保留贴靠、多屏、最大化后自动还原等系统行为。"""
-        wh = self.windowHandle()
-        if wh is not None:
-            wh.startSystemMove()
+    def _begin_window_drag(self):
+        """真正进入拖动：最大化/全屏时先还原普通窗口（Windows 拖出语义），
+        并把光标在最大化窗口里的相对位置保留到还原后的窗口上，避免窗口跳走。"""
+        self._dragging = True
+        if self.isMaximized() or self.isFullScreen():
+            ng = self.normalGeometry()
+            ratio = self._drag_local.x() / max(1, self.width())
+            self.showNormal()
+            self.setGeometry(int(self._drag_press.x() - ng.width() * ratio),
+                             max(0, self._drag_press.y() - self._drag_local.y()),
+                             ng.width(), ng.height())
+        self._drag_origin = self.pos()
+
+    def _end_window_drag(self):
+        was_dragging = self._dragging
+        self._drag_press = None
+        self._dragging = False
+        if was_dragging:
+            # 拖动期间跳过了子面板逐帧同步（见 moveEvent），松手补一次归位
+            self._request_side_sync(0)
 
     def mousePressEvent(self, e):
         if (e.button() == Qt.MouseButton.LeftButton
                 and e.position().y() <= self._top_drag_band_bottom()):
             self._drag_press = e.globalPosition().toPoint()
+            self._drag_local = e.position().toPoint()
+            self._dragging = False
             e.accept()
             return
         super().mousePressEvent(e)
@@ -18882,16 +18922,27 @@ class AgentPanel(QDialog):
     def mouseMoveEvent(self, e):
         if (self._drag_press is not None
                 and (e.buttons() & Qt.MouseButton.LeftButton)):
-            # 超过 5px 才真正拖窗：短按仍会作为单击/双击派发
-            if (e.globalPosition().toPoint() - self._drag_press).manhattanLength() >= 5:
-                self._drag_press = None
-                self._start_window_move()
+            g = e.globalPosition().toPoint()
+            if not self._dragging:
+                # 超过 5px 才真正拖窗：短按仍会作为单击/双击派发
+                if (g - self._drag_press).manhattanLength() < 5:
+                    return
+                self._begin_window_drag()
+            # 贴顶最大化：光标顶到屏幕工作区上边缘即最大化（拖动期间持续判定）
+            scr = self.screen() or QApplication.primaryScreen()
+            if (scr is not None
+                    and g.y() <= scr.availableGeometry().top() + self._TOP_SNAP_PX):
+                self._end_window_drag()
+                self.showMaximized()
                 e.accept()
                 return
+            self.move(self._drag_origin + (g - self._drag_press))
+            e.accept()
+            return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
-        self._drag_press = None
+        self._end_window_drag()
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
@@ -20489,13 +20540,13 @@ class AgentPanel(QDialog):
 
     def moveEvent(self, e):
         super().moveEvent(e)
-        # 原生系统拖动（startSystemMove）期间，每帧同步 4 个子面板会反复 move()+raise_()
-        # 多个圆角 + 阴影窗口，导致拖动严重卡顿 → 拖动期间跳过逐帧同步，
-        # 拖动结束（标题栏在 _dragging 复位后）再一次性重新定位，消除延迟。
+        # 自绘拖动（见 mouseMoveEvent）期间每帧都 move()：逐帧同步 4 个子面板会反复
+        # move()+raise_() 多个圆角 + 阴影窗口，拖动严重卡顿 → 拖动期间跳过，
+        # 松手后由 _end_window_drag 一次性归位。
         if getattr(self, "_dragging", False):
             return
-        # 默认模式（系统标题栏拖动）无 _dragging 标志：每帧 moveEvent 只重挂 160ms
-        # 防抖定时器，停止移动后才一次性归位 —— 避免拖动过程中逐帧 move+raise 子面板
+        # 非拖动来源的移动（系统移动、程序内 setGeometry）只重挂 160ms 防抖定时器，
+        # 停止移动后才一次性归位 —— 避免拖动过程中逐帧 move+raise 子面板
         # 造成顶部闪烁；移动持续时定时器被不断重置，不会中途触发。
         self._arm_move_side_sync()
 
@@ -20624,36 +20675,6 @@ class AgentPanel(QDialog):
         避免最大化时多次 move+raise 造成左面板消失与持续闪烁。"""
         self._request_side_sync(0)
 
-    def _start_system_move(self):
-        """用 Win32 SendMessage(WM_SYSCOMMAND, SC_MOVE|HTCAPTION) 触发原生阻塞式拖动。
-        SendMessage 会阻塞到鼠标释放（DefWindowProc 模态循环），确保调用方包裹的
-        拖动开关覆盖整个过程（QWindow.startSystemMove 在部分平台可能非阻塞，
-        导致开关提前复位、拖动期间仍逐帧重算模糊而卡顿）。"""
-        try:
-            if sys.platform != "win32":
-                wh = self.windowHandle()
-                if wh is not None:
-                    wh.startSystemMove()
-                return
-            hwnd = int(self.winId())
-            if hwnd == 0:
-                return
-            user32 = ctypes.windll.user32
-            # 关键：SendMessageW 的 HWND 是 64 位指针，必须显式声明参数类型，
-            # 否则 ctypes 默认按 c_int（32 位）截断句柄 → 无效 HWND → 拖动无效
-            # （默认 UI 用系统标题栏拖动不受影响，无边框自定义标题栏才暴露）。
-            try:
-                user32.SendMessageW.argtypes = [
-                    ctypes.c_void_p, ctypes.c_uint, ctypes.c_uintptr, ctypes.c_intptr]
-                user32.SendMessageW.restype = ctypes.c_intptr
-            except Exception:
-                pass
-            user32.ReleaseCapture()
-            # WM_SYSCOMMAND(0x0112), SC_MOVE(0xF010) | HTCAPTION(0x0002) = 0xF012
-            user32.SendMessageW(hwnd, 0x0112, 0xF012, 0)
-        except Exception:
-            pass
-
     def changeEvent(self, e):
         super().changeEvent(e)
         # 标题栏最大化/还原、父窗口（MainWindow）状态变化 → 同步面板全屏定位
@@ -20661,6 +20682,7 @@ class AgentPanel(QDialog):
             minimized = bool(self.windowState() & Qt.WindowState.WindowMinimized)
             self._panel_minimized = minimized
             if minimized:
+                self._was_minimized = True
                 # 面板最小化/隐藏：收起浮出的独立子窗口（hide 而非 showMinimized：
                 # 无边框 Tool 窗口最小化后无标题栏可恢复，隐藏最稳妥）。
                 self._collapse_float_windows()
@@ -20673,6 +20695,10 @@ class AgentPanel(QDialog):
                 return
             # 恢复/最大化/还原：圆角半径、黄点提示、缩放热区随状态同步
             self._sync_window_chrome()
+            if self._was_minimized:
+                # 由最小化恢复（点任务栏图标 / 再次点绿点）：播放弹跳动画
+                self._was_minimized = False
+                self._bounce_after_restore()
             # 恢复/最大化/还原：重新定位显示子面板（合并为一次）
             self._request_side_sync(0)
 
