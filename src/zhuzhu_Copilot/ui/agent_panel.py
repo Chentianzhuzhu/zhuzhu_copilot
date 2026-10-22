@@ -15582,7 +15582,7 @@ class _TrafficDot(QWidget):
         super().leaveEvent(e)
 
     def mousePressEvent(self, e):
-        # 必须接受按下：QWidget 默认忽略事件会冒泡到标题栏，标题栏随即接管拖动
+        # 必须接受按下：QWidget 默认忽略事件会冒泡到主面板，主面板随即接管拖动
         # 并抢走后续松开事件，圆点就永远收不到 click（关闭/最大化失效）。
         if e.button() == Qt.MouseButton.LeftButton:
             e.accept()
@@ -15614,8 +15614,9 @@ class _TitleBar(QWidget):
     """自绘标题栏：左侧红黄绿控制点，右侧应用图标 + 名称 + Agent 徽章。
 
     替代被移除的 Windows 原生标题栏（原生标题栏在 Win10/Win11 的圆角与配色
-    不一致）。拖动走 startSystemMove()，保留贴靠/多屏等系统行为；圆点自身
-    不参与拖动，双击标题栏切换最大化/还原。
+    不一致）。点击/拖动/double-click 不在这里处理：空白处的事件冒泡到主面板，
+    由 AgentPanel 统一接管整条顶部区域（见 _top_drag_band_bottom），
+    这样标题栏与顶栏空白处都能拖窗，不必两处各写一遍。
     """
 
     HEIGHT = 26
@@ -15624,7 +15625,6 @@ class _TitleBar(QWidget):
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self._panel = panel
-        self._press = None
         self.setFixedHeight(self.HEIGHT)
         self.setObjectName("agentTitleBar")
 
@@ -15669,36 +15669,6 @@ class _TitleBar(QWidget):
         """最大化/还原后更新黄点提示（图标本身保持三枚实心圆）"""
         self.max_dot.setToolTip(
             _ui("恢复") if self._panel.isMaximized() else _ui("最大化"))
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._press = e.globalPosition().toPoint()
-            e.accept()
-            return
-        super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if self._press is None or not (e.buttons() & Qt.MouseButton.LeftButton):
-            return super().mouseMoveEvent(e)
-        # 超过 5px 才交给系统拖动：短按仍会作为双击/单击事件派发
-        if (e.globalPosition().toPoint() - self._press).manhattanLength() < 5:
-            return
-        wh = self._panel.windowHandle()
-        self._press = None
-        if wh is not None:
-            wh.startSystemMove()
-        e.accept()
-
-    def mouseReleaseEvent(self, e):
-        self._press = None
-        super().mouseReleaseEvent(e)
-
-    def mouseDoubleClickEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._panel._toggle_max_restore()
-            e.accept()
-            return
-        super().mouseDoubleClickEvent(e)
 
 
 class AgentPanel(QDialog):
@@ -15939,6 +15909,7 @@ class AgentPanel(QDialog):
                             | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("agentMainPanel")
+        self._drag_press = None   # 顶部区域拖窗起点（窗口坐标外的全局坐标）
         # 优先应用包主题色板：在控件创建前更新模块级颜色常量，
         # 避免 _build_ui 内 createPreviewWidget 等函数用到旧色板。
         try:
@@ -18872,11 +18843,64 @@ class AgentPanel(QDialog):
                 pass
 
     def _toggle_max_restore(self):
-        """黄点/双击标题栏：最大化与还原切换（不进入全屏）。"""
+        """黄点/双击顶部区域：最大化与还原切换（不进入全屏）。"""
         if self.isMaximized():
             self.showNormal()
         else:
             self.showMaximized()
+
+    def _top_drag_band_bottom(self) -> int:
+        """顶部可拖拽区域的下边界（窗口坐标），0 表示区域尚未就绪。
+
+        覆盖标题栏 + 顶栏行（AI AGENT / 会话框 / 工具按钮那一排）的整条区域。
+        控件自己不接受的事件会冒泡到主面板，因此按钮/下拉不会触发拖窗，
+        而它们之间的空白处可以直接按住拖动窗口。
+        """
+        bottom = 0
+        tb = self.__dict__.get("_title_bar")
+        if tb is not None:
+            bottom = max(bottom, tb.geometry().bottom())
+        title = self.__dict__.get("title")
+        if title is not None:
+            bottom = max(bottom, title.geometry().bottom())
+        return bottom + 1 if bottom > 0 else 0
+
+    def _start_window_move(self):
+        """交给系统开始拖动窗口：保留贴靠、多屏、最大化后自动还原等系统行为。"""
+        wh = self.windowHandle()
+        if wh is not None:
+            wh.startSystemMove()
+
+    def mousePressEvent(self, e):
+        if (e.button() == Qt.MouseButton.LeftButton
+                and e.position().y() <= self._top_drag_band_bottom()):
+            self._drag_press = e.globalPosition().toPoint()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if (self._drag_press is not None
+                and (e.buttons() & Qt.MouseButton.LeftButton)):
+            # 超过 5px 才真正拖窗：短按仍会作为单击/双击派发
+            if (e.globalPosition().toPoint() - self._drag_press).manhattanLength() >= 5:
+                self._drag_press = None
+                self._start_window_move()
+                e.accept()
+                return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_press = None
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if (e.button() == Qt.MouseButton.LeftButton
+                and e.position().y() <= self._top_drag_band_bottom()):
+            self._toggle_max_restore()
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
 
     def _sync_window_chrome(self):
         """最大化/还原后同步自绘窗口饰件：圆角半径、黄点提示、缩放热区。"""
