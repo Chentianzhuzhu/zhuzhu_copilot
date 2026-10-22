@@ -69,10 +69,6 @@ try {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch { }
-
-# 项目目录：脚本所在目录。
-# 注意：不能写在 param 默认值里（PowerShell 5.1 求值默认值时 $PSScriptRoot 还是空，
-# 会直接报 “Cannot bind argument to parameter 'Path'”），必须在脚本体内解析。
 if (-not $ProjectDir) {
     $ProjectDir = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath }
                   elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -87,8 +83,6 @@ $Script:StepNo = 0
 $Script:StepTotal = 0
 $Script:Started = Get-Date
 $Script:Warnings = New-Object System.Collections.ArrayList
-
-# ---------------------------------------------------------------- 输出helpers
 function Write-Head([string]$text) {
     Write-Host ''
     Write-Host ('=' * 68) -ForegroundColor DarkCyan
@@ -114,11 +108,6 @@ function Fail([string]$text) {
     Write-Host "构建失败。日志: $Script:LogPath" -ForegroundColor Red
     throw $text
 }
-
-# 运行外部命令并校验退出码（GUI 子系统程序需经 cmd /c 才能同步等待）
-# 注意：native 程序写入 stderr 时，在 $ErrorActionPreference='Stop' 下 PowerShell 5.1 会
-# 抛 NativeCommandError 终止脚本（PyInstaller/依赖解析都会写 stderr）—— 故本地降级为
-# Continue，只以退出码判断成败。
 function Invoke-Exe {
     param(
         [Parameter(Mandatory)][string]$Exe,
@@ -130,12 +119,6 @@ function Invoke-Exe {
     $ErrorActionPreference = 'Continue'
     if ($WorkDir) { Push-Location $WorkDir }
     try {
-        # 【必须 Out-Host】PowerShell 函数会把未捕获的输出并入返回值：若直接调用外部程序，
-        # 子进程 stdout 会与退出码一起返回（曾把「0」和一大段日志当成退出码，误判失败）。
-        # 这里把子进程输出直通控制台（同时进 transcript 日志），函数只返回整数退出码。
-        if ($ViaCmd) {
-            # GUI 子系统 exe（ISCC）：PowerShell 直接调用不等待且 LASTEXITCODE 为空，
-            # 必须走 cmd /c 同步等待并拿到真实退出码。
             $line = '"' + $Exe + '"'
             foreach ($a in $Arguments) {
                 $line += ' ' + ($(if ($a -match '\s') { '"' + $a + '"' } else { $a }))
@@ -150,8 +133,6 @@ function Invoke-Exe {
         $ErrorActionPreference = $old
     }
 }
-
-# 采集外部命令输出（stdout+stderr 合并），供探针/版本探测做正则解析
 function Invoke-NativeCapture {
     param(
         [Parameter(Mandatory)][string]$Exe,
@@ -166,8 +147,6 @@ function Invoke-NativeCapture {
         $ErrorActionPreference = $old
     }
 }
-
-# ---------------------------------------------------------------- 版本号
 function Get-ProjectVersion {
     $iss = Join-Path $ProjectDir 'installer\zhuzhu_Copilot.iss'
     $m = Select-String -Path $iss -Pattern '^#define\s+MyAppVersion\s+"([^"]+)"' |

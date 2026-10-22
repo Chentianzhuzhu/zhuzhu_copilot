@@ -380,7 +380,7 @@
     </form>
 
     <div class="footer-note">
-      <span data-i18n="footer.agreePrefix">注册即表示你已阅读并同意 </span><a href="agreement.html" target="_blank" data-i18n="link.agreement">《用户协议》</a>
+      <span data-i18n="footer.agreePrefix">注册即表示你已阅读并同意 </span><a id="lnkAgreement" href="agreement.html" target="_blank" data-i18n="link.agreement">《用户协议》</a>
     </div>
   </div>
 
@@ -702,29 +702,144 @@ function refreshDynamicTexts() {
 var currentTab = 'login';
 var avatarBase64 = '';  // 注册头像的 base64 数据
 
-/* 读取回调端口：URL 参数 ?callback_port=xxxx，默认 18765 */
-function getCallbackPort() {
-  var m = location.search.match(/callback_port=(\d+)/);
-  return m ? m[1] : '18765';
-}
+/* ============================================================
+ * 登录上下文（握手参数）——必须比「当前页面地址」活得久
+ *
+ * 登录页地址形如：
+ *   /static/login/index.html?platform=...&state=...&version=...&callback_port=...
+ *
+ * 这四个参数是「本次登录的身份证」，缺一不可：
+ *   state         一次性握手票据，登录时回传服务端校验（防 CSRF / 重放），
+ *                 成功后还要用它把 token 投递给客户端；
+ *   callback_port 客户端本地回调端口，决定 token 往哪儿送；
+ *   platform / version  客户端身份，供服务端识别来源。
+ *
+ * 【曾经的坑】用户点开《用户协议》再返回登录页时，某些浏览器 / 内嵌 WebView
+ * 会用「不带查询串的 index.html」重新加载本页，四个参数全部丢失。后果是：
+ * 页面看起来一切正常，登录也能成功，但
+ *   · relayToServer() 因 LOGIN_STATE 为空直接跳过（服务端中转拿不到结果）；
+ *   · 本地回调携带的 state 为空，客户端 _verify_callback_state() 判定不一致 → 拒绝；
+ * 用户表现为「网页说登录成功，但客户端一直没反应 / 提示登录被拒绝」。
+ *
+ * 【对策】把参数当成会话状态存起来，而不是每次从地址栏读：
+ *   1) 带参进入时，立刻写入 sessionStorage + localStorage（附时间戳）；
+ *   2) 参数缺失时，从存储里恢复，并用 history.replaceState 把地址栏补全，
+ *      用户看到的仍是完整登录地址（可刷新、可复制）；
+ *   3) 之后所有逻辑只读 AUTH_CTX，不再直接读 location.search。
+ * 存储有效期 10 分钟，与服务端 LOGIN_STATE_TTL_SECONDS=600 对齐，避免陈旧 state。
+ * ============================================================ */
+var AUTH_CTX_KEY = 'copilot_auth_ctx';
+var AUTH_CTX_TS_KEY = 'copilot_auth_ctx_ts';
+var AUTH_CTX_TTL_MS = 10 * 60 * 1000;
+var AUTH_CTX_FIELDS = ['platform', 'state', 'version', 'callback_port'];
+var AUTH_CTX_VALUE_RE = /^[A-Za-z0-9_.\-]{1,128}$/;
 
-/* 读取登录握手 state：URL 参数 ?state=xxxx（防 CSRF / 重放）。
- * 由桌面客户端生成并申请；登录/注册时原样回传服务端校验，
- * 成功后随回调带回，客户端比对一致性。 */
-function getLoginState() {
-  var m = location.search.match(/[?&]state=([A-Za-z0-9_\-]+)/);
-  return m ? m[1] : '';
-}
-var LOGIN_STATE = getLoginState();
+var AUTH_CTX = (function () {
+  function isEmpty(o) {
+    if (!o) return true;
+    for (var k in o) { if (o.hasOwnProperty(k) && o[k]) return false; }
+    return true;
+  }
 
-/* 读取客户端平台标识与版本（仅展示/透传用途） */
-function getPlatform() {
-  var m = location.search.match(/[?&]platform=([A-Za-z0-9_\-]+)/);
-  return m ? m[1] : '';
-}
-function getVersion() {
-  var m = location.search.match(/[?&]version=([A-Za-z0-9_.\-]+)/);
-  return m ? m[1] : '';
+  /* 从地址栏解析白名单参数（非白名单/非法字符一律丢弃，避免脏值被回传） */
+  function pickFromSearch() {
+    var out = {};
+    var q = (location.search || '').replace(/^\?/, '');
+    if (!q) return out;
+    var parts = q.split('&');
+    for (var i = 0; i < parts.length; i++) {
+      var kv = parts[i].split('=');
+      var k = '', v = '';
+      try {
+        k = decodeURIComponent(kv[0] || '');
+        v = decodeURIComponent((kv[1] || '').replace(/\+/g, ' '));
+      } catch (e) { continue; }
+      if (AUTH_CTX_FIELDS.indexOf(k) !== -1 && AUTH_CTX_VALUE_RE.test(v)) out[k] = v;
+    }
+    return out;
+  }
+
+  /* 读存储：sessionStorage（同标签页内导航优先）→ localStorage（带 TTL 兜底） */
+  function readStore() {
+    try {
+      var raw = sessionStorage.getItem(AUTH_CTX_KEY);
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (!isEmpty(o)) return o;
+      }
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    try {
+      var raw2 = localStorage.getItem(AUTH_CTX_KEY);
+      var ts = parseInt(localStorage.getItem(AUTH_CTX_TS_KEY) || '0', 10) || 0;
+      if (raw2 && (Date.now() - ts) < AUTH_CTX_TTL_MS) {
+        var o2 = JSON.parse(raw2);
+        if (!isEmpty(o2)) return o2;
+      }
+    } catch (e) { /* 忽略 */ }
+    return null;
+  }
+
+  function save(o) {
+    try { sessionStorage.setItem(AUTH_CTX_KEY, JSON.stringify(o)); } catch (e) {}
+    try {
+      localStorage.setItem(AUTH_CTX_KEY, JSON.stringify(o));
+      localStorage.setItem(AUTH_CTX_TS_KEY, String(Date.now()));
+    } catch (e) {}
+  }
+
+  function toQuery(o) {
+    var parts = [];
+    for (var i = 0; i < AUTH_CTX_FIELDS.length; i++) {
+      var k = AUTH_CTX_FIELDS[i];
+      if (o[k]) parts.push(k + '=' + encodeURIComponent(o[k]));
+    }
+    return parts.join('&');
+  }
+
+  var fromUrl = pickFromSearch();
+  var ctx;
+  if (!isEmpty(fromUrl)) {
+    ctx = fromUrl;
+    save(ctx);                     // 新的一次登录：立即落盘，覆盖上一轮
+  } else {
+    ctx = readStore() || {};       // 地址栏丢了参数：从存储里捡回来
+    if (!isEmpty(ctx)) {
+      try {
+        var qs = toQuery(ctx);
+        if (qs) history.replaceState(null, '', location.pathname + '?' + qs);
+      } catch (e) { /* 部分 WebView 不支持 replaceState，忽略 */ }
+    }
+  }
+
+  return {
+    get: function (k) { return ctx[k] || ''; },
+    query: function () { return toQuery(ctx); },
+    hasState: function () { return !!ctx.state; }
+  };
+})();
+
+/* 读取回调端口：优先 URL/存储，最后兜底 18765 */
+function getCallbackPort() { return AUTH_CTX.get('callback_port') || '18765'; }
+
+/* 登录握手 state（防 CSRF / 重放），由桌面客户端申请，
+ * 登录/注册时原样回传服务端校验，成功后随回调带回，客户端比对一致性。 */
+var LOGIN_STATE = AUTH_CTX.get('state');
+function getLoginState() { return LOGIN_STATE; }
+
+/* 客户端平台标识与版本（仅展示/透传用途） */
+function getPlatform() { return AUTH_CTX.get('platform'); }
+function getVersion()  { return AUTH_CTX.get('version'); }
+
+/* 《用户协议》链接带上当前握手参数：
+ * 协议页据此知道「从哪来、回哪去」，点「我已阅读并同意」时才能带着
+ * state / callback_port 原样跳回登录页，而不是跳回一个裸的 index.html。 */
+function syncAgreementLink() {
+  try {
+    var a = document.getElementById('lnkAgreement');
+    if (!a) return;
+    var qs = AUTH_CTX.query();
+    a.href = 'agreement.html' + (qs ? '?' + qs : '');
+  } catch (e) { /* 忽略 */ }
 }
 
 /* 计算认证服务的 API 根路径（支持挂载在子路径下，如 /authapp）。
@@ -1306,10 +1421,12 @@ function forgotReset() {
  * ============================================================ */
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', function () {
+    syncAgreementLink();
     applyLang();
     loadAvatarLimits();
   });
 } else {
+  syncAgreementLink();
   applyLang();
   loadAvatarLimits();
 }

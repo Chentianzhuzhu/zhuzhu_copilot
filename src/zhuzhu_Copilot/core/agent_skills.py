@@ -1283,19 +1283,77 @@ def _shipped_skills_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "skills"
 
 
+def _plugin_owned_skills() -> set:
+    """当前由插件提供的技能名集合（插件 = 这些 SKILL.md 的唯一真源）。
+
+    技能目录只是插件 SKILL.md 的投影：插件在（哪怕停用）就不该被启动清理逻辑删掉，
+    否则插件技能会在技能手册/自动匹配里彻底消失。取不到插件索引时返回空集合
+    （宁可不删，也不要误删用户的技能）。"""
+    try:
+        from zhuzhu_Copilot.core import agent_plugins
+        names = set(agent_plugins.plugin_skill_names() or ())
+        names |= {str(p.get("skill_name") or "") for p in agent_plugins.list_plugins()
+                  if p.get("skill_name")}
+        names.discard("")
+        return names
+    except Exception:
+        return set()
+
+
+def _heal_plugin_skills(root) -> None:
+    """插件技能目录缺失时按插件 SKILL.md 补回（自愈）。
+
+    为什么必须自愈：历史版本的启动清理会删掉 `computer-control` 技能目录，而已安装的
+    用户插件版本没变（revision 相同）→ `ensure_shipped_plugins` 不会再登记技能，于是
+    「插件工具都在、技能规范永远缺失」。缺了 SKILL.md，模型拿不到「先截图 / 任务栏优先 /
+    refine_point 挑编号」这些纪律，表现就是乱点坐标、点不准、绕路找窗口。"""
+    owned = _plugin_owned_skills()
+    if not owned:
+        return
+    try:
+        from zhuzhu_Copilot.core import agent_plugins
+        metas = agent_plugins.list_plugins()
+    except Exception:
+        return
+    for meta in metas:
+        sname = str(meta.get("skill_name") or meta.get("name") or "")
+        if not sname or sname not in owned:
+            continue
+        f = root / sname / "SKILL.md"
+        if f.is_file():
+            continue
+        src = agent_plugins.plugin_dir(str(meta.get("name") or sname)) / "SKILL.md"
+        try:
+            if src.is_file():
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(src.read_text(encoding="utf-8", errors="replace"),
+                             encoding="utf-8")
+        except OSError:
+            continue
+
+
 def ensure_md_skills() -> None:
     """确保内置 md 技能存在并同步到最新模板：内置模板（_BUILTIN_MD_SKILLS）+ 随包分发的技能资源。
     内置模板技能启动时与最新模板比对，内容不一致则更新（保证规则/流程改动生效）；
     用户自建技能与随包分发技能仅缺失时生成，不覆盖。"""
     root = _skills_dir()
-    # 2026-08 电脑操控功能移除：清理旧版残留的电脑操控技能目录（computer-control/screen_operate/ui-automation）
+    # 旧版电脑操控技能清理：只清**真正废弃**的 screen_operate / ui-automation。
+    # `computer-control` 绝不能在这里删 —— 它现在由随包插件提供（plugin.json 的
+    # skill_name），每次启动都删掉会让插件技能永远不存在：模型拿不到操控纪律（先截图 /
+    # 任务栏优先 / refine_point 挑编号），只剩工具 schema 硬猜坐标，于是「点击极其不精准」。
+    # 判断依据是「插件是否在提供它」，而不是写死名字 —— 插件被删掉后同名残留仍会被清掉。
+    owned = _plugin_owned_skills()
     for name in ("computer-control", "screen_operate", "ui-automation"):
+        if name in owned:
+            continue
         d = root / name
         try:
             if d.is_dir():
                 shutil.rmtree(d)
         except OSError:
             pass
+    # 插件技能缺失则按插件 SKILL.md 自愈补回（覆盖「旧版本已删过」的存量安装）
+    _heal_plugin_skills(root)
     for name, cfg in _BUILTIN_MD_SKILLS.items():
         f = root / name / "SKILL.md"
         template = f"---\nname: {name}\ndescription: {cfg['description']}\n---\n\n{cfg['instruction'].strip()}\n"
@@ -1999,17 +2057,91 @@ def skills_covering_tools(tool_names) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 桌面 GUI 操控 ↔ 网页操作的消歧词表（引擎任务裁剪与技能匹配共用同一份）
+#
+# 为什么必须集中一份：两处各维护一套词表时，`browser-control` 用「登录 / 点一下 /
+# 帮我打开 / 帮我点」这类**桌面与网页都成立**的泛化词当触发词，于是
+# 「帮我自动化操作这个软件的界面，点击登录按钮」命中浏览器技能 → 系统提示把
+# browser_open/browser_click 摆到最前 → 模型拿浏览器工具去点桌面应用，
+# 表现为「输入控制电脑 GUI 的提示词却调起了浏览器操控」。
+# ---------------------------------------------------------------------------
+# 只在桌面语境成立的强信号（出现即认为要操控桌面 GUI）
+DESKTOP_STRONG_KWS = (
+    "操作电脑", "操控电脑", "控制电脑", "电脑操控", "电脑操作", "操作桌面", "操控桌面",
+    "桌面操作", "桌面自动化", "桌面自动", "模拟点击", "模拟键鼠", "模拟操作",
+    "键鼠操作", "鼠标操作", "用鼠标", "用键盘", "自动化操作", "自动化控制",
+    "自动操作", "自动点击", "自动输入", "自动完成", "看屏幕", "看桌面", "截图看看",
+    "任务栏", "桌面图标", "开始菜单", "屏幕上的", "屏幕上点", "屏幕上帮我",
+    "界面上点", "在界面上", "在界面里", "界面里点", "操作窗口", "切换窗口",
+    "打开软件", "打开应用", "软件界面", "应用界面", "程序界面", "这个软件", "该软件",
+    "打开微信", "打开qq", "打开 qq", "给好友发消息", "自动化完成",
+)
+# 只在网页/浏览器语境成立的强信号（出现即认为要操作网页）
+WEB_STRONG_KWS = (
+    "网页", "网站", "浏览器", "页面", "网址", "链接", "表单", "在线",
+    "http://", "https://", "www.", ".com", ".cn",
+)
+# 需要按「ASCII 词边界」判定的桌面信号（"gui" 不能命中 guide/guidance，"rpa" 同理）
+DESKTOP_STRONG_ASCII = ("gui", "rpa")
+# 「写脚本/写代码」类提示词不是操控任务：命中这些词且没有明确的操控动词时，
+# 不判为桌面操控（否则「帮我写个自动点击脚本」会白带一整套操控工具与技能规范）
+CODE_HINT_KWS = ("脚本", "代码", "编写", "python", "函数", "程序", "自动化测试")
+# 明确的操控动词：与代码线索同时出现时仍判为桌面操控
+GUI_VERB_KWS = ("操作电脑", "操控", "控制电脑", "帮我操作", "帮我点", "帮我点击",
+                "打开软件", "打开应用", "切到", "切换到")
+
+
+def _has_ascii_word(t: str, word: str) -> bool:
+    """ASCII 词边界匹配（"gui" 命中 "用 gui 控制"，但不命中 "guide"）。"""
+    return re.search(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", t) is not None
+
+
+def gui_automation_intent(text: str) -> bool:
+    """输入是否明确表达「操控桌面 GUI」意图（用于技能匹配与任务裁剪的消歧）。"""
+    t = (text or "").lower()
+    if not t:
+        return False
+    hit = any(k in t for k in DESKTOP_STRONG_KWS) or \
+        any(_has_ascii_word(t, k) for k in DESKTOP_STRONG_ASCII)
+    if not hit:
+        return False
+    # 写脚本/写代码类提示词：没有明确操控动词时不算操控任务
+    if any(k in t for k in CODE_HINT_KWS) and not any(k in t for k in GUI_VERB_KWS):
+        return False
+    return True
+
+
+def web_intent(text: str) -> bool:
+    """输入是否明确表达「操作网页」意图（浏览器内的元素级自动化）。"""
+    t = (text or "").lower()
+    return bool(t) and any(k in t for k in WEB_STRONG_KWS)
+
+
 # 按用户自然语言提示词自动匹配技能的触发词（命中即注入该技能流程）
-# 电脑操控类技能（computer-control/ui-automation/screen_operate）已移除（2026-08），
-# 网页类触发词统一归 browser-control。
+# 触发词只用**该领域专属**的措辞：泛化词（登录 / 点一下 / 帮我点 / 帮我打开）
+# 桌面与网页都成立，放进任一技能都会把另一边的任务抢过来（见上面的消歧说明）。
 _SKILL_KEYWORDS = {
     "doc-gen": ["ppt", "pptx", "powerpoint", "演示文稿", "word", "docx", "文档",
                 "excel", "xlsx", "表格", "报告", "简历", "计划书", "感言", "总结",
                 "方案", "毕业论文", "宣传单", "邀请函", "收款记录", "清单"],
+    "computer-control": ["操作电脑", "操控电脑", "控制电脑", "电脑操控", "电脑操作",
+                         "操作桌面", "操控桌面", "桌面操作", "桌面自动化", "桌面自动",
+                         "gui", "rpa", "模拟点击", "模拟键鼠", "模拟操作", "键鼠操作",
+                         "鼠标操作", "用鼠标", "用键盘", "自动化操作", "自动化控制",
+                         "自动操作", "自动点击", "自动输入", "看屏幕", "看桌面",
+                         "截图看看", "任务栏", "桌面图标", "开始菜单", "屏幕上的",
+                         "界面上点", "在界面上", "在界面里", "操作窗口", "切换窗口",
+                         "打开软件", "打开应用", "软件界面", "应用界面", "程序界面",
+                         "这个软件", "该软件", "自动化完成",
+                         "帮我点一下", "点这个按钮", "点那个按钮", "点击这个按钮",
+                         "这个按钮", "那个按钮", "记事本", "计算器", "发消息",
+                         "给好友发", "打开微信", "打开qq", "打开 qq"],
     "browser-control": ["浏览器", "打开网页", "打开网站", "浏览网页", "网页操作",
                         "刷视频", "看视频", "刷网页", "网页抓取", "抓取网页", "自动操作网页",
-                        "上网站", "进网站", "网页登录", "网页填表", "打开浏览器",
-                        "帮我打开", "打卡", "登录", "点赞", "点视频", "点一下", "帮我点"],
+                        "网页自动化", "上网站", "进网站", "网页登录", "网页填表",
+                        "打开浏览器", "网页上", "页面上", "网页里", "页面里",
+                        "网页上帮我点", "页面上帮我点", "打卡", "点赞", "点视频"],
     "web-search": ["搜索", "查询", "新闻", "最新", "实时", "查一下", "网页", "联网"],
     "file-ops": ["读取文件", "创建文件", "删除文件", "查找文件", "修改文件", "重命名文件", "整理文件"],
     "cmd-ops": ["命令行", "终端", "安装软件", "运行程序", "pip 安装", "下载文件", "执行命令"],
@@ -2035,16 +2167,63 @@ _SKILL_KEYWORDS = {
 }
 
 
+# 需要按 ASCII 词边界匹配的触发词：纯子串匹配会把 "guide"/"guidance" 当成 "gui"，
+# 让无关任务命中 computer-control。其余中文/混合词照旧走子串匹配。
+_ASCII_STRICT_KWS = frozenset({"gui", "rpa"})
+
+
+def _kw_hit(t: str, k: str) -> bool:
+    """单个触发词是否命中（ASCII 专有词按词边界，避免 guide→gui 这类误命中）。"""
+    if k in _ASCII_STRICT_KWS:
+        return _has_ascii_word(t, k)
+    return k in t
+
+
 def auto_skill_names(text: str) -> list:
     """根据用户自然语言提示词匹配命中的技能名（按触发词命中，返回技能名列表）。
     用于任务开始时把命中技能的规范流程注入系统提示词，让 AI 先走 skill 再动手。
-    技能能力关闭时返回空。"""
+    技能能力关闭时返回空。
+
+    桌面操控与浏览器自动化**互斥**：两者都命中时按强信号裁决，绝不让浏览器技能
+    抢走 GUI 操控任务（那会让模型拿 browser_click 去点桌面应用）。"""
     if not cap_enabled("skill"):
         return []
     t = (text or "").lower()
     if not t:
         return []
-    return [name for name, kws in _SKILL_KEYWORDS.items() if any(k in t for k in kws)]
+    names = [name for name, kws in _SKILL_KEYWORDS.items()
+             if any(_kw_hit(t, k) for k in kws)]
+    return _resolve_gui_web_conflict(t, names)
+
+
+def _resolve_gui_web_conflict(t: str, names: list) -> list:
+    """桌面操控技能与浏览器技能同时命中时的裁决（原地返回新列表）。
+
+    规则（顺序即优先级）：
+    1. 明确桌面信号 + 无网页信号 → 去掉 browser-control（GUI 操控任务）；
+    2. 明确网页信号 + 无桌面信号 → 去掉 computer-control（网页任务）；
+    3. 两者都有 → 保留两者（如「在浏览器里操作网页」，模型按技能规范自行分工）；
+    4. 都没有 → 泛化词同时命中，桌面优先（用户说「点一下」时更可能指桌面图标，
+       而纯网页任务几乎一定会带「网页/网站/浏览器」）。
+    """
+    if "computer-control" not in names and "browser-control" not in names:
+        return names
+    # 写脚本/写代码类任务不是操控任务：「帮我写个自动点击脚本」只该匹配到编码流程，
+    # 不该把整套操控纪律（先截图 / 任务栏 / refine_point）灌进上下文。
+    if ("computer-control" in names and not gui_automation_intent(t)
+            and any(k in t for k in CODE_HINT_KWS)
+            and not any(k in t for k in GUI_VERB_KWS)):
+        names = [n for n in names if n != "computer-control"]
+        if "browser-control" not in names:
+            return names
+    gui, web = gui_automation_intent(t), web_intent(t)
+    if gui and not web:
+        return [n for n in names if n != "browser-control"]
+    if web and not gui:
+        return [n for n in names if n != "computer-control"]
+    if not gui and not web:
+        return [n for n in names if n != "browser-control"]
+    return names
 
 
 # 子 Agent 技能名（其 instruction 通篇教怎么派发子 Agent）

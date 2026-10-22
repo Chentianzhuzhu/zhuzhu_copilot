@@ -22,3 +22,10 @@
 ## 用户偏好
 - 用户以中文沟通，交付物用中文。
 - 部署类任务倾向"直接做"（Agent 模式），仅网络暴露范围等安全/架构关键分叉需要确认。
+
+## zhuzhu Copilot 客户端（本仓库）约定
+- **技能真源 = 插件 SKILL.md**：`~/.zhuzhu_Copilot/agent/skills/<名>/SKILL.md` 只是插件 SKILL.md 的投影。`ensure_md_skills()` 里任何"清理旧技能"的名单都不得包含插件正在提供的名字（`computer-control` 曾因 2026-08 的遗留清理被每次启动 rmtree，导致模型拿不到操控纪律、乱猜坐标）。
+- **插件目录下不要放备份/临时目录**：`list_plugins()` 会把 `plugins/` 下任何含 plugin.json 的子目录当成插件，同名会顶掉真插件（备份请放 `~/.zhuzhu_Copilot/backups/`）。
+- **改插件要 bump `plugin.json` 的 `revision`**：`ensure_shipped_plugins()` 只在随包 revision 更大时才同步到用户目录并重登记 MCP/技能，否则改了 src 也不生效。改完 server.py 需重启 App（MCP 进程常驻）。
+- **任务路由双份表**：`agent_engine._TASK_GROUPS`（工具裁剪）+ `agent_skills._SKILL_KEYWORDS`（技能注入）。桌面/网页消歧词表统一在 agent_skills（`DESKTOP_STRONG_KWS`/`WEB_STRONG_KWS`/`gui_automation_intent`），两边都引用同一份，别再各写一套。
+- **`pytest.ini` 带 BOM 会导致 pytest 启动报错**：临时跑测试用 `-c <临时ini>` + `PYTHONPATH=src`。`tests/test_prompt_i18n.py` 与 `tests/test_agent_plugin_context.py` 有 4 个改动前就失败的用例（`efficient_mode` 属性缺失）。

@@ -303,22 +303,25 @@ _EFFICIENT_TOOLS = frozenset({
 _TASK_GROUPS = [
     # 触发词只用**桌面专属**措辞，绝不收「点一下 / 双击 / 窗口」这类泛化词：
     # 它们同样出现在网页语境里，混进来会让纯网页任务平白多带一整套操控工具。
-    # 泛化的点选措辞由 _desktop_intent() 单独判定（那里有桌面/网页的消歧逻辑）。
+    # 泛化的点选措辞由 _desktop_intent() 单独判定（那里有桌面/网页的消歧逻辑），
+    # GUI 自动化类措辞（GUI/RPA/自动化操作/控制电脑…）由 agent_skills 的共享词表覆盖。
     ("desktop",
      ("操作电脑", "操控电脑", "操控桌面", "操作桌面", "电脑操作", "桌面操作",
       "帮我操作", "帮我操控", "用鼠标", "用界面", "看屏幕", "看桌面", "截图看看",
       "打开软件", "安装界面", "设置界面", "操作窗口", "切换窗口",
-      "在屏幕上", "屏幕上点", "界面上点", "在界面上", "在界面里"),
+      "在屏幕上", "屏幕上点", "界面上点", "在界面上", "在界面里",
+      "自动化操作", "自动化控制", "桌面自动化", "模拟点击", "键鼠"),
      frozenset({"screen_info", "screen_shot", "virtual_desktop",
                 "find_app", "ask_user", "update_todo"})),
     # 「帮我点 / 帮我打开」是**网页**动作（点链接、点页面上的东西）。
     # 桌面语境下的「帮我点一下屏幕…」「帮我点这个窗口…」由 _desktop_intent()
     # 判定为 desktop；此处用「网页/页面」限定词把两类彻底分开，避免 browser
     # 抢走桌面点选指令、误暴露整套浏览器工具而不暴露操控所需的截图工具。
+    # 「登录」不是网页专属（桌面应用的登录界面极常见），必须带「网页」限定才归 browser。
     ("browser",
      ("打开浏览器", "打开网页", "打开网站", "浏览网页", "网页操作", "网页",
-      "登录", "点赞", "点视频", "看视频", "刷视频", "刷网页", "抓取网页",
-      "上网站", "进网站", "填表", "打卡", "网页上点", "页面上点",
+      "网页登录", "点赞", "点视频", "看视频", "刷视频", "刷网页", "抓取网页",
+      "上网站", "进网站", "网页填表", "打卡", "网页上点", "页面上点",
       "网页上帮我点", "页面上帮我点", "帮我打开网页", "帮我打开网站"),
      frozenset({"browser_open", "browser_navigate", "browser_snapshot", "browser_click",
                 "browser_type", "browser_scroll", "browser_eval", "browser_html",
@@ -419,21 +422,27 @@ _DESKTOP_POINT_KWS = ("点一下", "点这个", "点那个", "点它", "双击",
                       "点击", "按一下", "点一下", "这个按钮", "那个按钮")
 _DESKTOP_OBJECT_KWS = ("屏幕", "桌面", "窗口", "界面", "按钮", "图标", "菜单",
                        "对话框", "弹窗", "程序", "软件", "记事本", "计算器")
-_WEB_HINT_KWS = ("网页", "网站", "浏览器", "页面", "网址", "链接", "网页上",
-                 "页面上", "网站里", "网页里", "登录", "表单")
+# 网页线索与桌面强信号统一由 agent_skills 提供（同一份词表，避免两处判定不一致）。
+# 「登录」曾在这里，但它不是网页专属（桌面应用的登录界面极常见）——
+# 「帮我自动化完成这个软件的登录流程」因此被判成网页任务，误调浏览器工具。
+_WEB_HINT_KWS = agent_skills.WEB_STRONG_KWS
 
 
 def _desktop_intent(t: str) -> bool:
     """输入是否表达「操控桌面界面」意图（与网页操作消歧）。
 
     规则（顺序即优先级）：
-    1. 出现网页线索 → 网页任务，桌面点选措辞让位（"帮我点一下网页上的链接"）。
-    2. 出现桌面对象词（屏幕/窗口/按钮/图标…）→ 桌面任务，"点一下"归桌面。
-    3. 否则只看 desktop 组自己的专属触发词（操作电脑/看屏幕…），
-       不靠泛化点选词硬猜—— 猜错会让纯聊天/写代码任务白带一整套操控工具。
+    1. 明确的桌面 GUI 自动化信号（GUI/RPA/控制电脑/自动化操作/模拟点击/任务栏…）
+       且没有网页线索 → 桌面任务。**必须放在最前**：这类措辞是「操控电脑」的
+       最直接表达，不能被「登录」一类的泛化词让位给浏览器。
+    2. 出现网页线索 → 网页任务，桌面点选措辞让位（"帮我点一下网页上的链接"）。
+    3. 泛化点选词 + 桌面对象词 → 桌面任务。
+    4. 否则不算桌面任务 —— 猜错会让纯聊天/写代码任务白带一整套操控工具。
     """
     if not t:
         return False
+    if agent_skills.gui_automation_intent(t) and not agent_skills.web_intent(t):
+        return True
     if any(k in t for k in _WEB_HINT_KWS):
         return False
     if any(k in t for k in _DESKTOP_POINT_KWS) and any(k in t for k in _DESKTOP_OBJECT_KWS):
@@ -447,8 +456,14 @@ def _detect_task_groups(text: str):
     if not t:
         return None
     hit = [g for g, kws, _tools in _TASK_GROUPS if any(k in t for k in kws)]
-    if _desktop_intent(t) and "desktop" not in hit:
+    gui = agent_skills.gui_automation_intent(t)
+    web = agent_skills.web_intent(t)
+    if (gui or _desktop_intent(t)) and "desktop" not in hit:
         hit.append("desktop")
+    # 桌面 GUI 操控任务不得带出浏览器工具：两者同时命中且没有网页线索时，
+    # 浏览器工具会让模型拿 browser_click 去点桌面应用（本插件按坐标点，浏览器按 DOM 点）。
+    if "desktop" in hit and "browser" in hit and not web:
+        hit.remove("browser")
     return hit or None
 
 # 对话上下文持久化路径

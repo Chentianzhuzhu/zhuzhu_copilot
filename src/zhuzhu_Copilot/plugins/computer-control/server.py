@@ -26,6 +26,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -3515,6 +3516,68 @@ def _wait_app_window(keys: tuple, timeout: float = 12.0,
     return 0, "", ""
 
 
+_PROC_CACHE = {"ts": 0.0, "stems": []}
+
+
+def _process_stems() -> list:
+    """当前进程名（去扩展名）快照，带 5s 缓存。
+
+    `tasklist` 实测 1.4~1.7s（要拉起一个控制台程序），open_app 里若模型连着调几次
+    就会白等好几秒；进程列表 5 秒内的变化对本用途无影响，故做短 TTL 缓存。
+    """
+    now = time.time()
+    if _PROC_CACHE["stems"] and now - _PROC_CACHE["ts"] < 5.0:
+        return _PROC_CACHE["stems"]
+    stems = []
+    try:
+        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
+                             capture_output=True, timeout=10,
+                             creationflags=0x08000000).stdout
+        for line in out.decode("gbk", "replace").splitlines():
+            cells = [c.strip().strip('"') for c in line.split('","')]
+            if cells and cells[0]:
+                stems.append(os.path.splitext(cells[0])[0])
+    except Exception:
+        return []
+    _PROC_CACHE.update({"ts": now, "stems": stems})
+    return stems
+
+
+def _process_running(keys: tuple) -> str:
+    """应用进程是否在运行：命中返回进程名（未运行返回空串）。
+
+    为什么必须查进程：**最小化到托盘的应用没有可见窗口**，`list_windows` 看不到它。
+    此时若直接启动，会开出第二个实例（微信/QQ 会弹「已在运行」、甚至两个进程抢登录态）。
+    查到进程在跑就先去找托盘/后台面板里的图标，把它唤回来。
+    查不到 tasklist（异常/超时）返回空串 —— 退回「按没运行处理」，与旧行为一致。
+    """
+    for stem in _process_stems():
+        if _app_score(keys, stem) >= FUZZY_MIN_SCORE:
+            return stem
+    return ""
+
+
+def _taskbar_pick_hint(name: str, lead: str, where: str = "taskbar") -> list:
+    """返回「任务栏/后台面板编号图 + 一步点开指引」（open_app 唤不回窗口时的兜底）。
+
+    为什么不是自动点：任务栏图标是 explorer 自绘的，插件拿不到「这个图标是哪个应用」
+    —— 编号图交给模型认图标（认图是它擅长的），点哪个由它挑编号，
+    坐标仍由几何算法给出。这比盲目 SetForegroundWindow 成功率高得多。
+    """
+    out = tool_taskbar_open({"where": where, "name": name})
+    text = (f"{lead}\n"
+            f"请从下图**认出「{name}」的图标**（带「已启动」指示条的就是它）→ 直接 "
+            f"open_app(name=\"{name}\", index=编号) 一步点开（会自动校验前台窗口是否切过去）。"
+            if where == "taskbar" else
+            f"{lead}\n"
+            f"请从下图**认出「{name}」的图标** → open_app(name=\"{name}\", index=编号, "
+            f"where=\"panel\") 一步点开。")
+    if isinstance(out, list) and out and out[0].get("type") == "text":
+        out[0]["text"] = text + "\n\n" + str(out[0].get("text") or "")
+        return out
+    return [{"type": "text", "text": text + "\n\n" + str(out)}]
+
+
 # ---- 虚拟桌面容器 ----
 def switch_virtual_desktop(action: str) -> str:
     """Windows 虚拟桌面：new=新建并切入；back/prev=回到上一个；next=下一个。"""
@@ -3623,6 +3686,8 @@ _STATE = {
     "foreground": {"hwnd": 0, "title": ""},
     "web_port": 0,
     "aura": False,             # 屏幕边缘彩色光环是否点亮
+    # 最近一次 refine_point 的候选清单（点击可直接按编号取用，见 _resolve_cand）
+    "cands": {"ts": 0.0, "items": []},
 }
 _LOG: list = []
 _LOG_LOCK = threading.Lock()
@@ -3697,12 +3762,18 @@ def _interrupted() -> bool:
 
 
 # ---- 视觉基准：AI 所见图 ↔ 屏幕物理坐标 ----
-_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0}
+_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0, "ts": 0.0}
+
+# 截图基准的有效期（秒）：坐标点击必须建立在**刚看过的画面**上。
+# 界面是活的（窗口会移动、列表会滚动、弹窗会冒出来），拿几分钟前的截图算出来的
+# 坐标点下去，落在哪儿只有天知道 —— 这正是「点击极其不精准」最常见的一类原因，
+# 而且模型自己完全察觉不到（它会以为「我明明看过图」）。过期就要求重新截图。
+SHOT_MAX_AGE_S = 300.0
 
 
 def _set_view(x0, y0, w, h, img_w, img_h, kind: str, target_hwnd: int = 0):
     _VIEW.update({"x0": float(x0), "y0": float(y0), "w": float(w), "h": float(h),
-                  "img_w": float(img_w), "img_h": float(img_h)})
+                  "img_w": float(img_w), "img_h": float(img_h), "ts": time.time()})
     _STATE["view"] = kind
     # 记住「这张截图是哪个窗口的」：坐标点击前据此把目标窗口提到最前，
     # 避免「照着截图点」却点到盖在上面的别的窗口（见 _ensure_click_target）。
@@ -3854,6 +3925,65 @@ def to_physical(x, y) -> tuple:
             int(round(_VIEW["y0"] + y * _VIEW.get("h", 0.0) / ih)))
 
 
+def _require_fresh_shot(what: str = "点击") -> None:
+    """坐标动作的前置门槛：必须先有一张**新鲜**截图作为视觉基准。
+
+    为什么做成硬门槛而不是提示：模型不会主动承认「我在猜」。没有基准时
+    `to_physical` 会把图像坐标当物理坐标原样透传（缩放屏上整体偏移），
+    基准过期时坐标对应的界面早已变了 —— 两种情况的落点都不可预期，
+    却都会被模型当成「点过了」。宁可拒绝执行并告诉它先 screen_shot。
+    """
+    if _VIEW.get("img_w", 0.0) > 0:
+        ts = float(_VIEW.get("ts") or 0.0)
+        age = (time.time() - ts) if ts > 0 else 0.0   # 无时间戳=外部注入的基准，按新鲜处理
+        if age <= SHOT_MAX_AGE_S:
+            return
+        raise ValueError(
+            f"已拒绝{what}：当前截图基准是 {age:.0f}s 前的（有效期 {SHOT_MAX_AGE_S:.0f}s），"
+            f"界面很可能已经变了。请先 screen_shot 重新看一眼（只看目标窗口用 "
+            f"screen_shot(mode=\"window\")），再按新图上的坐标操作。"
+            f"如果你手里是**屏幕物理坐标**（例如 list_windows 给的窗口位置），"
+            f"传 space=\"screen\" 可直接使用。")
+    raise ValueError(
+        f"已拒绝{what}：还没有任何截图基准 —— 坐标无从换算，点下去只能靠猜。\n"
+        f"请按顺序：① screen_shot(mode=\"full\") 或 screen_shot(mode=\"window\", title=…) 先看图；"
+        f"② 小目标先 zoom_in 放大读数；③ 拿不准就 refine_point 挑候选编号；④ 再 click。\n"
+        f"（若你手里是屏幕物理坐标，传 space=\"screen\" 可直接点击。）")
+
+
+def _resolve_cand(args: dict):
+    """解析「按 refine_point 候选编号点击」的入参，返回 (x, y, note) 或 None。
+
+    为什么需要它：`refine_point` 已经把候选**框好并编了号**，但此前模型必须把编号对应的
+    x/y **手抄**进 click —— 抄错一位就是点偏，而且完全没有反馈。这里让模型直接传
+    `cand=3`：坐标由几何算法给出（候选框中心，精确到像素），模型只负责「认编号」，
+    把「算坐标」这件它不擅长的事彻底交还给插件。
+    """
+    idx = 0
+    for k in ("cand", "candidate", "ref", "编号"):
+        if args.get(k) not in (None, ""):
+            idx = _num(args.get(k), 0)
+            break
+    if idx <= 0:
+        return None
+    box = _STATE.get("cands") or {}
+    items = box.get("items") or []
+    if not items:
+        raise ValueError("没有可用的候选编号：cand 只能配合 refine_point 使用。"
+                         "请先 refine_point(x=…, y=…) 让它把这一片的候选编号列出来，"
+                         "再用 click(cand=编号) 点。")
+    if time.time() - float(box.get("ts") or 0) > SHOT_MAX_AGE_S:
+        raise ValueError("候选清单已过期（超过有效期），界面可能已变。"
+                         "请重新 refine_point 后再按编号点。")
+    hit = next((c for c in items if int(c.get("i", 0)) == idx), None)
+    if not hit:
+        nums = "、".join(str(c.get("i")) for c in items)
+        raise ValueError(f"没有编号 {idx} 的候选（本次只有 {nums}）。请用现有编号重试。")
+    return (int(hit["x"]), int(hit["y"]),
+            f"按 refine_point 候选 #{idx}（{hit.get('kind', '目标')}，"
+            f"{hit.get('w', 0)}×{hit.get('h', 0)}px）的几何中心定位，坐标由插件算出。")
+
+
 def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
     """解析工具入参里的坐标 → 屏幕物理坐标。
 
@@ -3863,11 +3993,16 @@ def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
     没有这个开关时，模型只能靠「再截一张图」来对齐基准，而那张新图又会让基准
     变成别的窗口/区域，来回打转。
 
+    前置门槛（见 _require_fresh_shot）：没有新鲜截图基准时**拒绝**换算，
+    逼模型先看图 —— 这是「先截屏再点」的硬保证，而不是靠提示词祈祷它照做。
+    space="screen" 是明确的物理坐标，不需要截图基准，直接放行。
+
     kx/ky 用于取不同键名（drag 用 x1/y1、x2/y2）。
     """
     if str(args.get("space") or "image").strip().lower() in (
             "screen", "physical", "abs", "absolute", "物理", "绝对"):
         return _num(args.get(kx)), _num(args.get(ky))
+    _require_fresh_shot()
     return to_physical(args.get(kx), args.get(ky))
 
 
@@ -4291,9 +4426,11 @@ def _cand_menu_lines(cands: list, sx: int, sy: int) -> list:
         lines.append(f"  {c['i']}. {c['kind']}  中心({c['x']},{c['y']})  "
                      f"尺寸 {c['w']}×{c['h']}  距估计点 {c['d']:.0f}px{sel}")
     lines.append("怎么用：在图上按编号确认哪个才是你要点的目标，然后")
-    lines.append("  ① 直接点：click(x=上表「中心」的 x, y=它的 y, space=\"screen\", snap=false)")
-    lines.append("  ② 或改选：refine_point(x=原估计x, y=原估计y, pick=N, space=\"screen\")")
-    lines.append("**务必带 snap=false**：否则 click 会再吸附一次，可能又挪到隔壁那个去。")
+    lines.append("  ① **最稳**：click(cand=编号) —— 坐标由插件按该候选的几何中心算出，"
+                 "你只要认编号，不用抄数字（默认不再二次吸附，点到的就是框心）")
+    lines.append("  ② 也可以：click(x=上表「中心」的 x, y=它的 y, space=\"screen\", snap=false)")
+    lines.append("  ③ 或改选：refine_point(x=原估计x, y=原估计y, pick=N, space=\"screen\")")
+    lines.append("用 ② 时**务必带 snap=false**：否则 click 会再吸附一次，可能又挪到隔壁那个去。")
     return lines
 
 
@@ -4318,6 +4455,8 @@ def tool_refine_point(args: dict) -> list:
     reach = _num(args.get("reach"), SNAP_REACH_DEFAULT)
     cands = []
     sx, sy, note, ruler = _snap_core(x, y, reach, cands=cands)
+    # 候选清单落库：后续 click(cand=N) 直接按编号取几何中心，模型不必手抄坐标。
+    _STATE["cands"] = {"ts": time.time(), "items": [dict(c) for c in cands]}
     pick = _num(args.get("pick"), 0)
     if pick:
         chosen = next((c for c in cands if c["i"] == pick), None)
@@ -4436,8 +4575,17 @@ def tool_click(args: dict) -> str:
     reason = _guard("click")
     if reason:
         return reason
-    x, y = _resolve_point(args)
-    x, y, snap_note = _apply_snap(args, x, y)
+    cand = _resolve_cand(args)
+    if cand:
+        # 候选中心由几何算法给出（精确到像素），**不再二次吸附**：
+        # 再吸附一次可能挪到隔壁候选上，那正是 refine_point 要消灭的问题。
+        x, y, snap_note = cand
+    else:
+        if args.get("x") in (None, "") or args.get("y") in (None, ""):
+            raise ValueError("click 需要坐标：传 x/y（截图基准）或 cand=编号"
+                             "（编号来自 refine_point）。两者都没给，无法定位目标。")
+        x, y = _resolve_point(args)
+        x, y, snap_note = _apply_snap(args, x, y)
     button = str(args.get("button") or "left").strip().lower()
     clicks = max(1, min(_num(args.get("clicks"), 1), 3))
     if action == "right":
@@ -4488,8 +4636,14 @@ def tool_long_press(args: dict) -> str:
     reason = _guard("long_press")
     if reason:
         return reason
-    x, y = _resolve_point(args)
-    x, y, snap_note = _apply_snap(args, x, y)
+    cand = _resolve_cand(args)
+    if cand:
+        x, y, snap_note = cand
+    else:
+        if args.get("x") in (None, "") or args.get("y") in (None, ""):
+            raise ValueError("long_press 需要坐标：传 x/y（截图基准）或 cand=编号。")
+        x, y = _resolve_point(args)
+        x, y, snap_note = _apply_snap(args, x, y)
     dur = max(0.2, float(_num(args.get("duration"), int(DEFAULT_LONG_PRESS_S * 1000)) / 1000.0))
     pre = _ensure_click_target(x, y, args)
     ok = do_long_press(x, y, dur, mode=_input_mode(args))
@@ -4837,13 +4991,23 @@ def _hit_check(hwnd: int, x: int, y: int) -> str:
 # ============================================================================
 # 窗口 / 应用管理工具
 # ============================================================================
-def tool_open_app(args: dict) -> str:
-    """打开 / 切到某个应用：**一次调用**完成「找到它 → 没运行就启动 → 等窗口 → 恢复最小化 → 置顶 → 校验」。
+def tool_open_app(args: dict):
+    """打开 / 切到某个应用：**任务栏 / 托盘优先**，其次启动。
 
     用户说「打开微信」「切到 XX」「XX 在后台/最小化了」时**先调这个**，不要用
     list_windows 反复找窗口 —— 那正是把「打开微信发个消息」拖成几十次工具调用、
     甚至绕不出来的原因。返回值里直接给出 hwnd 与就绪状态，后续 screen_shot(mode="window",
     hwnd=…) / click_window 直接用这个 hwnd 即可。
+
+    三级优先级（按用户要求：任务栏前台 → 后台托盘 → 启动新实例）：
+      1. 已有可见窗口 → 直接切前台并**实测校验**（最小化的先恢复）；
+         置前被系统拒绝时，回一张任务栏编号图，让模型用 index=编号 一步点过去；
+      2. 没有可见窗口但**进程在跑**（典型：最小化到托盘）→ 不启动第二个实例，
+         回任务栏 + 「↑」后台面板的编号图，让模型认出图标后 open_app(index=N) 点开；
+      3. 确实没在运行 → 启动 + 等窗口 + 恢复 + 置前 + 校验。
+
+    index=N 是「按编号点任务栏/面板里的图标」，是切到已运行应用最快也最稳的一步
+    （where="panel" 时点「↑」面板里的编号）。
 
     name 用用户的原话（中文口语名也行，如「微信」「记事本」）；插件自己按
     开始菜单 + 注册表 App Paths 建的索引做模糊匹配。
@@ -4857,6 +5021,18 @@ def tool_open_app(args: dict) -> str:
     keys = _app_keys(name)
     tmo = max(2.0, _num(args.get("timeout"), 15000) / 1000.0)
     steps = []
+    where = str(args.get("where") or "taskbar").strip().lower()
+    index = _num(args.get("index"), 0)
+
+    # ① 按编号点任务栏/后台面板里的图标（一步切到已运行的应用）
+    if index > 0:
+        out = tool_taskbar_open({"index": index, "where": where, "name": name})
+        head = (f"open_app：按编号点「{'↑ 后台面板' if where != 'taskbar' else '任务栏'}」"
+                f"第 {index} 个图标（切到已运行应用的最短路径）。\n")
+        if isinstance(out, list) and out and out[0].get("type") == "text":
+            out[0]["text"] = head + str(out[0].get("text") or "")
+            return out
+        return head + str(out)
 
     hwnd, title, how = _find_app_window(keys)
     if hwnd:
@@ -4870,6 +5046,17 @@ def tool_open_app(args: dict) -> str:
                 f"已安装应用里名字最接近的是：{cand}\n"
                 f"请从这些**真实名字**里挑一个重试；若列表里确实没有，说明它没装，"
                 f"请先安装，或用文件工具找到它的可执行文件路径后让用户确认。")
+        # ② 没窗口但进程在跑 → 多半最小化到了托盘：先去找图标，别再开一个实例
+        proc = _process_running(keys)
+        if proc and not _bool(args.get("launch"), False):
+            _log("ai", f"open_app：{name} 进程 {proc} 在跑但无可见窗口 → 转托盘面板查找")
+            return _taskbar_pick_hint(
+                name,
+                f"「{name}」**进程在运行（{proc}）但没有可见窗口** —— 典型情况是"
+                f"最小化到了**系统托盘/后台面板**。此时**不要启动第二个实例**"
+                f"（会开出重复窗口、甚至抢登录态）。先看下面的任务栏编号图；"
+                f"图标不在任务栏可见区就再用 where=\"panel\" 看「↑」后台面板。",
+                where="taskbar")
         before = {w["hwnd"] for w in list_windows()}
         _log("ai", f"启动应用「{res['display']}」← {res['target']}")
         launch_app(res["target"])
@@ -4906,13 +5093,17 @@ def tool_open_app(args: dict) -> str:
             f"{'已在前台' if ok else '⚠ 不在前台'}")
     body = "\n".join(f"  · {s}" for s in steps)
     if not ok:
-        head += ("\n（系统拒绝了置顶，后续坐标点击有落到别的窗口上的风险 —— 先用 "
-                 "taskbar_open(index=N) 点一下它的任务栏图标（通常一步就能切过去），"
-                 "还不行再请用户手动切一下。）")
+        # 置前失败：不再让模型反复 open_app/manage_window 试置顶，直接给任务栏编号图。
+        return _taskbar_pick_hint(
+            name,
+            f"「{title or name}」窗口已找到（hwnd={hwnd}），但**系统拒绝了前台切换**"
+            f"（通常是被别的窗口/锁屏/UAC 挡住，或有前台锁）。{note or ''}\n"
+            f"此时坐标点击有落到别的窗口上的风险 —— 点一下它的任务栏图标通常一步就切过去：",
+            where="taskbar")
     return (f"{head}\n{body}\n"
             f"下一步：用 screen_shot(mode=\"window\", hwnd={hwnd}) 建立坐标基准，"
-            f"再用 zoom_in 放大细看、click 按坐标点击 —— **不要**再重复 list_windows 找窗口，"
-            f"也**不要**再调 open_app/manage_window 反复置顶。")
+            f"再用 zoom_in 放大细看、refine_point 挑编号、click 按编号或坐标点击 —— "
+            f"**不要**再重复 list_windows 找窗口，也**不要**再调 open_app/manage_window 反复置顶。")
 
 
 def tool_manage_window(args: dict) -> str:
@@ -5066,13 +5257,17 @@ TOOLS = [
         "click=单击（默认）/double=双击/right=右键/long_press=长按（可呼出上下文菜单）/"
         "drag=拖拽（起点 x,y → 终点 x2,y2，移动文件、拖滑块、拖窗口）/swipe=快速滑动（滚列表、翻页）/"
         "select=拖选文本或区域（随后可用 copy）。"
+        "**必须先 screen_shot 建立截图基准**（无基准或基准超过 5 分钟会直接拒绝执行）；"
+        "**密排界面先 refine_point 再 click(cand=编号)** —— 坐标由插件按候选框中心算出，"
+        "比照抄数字稳得多。"
         "**默认会自动做元素吸附**：把坐标修正到附近那个控件的几何中心（纯像素连通域判定，"
         "不依赖控件树，对 Blender 等自绘界面同样有效），返回值里会说明有没有吸附、位移多少。"
         "想点一个精确像素（如三维视口里的某点）传 snap=false。"
         "拖拽与滑动动作顺带支持 duration（毫秒）与 input=touch。",
      "inputSchema": {"type": "object", "properties": {
-         "x": {"type": "integer", "description": "x 坐标（截图基准）；action=drag/swipe/select 时为起点"},
-         "y": {"type": "integer", "description": "y 坐标（截图基准）；action=drag/swipe/select 时为起点"},
+         "x": {"type": "integer", "description": "x 坐标（截图基准）；action=drag/swipe/select 时为起点；用 cand 时可省略"},
+         "y": {"type": "integer", "description": "y 坐标（截图基准）；action=drag/swipe/select 时为起点；用 cand 时可省略"},
+         "cand": {"type": "integer", "description": "按 refine_point 列出的候选编号点击（坐标由插件按候选框几何中心算出，优先用它）"},
          "action": {"type": "string", "description": "click（默认）/double/right/long_press/drag/swipe/select"},
          "x2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 x（截图基准）"},
          "y2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 y（截图基准）"},
@@ -5081,24 +5276,26 @@ TOOLS = [
          "clicks": {"type": "integer", "description": "点击次数，默认 1（action=double 时自动为 2）"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（触控优先的界面才用，实测落点偏差不可控）"},
          "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告界面是否真的响应了（默认 false）"},
-         "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false）"},
+         "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false；用 cand 时自动关闭）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"},
          "title": {"type": "string", "description": "目标窗口标题片段（可选；填了就在该窗口内点击，并自动把它激活置顶）"},
          "hwnd": {"type": "integer", "description": "目标窗口句柄（可选，来自 list_windows）"}},
-         "required": ["x", "y"]}},
+         "required": []}},
     {"name": "long_press", "description":
         "长按指定位置：触控设备为真实触控长按（可呼出上下文菜单），无触控时为按住鼠标不动"
-        "（需要右键菜单请用 click(button=\"right\")）。默认同样做元素吸附。",
+        "（需要右键菜单请用 click(button=\"right\")）。默认同样做元素吸附；"
+        "也可用 cand=编号 按 refine_point 的候选中心长按。",
      "inputSchema": {"type": "object", "properties": {
-         "x": {"type": "integer", "description": "x 坐标（截图基准）"},
-         "y": {"type": "integer", "description": "y 坐标（截图基准）"},
+         "x": {"type": "integer", "description": "x 坐标（截图基准）；用 cand 时可省略"},
+         "y": {"type": "integer", "description": "y 坐标（截图基准）；用 cand 时可省略"},
+         "cand": {"type": "integer", "description": "按 refine_point 的候选编号长按"},
          "duration": {"type": "integer", "description": "按住时长毫秒，默认 800"},
          "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认）；screen=屏幕物理坐标"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（仅触控优先的界面才用）"}},
-         "required": ["x", "y"]}},
+         "required": []}},
     {"name": "drag", "description":
         "拖拽：从 (x1,y1) 按住拖到 (x2,y2)，用于移动文件/图标、拖滑块、拖动窗口等。"
         "**两端都默认做元素吸附**（起点抓控件中心才不会拖空，终点落在目标控件上）；"
@@ -5194,16 +5391,24 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "description": "status/take_over/resume"}}}},
     {"name": "open_app", "description":
-        "**打开/启动应用（任务栏里没有它时的兜底）**：一次调用完成「找到该应用的窗口 → "
-        "没运行就启动它 → 等窗口出现 → 最小化就恢复 → 切到前台 → 实测校验」。"
-        "顺序上先试 taskbar_open（应用已在跑时点任务栏图标更快、也不会开出第二个实例）；"
-        "任务栏和「↑」面板里都没有它、或任务栏自动隐藏时才用本工具。"
+        "**打开/切到应用（任务栏 → 后台托盘 → 启动，三级优先）**："
+        "① 已有窗口 → 恢复最小化、切前台并实测校验；"
+        "② 没有可见窗口但进程在跑（最小化到托盘）→ **不启动第二个实例**，回任务栏与「↑」"
+        "后台面板的编号图，让你用 index=编号 一步点开；"
+        "③ 确实没在运行 → 启动 + 等窗口 + 置前 + 校验。"
         "**不要**用 list_windows 反复找窗口（那是任务绕不出来的主因）。"
         "name 传用户的原话即可（中文口语名也认，如「微信」「记事本」）；"
         "返回值给出 hwnd 与就绪状态，后续直接用该 hwnd 截图/读坐标。",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string",
                   "description": "应用名，例如「微信」「企业微信」「记事本」「Visual Studio Code」"},
+         "index": {"type": "integer",
+                   "description": "按任务栏（或 where=panel 时「↑」后台面板）里第 N 个图标点开——"
+                                  "切换已运行应用最快的一步；编号来自返回值里的编号图"},
+         "where": {"type": "string",
+                   "description": "taskbar（默认，屏幕底部任务栏）/ panel（右侧「↑」隐藏图标/后台应用面板）"},
+         "launch": {"type": "boolean",
+                    "description": "强制启动新实例（默认 false：进程在跑但没有窗口时先去找托盘图标，避免开出重复实例）"},
          "timeout": {"type": "integer",
                      "description": "等待窗口出现的超时毫秒（默认 15000，启动慢的应用可加大）"}},
          "required": ["name"]}},

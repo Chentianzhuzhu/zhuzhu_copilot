@@ -160,6 +160,7 @@ from zhuzhu_Copilot.ui.tokens import (
     SPACING_SM,
     SPACING_XS,
 )
+from zhuzhu_Copilot.ui import window_fx
 from zhuzhu_Copilot.ui.widgets import ArrowComboBox, add_brand_footer
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
@@ -15638,7 +15639,7 @@ class _TitleBar(QWidget):
         lay.setSpacing(8)
         self.close_dot = _TrafficDot("#FF5F57", _ui("关闭"), panel.close, self)
         self.max_dot = _TrafficDot("#FEBC2E", _ui("最大化"), panel._toggle_max_restore, self)
-        self.min_dot = _TrafficDot("#28C840", _ui("最小化"), panel.showMinimized, self)
+        self.min_dot = _TrafficDot("#28C840", _ui("最小化"), panel._animate_minimize, self)
         for d in (self.close_dot, self.max_dot, self.min_dot):
             lay.addWidget(d, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addStretch(1)
@@ -15926,6 +15927,11 @@ class AgentPanel(QDialog):
         self._drag_origin = QPoint()  # 拖窗开始时窗口左上角
         self._dragging = False
         self._was_minimized = False   # 用于识别「任务栏图标把窗口恢复」→ 弹跳动画
+        # 任务栏折叠动画（最小化沉入任务栏 / 恢复时折叠展开）。
+        # 与 _was_minimized 的弹跳动画互斥：折叠动画接管时先清标志，避免恢复瞬间
+        # 「展开到位又被弹跳推一下」的双重动画。
+        self._fx = window_fx.WindowFoldAnimator(self, radius=self._WINDOW_RADIUS)
+        self._taskbar_filter = None   # 系统命令拦截器（showEvent 首次显示时安装）
         # 优先应用包主题色板：在控件创建前更新模块级颜色常量，
         # 避免 _build_ui 内 createPreviewWidget 等函数用到旧色板。
         try:
@@ -18859,11 +18865,90 @@ class AgentPanel(QDialog):
                 pass
 
     def _toggle_max_restore(self):
-        """黄点/双击顶部区域：最大化与还原切换（不进入全屏）。"""
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
+        """黄点/双击顶部区域：最大化与还原切换（不进入全屏）。
+
+        走快照尺寸过渡（与最小化同一套浮层机制）：先抓当前画面，最大化/还原的真实
+        重排被浮层遮住，屏幕上是平滑的缩放，不会「瞬间跳变」。
+        """
+        try:
+            if self.isMaximized():
+                if self._fx.start_restore_size():
+                    return
+                self.showNormal()
+            else:
+                if self._fx.start_maximize():
+                    return
+                self.showMaximized()
+        except Exception:
+            try:
+                if self.isMaximized():
+                    self.showNormal()
+                else:
+                    self.showMaximized()
+            except Exception:
+                pass
+
+    # ---------- 任务栏折叠动画（最小化 / 恢复） ----------
+    def _animate_minimize(self):
+        """最小化入口（绿点 / 任务栏图标 / 系统菜单）：优先播放「折叠沉入任务栏」。
+
+        折叠动画内部会自己调 showMinimized()（先抓快照再最小化，保证屏幕上没有空窗），
+        失败时（取不到快照等）一律退回系统原生最小化 —— 动画只是锦上添花，
+        绝不能因为动画失败让窗口最小化不掉。
+        """
+        try:
+            if self._fx.start_conceal():
+                return
+        except Exception:
+            pass
+        self.showMinimized()
+
+    def _prewarm_window_fx(self):
+        """预热折叠动画的离屏快照路径（幂等；异常一律吞掉，不能影响主流程）。"""
+        try:
+            self._fx.prewarm()
+        except Exception:
+            pass
+
+    def _animate_restore(self):
+        """从最小化恢复：优先播放「从任务栏折叠展开」，失败退回原生还原。"""
+        self._was_minimized = False   # 折叠动画自带入场，不要再叠加弹跳
+        try:
+            if self._fx.start_reveal():
+                return
+        except Exception:
+            pass
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _install_taskbar_filter(self):
+        """安装系统命令拦截器（任务栏图标点击的最小化/恢复）。
+
+        必须用 QAbstractNativeEventFilter 而不是重写 QWidget.nativeEvent：
+        PyQt 6.11 下给 QWidget 子类加 nativeEvent 覆写会让窗口创建阶段直接崩溃
+        （最小复现同样崩溃，与业务无关）。详见 window_fx.TaskbarCommandFilter。
+        """
+        if self._taskbar_filter is not None:
+            # 窗口句柄可能因重建而变（如切换窗口标志），每次显示都重新绑定
+            try:
+                self._taskbar_filter.bind()
+            except Exception:
+                pass
+            return
+        try:
+            f = window_fx.TaskbarCommandFilter(
+                self,
+                can_minimize=self._fx.can_conceal,
+                can_restore=self._fx.can_reveal,
+                do_minimize=self._animate_minimize,
+                do_restore=self._animate_restore,
+            )
+            f.bind()
+            QApplication.instance().installNativeEventFilter(f)
+            self._taskbar_filter = f
+        except Exception:
+            self._taskbar_filter = None
 
     def _bounce_after_restore(self):
         """从最小化恢复时的弹跳动画（点任务栏图标 / 再次点绿点唤起）。
@@ -20448,6 +20533,11 @@ class AgentPanel(QDialog):
         self._apply_window_round()
         # 强制任务栏缩略图（owned window 默认不显示，需手动加 WS_EX_APPWINDOW）
         self._ensure_taskbar_entry()
+        # 任务栏图标点击的最小化/恢复：拦截 SC_MINIMIZE / SC_RESTORE 走折叠动画
+        self._install_taskbar_filter()
+        # 预热折叠动画的离屏快照路径：首次 grab 有 300~500ms 懒初始化，不能让它压在
+        # 用户第一次点「最小化」上（表现为点了没反应半秒）。放到面板首帧之后再消化。
+        QTimer.singleShot(1200, self._prewarm_window_fx)
         # 原生窗口显示后强制设置任务栏大/小图标，修复安装后任务栏显示默认图标
         set_native_window_icon(self, _app_icon_path())
         # 打开面板时同步显示左侧停靠面板（worktree→git→todos 自上而下堆叠）；
@@ -20706,9 +20796,12 @@ class AgentPanel(QDialog):
             # 恢复/最大化/还原：圆角半径、黄点提示、缩放热区随状态同步
             self._sync_window_chrome()
             if self._was_minimized:
-                # 由最小化恢复（点任务栏图标 / 再次点绿点）：播放弹跳动画
+                # 由最小化恢复（点任务栏图标 / 再次点绿点）：播放弹跳动画。
+                # 但折叠动画本身就是入场动画 —— 它刚把窗口还原时不要再叠一次弹跳，
+                # 否则看起来是「展开一次，又弹一下」（重复播放）。
                 self._was_minimized = False
-                self._bounce_after_restore()
+                if not self._fx.recently_restored():
+                    self._bounce_after_restore()
             # 恢复/最大化/还原：重新定位显示子面板（合并为一次）
             self._request_side_sync(0)
 
@@ -21113,7 +21206,13 @@ class AgentPanel(QDialog):
             logging.getLogger(app_identity.APP_SLUG).warning("Copilot 浮层预创建失败", exc_info=True)
 
     def _show_self_front(self):
-        """托盘 / 桌宠请求：确保 AI 面板可见并置前（主窗口已移除，它是唯一界面）"""
+        """托盘 / 桌宠请求：确保 AI 面板可见并置前（主窗口已移除，它是唯一界面）
+
+        处于最小化时走「从任务栏折叠展开」，与点任务栏图标恢复保持同一套观感。
+        """
+        if self.isMinimized():
+            self._animate_restore()
+            return
         self.show()
         self.raise_()
         self.activateWindow()
@@ -27919,6 +28018,18 @@ class AgentPanel(QDialog):
             pass
         # 先掐掉语音输入（释放麦克风 + WebSocket），再停引擎
         self._voice_abort()
+        # 关掉可能还在播放的任务栏折叠动画浮层（否则顶层快照会残留到桌面）
+        try:
+            self._fx.cancel()
+        except Exception:
+            pass
+        # 摘掉系统命令拦截器（窗口即将销毁，留着会对着野指针判 HWND）
+        try:
+            if self._taskbar_filter is not None:
+                QApplication.instance().removeNativeEventFilter(self._taskbar_filter)
+                self._taskbar_filter = None
+        except Exception:
+            self._taskbar_filter = None
         # 关闭面板时同步收起并清理 zhuzhu Copilot 浮层（含防护线程 / 桌宠 / 托盘）
         _cp = self.__dict__.get("_copilot_panel")
         if _cp is not None:

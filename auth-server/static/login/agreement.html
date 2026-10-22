@@ -75,6 +75,17 @@
     cursor: pointer;
   }
   .btn-agree:hover { opacity: 0.9; }
+  .btn-back {
+    display: inline-block;
+    margin-left: 14px;
+    padding: 12px 24px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 14px;
+    text-decoration: none;
+  }
+  .btn-back:hover { color: var(--text); border-color: var(--text-dim); }
 </style>
 </head>
 <body>
@@ -137,24 +148,67 @@
 
   <div class="footer">
     <button class="btn-agree" onclick="agree()">我已阅读并同意</button>
+    <a class="btn-back" id="lnkBack" href="index.html">返回登录页</a>
   </div>
 </div>
 
 <script>
-function agree() {
-  // 供客户端嵌入查看时使用：关闭窗口或返回
-  if (window.opener) {
-    // 被窗口打开：通知父窗口并关闭
-    try { window.opener.postMessage('agreement_agreed', '*'); } catch (e) {}
-    window.close();
-  } else if (history.length > 1) {
-    // 浏览器内返回
-    history.back();
-  } else {
-    // 兜底：跳回登录页
-    location.href = 'index.html';
-  }
+/* ============================================================
+ * 返回登录页时必须「带着参数一起回去」
+ *
+ * 本页地址 = 登录页地址换了最后一段文件名，例如：
+ *   agreement.html?platform=...&state=...&version=...&callback_port=...
+ * 这些参数是本次登录的身份证（state 是防 CSRF 的一次性票据、
+ * callback_port 决定 token 往哪个本地端口送）。如果返回时写成
+ * `location.href = 'index.html'`，参数就全丢了：登录页虽然还能打开、
+ * 甚至还能登录成功，但无法把 token 交回客户端（客户端校验 state 失败）。
+ *
+ * 因此：返回地址一律由 location.search 拼出，绝不使用裸的 index.html。
+ * ============================================================ */
+function loginUrl() {
+  var q = (location.search || '').replace(/^\?/, '');
+  return 'index.html' + (q ? '?' + q : '');
 }
+
+function agree() {
+  var back = loginUrl();
+  var openerAlive = false;
+  try { openerAlive = !!(window.opener && !window.opener.closed); } catch (e) { openerAlive = false; }
+
+  if (openerAlive) {
+    // 场景 A：协议页由登录页新开了一个标签/窗口 —— 通知父窗口并关掉自己
+    try { window.opener.postMessage('agreement_agreed', '*'); } catch (e) {}
+    try { window.close(); } catch (e) {}
+    // 有些浏览器禁止脚本关闭非脚本打开的窗口：稍后自检，没关掉就自己带着参数跳回
+    setTimeout(function () {
+      if (!window.closed) { location.replace(back); }
+    }, 250);
+    return;
+  }
+
+  // 场景 B：没有 opener（Chrome 88+ 对 target="_blank" 隐式加了 noopener）。
+  // 若本页是链接新开的独立标签（history.length === 1），先尝试关掉自己，
+  // 让用户直接回到原来那个登录标签；关不掉再带着参数跳回登录页。
+  if (history.length <= 1) {
+    try { window.close(); } catch (e) {}
+    setTimeout(function () {
+      if (!window.closed) { location.replace(back); }
+    }, 250);
+    return;
+  }
+
+  // 场景 C：同标签页内打开（内嵌 WebView 忽略 target="_blank"，或用户从地址栏进入）
+  // 用 replace 而不是 href：不把「协议页」留在历史里，返回键行为更符合直觉
+  location.replace(back);
+}
+
+/* 「返回登录页」链接同样带上参数 */
+(function () {
+  try {
+    var a = document.getElementById('lnkBack');
+    if (a) a.href = loginUrl();
+  } catch (e) { /* 忽略 */ }
+})();
 </script>
 </body>
 </html>
