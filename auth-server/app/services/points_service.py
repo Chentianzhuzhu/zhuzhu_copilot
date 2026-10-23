@@ -31,6 +31,31 @@ return {nv, cur}
 """
 
 _POINTS_CACHE_TTL = 300  # 秒
+# 扣减幂等键 TTL（秒）：覆盖客户端重试窗口；10 分钟后同一 request_id 视为新请求
+_IDEMPOTENCY_TTL = 600
+
+
+def _idempotency_key(user_id: int, request_id: str) -> str:
+    return f"points:idem:{user_id}:{request_id}"
+
+
+async def _cached_or_db_points(user_id: int, db: AsyncSession) -> int:
+    """当前积分余额：先读 L2 缓存，未命中回退 DB（与扣减前取余额同源）。"""
+    try:
+        cached = await redis_l2.get(points_cache_key(user_id))
+        if cached is not None:
+            return int(cached)
+    except Exception:
+        pass
+    try:
+        result = await db.execute(
+            text("SELECT points FROM users WHERE id = :uid"), {"uid": user_id})
+        row = result.mappings().first()
+        if row:
+            return int(row["points"])
+    except Exception:
+        pass
+    return 0
 
 
 async def get_points_balance(user_id: int, db: AsyncSession, redis: aioredis.Redis) -> dict:
@@ -70,12 +95,29 @@ async def consume_points(
     task_id: str | None,
     db: AsyncSession,
     redis: aioredis.Redis,
+    request_id: str = "",
 ) -> dict:
     """
     积分消耗：L2 原子扣减（Lua 单往返），异步写 MySQL 流水
     返回: {"remaining": int}
     异常: 积分不足抛 ValueError 402
+
+    request_id 幂等键：客户端每次上报生成一个 uuid，被边缘网关拦截
+    （403 + 未备案页，nginx 侧表现为 499/0 字节）重试时原样带回。
+    同一 request_id 只扣一次——否则客户端重试会把同一批 token 扣两遍。
+    去重用 Redis SETNX 保证原子：抢到键的请求才扣减，其余直接返回当前余额。
     """
+    # ---- request_id 幂等：已处理过的直接返回当前余额，不重复扣减 ----
+    if request_id:
+        ikey = _idempotency_key(user_id, request_id)
+        try:
+            first = await redis_l2.set(ikey, "1", nx=True, ex=_IDEMPOTENCY_TTL)
+        except Exception:
+            first = True                     # Redis 异常不阻断扣减，按新请求处理
+        if not first:
+            remaining = await _cached_or_db_points(user_id, db)
+            return {"remaining": remaining, "deduplicated": True}
+
     key = points_cache_key(user_id)
     cached = await redis_l2.get(key)
     if cached is not None:

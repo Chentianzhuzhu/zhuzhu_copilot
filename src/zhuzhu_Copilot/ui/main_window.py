@@ -711,6 +711,11 @@ class CopilotPanel(QFrame):
         # 记忆上次选择：开启过防护则下次启动自动开启
         if self._settings.value("security_auto", False, type=bool) and is_admin():
             QTimer.singleShot(0, self._start_security)
+        # Copilot 插件扩展（应用级：页面/服务/托盘/快捷键），在托盘就绪之后加载
+        try:
+            self._load_copilot_extensions()
+        except Exception:
+            pass
         self._start_scan()
         self._init_update_check()
         # 启动就绪后按当前主题统一落地一次（同步 app 级 QPalette/控件样式）
@@ -723,11 +728,15 @@ class CopilotPanel(QFrame):
         self.open_agent_requested.emit()
 
     def shutdown(self):
-        """应用退出前清理：停防护线程、关桌宠与托盘（浮层显隐由 AgentPanel 管理，不在此关闭窗口）"""
+        """应用退出前清理：停防护线程、停 Copilot 插件服务、关桌宠与托盘（浮层显隐由 AgentPanel 管理，不在此关闭窗口）"""
         if self.security_worker and self.security_worker.isRunning():
             self.security_worker.stop()
             if not self.security_worker.wait(3000):
                 self.security_worker.terminate()
+        try:
+            self._shutdown_copilot_extensions()
+        except Exception:
+            pass
         if hasattr(self, "tray"):
             self.tray.hide()
         pet = getattr(self, "_pet", None)
@@ -1578,6 +1587,132 @@ class CopilotPanel(QFrame):
         finally:
             QApplication.quit()
 
+    # ---------- Copilot 插件扩展（应用级，独立于 Agent 插件体系） ----------
+
+    def _load_copilot_extensions(self):
+        """启动时加载启用中的 Copilot 插件扩展：主窗口页面 / 后台服务 / 托盘动作 /
+        全局快捷键（插件包 copilot.json 声明，module 指向包内源码文件）。
+
+        单个插件失败只跳过不阻塞（容错加载）；页面以新页签追加到
+        「应用/防护/通用/工具」之后；服务随进程常驻，shutdown 时统一停。
+        """
+        self._copilot_ext = {"pages": [], "services": [], "tray": [],
+                             "shortcuts": []}
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            plugins = [p for p in copilot_plugins.list_plugins()
+                       if p.get("enabled", True)]
+        except Exception:
+            return
+        for p in plugins:
+            name = str(p.get("name") or "")
+            try:
+                d = copilot_plugins.plugin_dir(name)
+                man = copilot_plugins.load_copilot_manifest(d)
+                for section, entry in copilot_plugins._iter_manifest_entries(man):
+                    self._register_copilot_entry(name, d, section, entry)
+            except Exception:
+                continue   # 单插件容错：不阻塞其余插件与主流程
+
+    def _import_copilot_module(self, d: Path, rel: str):
+        """从插件包目录动态导入模块（按文件路径加载；失败抛异常由调用方捕获）。"""
+        import importlib.util
+        import re as _re
+        p = (Path(d) / str(rel)).resolve()
+        if not str(p).startswith(str(Path(d).resolve())) or not p.is_file():
+            raise FileNotFoundError(f"模块不存在: {rel}")
+        mod_name = "zhuzhu_copilot_ext_" + _re.sub(r"\W", "_", str(rel))
+        spec = importlib.util.spec_from_file_location(mod_name, str(p))
+        if spec is None or spec.loader is None:
+            raise ImportError(f"无法加载模块: {rel}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _register_copilot_entry(self, name: str, d: Path, section: str,
+                                entry: dict):
+        """登记单条扩展（pages/services/tray/shortcuts）。"""
+        if section == "pages":
+            mod = self._import_copilot_module(d, entry.get("module"))
+            widget_cls = getattr(mod, str(entry.get("widget") or ""), None)
+            if widget_cls is None:
+                raise AttributeError(f"页面类不存在: {entry.get('widget')}")
+            idx = self._pages.count()
+            b = QPushButton(_ui(str(entry.get("title") or name)))
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(26)
+            b.setStyleSheet(_tab_qss())
+            self._tab_group.addButton(b, idx)
+            lay = self._tab_wrap.layout()
+            lay.insertWidget(max(lay.count() - 1, 0), b)
+            page = widget_cls(self._pages)
+            self._pages.addWidget(page)
+            self._copilot_ext["pages"].append(
+                {"plugin": name, "id": entry.get("id"), "index": idx})
+        elif section == "services":
+            mod = self._import_copilot_module(d, entry.get("module"))
+            start = getattr(mod, str(entry.get("entry") or ""), None)
+            if not callable(start):
+                raise AttributeError(f"服务入口函数不存在: {entry.get('entry')}")
+            handle = start()
+            self._copilot_ext["services"].append(
+                {"plugin": name, "id": entry.get("id"), "module": mod,
+                 "stop": str(entry.get("stop") or ""), "handle": handle})
+        elif section == "tray":
+            mod = self._import_copilot_module(d, entry.get("module"))
+            action = getattr(mod, str(entry.get("action") or ""), None)
+            if not callable(action):
+                raise AttributeError(f"托盘动作函数不存在: {entry.get('action')}")
+            menu = self.tray.contextMenu()
+            act = menu.addAction(_ui(str(entry.get("title") or name)))
+            act.triggered.connect(lambda *a, _f=action: _f())
+            self._copilot_ext["tray"].append(
+                {"plugin": name, "id": entry.get("id"), "action": act})
+        elif section == "shortcuts":
+            from PyQt6.QtGui import QShortcut, QKeySequence
+            mod = self._import_copilot_module(d, entry.get("module"))
+            action = getattr(mod, str(entry.get("action") or ""), None)
+            if not callable(action):
+                raise AttributeError(f"快捷键动作函数不存在: {entry.get('action')}")
+            sc = QShortcut(QKeySequence(str(entry.get("hotkey") or "")), self)
+            sc.activated.connect(lambda *a, _f=action: _f())
+            self._copilot_ext["shortcuts"].append(
+                {"plugin": name, "id": entry.get("id"), "shortcut": sc})
+
+    def _shutdown_copilot_extensions(self):
+        """退出清理：停后台服务、移除托盘动作与快捷键（页面随窗口销毁）。"""
+        ext = getattr(self, "_copilot_ext", None) or {}
+        for svc in reversed(ext.get("services") or []):
+            stop = getattr(svc.get("module"), svc.get("stop") or "", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:
+                    pass
+            handle = svc.get("handle")
+            closer = getattr(handle, "stop", None) or getattr(handle, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
+        for act in ext.get("tray") or []:
+            try:
+                menu = self.tray.contextMenu()
+                if menu is not None:
+                    menu.removeAction(act.get("action"))
+            except Exception:
+                pass
+        for sc in ext.get("shortcuts") or []:
+            try:
+                sc.get("shortcut").setEnabled(False)
+                sc.get("shortcut").deleteLater()
+            except Exception:
+                pass
+        self._copilot_ext = {"pages": [], "services": [], "tray": [],
+                             "shortcuts": []}
+
     def _toggle_security(self, *_):
         """开启/关闭静默防护，并记忆用户选择"""
         if self._security_on:
@@ -1818,12 +1953,24 @@ class CopilotPanel(QFrame):
             self._admin_dot.setStyleSheet(f"background: {PALETTE['danger']}; border-radius: 4px;")
             self.admin_label.setText(_ui("未提权"))
             self.admin_label.setStyleSheet(f"font-size: 12px; color: {PALETTE['danger']};")
-            QMessageBox.warning(
-                self,
-                _ui("需要管理员权限"),
-                _uim("本工具需要管理员权限才能创建目录联接和修改系统目录。\n"
-                     "请右键以管理员身份运行。"),
-            )
+            # 非模态 + 只提示一次：
+            # 1) 用 warning()（模态）会在每次未提权启动时弹一个阻塞窗，把随后所有
+            #    点击全部吞掉 —— 用户观感正是「点什么都只没反应、但也不是未响应」，
+            #    与最大化/还原连点时的假死投诉完全同源。改 open() 让对话框不抢输入。
+            # 2) 已经提示过就不再烦：状态灯常驻「未提权」，需要时用户自己会去右键提权。
+            try:
+                if self._settings.value("admin_warned", False, type=bool):
+                    return
+                self._settings.setValue("admin_warned", True)
+            except Exception:
+                pass
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(_ui("需要管理员权限"))
+            box.setText(_uim("本工具需要管理员权限才能创建目录联接和修改系统目录。\n"
+                             "请右键以管理员身份运行。"))
+            box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            box.open()   # 非模态：不阻塞主事件循环，不吞掉面板上的点击
 
     def _start_scan(self, *_):
         self.app_list.clear()

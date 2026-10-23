@@ -47,6 +47,22 @@ _d3d_datas = [(_d3d_path, '.')] if _os.path.isfile(_d3d_path) else []
 _seed_dir = _os.path.join(_root, 'build/workflows_seed')
 _seed_datas = [(_seed_dir, 'workflows_seed')] if _os.path.isdir(_seed_dir) else []
 
+# 源码快照（_copilot_src/zhuzhu_Copilot/**）：源码级 Copilot 插件在【打包态】的
+# 基准数据。安装目录不含源码，插件做「插入/替换某模块」时需要原版内容作锚点；
+# 覆盖层导入钩子（src/_copilot_overlay_hook.py）也要靠它把 __file__ 指回原版
+# 路径，保证包内资源（locales/skills/config）解析不回退。排除 __pycache__ 与
+# .pyc（约 5.8MB，相对 Qt WebEngine 体积可忽略）。
+_src_snapshot_datas = []
+_snap_pkg = _os.path.join(_root, 'src', 'zhuzhu_Copilot')
+for _dirpath, _dirnames, _filenames in _os.walk(_snap_pkg):
+    _dirnames[:] = [_d for _d in _dirnames if _d != '__pycache__']
+    for _fn in _filenames:
+        if _fn.endswith(('.pyc', '.pyo')):
+            continue
+        _full = _os.path.join(_dirpath, _fn)
+        _rel = _os.path.relpath(_full, _os.path.join(_root, 'src'))
+        _src_snapshot_datas.append((_full, _os.path.join('_copilot_src', _rel)))
+
 a = Analysis(
     [_os.path.join(_root, 'src/main.py')],
     pathex=[_src],
@@ -62,7 +78,7 @@ a = Analysis(
            # 安全引擎数据文件（config/security.json、security_rules.json、yara/ 规则库）：
            # 引擎在打包态按 _MEIPASS/config 解析，缺失则回退内置默认导致规则库/特征库不生效
            (_os.path.join(_root, 'config'), 'config')]
-           + _runtime_datas + _d3d_datas + _seed_datas,
+           + _runtime_datas + _d3d_datas + _seed_datas + _src_snapshot_datas,
     hiddenimports=[
         # agent_tools 通过 importlib 动态导入 core 子模块（agent_find/agent_tts/
         # agent_subagent/agent_panels/agent_deps 等），PyInstaller 静态分析发现不了，

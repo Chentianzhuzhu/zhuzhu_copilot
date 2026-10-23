@@ -79,10 +79,14 @@ SC_MINIMIZE = 0xF020
 SC_RESTORE = 0xF120
 
 _DBG_PATH = os.environ.get("ZHZHU_FX_DEBUG") or ""
-_NO_DWM_FIX = bool(os.environ.get("ZHZHU_FX_NO_DWM_FIX"))   # 临时 A/B 开关
 
 
 def _dbg(msg: str):
+    """排查用埋点：设置环境变量 ZHZHU_FX_DEBUG=<文件路径> 后把每步耗时写进该文件。
+
+    动画问题（卡顿、少一帧、状态没落地）光看代码很难定位，现场抓时间线最快；
+    不设环境变量时只有一次全局判断，无开销。
+    """
     if not _DBG_PATH:
         return
     try:
@@ -131,18 +135,25 @@ def _screen_for(win):
     return QGuiApplication.primaryScreen()
 
 
-def unmaximize(win):
-    """把最大化窗口还原成普通态（瞬时）。
+def unmaximize(win, target: QRect = None):
+    """把最大化窗口还原成普通态（瞬时），并保证几何真正回到普通尺寸。
 
-    **不要用 showNormal()**：无边框窗口首次 showNormal() 实测阻塞 1400ms（Qt 重建
-    backing store + DWM 切换），而这段时间浮层是静止的 —— 用户看到的就是「点了还原
-    画面卡住一秒半」。`setWindowState(WindowNoState)` 语义等价（窗口本来就可见，
-    show() 是空操作），实测 1ms。
+    两个坑：
+    1. **不要用 showNormal()**：无边框窗口首次 showNormal() 实测阻塞 1400ms（Qt 重建
+       backing store + DWM 切换），而这段时间浮层是静止的 —— 用户看到的就是「点了还原
+       画面卡住一秒半」。`setWindowState(WindowNoState)` 语义等价（窗口本来就可见，
+       show() 是空操作），实测 1ms。
+    2. **setWindowState 只清状态标志，几何不一定跟随**：若窗口的「还原矩形」本身就是
+       满屏尺寸（被拖到满屏、或热区拉满过），还原后窗口仍是 1920x1032 但状态是普通态
+       —— 之后点最大化会因「没有可放大的空间」直接空操作，按钮从此按了没反应。
+       所以这里显式把几何钉回 target（start_maximize 记下的最大化前矩形）。
     """
     try:
         win.setWindowState(Qt.WindowState.WindowNoState)
         if win.isMaximized():
             win.showNormal()   # 极少数情况下状态没落地，再走一次原生路径
+        if target is not None and not target.isEmpty() and win.geometry() != target:
+            win.setGeometry(target)
     except Exception:
         pass
 
@@ -154,20 +165,18 @@ _DWMWA_TRANSITIONS_FORCEDISABLED = 3
 def set_transitions(win, disabled: bool):
     """开关「窗口自己的」系统过渡动画（最小化到任务栏 / 从任务栏还原那一下）。
 
-    这一步是**观感的关键**：默认情况下 `showMinimized()` 会让 DWM 先播一遍系统自带的
-    缩略图缩放动画（约 200ms），紧接着我们的浮层再从整窗折叠一遍 —— 用户看到的就是
-    「最小化动画播了两次」。还原时同理（`showNormal()` 会让窗口从任务栏长出来，和
-    折叠展开叠在一起）。动画期间把 DWM 过渡关掉，屏幕上就只剩我们这一套运动。
+    系统默认会为最小化/还原播一段 DWM 过渡。它和本模块的折叠是两段独立运动：
+    一旦系统那套也开着，屏幕上就是「窗口先缩进任务栏，快照再折叠一遍」——
+    也就是用户说的「动画重复播放」。动画期间关掉它，屏幕上只留我们这一套。
 
     只影响本窗口，不动系统全局设置（`SPI_SETANIMATION` 那种改法会影响其它程序）。
+    某些系统设置下这段过渡本来就不播，此时本调用是空操作，没有副作用。
     """
     try:
         hwnd = int(win.winId())
     except Exception:
         return
     if not hwnd:
-        return
-    if _NO_DWM_FIX and disabled:
         return
     try:
         dwmapi = ctypes.windll.dwmapi
@@ -244,6 +253,9 @@ class TaskbarCommandFilter(QAbstractNativeEventFilter):
             msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
             if msg.message != WM_SYSCOMMAND:
                 return False, 0
+            _dbg("syscmd %-22s hwnd=%s (bound=%s) wparam=%#x" % (
+                bytes(eventType).decode("ascii", "replace"), int(msg.hwnd or 0),
+                self._hwnd, int(msg.wParam or 0)))
             # 全局过滤器会收到进程内所有窗口的消息，只认本窗口
             if self._hwnd and int(msg.hwnd or 0) != self._hwnd:
                 return False, 0
@@ -329,31 +341,39 @@ class FoldSprite(QWidget):
         self._fold = max(0.0, min(1.0, float(f)))
 
     # ---------- 绘制 ----------
-    def paintEvent(self, _e):
-        if self._pix is None or self._content.isEmpty():
-            return
+    def paintEvent(self, e):
         try:
             p = QPainter(self)
         except Exception:
             return
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        p.setOpacity(self._alpha)
-        r = QRectF(self._content.translated(-self.pos()))
-        # 折叠时窗口被纵向压扁，圆角同步收缩：否则会出现「薄片配大圆角」的怪形
-        rad = min(float(self._radius), r.height() / 2.0, r.width() / 2.0)
-        path = QPainterPath()
-        path.addRoundedRect(r, rad, rad)
-        p.setClipPath(path)
-        p.drawPixmap(r, self._pix, QRectF(self._pix.rect()))
-        # 折痕：折叠越深，顶缘越像「纸被折起而背光」，一道极淡的暗边收住轮廓
-        depth = 1.0 - self._fold
-        if depth > 0.02:
-            g = QLinearGradient(r.left(), r.top(),
-                                r.left(), r.top() + max(1.0, r.height() * 0.45))
-            g.setColorAt(0.0, QColor(0, 0, 0, int(_CREASE_ALPHA * depth)))
-            g.setColorAt(1.0, QColor(0, 0, 0, 0))
-            p.fillRect(r, g)
-        p.end()
+        try:
+            # 先清掉本次脏区再画。**这步不能省**：分层窗口（WA_TranslucentBackground）
+            # 的背面缓冲不会自动擦除，而折叠是「内容矩形逐帧收缩」，腾空的区域如果不
+            # 主动清掉，上一帧的大矩形会一直残留在屏幕上 —— 用户看到的就是窗口拖影。
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            p.fillRect(e.rect(), QColor(0, 0, 0, 0))
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            if self._pix is None or self._content.isEmpty():
+                return
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            p.setOpacity(self._alpha)
+            r = QRectF(self._content.translated(-self.pos()))
+            # 折叠时窗口被纵向压扁，圆角同步收缩：否则会出现「薄片配大圆角」的怪形
+            rad = min(float(self._radius), r.height() / 2.0, r.width() / 2.0)
+            path = QPainterPath()
+            path.addRoundedRect(r, rad, rad)
+            p.setClipPath(path)
+            p.drawPixmap(r, self._pix, QRectF(self._pix.rect()))
+            # 折痕：折叠越深，顶缘越像「纸被折起而背光」，一道极淡的暗边收住轮廓
+            depth = 1.0 - self._fold
+            if depth > 0.02:
+                g = QLinearGradient(r.left(), r.top(),
+                                    r.left(), r.top() + max(1.0, r.height() * 0.45))
+                g.setColorAt(0.0, QColor(0, 0, 0, int(_CREASE_ALPHA * depth)))
+                g.setColorAt(1.0, QColor(0, 0, 0, 0))
+                p.fillRect(r, g)
+        finally:
+            p.end()
 
 
 class WindowFoldAnimator(QObject):
@@ -429,9 +449,12 @@ class WindowFoldAnimator(QObject):
     def can_conceal(self) -> bool:
         w = self._win
         if self._busy:
-            # 动画在跑：仍返回 True，让系统命令被吞掉并转成「排队」，
-            # 否则原生最小化会插进来把正在播的浮层顶掉（展开中途点最小化会看到窗口弹回原位）。
-            return self._mode in ("reveal", "morph")
+            # 动画在跑：一律返回 True 把系统命令吞掉，交给 start_conceal 决定
+            # （反向 → 折返；同向 → 排队，收尾时自然变成空操作）。
+            # **不能因为「当前正在收起」就返回 False**：那会把重复投递的最小化命令
+            # 放行给系统，系统随即原生最小化，正在播的折叠被当场打断 —— 表现就是
+            # 「动画播到一半窗口突然消失」。
+            return True
         try:
             return (w.isVisible() and not w.isMinimized()
                     and w.width() >= 200 and w.height() >= 150)
@@ -442,7 +465,7 @@ class WindowFoldAnimator(QObject):
         w = self._win
         if self._busy:
             # 同上：折叠还没播完就点任务栏图标（用户手快）也必须能接住。
-            return self._mode in ("conceal", "morph")
+            return True
         try:
             return (w.isMinimized() and w.width() >= 200 and w.height() >= 150)
         except RuntimeError:
@@ -584,7 +607,10 @@ class WindowFoldAnimator(QObject):
             return False
         self._busy = True
         self._disable_transitions()
-        self._play(pix, start, end, "morph", None, before=lambda: unmaximize(w))
+        # before 阶段做真实还原（此时满屏浮层还盖着，重排多久都看不见）；
+        # target 显式传入：setWindowState 不保证把几何带回普通尺寸（见 unmaximize）。
+        self._play(pix, start, end, "morph", None,
+                   before=lambda: unmaximize(w, QRect(end)))
         return True
 
     def cancel(self):

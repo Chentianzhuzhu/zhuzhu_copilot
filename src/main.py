@@ -7,6 +7,18 @@ import multiprocessing
 import threading
 multiprocessing.freeze_support()
 
+# 【源码级 Copilot 插件 · 覆盖层导入钩子】必须在导入 zhuzhu_Copilot 包【之前】安装：
+# 应用以 PyInstaller 打包分发（安装目录没有源码），源码级插件不能把代码插进安装
+# 目录，改为写入用户数据目录的源码覆盖层 ~/.zhuzhu_Copilot/source_overlay/，
+# 由该钩子让 zhuzhu_Copilot.* 的导入优先命中覆盖层——任何人都能把 Copilot
+# 自定义成想要的样子（改主题 / 自定义 Agent / 自定义工具 / 自定义语言 / 增删
+# 替换任何模块），打包版上同样生效（应用后重启即生效）。无覆盖层时零侵入。
+try:
+    import _copilot_overlay_hook
+    _copilot_overlay_hook.install()
+except Exception:
+    pass
+
 from zhuzhu_Copilot import app_identity
 
 # 确保从 src/ 目录运行时能找到同级的 zhuzhu_Copilot 包

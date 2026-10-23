@@ -54,6 +54,21 @@ ANNOUNCEMENT_POLL_INTERVAL_S = 30
 _HTTP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/126.0 Safari/537.36 zhuzhuCopilot")
 
+# ---------- 网关拦截重试 ----------
+# 服务端在大陆机房、域名未备案，阿里云网关会对「抽样比例」的连接返回
+# 403 + 未备案拦截页（服务端 nginx 记为 499 / 0 字节），实测客户端约一半
+# 请求会这样失败，且常呈「连续几次都被拦」的突发形态。
+# 这是边缘网络问题，客户端能做的是识别它并重试：8 次尝试 + 最长 2.5s 退避，
+# 可同时覆盖随机失败与短突发；最坏情况约 9s，只在确实失败时发生。
+HTTP_RETRY_ATTEMPTS = 8
+HTTP_RETRY_BACKOFF = (0.15, 0.3, 0.5, 0.8, 1.2, 1.6, 2.0, 2.5)   # 秒，逐次递增
+_GATEWAY_BLOCK_MARKERS = (
+    "non-compliance icp",          # 拦截页标题
+    "beian-block",                 # www.aliyun.com/beian/beian-block
+    "aliyun.com/beian",
+    "域名未备案",
+)
+
 
 def _client_version() -> str:
     """客户端版本号（取自 update_check.APP_VERSION，失败返回 dev）。"""
@@ -74,41 +89,137 @@ def is_builtin_base_url(base_url: str) -> bool:
 
 def _http_get_json(url: str, token: str = "", timeout: int = 15):
     """GET JSON：返回 (ok, data_dict, status_code)。统一浏览器 UA。"""
-    headers = {"User-Agent": _HTTP_UA}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return True, json.loads(resp.read().decode("utf-8")), resp.status
-    except urllib.error.HTTPError as e:
-        try:
-            data = json.loads(e.read().decode("utf-8"))
-        except Exception:
-            data = {}
-        return False, data, e.code
-    except Exception:
-        return False, {}, 0
+    ok, data, status, _ = _request_json("GET", url, None, token, timeout)
+    return ok, data, status
+
+
+def _http_get_json_ex(url: str, token: str = "", timeout: int = 15):
+    """GET JSON（带网关拦截标记）：返回 (ok, data, status, gateway_block)。
+
+    需要区分「业务拒绝」与「边缘网关拦截」的调用方用它——
+    尤其 403：把网关拦截误判成业务 403 会把用户错误地强制下线。
+    """
+    return _request_json("GET", url, None, token, timeout)
 
 
 def _http_post_json(url: str, body: dict, token: str = "", timeout: int = 15):
-    """POST JSON：返回 (ok, data_dict, status_code)。"""
-    data = json.dumps(body).encode("utf-8")
-    headers = {"User-Agent": _HTTP_UA, "Content-Type": "application/json"}
+    """POST JSON：返回 (ok, data_dict, status_code)。默认不重试。"""
+    ok, data, status, _ = _request_json("POST", url, body, token, timeout,
+                                        retry=False)
+    return ok, data, status
+
+
+def _http_post_json_ex(url: str, body: dict, token: str = "", timeout: int = 15,
+                       retry: bool = False):
+    """POST JSON（带网关拦截标记）：返回 (ok, data, status, gateway_block)。
+
+    幂等接口（带 request_id 幂等键）可传 retry=True，让它在被网关拦截后
+    自动重试而不产生重复副作用；其余接口保持默认不重试。
+    """
+    return _request_json("POST", url, body, token, timeout, retry=retry)
+
+
+def http_get_bytes(url: str, timeout: int = 10, attempts: int = HTTP_RETRY_ATTEMPTS):
+    """下载二进制（头像等静态资源），同样带网关拦截重试。失败返回 b""。"""
+    headers = {"User-Agent": _HTTP_UA}
+    for i in range(max(1, attempts)):
+        if i:
+            time.sleep(_retry_delay(i))
+        try:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            raw = b""
+            try:
+                raw = e.read()
+            except Exception:
+                pass
+            if _looks_like_gateway_block(e.code, raw):
+                continue                     # 网关拦截：换一次连接重试
+            return b""
+        except Exception:
+            continue                         # 连接层失败：GET 幂等，可重试
+    return b""
+
+
+def _looks_like_gateway_block(status: int, raw: bytes) -> bool:
+    """是否为「边缘网关拦截页」而非业务拒绝。
+
+    服务端在大陆机房、域名未备案，阿里云网关会对抽样比例的连接返回
+    403 + 未备案拦截页（服务端 nginx 侧表现为 499 / 0 字节）。
+    这类 403 的响应体是 HTML，而应用自身的 403 一律是 JSON，
+    因此可用「403 + 拦截页特征」区分：请求根本没到达应用，重试是安全的。
+    """
+    if status != 403 or not raw:
+        return False
+    head = raw[:2048].decode("utf-8", "ignore").lower()
+    return any(m in head for m in _GATEWAY_BLOCK_MARKERS)
+
+
+def _retry_delay(attempt: int) -> float:
+    """第 attempt 次重试前的等待秒数（0.15/0.3/0.5/0.8/1.2 封顶）。"""
+    idx = min(max(attempt - 1, 0), len(HTTP_RETRY_BACKOFF) - 1)
+    return HTTP_RETRY_BACKOFF[idx]
+
+
+def _request_json(method: str, url: str, body, token: str, timeout: int,
+                  retry: bool = True):
+    """统一的 JSON 请求：对网关拦截 / 连接层失败做有限次快速重试。
+
+    返回 (ok, data_dict, status_code, gateway_block)：
+    第四个标记表示最后一次失败是否为「边缘网关拦截」（403 + 未备案页）。
+    调用方据此区分「业务拒绝」与「请求根本没送到应用」——尤其 403：
+    把网关拦截误判成业务 403，会把用户错误地强制下线。
+
+    重试策略：
+    * GET 幂等：任何网络层失败（网关拦截、连接失败、超时、5xx）都可重试；
+    * POST 默认不重试（扣积分、下单等有副作用，重试会重复生效）；
+      仅当调用方确认接口幂等（带了 request_id 幂等键）时才传 retry=True。
+    """
+    headers = {"User-Agent": _HTTP_UA}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return True, json.loads(resp.read().decode("utf-8")), resp.status
-    except urllib.error.HTTPError as e:
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    idempotent = retry or (method == "GET")
+    last = (False, {}, 0, False)
+    for i in range(HTTP_RETRY_ATTEMPTS if idempotent else 1):
+        if i:
+            time.sleep(_retry_delay(i))
         try:
-            data = json.loads(e.read().decode("utf-8"))
+            req = urllib.request.Request(url, data=payload, headers=headers,
+                                         method=method)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                try:
+                    return True, json.loads(raw.decode("utf-8")), resp.status, False
+                except Exception:
+                    return False, {}, resp.status, False
+        except urllib.error.HTTPError as e:
+            raw = b""
+            try:
+                raw = e.read()
+            except Exception:
+                pass
+            blocked = _looks_like_gateway_block(e.code, raw)
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except Exception:
+                data = {}
+            last = (False, data, e.code, blocked)
+            if blocked:
+                continue                     # 网关拦截：换一次连接重试
+            if idempotent and e.code >= 500:
+                continue                     # 网关 5xx：GET 可重试
+            return last
         except Exception:
-            data = {}
-        return False, data, e.code
-    except Exception:
-        return False, {}, 0
+            last = (False, {}, 0, False)
+            if idempotent:
+                continue
+            return last
+    return last
 
 
 # ---------- 登录回调 HTTP 处理器 ----------
@@ -944,16 +1055,18 @@ class AuthClient(QObject):
         token = self.token
         if not token:
             return False
-        ok, data, status = _http_post_json(f"{self.server}/api/auth/refresh",
-                                           {}, token=token, timeout=10)
+        ok, data, status, blocked = _http_post_json_ex(
+            f"{self.server}/api/auth/refresh", {}, token=token, timeout=10)
         if ok and isinstance(data, dict) and data.get("code") == 0:
             new_token = ((data.get("data") or {}).get("token") or "").strip()
             if new_token:
                 self._save_user(self._user or {}, new_token)
                 self._restart_ws_with_token()
                 return True
-        # 401/403：会话已失效，无法续期
-        if status in (401, 403):
+        # 401/403：会话已失效，无法续期。
+        # blocked=True 是边缘网关拦截（403 + 未备案页），不是业务拒绝，
+        # 不能据此把用户判成掉线。
+        if not blocked and status in (401, 403):
             self._on_session_expired()
         return False
 
@@ -1038,22 +1151,30 @@ class AuthClient(QObject):
         - 402 积分不足：明确中止（False）。
         - 401 登录态过期：自动续期一次并重试；续期失败则按强制下线处理并中止。
         - 403 账号被禁用/删除：立即强制下线并中止任务（返回 False）。
+          注意：403 也可能是边缘网关拦截（未备案页），必须排除后再判断，
+          否则约一半的扣减请求会莫名把用户踢下线。
         - 其余网络/服务端错误：保守放行（True），避免断网误杀正在进行的任务。
+
+        带 request_id 幂等键，因此被网关拦截后可安全重试一次
+        （服务端同一 request_id 只扣一次，不会重复扣积分）。
         """
         token = self.token
         if not token:
             return False
+        request_id = uuid.uuid4().hex
 
         def _post():
-            return _http_post_json(
+            return _http_post_json_ex(
                 f"{self.server}/api/points/consume",
-                {"amount": int(amount or 1), "model": model, "task_id": task_id},
-                token=self.token, timeout=10)
+                {"amount": int(amount or 1), "model": model, "task_id": task_id,
+                 "request_id": request_id},
+                token=self.token, timeout=10, retry=True)
 
-        ok, data, status = _post()
+        ok, data, status, blocked = _post()
 
-        # 账号被禁用/删除：管理员操作后服务端返回 403，立即强制下线
-        if not ok and status == 403:
+        # 账号被禁用/删除：管理员操作后服务端返回 403，立即强制下线。
+        # blocked=True 是网关拦截页，不是业务拒绝。
+        if not ok and status == 403 and not blocked:
             detail = ""
             try:
                 detail = (data or {}).get("message") or (data or {}).get("detail") or ""
@@ -1065,9 +1186,9 @@ class AuthClient(QObject):
         # 登录态过期：自动续期一次后重试（长时间任务挂机场景）
         if not ok and status == 401:
             if self.refresh_token():
-                ok, data, status = _post()
+                ok, data, status, blocked = _post()
                 # 续期后仍 403：账号状态异常（禁用/删除）
-                if not ok and status == 403:
+                if not ok and status == 403 and not blocked:
                     self._on_force_logout(_ui("账号已被禁用，已强制下线"))
                     return False
             else:
@@ -1196,12 +1317,14 @@ class AuthClient(QObject):
         token = self.token
         if not token:
             return
-        ok, data, status = _http_get_json(f"{self.server}/api/auth/me",
-                                          token=token, timeout=10)
+        ok, data, status, blocked = _http_get_json_ex(
+            f"{self.server}/api/auth/me", token=token, timeout=10)
         if ok:
             self._sync_from_me(data)
             return
-        if status == 403:
+        # 403：账号被禁用/删除才强制下线；边缘网关拦截（未备案页）不算，
+        # 否则约一半的 /me 探测会莫名把用户踢下线。
+        if status == 403 and not blocked:
             detail = (data or {}).get("message") or (data or {}).get("detail") or ""
             self._on_force_logout(detail or _ui("账号已被禁用，已强制下线"))
         # 401 交由 consume_points / WS 的既有 401 处理，避免误清「短暂网络抖动」

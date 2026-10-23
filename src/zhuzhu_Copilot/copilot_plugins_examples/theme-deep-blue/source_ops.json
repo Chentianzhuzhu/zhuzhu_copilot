@@ -1,0 +1,8 @@
+[
+  {
+    "op": "insert_after",
+    "path": "zhuzhu_Copilot/ui/styles.py",
+    "anchor": "    PALETTE.update(src)",
+    "content": "    # ---- Copilot 插件 theme-deep-blue：强调色换成深蓝 ----\n    # 插在 set_palette 内部：每次切换主题重建 PALETTE 后都会再覆盖一次，\n    # 因此深色/浅色主题下都保持深蓝强调色。\n    PALETTE[\"primary\"] = \"#1D4ED8\"\n    PALETTE[\"primary_hover\"] = \"#1E40AF\"\n    PALETTE[\"primary_pressed\"] = \"#1E3A8A\""
+  }
+]

@@ -49,14 +49,20 @@ class McpError(Exception):
 
 
 class _StdioTransport:
-    def __init__(self, command: str, args: list):
+    def __init__(self, command: str, args: list, env: dict = None):
+        # env：插件配置注入的环境变量（键名已由上层大写化）。在继承当前进程
+        # 环境的基础上覆盖，保证 PATH 等基础变量不丢；保留键上层已拦截。
+        env_full = None
+        if env:
+            env_full = dict(os.environ)
+            env_full.update({str(k): str(v) for k, v in env.items()})
         # CREATE_NO_WINDOW：禁止子进程弹出控制台窗口（否则连接时会闪一个黑色终端）
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
             self._proc = subprocess.Popen(
                 [command, *args], stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                creationflags=creationflags)
+                env=env_full, creationflags=creationflags)
         except Exception as e:
             raise McpError(f"启动 MCP 服务器失败: {e}")
         self._pending: dict = {}
@@ -191,8 +197,10 @@ class McpClient:
         self._call_map: dict = {}    # schema 工具名 -> MCP 原始工具名
         typ = config.get("type", "stdio")
         if typ == "stdio":
+            # config["env"]：插件配置注入（见 agent_plugins.set_plugin_config）
             self._transport = _StdioTransport(_safe_stdio_command(config),
-                                              config.get("args", []))
+                                              config.get("args", []),
+                                              config.get("env"))
         elif typ == "sse":
             self._transport = _SSETransport(config["url"])
         else:

@@ -38,6 +38,7 @@ async def consume(
             task_id=req.task_id,
             db=db,
             redis=redis,
+            request_id=(req.request_id or "")[:64],
         )
     except ValueError as e:
         msg, code = e.args[0], e.args[1]

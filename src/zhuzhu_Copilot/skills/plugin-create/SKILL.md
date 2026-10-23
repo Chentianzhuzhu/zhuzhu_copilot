@@ -1,6 +1,6 @@
 ---
 name: plugin-create
-description: 插件创建：根据用户自然语言描述自动生成可运行插件（MCP server + SKILL.md 技能 + web 型本地 HTTP UI 三件套）并加载，生成后自动冒烟自检
+description: 插件创建：根据用户自然语言描述自动生成可运行插件（MCP server + SKILL.md 技能 + web 型本地 HTTP UI 三件套）并加载，生成后自动冒烟自检；也支持源码级插件（source_ops 源码变更清单：新建文件/追加插入/替换模块/多模块集成，经插件校验系统检查后应用与回滚）
 ---
 
 # plugin-create：创建新插件
@@ -43,3 +43,49 @@ description: 插件创建：根据用户自然语言描述自动生成可运行�
    （返回文案会写明自检结论与是否登记）；用户可在设置-插件页查看/管理/停用/删除；
    MCP 服务器需保存后自动重连。
 6. 若用户描述的是可复用的独立能力，适合沉淀为插件；若只是流程，用 skill-create 即可。
+
+## 源码级插件（kind=source，开发者基于源码开发）
+
+当需求是**改动应用源码本身**（新建模块、在现有模块里接线、替换某段实现、跨多文件集成功能）时，
+走源码级插件而不是普通插件：
+
+1. 用 `create_source_plugin` 工具：AI 生成 `source_ops` 变更清单（五类 op：
+   `create_file` 新建文件 / `append` 追加到现有模块之后（可给 after 锚点）/
+   `insert_after` 锚点后插入（anchor 须唯一）/ `replace_module` 替换模块（start..end）/
+   `replace_file` 整体替换），可一次多条、跨多个文件综合修改关联模块。
+2. **设计锚点前必须先 `read_file` 查看目标文件**，锚点取自真实存在且唯一的字符串
+   （函数签名/注释标记/注册条目行），否则应用会因找不到锚点整体回滚。
+3. 严禁改动受保护核心程序：`plugin_guard.py`、`security.py`、`security_engine/`。
+4. 创建后**不会自动改动源码**：先读 `source_ops.json` 审查，确认后 `apply_source_plugin`
+   应用（逐文件备份 → 应用 → py_compile，任一失败整体回滚）；`revert_source_plugin` 卸载回滚。
+5. 所有插件（含源码插件）在导入/生成/应用前都要过**插件校验系统**（`plugin_guard`，
+   静态危险规则 + LLM 源码评审）：危险代码会被**强制删除**并提示用户，源码插件危险则
+   整体删除插件包。该程序内置唯一、不可替换，也不要试图绕过。
+6. 插件包元数据规范：名称 name / 开发者或公司 author / 更新时间 updated_at / 插件图标 icon
+   （包内图标文件），导入与创建时自动补齐，设置-插件页展示。
+7. 插件可携带 `config.json` 配置项（键 → 文本/数字/布尔标量）：用户在设置-插件页
+   「详情/配置」里编辑；MCP 型插件的配置会以环境变量（键名自动大写，如 api_key → API_KEY）
+   注入 server 子进程，server.py 里用 `os.environ.get("API_KEY")` 读取。PATH/HOME 等
+   保留环境变量名禁止作为配置键。
+
+## Copilot 插件（应用级独立体系，与 Agent 插件分开，应用范围更广）
+
+当需求是**定制整个应用本身**——改主题、自定义 Agent、自定义工具、自定义语言、
+增删替换任何模块，或注册主窗口页面 / 后台服务 / 托盘动作 / 快捷键——用 Copilot 插件
+（`create_copilot_plugin` / `apply_copilot_plugin` / `revert_copilot_plugin`，
+设置页「Copilot 插件」）：
+
+1. 与 Agent 插件共用同一套源码变更引擎与插件校验系统，安全边界一致；落点自动切换：
+   源码运行直接改 `src/`，**打包（安装版）写源码覆盖层** `~/.zhuzhu_Copilot/source_overlay/`
+   （导入钩子优先加载，重启生效）——安装版同样能源码级定制。
+2. 除 source_ops 外可带 `copilot.json` 应用扩展清单（pages/services/tray/shortcuts，
+   `module` 指向**插件包内**源码文件，随包分发），以及可选 `agent/` 子包
+   （SKILL.md + server.py，导入时登记为技能与 MCP，成为 Agent 插件的超集）。
+3. 学习示例：`src/zhuzhu_Copilot/copilot_plugins_examples/`（theme-deep-blue 改主题 /
+   custom-hello-tool 自定义工具 / settings-page-demo 自定义设置页 /
+   tray-quick-note 应用扩展 / py-syntax-lint Python 语法高亮与纠错（「插入」示例：
+   追加包装函数重绑定既有函数，原有代码行一行未改）/ prompt-optimizer 提示词优化
+   （「替换」示例：replace_module 改写既有函数末行）），都是标准插件包，可导入后
+   体验应用/回滚闭环。
+4. 受保护核心程序（任何源码插件不得改动）：`plugin_guard.py`、`plugin_source.py`、
+   `copilot_plugins.py`、`security.py`、`security_engine/`、`_copilot_overlay_hook.py`、`main.py`。

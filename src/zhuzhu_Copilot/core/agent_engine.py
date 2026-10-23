@@ -555,6 +555,12 @@ def _context_image(data_url: str) -> str:
 _NO_WAIT_TIMEOUT_TOOLS = frozenset({
     "run_command",      # 长命令（构建/训练/长脚本）天然无上限，由停止按钮取消
     "create_plugin",    # 生成类：内部是完整 LLM 往返（设计 + 自检 + 可能自修），远超 40s
+    "create_source_plugin",   # 生成类：完整 LLM 往返（source_ops 设计 + 插件校验），远超 40s
+    "apply_source_plugin",    # 源码应用：备份 + 多文件写入 + 逐文件编译检查，可超 40s
+    "revert_source_plugin",   # 源码回滚：多文件还原，可超 40s
+    "create_copilot_plugin",  # 生成类：完整 LLM 往返（source_ops + 扩展清单设计 + 校验）
+    "apply_copilot_plugin",   # 源码应用：备份 + 多文件写入 + 逐文件编译检查，可超 40s
+    "revert_copilot_plugin",  # 源码回滚：多文件还原，可超 40s
     "send_file_to_wechat",   # 微信推送：大文件 CDN 上传可超 40s，超时放弃会与真实结果错位
     "send_files_to_wechat",  # 微信批量推送：N 个文件 × 多次网络往返（getuploadurl+CDN+sendmessage）
 })
@@ -573,6 +579,26 @@ def _tool_wait_timeout(name: str):
     if name == "fast_download":
         return _DOWNLOAD_WAIT_TIMEOUT_S
     return _DEFAULT_WAIT_TIMEOUT_S
+
+
+def _builtin_points_gate(auth) -> str:
+    """内置模型（agens）开跑前的余额预检。放行返回空串，否则返回错误文案。
+
+    为什么必须有这一步：积分扣费是「流式输出攒够 TOKEN_FLUSH_THRESHOLD(100)
+    token 才第一次上报」，扣到负数服务端才回 402。若不在任务开始前查余额，
+    0 积分的用户照样能聊一小段（约 100 token）才被截断——等于白送。
+
+    读本地缓存余额（WS points_update 与每次扣费响应都会刷新它），不再多发
+    一次网络请求；缓存显示有余量但服务端实际为 0 时，仍由首次扣费的 402
+    截断兜底，不会漏放。
+    """
+    try:
+        if auth is not None and auth.get_points() <= 0:
+            return _ui("积分不足：当前余额为 0，内置模型（agens）已停用，"
+                       "请充值或接入其他 AI 服务后继续")
+    except Exception:
+        pass                                 # 取余额失败不阻断：交给扣费环节裁决
+    return ""
 
 
 def _call_with_stop(fn, stop_event, timeout: float = 30.0):
@@ -2559,6 +2585,43 @@ class AgentEngine:
             # 对话作用域复位（线程可能被复用：下次任务入口会重新落地）
             agent_context.set_conversation(_prev_conv or "")
 
+    def _emit_block_message(self, msg: str):
+        """把「任务被前置拦截」的文案直接显示给用户。
+
+        必须走 on_delta 而不是 on_status：on_status 只更新一行瞬时状态
+        （随后会被「正在思考…」等覆盖，用户根本看不见），on_delta 才会落进
+        AI 气泡成为一条真正的回复。on_delta 缺失时（测试/无 UI）退化为状态行。
+        """
+        if not msg:
+            return
+        try:
+            if self.on_delta:
+                self.on_delta(msg)
+            elif self.on_status:
+                self.on_status(msg)
+        except Exception:
+            pass
+
+    def _finish_stopped(self):
+        """统一的「被强制中断」出口：end_state 与提示文字全网关唯一。
+
+        不论中断落在哪个位置（思考中 / 流式输出中 / 工具预处理 / 工具执行中）、
+        也不论是首次执行还是重试（再次尝试）时被中断，用户看到的必须一致：
+        end_state="stopped"（结束徽章 Stop by user）+ on_status("已停止")
+        （状态行立即收起，不留「正在执行: xxx」残影；后台会话也据此触发
+        「AI 任务已停止」通知与排队消息续跑）。
+
+        曾经的两种不一致都由此消除：
+        1. 工具预处理/执行中的停止分支只置 end_state、完全不发状态 → 后台会话
+           收不到「已停止」，task_active 永不复位、排队消息卡死、无通知；
+        2. 领导者暂停终止用「已停止（被领导者暂停后终止）」→ 与精确匹配
+           「已停止」的后台结束处理对不上，同样漏通知。
+        所有停止分支只调本方法，禁止各处散落自定义文案。
+        """
+        self.end_state = "stopped"
+        if self.on_status:
+            self.on_status("已停止")
+
     def _run_inner(self, user_input: str, agent_name: str = "", images: list = None,
                    skills: list = None, plugins: list = None):
         self.end_state = ""
@@ -2574,10 +2637,20 @@ class AgentEngine:
                 _auth = _get_auth_client()
                 if not _auth.is_logged_in():
                     _msg = _ui("未登录：内置模型（agnes）需登录账号后使用，请在右上角点击「登录」")
-                    if self.on_status:
-                        self.on_status(_msg)
+                    self._emit_block_message(_msg)
                     self._messages.append({"role": "assistant", "content": _msg})
-                    self.end_state = "done"
+                    # end_state=error（不是 done）：任务被前置拦截=失败，结束徽章
+                    # 必须是红色 Error，绝不能用绿色 Successfully 误报成功
+                    self.end_state = "error"
+                    return
+                # 余额预检（见 _builtin_points_gate）：0 积分直接结束，
+                # 不能等流式输出攒够 100 token 才第一次扣费，那等于白送一段对话。
+                _gate_msg = _builtin_points_gate(_auth)
+                if _gate_msg:
+                    self._emit_block_message(_gate_msg)
+                    self._messages.append({"role": "assistant", "content": _gate_msg})
+                    # 同上：拦截=失败 → Error 徽章（红色），不用 Successfully
+                    self.end_state = "error"
                     return
                 self._points_consumer = PointsConsumer(_auth)
         except Exception:
@@ -2750,16 +2823,13 @@ class AgentEngine:
             # 每轮都检查 _stop，长任务可一直执行下去
             while True:
                 if self._stop.is_set():
-                    self.end_state = "stopped"
-                    if self.on_status:
-                        self.on_status("已停止")
+                    self._finish_stopped()
                     return
                 # 工作团控制：暂停中挂起等待恢复；领导者警告注入本轮上下文（仅首次）
                 if self._control is not None:
                     if not self._control.wait_if_paused():
-                        self.end_state = "stopped"
-                        if self.on_status:
-                            self.on_status("已停止（被领导者暂停后终止）")
+                        # 与用户手动停止共用同一出口：提示文字/徽章/后台通知全一致
+                        self._finish_stopped()
                         return
                     _warns = self._control.drain_warns()
                     if _warns:
@@ -2961,7 +3031,9 @@ class AgentEngine:
                                 self._messages.append({
                                     "role": "tool", "tool_call_id": c["id"],
                                     "content": "[已停止] 用户已停止任务，该工具未执行"})
-                        self.end_state = "stopped"
+                        # 必须发「已停止」状态：后台会话的结束处理（通知/task_active
+                        # 复位/排队续跑）只认这个状态文本，漏发会令会话卡在运行中
+                        self._finish_stopped()
                         return
                     name = call["function"]["name"]
                     # 技能路由硬拦截：被技能覆盖的工具，首次调用直接把该技能的规范流程
@@ -3099,7 +3171,8 @@ class AgentEngine:
                                 self._messages.append({
                                     "role": "tool", "tool_call_id": c["id"],
                                     "content": "[已停止] 用户已停止任务，该工具未执行"})
-                        self.end_state = "stopped"
+                        # 同工具预处理分支：统一出口，漏发状态会卡死后台会话收尾
+                        self._finish_stopped()
                         return
                     if not approved:
                         text = "[用户拒绝执行此操作]"
@@ -3260,16 +3333,21 @@ class AgentEngine:
                 else:
                     self._consec_fail = 0
         except agent_llm.AgentLLMError as e:
-            # 用户主动停止（含 LLM 层"已停止"）优先识别为 stopped，而不是 error
-            stopped = self._stop.is_set()
-            self.end_state = "stopped" if stopped else "error"
-            if self.on_status:
-                self.on_status("已停止" if stopped else f"错误: {e}")
+            # 用户主动停止（含 LLM 层"已停止"）优先识别为 stopped，而不是 error；
+            # 停止与错误都走统一出口，保证提示文字/徽章在任何中断位置都一致
+            if self._stop.is_set():
+                self._finish_stopped()
+            else:
+                self.end_state = "error"
+                if self.on_status:
+                    self.on_status(f"错误: {e}")
         except Exception as e:
-            stopped = self._stop.is_set()
-            self.end_state = "stopped" if stopped else "error"
-            if self.on_status:
-                self.on_status("已停止" if stopped else f"错误: {e}")
+            if self._stop.is_set():
+                self._finish_stopped()
+            else:
+                self.end_state = "error"
+                if self.on_status:
+                    self.on_status(f"错误: {e}")
         finally:
             # 朗读收尾：正常完成则让朗读线程把剩余文本读完；停止/出错则立即停
             if self.end_state == "done":

@@ -14,9 +14,23 @@
   skill    仅提供标准技能 SKILL.md
   combined 同时提供技能与 MCP 工具
   web      三件套：SKILL.md 技能 + MCP 工具 + 本地 HTTP 浏览器界面（可视化交互类）
+  source   源码级插件：携带 source_ops 源码变更清单（新建源码文件 / 追加到现有
+           代码模块之后 / 锚点后插入 / 替换模块 / 整体替换文件），可跨多个文件
+           综合修改并集成功能。应用前必须通过插件校验系统，应用时逐文件备份、
+           编译检查、可一键卸载回滚。
 
-生成链路（`create_plugin_from_nl`）：AI 设计 → 落盘 → **冒烟自检**（py_compile → web 打
-HTTP 端点 / mcp 走 stdio tools/list）→ 未过则把错误回灌给模型自修（有界轮数）→ 通过才登记
+插件包元数据（plugin.json）：name 名称 / author 开发者或公司 / updated_at 更新时间 /
+icon 插件图标（包内图标文件名）/ description / kind / enabled 等。
+
+安全（插件校验系统，内置唯一、不可替换）：所有插件在导入 / AI 生成 / 源码应用
+之前都要过 `plugin_guard` 校验（静态危险规则 + LLM 源码评审）；判定危险的代码
+**强制删除**并明确提示用户，源码级插件危险则整体移除插件包。校验系统自身与
+安全引擎位于 PROTECTED_CORE_FILES，任何源码插件不得改动，plugin.json 也没有
+任何字段可以跳过校验。
+
+生成链路（`create_plugin_from_nl`）：AI 设计 → 落盘 → **插件校验**（guard，危险即
+强制删除并告知）→ **冒烟自检**（py_compile → web 打 HTTP 端点 / mcp 走 stdio
+tools/list）→ 未过则把错误回灌给模型自修（有界轮数）→ 复检 → 通过才登记
 MCP（避免坏 server 进注册表，每次会话都拉起报错）。
 
 MCP 传输由 plugin.json 声明（可组合「远程 MCP server + 本地 SKILL.md 技能」的市场插件）：
@@ -236,6 +250,10 @@ def list_plugins() -> list:
         meta.setdefault("kind", "mcp")
         meta.setdefault("enabled", True)
         meta.setdefault("created_at", "")
+        # 插件包规范字段：开发者/公司、更新时间（缺省回落创建时间）、图标
+        meta.setdefault("author", "")
+        meta.setdefault("updated_at", meta.get("created_at") or "")
+        meta.setdefault("icon", "")
         # 推断构成：目录内存在 SKILL.md / server.py / deploy.py，或声明远程 SSE
         d = plugin_dir(n)
         has_skill = (d / "SKILL.md").is_file()
@@ -243,8 +261,43 @@ def list_plugins() -> list:
                    or str(meta.get("mcp_type") or "").lower() == "sse")
         meta["has_skill"] = has_skill
         meta["has_mcp"] = has_mcp
+        meta["source_applied"] = (d / "applied.json").is_file()
         out.append(meta)
     return out
+
+
+_ICON_EXTS = {".png", ".jpg", ".jpeg", ".svg", ".ico", ".gif", ".webp"}
+
+
+def plugin_icon_path(name: str):
+    """插件图标文件路径（plugin.json 的 icon 字段指向包内图标；无/非法返回 None）。"""
+    icon = str((_read_meta(name) or {}).get("icon") or "").strip()
+    if not icon or "/" in icon or "\\" in icon or icon.startswith("."):
+        return None
+    p = plugin_dir(name) / icon
+    if p.is_file() and p.suffix.lower() in _ICON_EXTS:
+        return p
+    return None
+
+
+def _normalize_pkg_meta(name: str) -> None:
+    """导入/创建后补齐插件包规范字段：author / updated_at / icon（非法图标清空）。"""
+    meta = _read_meta(name)
+    if not meta:
+        return
+    changed = False
+    if not str(meta.get("author") or "").strip():
+        meta["author"] = ""
+        changed = True
+    if not str(meta.get("updated_at") or "").strip():
+        meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        changed = True
+    icon = str(meta.get("icon") or "").strip()
+    if icon and plugin_icon_path(name) is None:
+        meta["icon"] = ""
+        changed = True
+    if changed:
+        _write_meta(name, meta)
 
 
 def plugin_mcp_names() -> set:
@@ -467,7 +520,144 @@ def _mcp_config_for(meta: dict) -> dict:
     else:
         command = agent_runtime.python_interpreter()
         args = [str(d / "server.py")]
-    return {"name": mcp_name, "type": "stdio", "command": command, "args": args}
+    cfg = {"name": mcp_name, "type": "stdio", "command": command, "args": args}
+    env = plugin_config_env(name)
+    if env:
+        cfg["env"] = env   # 插件配置以环境变量注入 server 子进程（见 set_plugin_config）
+    return cfg
+
+
+# ---------- 插件配置（config.json，每插件一份，设置-插件页可编辑） ----------
+# 配置是「键 → 标量」的扁平结构；对 MCP 型插件，保存时同步把配置以环境变量
+# （键名大写，如 api_key → API_KEY）写进 mcp_servers.json 对应服务器，stdio
+# server 子进程启动时注入（见 agent_mcp._StdioTransport）。
+
+_CONFIG_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+
+# 禁用的环境变量名（大写后比较）：防插件配置覆盖 PATH/HOME 等关键变量
+_ENV_RESERVED = {"PATH", "HOME", "USERPROFILE", "TEMP", "TMP", "APPDATA",
+                 "LOCALAPPDATA", "COMSPEC", "PATHEXT", "SYSTEMROOT",
+                 "WINDIR", "PYTHONPATH", "USERNAME", "COMPUTERNAME"}
+
+_MAX_CONFIG_KEYS = 64
+
+
+def plugin_config_path(name: str) -> str:
+    """插件配置文件路径（plugins/<name>/config.json）"""
+    return str(plugin_dir(name) / "config.json")
+
+
+def get_plugin_config(name: str) -> dict:
+    """读取插件配置；文件缺失/损坏/结构非法时返回 {}（不影响插件其余功能）。"""
+    f = plugin_dir(name) / "config.json"
+    if not f.is_file():
+        return {}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # 只接受「键 → 标量」的扁平结构；嵌套/列表等忽略（防配置被写坏后拖累插件）
+    return {str(k): v for k, v in data.items()
+            if isinstance(v, (str, int, float, bool))}
+
+
+def _validate_config(cfg) -> tuple:
+    """校验配置结构：dict、键合法且非保留环境变量名、值为标量。返回 (ok, msg)。"""
+    if not isinstance(cfg, dict):
+        return False, "配置必须是 JSON 对象（键值对）"
+    if len(cfg) > _MAX_CONFIG_KEYS:
+        return False, f"配置项超过 {_MAX_CONFIG_KEYS} 个上限"
+    for k, v in cfg.items():
+        key = str(k)
+        if not _CONFIG_KEY_RE.match(key):
+            return False, f"配置键「{key}」不合法（仅字母/数字/下划线/连字符/点，≤64 字符）"
+        if key.upper() in _ENV_RESERVED:
+            return False, (f"配置键「{key}」会覆盖系统关键环境变量"
+                           "（PATH/HOME 等），已禁止")
+        if isinstance(v, bool) or isinstance(v, (str, int, float)):
+            if isinstance(v, str) and len(v) > 4096:
+                return False, f"配置项「{key}」取值过长（>4096 字符）"
+            continue
+        return False, f"配置项「{key}」的取值只支持标量（文本/数字/布尔）"
+    return True, ""
+
+
+def set_plugin_config(name: str, cfg: dict) -> tuple:
+    """保存插件配置到 config.json；若插件已登记 stdio MCP，同步更新其 env 并
+    提示需要重连生效。返回 (ok, message)。"""
+    if not plugin_dir(name).is_dir():
+        return False, f"插件「{name}」不存在"
+    ok, why = _validate_config(cfg)
+    if not ok:
+        return False, why
+    try:
+        (plugin_dir(name) / "config.json").write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        return False, f"写入插件配置失败: {e}"
+    # 联动 MCP：更新已登记服务器的 env（重连由上层触发）
+    mcp_updated = False
+    try:
+        meta = _read_meta(name) or {}
+        bound = meta.get("mcp_name")
+        if bound:
+            servers = agent_skills.load_mcp_servers()
+            env = plugin_config_env(name)
+            for s in servers:
+                if s.get("name") == bound and s.get("type") == "stdio":
+                    if env:
+                        s["env"] = env
+                    else:
+                        s.pop("env", None)
+                    mcp_updated = True
+            if mcp_updated:
+                agent_skills.save_mcp_servers(servers)
+    except Exception:
+        pass
+    msg = f"已保存插件「{name}」的配置（{len(cfg)} 项）"
+    if mcp_updated:
+        msg += "；MCP 服务器环境变量已更新，重连后生效"
+    return True, msg
+
+
+def plugin_config_env(name: str) -> dict:
+    """插件配置 → MCP server 子进程环境变量（键名大写；跳过保留键）。"""
+    env = {}
+    for k, v in get_plugin_config(name).items():
+        key = str(k).upper()
+        if key in _ENV_RESERVED:
+            continue
+        env[key] = ("true" if v else "false") if isinstance(v, bool) else str(v)
+    return env
+
+
+def export_plugin_zip(name: str, dest_path: str) -> tuple:
+    """导出插件包为 zip（含 plugin.json/config.json/图标/源码等全部文件）；
+    排除 __pycache__、backups/、applied.json（本机回滚数据，不可移植）。
+    返回 (ok, message)。"""
+    d = plugin_dir(name)
+    if not d.is_dir():
+        return False, f"插件「{name}」不存在"
+    dest = Path(str(dest_path or "").strip())
+    if not str(dest_path or "").strip() or str(dest) in ("", "."):
+        return False, "缺少导出路径"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(d.rglob("*")):
+                if not f.is_file():
+                    continue
+                rel = f.relative_to(d)
+                if any(seg in ("__pycache__", "backups") for seg in rel.parts):
+                    continue
+                if rel.parts == ("applied.json",):
+                    continue
+                z.write(f, f"{name}/{rel.as_posix()}")
+    except OSError as e:
+        return False, f"导出失败: {e}"
+    return True, f"已导出插件「{name}」→ {dest}"
 
 
 def set_plugin_enabled(name: str, enabled: bool) -> tuple:
@@ -505,6 +695,13 @@ def delete_plugin(name: str) -> tuple:
     if not d.is_dir():
         return False, f"插件「{name}」不存在"
     meta = _read_meta(name)
+    # 源码插件：先卸载回滚已应用的源码变更（备份仍在；失败不阻断删除本身）
+    if (d / "applied.json").is_file():
+        try:
+            from zhuzhu_Copilot.core import plugin_source
+            plugin_source.revert_source_plugin(name)
+        except Exception:
+            pass
     # 1. 解绑已登记的 MCP 服务器（mcp_servers.json）
     try:
         bound = meta.get("mcp_name")
@@ -548,6 +745,7 @@ def import_plugin_zip(zip_path: str) -> tuple:
     p = Path(zip_path or "")
     if not p.is_file():
         return False, "文件不存在"
+    from zhuzhu_Copilot.core import plugin_guard
     root = plugins_dir()
     try:
         with zipfile.ZipFile(p) as z:
@@ -589,10 +787,16 @@ def import_plugin_zip(zip_path: str) -> tuple:
                     return False, "压缩包内含越界路径（拒绝导入）"
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(z.read(info))
+        # 插件校验系统（内置唯一、不可替换）：静态规则 + LLM 源码评审。
+        # 判定危险 → guard 已强制删除危险文件（必要时整体移除插件）→ 拒绝导入并提示。
+        gok, gmsg = plugin_guard.guard_plugin(name)
+        if not gok:
+            return False, gmsg
         msg = f"已导入插件「{name}」（{target}）"
         reg_ok, reg_msg = _register_imported_plugin(name)
         if reg_msg:
             msg += f"；{reg_msg}"
+        _normalize_pkg_meta(name)   # 补齐 author/updated_at/icon 规范字段
         return reg_ok, msg
     except zipfile.BadZipFile:
         return False, "不是有效的 zip 包"
@@ -678,8 +882,10 @@ def _wrap_skill_dir(name: str, skill_src: Path) -> tuple:
         shutil.copytree(skill_src, plugin_dir(name), dirs_exist_ok=True)
     except OSError as e:
         return False, f"复制技能失败: {e}"
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
     meta = {"name": name, "kind": "skill", "enabled": True,
-            "skill_name": name, "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "skill_name": name, "created_at": now, "updated_at": now,
+            "author": "", "icon": "",
             "description": _read_skill_desc(plugin_dir(name) / "SKILL.md")}
     _write_meta(name, meta)
     return True, f"已导入技能插件「{name}」（skill 型）"
@@ -728,6 +934,13 @@ def create_plugin_from_nl(description: str, kind: str = "combined", on_status=No
 
     rep(60, "AI 已完成设计，正在写入插件文件…")
     ok, err = _write_plugin_files(name, kind, spec)
+    if ok:
+        # 插件校验系统（内置唯一、不可替换）：冒烟自检会**真跑**插件代码，
+        # 必须先过校验；危险代码已被强制删除并随错误提示用户。
+        from zhuzhu_Copilot.core import plugin_guard
+        gok, gmsg = plugin_guard.guard_plugin(name)
+        if not gok:
+            return False, gmsg
     rep(85, "正在冒烟自检（语法 / HTTP 端点 / MCP tools）…")
     verified, detail = _verify_plugin(name, kind) if ok else (False, err)
     # 自检未过 → 把错误回灌给模型让它自己修（有界次数，避免生成时长失控）
@@ -751,14 +964,22 @@ def create_plugin_from_nl(description: str, kind: str = "combined", on_status=No
         spec = fixed
         verified, detail = _verify_plugin(name, kind)
 
+    if repairs > 0:
+        # 修正轮重写过插件文件，登记前复检（内容可能已变化）
+        from zhuzhu_Copilot.core import plugin_guard
+        gok, gmsg = plugin_guard.guard_plugin(name)
+        if not gok:
+            return False, gmsg
     rep(96, "正在登记技能与 MCP 配置…")
     d = plugin_dir(name)
     parts = _spec_parts(spec, kind)
     has_skill, has_mcp = parts["has_skill"], parts["has_mcp"]
     try:
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
         meta = {"name": name, "kind": kind, "enabled": True,
                 "description": parts["summary"] or desc,
-                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "author": "AI 生成", "created_at": now, "updated_at": now,
+                "icon": "",
                 "verified": bool(verified), "verify_detail": detail}
         # 登记 MCP：本地 server.py → stdio（本地部署）。
         # **只在自检通过时登记**：坏 server 一旦进注册表，每次会话都会拉起并报错刷屏。
@@ -1126,6 +1347,142 @@ def _ai_generate_spec(desc: str, kind: str) -> dict:
             return data if isinstance(data, dict) else {}
         except json.JSONDecodeError:
             return {}
+
+
+# ── 源码级插件：AI 生成 source_ops 变更清单 ──────────────────────────────
+
+_SOURCE_OP_RULES = (
+    "可用 op（path 均为相对应用源码根（src/）的路径，"
+    "如 zhuzhu_Copilot/core/xxx.py）：\n"
+    '  create_file     新建源码文件：{"op":"create_file","path":"...","content":"完整文件内容"}\n'
+    '  append          追加到现有代码模块之后：{"op":"append","path":"...","content":"...",'
+    '"after":"锚点串(可选，缺省追加到文件末尾)"}\n'
+    '  insert_after    锚点后插入：{"op":"insert_after","path":"...",'
+    '"anchor":"锚点串(必须在目标文件中唯一)","content":"..."}\n'
+    '  replace_module  替换模块：{"op":"replace_module","path":"...",'
+    '"start":"起始锚点","end":"结束锚点(可选，缺省替换到文件尾)","content":"..."}\n'
+    '  replace_file    整体替换文件：{"op":"replace_file","path":"...","content":"..."}\n'
+    "硬性要求：\n"
+    "  · 优先新建模块（create_file）再在现有模块里做最小侵入接线"
+    "（append/insert_after），不得大段重写无关代码；\n"
+    "  · 锚点必须取自目标文件里**真实存在且唯一**的字符串（函数签名 / 注释标记 / "
+    "注册表条目行），设计前应先 read_file 查看目标文件真实内容；\n"
+    "  · 严禁改动受保护核心程序：zhuzhu_Copilot/core/plugin_guard.py、"
+    "security.py、security_engine/（整个目录）；\n"
+    "  · 代码用 Python 3.13 标准库或已在依赖清单内的库，风格与目标文件一致；\n"
+    "  · 每条 op 的 content 必须是完整、可独立编译的代码。\n"
+)
+
+
+def _ai_generate_source_spec(desc: str) -> dict:
+    """调用当前配置的 LLM 生成源码级插件设计 JSON（name/summary/author/source_ops）。"""
+    from zhuzhu_Copilot.core import agent_llm
+    cfg = agent_llm.load_model_config()
+    client = agent_llm.LLMClient(cfg.get("base_url"), cfg.get("api_key"),
+                                 cfg.get("model") or agent_llm.DEFAULT_MODEL)
+    sys_p = (
+        "你是源码级插件设计专家。根据用户描述，设计对 zhuzhu Copilot 应用源码的"
+        "变更清单 source_ops（开发者基于源码开发插件）。\n" + _SOURCE_OP_RULES +
+        '输出严格 JSON（不要 markdown 代码块包裹）：\n'
+        '{\n'
+        '  "name": "插件名（英文，字母数字下划线连字符，≤50字符，小写）",\n'
+        '  "summary": "一句话用途简介（中文）",\n'
+        '  "author": "开发者/公司名（未知可留空）",\n'
+        '  "source_ops": [上述 op 对象，1-N 条，可跨多个文件]\n'
+        "}\n"
+        f"用户描述: {desc}"
+    )
+    try:
+        res = client.chat(
+            [{"role": "system", "content": sys_p},
+             {"role": "user", "content": desc}],
+            max_tokens=8192, timeout=agent_llm.GEN_TIMEOUT_S)
+        text = (res.get("text") or "").strip()
+    except Exception:
+        raise
+    if not text:
+        return {}
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return {}
+        try:
+            data = json.loads(m.group(0))
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+
+def create_source_plugin_from_nl(description: str, on_status=None) -> tuple:
+    """用自然语言描述创建源码级插件：AI 设计 source_ops → 落盘插件包 →
+    **插件校验系统**（危险即强制删除并提示）→ 返回应用指引（不会自动改源码）。
+
+    返回 (ok, message)。应用需显式调用 apply_source_plugin（可先人工review）。
+    """
+    def rep(pct, msg):
+        if callable(on_status):
+            try:
+                on_status(int(pct), msg)
+            except Exception:
+                pass
+
+    desc = (description or "").strip()
+    if not desc:
+        return False, "请用自然语言描述你想要的源码插件功能"
+    rep(5, "正在分析需求并设计源码变更清单…")
+    try:
+        spec = _ai_generate_source_spec(desc)
+    except Exception as e:
+        return False, f"AI 生成失败: {e}"
+    if not spec:
+        return False, "AI 未返回有效的源码插件设计"
+    name = str(spec.get("name") or "").strip().lower()
+    if not _NAME_RE.match(name or ""):
+        return False, "AI 返回的插件名不合法，请换一种描述重试"
+    if plugin_dir(name).exists():
+        return False, f"插件「{name}」已存在，请换名或删除后重试"
+    ops = spec.get("source_ops")
+    if not isinstance(ops, list) or not ops:
+        return False, "AI 未返回 source_ops 变更清单"
+    from zhuzhu_Copilot.core import plugin_source
+    ok, why = plugin_source.validate_source_ops(ops)
+    if not ok:
+        return False, f"AI 返回的变更清单不合法：{why}"
+
+    rep(60, "正在写入源码插件包…")
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    meta = {"name": name, "kind": "source", "enabled": True,
+            "description": str(spec.get("summary") or desc),
+            "author": str(spec.get("author") or "").strip() or "AI 生成",
+            "created_at": now, "updated_at": now, "icon": "",
+            "source_ops": ops}
+    try:
+        d = plugin_dir(name)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "source_ops.json").write_text(
+            json.dumps(ops, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_meta(name, meta)
+    except OSError as e:
+        return False, f"创建源码插件失败: {e}"
+
+    rep(85, "插件校验系统检查中（静态规则 + LLM 源码评审）…")
+    from zhuzhu_Copilot.core import plugin_guard
+    gok, gmsg = plugin_guard.guard_source_plugin(name)
+    if not gok:
+        return False, gmsg
+    _normalize_pkg_meta(name)
+    n_files = len({str(op.get("path") or "") for op in ops if isinstance(op, dict)})
+    return True, (f"已创建源码插件「{name}」（{n_files} 个文件、{len(ops)} 条变更），"
+                  f"已通过插件校验系统。\n变更清单：{d / 'source_ops.json'}\n"
+                  "**尚未改动源码**——确认无误后调用 apply_source_plugin 应用"
+                  "（应用时逐文件备份、编译检查，可 revert_source_plugin 回滚）；"
+                  "也可以先 read_file 审查清单后再决定。")
 
 
 def _split_impl(name: str, impl: str) -> tuple:
@@ -1538,3 +1895,25 @@ def _start_http():
 def skill_md_path(name: str) -> str:
     """插件内置 SKILL.md 路径（skill 型插件）"""
     return str(plugin_dir(name) / "SKILL.md")
+
+
+# ---------- 源码级插件：应用 / 卸载回滚 / 状态 ----------
+# 实现见 plugin_source（引擎）与 plugin_guard（应用前的强制校验）；
+# 这里只做惰性导入包装，避免模块级循环依赖。
+
+def apply_source_plugin(name: str) -> tuple:
+    """应用源码插件的变更（先过插件校验系统，失败整体回滚）。返回 (ok, msg)。"""
+    from zhuzhu_Copilot.core import plugin_source
+    return plugin_source.apply_source_plugin(name)
+
+
+def revert_source_plugin(name: str) -> tuple:
+    """卸载回滚源码插件已应用的变更（按 applied.json + 备份还原）。返回 (ok, msg)。"""
+    from zhuzhu_Copilot.core import plugin_source
+    return plugin_source.revert_source_plugin(name)
+
+
+def source_plugin_status(name: str) -> dict:
+    """源码插件应用状态：{applied, applied_at, ops, files}。"""
+    from zhuzhu_Copilot.core import plugin_source
+    return plugin_source.source_plugin_status(name)

@@ -1,0 +1,10 @@
+{
+  "name": "py-syntax-lint",
+  "kind": "copilot",
+  "author": "zhuzhu Copilot 示例",
+  "description": "Python 语法高亮与纠错：聊天里的代码块按 Python 语法着色，并新增 check_python_syntax 工具（语法错误定位，只解析不执行）——源码级「插入」示例（不改原代码行）",
+  "enabled": true,
+  "created_at": "2026-10-23 22:00:00",
+  "updated_at": "2026-10-23 22:00:00",
+  "icon": ""
+}

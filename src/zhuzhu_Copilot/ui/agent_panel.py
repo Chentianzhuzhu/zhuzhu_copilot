@@ -111,6 +111,8 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextBrowser,
     QTextEdit,
     QToolButton,
@@ -1154,6 +1156,11 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
         'a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682'
         'a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015'
         ' 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/>'),
+    # Copilot 插件：立方体箱件 —— 应用级插件（覆盖整个应用的源码与扩展点）
+    "copilot_plugins": _lucide(
+        '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0'
+        ' 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>'
+        '<path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>'),
     # 语音合成：声波刻度 —— 朗读音色与语速
     "tts": _lucide(
         '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/>'
@@ -1204,7 +1211,8 @@ _NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("模型接入", "model"),
     ("技能", "skills"),
     ("MCP 服务器", "mcp"),
-    ("插件", "plugins"),
+    ("Agent 插件", "plugins"),
+    ("Copilot 插件", "copilot_plugins"),
     ("语音合成", "tts"),
     ("音乐", "music"),
     ("Agent 管理", "agents"),
@@ -1220,6 +1228,8 @@ _PLUGIN_KIND_LABEL = {
     "mcp": "工具",
     "skill": "技能",
     "combined": "工具+技能",
+    "web": "网页三件套",
+    "source": "源码插件",
 }
 
 # 导航图标尺寸（px）：18px 下 brain-circuit / puzzle 这类细密图形的笔画才分得开
@@ -2380,6 +2390,9 @@ _OP_STATUS = {
     # ---- 扩展能力 ----
     "create_skill": "正在创建技能",
     "create_plugin": "正在创建插件",
+    "create_source_plugin": "正在创建源码插件",
+    "apply_source_plugin": "正在应用源码插件",
+    "revert_source_plugin": "正在回滚源码插件",
     "create_workflow": "正在创建工作流",
     "register_sub_agent": "正在注册子 Agent",
     "dispatch_sub_agents": "正在派发子 Agent",
@@ -2622,6 +2635,719 @@ class _MultiLineInputDialog(QDialog):
         return (dlg.get_value(), True) if ok else ("", False)
 
 
+class _PluginDetailDialog(QDialog):
+    """插件详情与配置（设置-插件页）：基本信息 / 插件配置 / 源码变更 / 校验记录。
+
+    - 基本信息：名称、类型、开发者/公司、更新时间、描述、构成、校验结论；
+    - 插件配置：键值编辑，保存到插件目录 config.json；对 MCP 型插件以环境变量
+      （键名大写）注入 server 子进程，保存后需重连生效（config_saved 信号通知
+      父窗口重连 MCP）；
+    - 源码变更：源码级插件的 source_ops 清单与应用状态（只读预览）；
+    - 校验记录：插件校验系统对该插件的拦截/通过日志。
+    """
+
+    config_saved = pyqtSignal()   # 配置已保存（父窗口据此重连 MCP / 刷新列表）
+
+    def __init__(self, plugin: dict, parent=None):
+        super().__init__(parent)
+        self._plugin = plugin or {}
+        self._name = str(self._plugin.get("name") or "")
+        self.setWindowTitle(_uif("插件详情与配置 - {n}", n=self._name))
+        self.setMinimumSize(640, 520)
+        self.setModal(True)
+        # 与 _MultiLineInputDialog 同理：对话框是不透明白底，取原始色板
+        _dlg_bg = _base_color("PANEL")
+        _in_bg = _base_color("PANEL")
+        _bd = _base_color("BORDER")
+        self.setStyleSheet(f"QDialog {{ background: {_dlg_bg}; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+
+        # ---- 头区：图标 + 名称 + 类型/状态 + 开发者/更新时间 ----
+        head = QHBoxLayout()
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(48, 48)
+        try:
+            ip = agent_plugins.plugin_icon_path(self._name)
+            if ip is not None:
+                pm = QPixmap(str(ip))
+                if not pm.isNull():
+                    icon_lbl.setPixmap(pm.scaled(
+                        44, 44, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+        except Exception:
+            pass
+        if icon_lbl.pixmap() is None:
+            icon_lbl.setText("🧩")
+            icon_lbl.setStyleSheet(f"font-size: 30px;")
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(icon_lbl)
+        title_col = QVBoxLayout()
+        name_lbl = QLabel(self._name)
+        name_lbl.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
+        title_col.addWidget(name_lbl)
+        kind = _PLUGIN_KIND_LABEL.get(self._plugin.get("kind"), str(self._plugin.get("kind") or ""))
+        state = _ui("启用") if self._plugin.get("enabled") else _ui("停用")
+        sub_lbl = QLabel(_uif("{k} · {s}", k=kind, s=state))
+        sub_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        title_col.addWidget(sub_lbl)
+        meta_bits = []
+        if str(self._plugin.get("author") or "").strip():
+            meta_bits.append(_uif("开发者: {a}", a=self._plugin.get("author")))
+        if str(self._plugin.get("updated_at") or "").strip():
+            meta_bits.append(_uif("更新: {t}", t=self._plugin.get("updated_at")))
+        if meta_bits:
+            meta_lbl = QLabel(" | ".join(meta_bits))
+            meta_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+            title_col.addWidget(meta_lbl)
+        head.addLayout(title_col, 1)
+        lay.addLayout(head)
+
+        # ---- 页签 ----
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(
+            f"QTabWidget::pane {{ border: 1px solid {_bd}; border-radius: 8px; }}"
+            f"QTabBar::tab {{ background: {_in_bg}; color: {TEXT_DIM};"
+            "padding: 6px 14px; border-top-left-radius: 6px;"
+            "border-top-right-radius: 6px; }}"
+            f"QTabBar::tab:selected {{ background: {_dlg_bg}; color: {TEXT}; }}")
+        lay.addWidget(self.tabs, 1)
+        self._build_info_tab()
+        self._build_config_tab()
+        if self._plugin.get("kind") == "source":
+            self._build_source_tab()
+        self._build_guard_tab()
+
+        # ---- 底部按钮 ----
+        btns = QHBoxLayout()
+        export_b = QPushButton(_ui("导出插件包…"))
+        export_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
+                               f"border: 1px solid {_bd}; border-radius: 8px;"
+                               "padding: 7px 16px; font-weight: 600;")
+        export_b.setAutoDefault(False)
+        export_b.setToolTip(_ui("把插件打包为 zip（含 plugin.json / 配置 / 图标 / 源码），便于分享与备份"))
+        export_b.clicked.connect(self._on_export)
+        btns.addWidget(export_b)
+        btns.addStretch(1)
+        close_b = QPushButton(_ui("关闭"))
+        close_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
+                              f"border: 1px solid {_bd}; border-radius: 8px;"
+                              "padding: 7px 20px;")
+        close_b.setAutoDefault(False)
+        close_b.clicked.connect(self.accept)
+        btns.addWidget(close_b)
+        lay.addLayout(btns)
+
+    # ---------- 页签：基本信息 ----------
+
+    def _build_info_tab(self):
+        w = QWidget()
+        form = QFormLayout(w)
+        form.setContentsMargins(14, 12, 14, 12)
+        form.setSpacing(8)
+        _lbl_style = f"color: {TEXT}; font-size: 13px;"
+        _key_style = f"color: {TEXT_DIM}; font-size: 12px;"
+
+        def _row(k, v):
+            kl = QLabel(_ui(k))
+            kl.setStyleSheet(_key_style)
+            vl = QLabel(str(v or "—"))
+            vl.setStyleSheet(_lbl_style)
+            vl.setWordWrap(True)
+            vl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            form.addRow(kl, vl)
+
+        _row("插件名", self._plugin.get("name"))
+        _row("类型", _PLUGIN_KIND_LABEL.get(self._plugin.get("kind"),
+                                            str(self._plugin.get("kind") or "")))
+        _row("开发者/公司", self._plugin.get("author"))
+        _row("创建时间", self._plugin.get("created_at"))
+        _row("更新时间", self._plugin.get("updated_at"))
+        _row("描述", self._plugin.get("description"))
+        parts = []
+        if self._plugin.get("has_skill"):
+            parts.append("技能 SKILL.md")
+        if self._plugin.get("has_mcp"):
+            parts.append("MCP 工具")
+        _row("构成", "、".join(parts) or "—")
+        verified = self._plugin.get("verified")
+        vtxt = ("通过" if verified else "未通过/未检") if verified is not None else "未检"
+        detail = str(self._plugin.get("verify_detail") or "")
+        _row("冒烟自检", (vtx + (f"（{detail[:120]}）" if detail and not verified else ""))
+            if verified is not None else "未检")
+        self.tabs.addTab(w, _ui("基本信息"))
+
+    # ---------- 页签：插件配置 ----------
+
+    def _build_config_tab(self):
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(8)
+        hint = QLabel(_ui("键值配置保存到插件目录 config.json；对 MCP 型插件会以环境变量"
+                          "（键名自动大写，如 api_key → API_KEY）注入 server 进程，"
+                          "保存后需重连 MCP 生效。"))
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+        self.cfg_table = QTableWidget(0, 2)
+        self.cfg_table.setHorizontalHeaderLabels([_ui("配置键"), _ui("值")])
+        self.cfg_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.cfg_table.verticalHeader().setVisible(False)
+        self.cfg_table.setStyleSheet(
+            f"QTableWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px;"
+            "gridline-color: transparent; }"
+            f"QTableWidget::item {{ padding: 4px 6px; }}"
+            f"QLineEdit {{ background: {_base_color('PANEL')}; color: {TEXT}; }}")
+        cfg = agent_plugins.get_plugin_config(self._name)
+        for k, v in cfg.items():
+            self._cfg_add_row(k, "" if isinstance(v, bool) and v is False else v)
+        col.addWidget(self.cfg_table, 1)
+        row = QHBoxLayout()
+        add_b = QPushButton(_ui("添加一项"))
+        add_b.setStyleSheet(f"background: {_base_color('PANEL')}; color: {TEXT};"
+                            f"border: 1px solid {_base_color('BORDER')};"
+                            "border-radius: 8px; padding: 6px 14px;")
+        add_b.setAutoDefault(False)
+        add_b.clicked.connect(lambda: self._cfg_add_row("", ""))
+        row.addWidget(add_b)
+        del_b = QPushButton(_ui("删除选中行"))
+        del_b.setStyleSheet(f"background: {_base_color('PANEL')}; color: {TEXT};"
+                            f"border: 1px solid {_base_color('BORDER')};"
+                            "border-radius: 8px; padding: 6px 14px;")
+        del_b.setAutoDefault(False)
+        del_b.clicked.connect(self._cfg_del_row)
+        row.addWidget(del_b)
+        row.addStretch(1)
+        save_b = QPushButton(_ui("保存配置"))
+        save_b.setStyleSheet(f"background: {ACCENT}; color: #FFFFFF; border: none;"
+                             "border-radius: 8px; padding: 6px 20px; font-weight: 700;")
+        save_b.setAutoDefault(False)
+        save_b.clicked.connect(self._on_save_config)
+        row.addWidget(save_b)
+        col.addLayout(row)
+        self.tabs.addTab(w, _ui("插件配置"))
+
+    def _cfg_add_row(self, key, value):
+        r = self.cfg_table.rowCount()
+        self.cfg_table.insertRow(r)
+        self.cfg_table.setItem(r, 0, QTableWidgetItem(str(key)))
+        self.cfg_table.setItem(r, 1, QTableWidgetItem(
+            "true" if value is True else "false" if value is False else str(value)))
+
+    def _cfg_del_row(self):
+        rows = sorted({i.row() for i in self.cfg_table.selectedItems()},
+                      reverse=True)
+        for r in rows:
+            self.cfg_table.removeRow(r)
+
+    def _on_save_config(self):
+        cfg = {}
+        for r in range(self.cfg_table.rowCount()):
+            k = (self.cfg_table.item(r, 0) or QTableWidgetItem("")).text().strip()
+            v = (self.cfg_table.item(r, 1) or QTableWidgetItem("")).text().strip()
+            if not k and not v:
+                continue
+            if not k:
+                QMessageBox.warning(self, _ui("保存失败"), _ui("存在没有配置键的行，请补全或删除"))
+                return
+            if k in cfg:
+                QMessageBox.warning(self, _ui("保存失败"), _uif("配置键「{k}」重复", k=k))
+                return
+            if v.lower() in ("true", "false"):
+                cfg[k] = (v.lower() == "true")
+            else:
+                try:
+                    cfg[k] = int(v)
+                except ValueError:
+                    try:
+                        cfg[k] = float(v)
+                    except ValueError:
+                        cfg[k] = v
+        ok, msg = agent_plugins.set_plugin_config(self._name, cfg)
+        if ok:
+            QMessageBox.information(self, _ui("保存配置"), msg)
+            self.config_saved.emit()
+        else:
+            QMessageBox.warning(self, _ui("保存失败"), msg)
+
+    # ---------- 页签：源码变更（source 型） ----------
+
+    def _build_source_tab(self):
+        from zhuzhu_Copilot.core import plugin_source
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(8)
+        st = plugin_source.source_plugin_status(self._name)
+        state = QLabel(_uif("应用状态：{s}", s="已应用" if st.get("applied") else "未应用")
+                       + (_uif("（{n} 个文件，{t}）", n=len(st.get("files") or []),
+                              t=st.get("applied_at") or "") if st.get("applied") else ""))
+        state.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        state.setWordWrap(True)
+        col.addWidget(state)
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels([_ui("操作"), _ui("目标文件（相对源码根）")])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setStyleSheet(
+            f"QTableWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px;"
+            "gridline-color: transparent; }}")
+        try:
+            ops = plugin_source.load_source_ops(self._name)
+        except Exception:
+            ops = []
+        for op in ops:
+            r = table.rowCount()
+            table.insertRow(r)
+            table.setItem(r, 0, QTableWidgetItem(str(op.get("op") or "")))
+            table.setItem(r, 1, QTableWidgetItem(str(op.get("path") or "")))
+        col.addWidget(table, 1)
+        hint = QLabel(_ui("完整变更清单见插件目录 source_ops.json（可编辑后重新导入，"
+                          "或用应用/回滚按钮管理）。"))
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+        self.tabs.addTab(w, _ui("源码变更"))
+
+    # ---------- 页签：校验记录 ----------
+
+    def _build_guard_tab(self):
+        from zhuzhu_Copilot.core import plugin_guard
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(8)
+        lst = QListWidget()
+        lst.setStyleSheet(
+            f"QListWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px; padding: 4px; }}"
+            f"QListWidget::item {{ padding: 6px 8px; }}")
+        lst.setWordWrap(True)
+        events = [e for e in plugin_guard.recent_guard_events(50)
+                  if str(e.get("plugin") or "") == self._name]
+        _ACT = {"pass": "通过", "pass_source": "通过（源码）",
+                "force_delete": "强制删除危险代码",
+                "force_delete_source_plugin": "强制删除源码插件包"}
+        if not events:
+            item = QListWidgetItem(_ui("暂无校验记录（导入/创建/应用时会自动记录）"))
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            lst.addItem(item)
+        for e in events:
+            act = _ACT.get(str(e.get("action") or ""), str(e.get("action") or ""))
+            reason = str(e.get("llm_reason") or "")
+            if not reason:
+                reasons = e.get("reasons") or {}
+                if isinstance(reasons, dict):
+                    reason = "；".join(f"{k}" for k in list(reasons)[:4])
+            txt = f"[{e.get('ts', '')}] {act}"
+            if reason:
+                txt += f" — {reason[:120]}"
+            lst.addItem(QListWidgetItem(txt))
+        col.addWidget(lst, 1)
+        self.tabs.addTab(w, _ui("校验记录"))
+
+    # ---------- 导出 ----------
+
+    def _on_export(self):
+        dest, _ = QFileDialog.getSaveFileName(
+            self, _ui("导出插件包"), f"{self._name}.zip",
+            _ui("插件压缩包 (*.zip)"))
+        if not dest:
+            return
+        ok, msg = agent_plugins.export_plugin_zip(self._name, dest)
+        if ok:
+            QMessageBox.information(self, _ui("导出插件"), msg)
+        else:
+            QMessageBox.warning(self, _ui("导出失败"), msg)
+
+
+class _CopilotPluginDetailDialog(QDialog):
+    """Copilot 插件详情与配置（设置-Copilot 插件页）：基本信息 / 插件配置 /
+    源码变更 / 应用扩展 / 校验记录。
+
+    Copilot 插件是应用级独立体系（与 Agent 插件分开）：源码变更可插入任何源码
+    文件、新建源码文件、跨多文件综合修改；copilot.json 声明主窗口页面 / 后台
+    服务 / 托盘动作 / 快捷键；可选 agent/ 子包附带 MCP 工具与技能。
+    """
+
+    config_saved = pyqtSignal()   # 配置已保存（父窗口据此重连 MCP / 刷新列表）
+
+    def __init__(self, plugin: dict, parent=None):
+        super().__init__(parent)
+        self._plugin = plugin or {}
+        self._name = str(self._plugin.get("name") or "")
+        self.setWindowTitle(_uif("Copilot 插件详情与配置 - {n}", n=self._name))
+        self.setMinimumSize(640, 540)
+        self.setModal(True)
+        _dlg_bg = _base_color("PANEL")
+        _in_bg = _base_color("PANEL")
+        _bd = _base_color("BORDER")
+        self.setStyleSheet(f"QDialog {{ background: {_dlg_bg}; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+
+        # ---- 头区：图标 + 名称 + 状态 + 开发者/更新时间 ----
+        head = QHBoxLayout()
+        icon_lbl = QLabel()
+        icon_lbl.setFixedSize(48, 48)
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ip = copilot_plugins.plugin_icon_path(self._name)
+            if ip is not None:
+                pm = QPixmap(str(ip))
+                if not pm.isNull():
+                    icon_lbl.setPixmap(pm.scaled(
+                        44, 44, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+        except Exception:
+            pass
+        if icon_lbl.pixmap() is None:
+            icon_lbl.setText("🧊")
+            icon_lbl.setStyleSheet("font-size: 30px;")
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(icon_lbl)
+        title_col = QVBoxLayout()
+        name_lbl = QLabel(self._name)
+        name_lbl.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
+        title_col.addWidget(name_lbl)
+        state = _ui("启用") if self._plugin.get("enabled") else _ui("停用")
+        sub_lbl = QLabel(_uif("Copilot 应用级插件 · {s}", s=state))
+        sub_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        title_col.addWidget(sub_lbl)
+        meta_bits = []
+        if str(self._plugin.get("author") or "").strip():
+            meta_bits.append(_uif("开发者: {a}", a=self._plugin.get("author")))
+        if str(self._plugin.get("updated_at") or "").strip():
+            meta_bits.append(_uif("更新: {t}", t=self._plugin.get("updated_at")))
+        if meta_bits:
+            meta_lbl = QLabel(" | ".join(meta_bits))
+            meta_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+            title_col.addWidget(meta_lbl)
+        head.addLayout(title_col, 1)
+        lay.addLayout(head)
+
+        # ---- 页签 ----
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(
+            f"QTabWidget::pane {{ border: 1px solid {_bd}; border-radius: 8px; }}"
+            f"QTabBar::tab {{ background: {_in_bg}; color: {TEXT_DIM};"
+            "padding: 6px 14px; border-top-left-radius: 6px;"
+            "border-top-right-radius: 6px; }}"
+            f"QTabBar::tab:selected {{ background: {_dlg_bg}; color: {TEXT}; }}")
+        lay.addWidget(self.tabs, 1)
+        self._build_info_tab()
+        self._build_config_tab()
+        self._build_source_tab()
+        self._build_manifest_tab()
+        self._build_guard_tab()
+
+        # ---- 底部按钮 ----
+        btns = QHBoxLayout()
+        export_b = QPushButton(_ui("导出插件包…"))
+        export_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
+                               f"border: 1px solid {_bd}; border-radius: 8px;"
+                               "padding: 7px 16px; font-weight: 600;")
+        export_b.setAutoDefault(False)
+        export_b.setToolTip(_ui("把插件打包为 zip（含 plugin.json / 配置 / 图标 / 变更清单），便于分享与备份"))
+        export_b.clicked.connect(self._on_export)
+        btns.addWidget(export_b)
+        btns.addStretch(1)
+        close_b = QPushButton(_ui("关闭"))
+        close_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
+                              f"border: 1px solid {_bd}; border-radius: 8px;"
+                              "padding: 7px 20px;")
+        close_b.setAutoDefault(False)
+        close_b.clicked.connect(self.accept)
+        btns.addWidget(close_b)
+        lay.addLayout(btns)
+
+    # ---------- 页签：基本信息 ----------
+
+    def _build_info_tab(self):
+        from zhuzhu_Copilot.core import copilot_plugins
+        w = QWidget()
+        form = QFormLayout(w)
+        form.setContentsMargins(14, 12, 14, 12)
+        form.setSpacing(8)
+        _lbl_style = f"color: {TEXT}; font-size: 13px;"
+        _key_style = f"color: {TEXT_DIM}; font-size: 12px;"
+
+        def _row(k, v):
+            kl = QLabel(_ui(k))
+            kl.setStyleSheet(_key_style)
+            vl = QLabel(str(v or "—"))
+            vl.setStyleSheet(_lbl_style)
+            vl.setWordWrap(True)
+            vl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            form.addRow(kl, vl)
+
+        _row("插件名", self._plugin.get("name"))
+        _row("体系", "Copilot 应用级插件（与 Agent 插件分开）")
+        _row("开发者/公司", self._plugin.get("author"))
+        _row("创建时间", self._plugin.get("created_at"))
+        _row("更新时间", self._plugin.get("updated_at"))
+        _row("描述", self._plugin.get("description"))
+        try:
+            st = copilot_plugins.status(self._name)
+            ops = copilot_plugins.source_ops(self._name)
+            n_files = len({str(op.get("path") or "") for op in ops})
+        except Exception:
+            st, ops, n_files = {}, [], 0
+        _row("源码变更", _uif("{n} 个文件 / {m} 条操作（{s}）",
+                              n=n_files, m=len(ops),
+                              s="已应用" if st.get("applied") else "未应用"))
+        ext = self._plugin.get("manifest_ext") or {}
+        if any(ext.values()):
+            _row("应用扩展", "、".join(f"{k}×{v}" for k, v in ext.items() if v))
+        _row("Agent 能力", "含 agent/ 子包（技能 + MCP）"
+            if self._plugin.get("has_agent_pkg") else "无")
+        self.tabs.addTab(w, _ui("基本信息"))
+
+    # ---------- 页签：插件配置 ----------
+
+    def _build_config_tab(self):
+        from zhuzhu_Copilot.core import copilot_plugins
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(8)
+        hint = QLabel(_ui("键值配置保存到插件目录 config.json；插件带的 MCP server 会以环境变量"
+                          "（键名大写）读取，如 os.environ.get(\"API_KEY\")。保存后需重连 MCP 生效。"))
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+        self.cfg_table = QTableWidget(0, 2)
+        self.cfg_table.setHorizontalHeaderLabels([_ui("配置键"), _ui("值")])
+        self.cfg_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.cfg_table.verticalHeader().setVisible(False)
+        self.cfg_table.setStyleSheet(
+            f"QTableWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px;"
+            "gridline-color: transparent; }"
+            f"QTableWidget::item {{ padding: 4px 6px; }}"
+            f"QLineEdit {{ background: {_base_color('PANEL')}; color: {TEXT}; }}")
+        for k, v in copilot_plugins.get_plugin_config(self._name).items():
+            self._cfg_add_row(k, v)
+        col.addWidget(self.cfg_table, 1)
+        row = QHBoxLayout()
+        add_b = QPushButton(_ui("添加一项"))
+        add_b.setStyleSheet(f"background: {_base_color('PANEL')}; color: {TEXT};"
+                            f"border: 1px solid {_base_color('BORDER')};"
+                            "border-radius: 8px; padding: 6px 14px;")
+        add_b.setAutoDefault(False)
+        add_b.clicked.connect(lambda: self._cfg_add_row("", ""))
+        row.addWidget(add_b)
+        del_b = QPushButton(_ui("删除选中行"))
+        del_b.setStyleSheet(f"background: {_base_color('PANEL')}; color: {TEXT};"
+                            f"border: 1px solid {_base_color('BORDER')};"
+                            "border-radius: 8px; padding: 6px 14px;")
+        del_b.setAutoDefault(False)
+        del_b.clicked.connect(self._cfg_del_row)
+        row.addStretch(1)
+        save_b = QPushButton(_ui("保存配置"))
+        save_b.setStyleSheet(f"background: {ACCENT}; color: #FFFFFF; border: none;"
+                             "border-radius: 8px; padding: 6px 20px; font-weight: 700;")
+        save_b.setAutoDefault(False)
+        save_b.clicked.connect(self._on_save_config)
+        row.addWidget(save_b)
+        col.addLayout(row)
+        self.tabs.addTab(w, _ui("插件配置"))
+
+    def _cfg_add_row(self, key, value):
+        r = self.cfg_table.rowCount()
+        self.cfg_table.insertRow(r)
+        self.cfg_table.setItem(r, 0, QTableWidgetItem(str(key)))
+        self.cfg_table.setItem(r, 1, QTableWidgetItem(
+            "true" if value is True else "false" if value is False else str(value)))
+
+    def _cfg_del_row(self):
+        rows = sorted({i.row() for i in self.cfg_table.selectedItems()},
+                      reverse=True)
+        for r in rows:
+            self.cfg_table.removeRow(r)
+
+    def _on_save_config(self):
+        from zhuzhu_Copilot.core import copilot_plugins
+        cfg = {}
+        for r in range(self.cfg_table.rowCount()):
+            k = (self.cfg_table.item(r, 0) or QTableWidgetItem("")).text().strip()
+            v = (self.cfg_table.item(r, 1) or QTableWidgetItem("")).text().strip()
+            if not k and not v:
+                continue
+            if not k:
+                QMessageBox.warning(self, _ui("保存失败"), _ui("存在没有配置键的行，请补全或删除"))
+                return
+            if k in cfg:
+                QMessageBox.warning(self, _ui("保存失败"), _uif("配置键「{k}」重复", k=k))
+                return
+            if v.lower() in ("true", "false"):
+                cfg[k] = (v.lower() == "true")
+            else:
+                try:
+                    cfg[k] = int(v)
+                except ValueError:
+                    try:
+                        cfg[k] = float(v)
+                    except ValueError:
+                        cfg[k] = v
+        ok, msg = copilot_plugins.set_plugin_config(self._name, cfg)
+        if ok:
+            QMessageBox.information(self, _ui("保存配置"), msg)
+            self.config_saved.emit()
+        else:
+            QMessageBox.warning(self, _ui("保存失败"), msg)
+
+    # ---------- 页签：源码变更 ----------
+
+    def _build_source_tab(self):
+        from zhuzhu_Copilot.core import copilot_plugins
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(8)
+        st = copilot_plugins.status(self._name)
+        state = QLabel(_uif("应用状态：{s}", s="已应用" if st.get("applied") else "未应用")
+                       + (_uif("（{n} 个文件，{t}）", n=len(st.get("files") or []),
+                              t=st.get("applied_at") or "") if st.get("applied") else ""))
+        state.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        state.setWordWrap(True)
+        col.addWidget(state)
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels([_ui("操作"), _ui("目标文件（相对源码根）")])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setStyleSheet(
+            f"QTableWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px;"
+            "gridline-color: transparent; }}")
+        try:
+            ops = copilot_plugins.source_ops(self._name)
+        except Exception:
+            ops = []
+        for op in ops:
+            r = table.rowCount()
+            table.insertRow(r)
+            table.setItem(r, 0, QTableWidgetItem(str(op.get("op") or "")))
+            table.setItem(r, 1, QTableWidgetItem(str(op.get("path") or "")))
+        col.addWidget(table, 1)
+        hint = QLabel(_ui("变更可插入任何源码文件（追加/锚点插入/替换模块）、新建源码文件、"
+                          "一次修改多个文件；应用时逐文件备份、编译检查，失败整体回滚。"))
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+        self.tabs.addTab(w, _ui("源码变更"))
+
+    # ---------- 页签：应用扩展（copilot.json） ----------
+
+    def _build_manifest_tab(self):
+        from zhuzhu_Copilot.core import copilot_plugins
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(8)
+        lst = QListWidget()
+        lst.setStyleSheet(
+            f"QListWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px; padding: 4px; }}"
+            f"QListWidget::item {{ padding: 6px 8px; }}")
+        lst.setWordWrap(True)
+        try:
+            man = copilot_plugins.load_copilot_manifest(
+                copilot_plugins.plugin_dir(self._name))
+        except Exception:
+            man = {}
+        _SEC = {"pages": "主窗口页面", "services": "后台服务",
+                "tray": "托盘动作", "shortcuts": "全局快捷键"}
+        rows = 0
+        for sec, label in _SEC.items():
+            for it in (man.get(sec) or []):
+                rows += 1
+                if sec == "pages":
+                    txt = _uif("{s}：{t}（{m} → {w}）", s=label,
+                               t=it.get("title"), m=it.get("module"),
+                               w=it.get("widget"))
+                elif sec == "services":
+                    txt = _uif("{s}：{t}（{m} → {e}/{p}）", s=label,
+                               t=it.get("title"), m=it.get("module"),
+                               e=it.get("entry"), p=it.get("stop") or "—")
+                elif sec == "tray":
+                    txt = _uif("{s}：{t}（{m} → {a}）", s=label,
+                               t=it.get("title"), m=it.get("module"),
+                               a=it.get("action"))
+                else:
+                    txt = _uif("{s}：{t}（{h} → {m}.{a}）", s=label,
+                               t=it.get("title"), h=it.get("hotkey"),
+                               m=it.get("module"), a=it.get("action"))
+                lst.addItem(QListWidgetItem(txt))
+        if not rows:
+            item = QListWidgetItem(_ui("该插件没有声明应用扩展（仅源码级变更）。"
+                                       "扩展在插件包 copilot.json 中声明，重启应用后生效。"))
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            lst.addItem(item)
+        col.addWidget(lst, 1)
+        self.tabs.addTab(w, _ui("应用扩展"))
+
+    # ---------- 页签：校验记录 ----------
+
+    def _build_guard_tab(self):
+        from zhuzhu_Copilot.core import copilot_plugins
+        w = QWidget()
+        col = QVBoxLayout(w)
+        col.setContentsMargins(14, 12, 14, 12)
+        col.setSpacing(8)
+        lst = QListWidget()
+        lst.setStyleSheet(
+            f"QListWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px; padding: 4px; }}"
+            f"QListWidget::item {{ padding: 6px 8px; }}")
+        lst.setWordWrap(True)
+        events = copilot_plugins.guard_log(self._name, 50)
+        _ACT = {"pass": "通过", "pass_source": "通过（源码）",
+                "force_delete": "强制删除危险代码",
+                "force_delete_source_plugin": "强制删除源码插件包"}
+        if not events:
+            item = QListWidgetItem(_ui("暂无校验记录（导入/创建/应用时会自动记录）"))
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            lst.addItem(item)
+        for e in events:
+            act = _ACT.get(str(e.get("action") or ""), str(e.get("action") or ""))
+            reason = str(e.get("llm_reason") or "")
+            if not reason:
+                reasons = e.get("reasons") or {}
+                if isinstance(reasons, dict):
+                    reason = "；".join(f"{k}" for k in list(reasons)[:4])
+            txt = f"[{e.get('ts', '')}] {act}"
+            if reason:
+                txt += f" — {reason[:120]}"
+            lst.addItem(QListWidgetItem(txt))
+        col.addWidget(lst, 1)
+        self.tabs.addTab(w, _ui("校验记录"))
+
+    # ---------- 导出 ----------
+
+    def _on_export(self):
+        from zhuzhu_Copilot.core import copilot_plugins
+        dest, _ = QFileDialog.getSaveFileName(
+            self, _ui("导出 Copilot 插件包"), f"{self._name}.zip",
+            _ui("插件压缩包 (*.zip)"))
+        if not dest:
+            return
+        ok, msg = copilot_plugins.export_plugin_zip(self._name, dest)
+        if ok:
+            QMessageBox.information(self, _ui("导出插件"), msg)
+        else:
+            QMessageBox.warning(self, _ui("导出失败"), msg)
+
+
 class _ConfirmDialog(QDialog):
     """工具执行确认：显示操作与风险等级（不再内嵌屏幕截图，更轻更快）
 
@@ -2833,9 +3559,11 @@ class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
     plugin_done = pyqtSignal(str, str)   # 插件创建完成（ok, message），后台线程回主线程
+    copilot_plugin_done = pyqtSignal(str, str)   # Copilot 插件创建完成（ok, message）
     workflow_done = pyqtSignal(str, str)  # 工作流 AI 生成完成（ok, message），后台线程回主线程
     workflow_progress = pyqtSignal(int, str)  # 工作流生成进度（百分比, 阶段提示），后台线程回主线程
     plugin_progress = pyqtSignal(int, str)    # 插件生成进度（百分比, 阶段提示），后台线程回主线程
+    copilot_plugin_progress = pyqtSignal(int, str)  # Copilot 插件生成进度（百分比, 阶段提示）
     plugin_progress = pyqtSignal(int, str)  # 插件生成进度（百分比, 阶段提示）
     wechat_message_signal = pyqtSignal(str)   # 微信消息：后台线程 → 主线程分发
     #: /api/shop/products 拉取完成（后台线程 → 主线程重建会员卡片）。
@@ -2934,6 +3662,7 @@ class _AgentSettingsDialog(QDialog):
             self._build_skill_page,
             self._build_mcp_page,
             self._build_plugin_page,
+            self._build_copilot_plugin_page,
             self._build_tts_page,
             self._build_music_page,
             self._build_agent_page,
@@ -2976,9 +3705,11 @@ class _AgentSettingsDialog(QDialog):
         root.addLayout(right)
 
         self.plugin_done.connect(self._on_plugin_done)
+        self.copilot_plugin_done.connect(self._on_coplugin_done)
         self.workflow_done.connect(self._on_workflow_done)
         self.workflow_progress.connect(self._on_workflow_progress)
         self.plugin_progress.connect(self._on_plugin_progress)
+        self.copilot_plugin_progress.connect(self._on_coplugin_progress)
         # 支付收款码加载结果回主线程落地（后台线程 → 主线程，Qt 自动排队）
         self.pay_qr_signal.connect(self._on_pay_qr)
 
@@ -5207,6 +5938,38 @@ class _AgentSettingsDialog(QDialog):
         imp_skill.setAutoDefault(False)
         imp_skill.setToolTip(_ui("导入市场标准 SKILL.md（或含 SKILL.md 的 zip），包装为 skill 型插件"))
         imp_skill.clicked.connect(self._on_plugin_import_skill)
+        src_create_b = QPushButton(_ui("创建源码插件（自然语言）"))
+        src_create_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                                   f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                                   "padding: 7px 14px; font-weight: 600;")
+        src_create_b.setAutoDefault(False)
+        src_create_b.setToolTip(_ui("开发者向：AI 生成对应用源码的变更清单（新建源码文件/追加到现有模块之后/"
+                                    "锚点插入/替换模块/多模块综合修改），经插件校验系统检查后由你确认应用"))
+        src_create_b.clicked.connect(self._on_plugin_create_source)
+        self.plugin_apply_b = QPushButton(_ui("应用源码插件"))
+        self.plugin_apply_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
+                                          f"border: none; border-radius: 8px;"
+                                          "padding: 7px 14px; font-weight: 700;")
+        self.plugin_apply_b.setAutoDefault(False)
+        self.plugin_apply_b.setEnabled(False)
+        self.plugin_apply_b.setToolTip(_ui("应用源码插件的变更：先过插件校验系统（危险强制删除并提示），"
+                                           "再逐文件备份、应用、编译检查，失败整体回滚；改动重启应用后生效"))
+        self.plugin_apply_b.clicked.connect(self._on_plugin_apply_source)
+        self.plugin_revert_b = QPushButton(_ui("回滚源码插件"))
+        self.plugin_revert_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
+                                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                                           "padding: 7px 14px; font-weight: 600;")
+        self.plugin_revert_b.setAutoDefault(False)
+        self.plugin_revert_b.setEnabled(False)
+        self.plugin_revert_b.setToolTip(_ui("按备份卸载回滚已应用的源码变更（新建的文件删除、修改的文件还原）"))
+        self.plugin_revert_b.clicked.connect(self._on_plugin_revert_source)
+        detail_b = QPushButton(_ui("详情/配置"))
+        detail_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                               "padding: 7px 14px; font-weight: 600;")
+        detail_b.setAutoDefault(False)
+        detail_b.setToolTip(_ui("查看插件详情（开发者/更新时间/校验记录/源码变更），编辑插件配置（config.json，MCP 型以环境变量注入），导出插件包"))
+        detail_b.clicked.connect(self._on_plugin_detail)
         call_b = QPushButton(_ui("调用"))
         call_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
@@ -5233,9 +5996,17 @@ class _AgentSettingsDialog(QDialog):
                             "padding: 7px 14px; font-weight: 600;")
         del_b.setAutoDefault(False)
         del_b.clicked.connect(self._on_plugin_delete)
+        self.plugin_list.currentItemChanged.connect(
+            lambda *a: self._update_source_buttons())
+        self.plugin_list.itemDoubleClicked.connect(
+            lambda *a: self._on_plugin_detail())
         row.addWidget(create_b)
+        row.addWidget(src_create_b)
         row.addWidget(imp_zip)
         row.addWidget(imp_skill)
+        row.addWidget(detail_b)
+        row.addWidget(self.plugin_apply_b)
+        row.addWidget(self.plugin_revert_b)
         row.addWidget(toggle_b)
         row.addWidget(call_b)
         row.addWidget(wf_b)
@@ -5264,10 +6035,40 @@ class _AgentSettingsDialog(QDialog):
                                             p.get("description", "") or "")
             except Exception:
                 _plugin_desc = p.get("description", "") or ""
-            self.plugin_list.addItem(_uif(
-                "{name}   [{kind}]   {state}{wf}   {desc}",
+            # 插件包规范字段：开发者/公司、更新时间；源码插件附应用状态
+            _pkg = []
+            _author = str(p.get("author") or "").strip()
+            if _author:
+                _pkg.append(_uif("开发者: {a}", a=_author))
+            _updated = str(p.get("updated_at") or "").strip()
+            if _updated:
+                _pkg.append(_uif("更新: {t}", t=_updated))
+            if p.get("kind") == "source":
+                _pkg.append("已应用" if p.get("source_applied") else "未应用")
+            _pkg_line = ("   " + " | ".join(_pkg)) if _pkg else ""
+            _item = QListWidgetItem(_uif(
+                "{name}   [{kind}]   {state}{wf}   {desc}{pkg}",
                 name=p.get("name", "?"), kind=kind, state=state, wf=wf,
-                desc=_plugin_desc))
+                desc=_plugin_desc, pkg=_pkg_line))
+            # 插件图标（plugin.json 的 icon 指向包内图标文件）
+            try:
+                _icon = agent_plugins.plugin_icon_path(p.get("name", ""))
+                if _icon is not None:
+                    _item.setIcon(QIcon(str(_icon)))
+            except Exception:
+                pass
+            self.plugin_list.addItem(_item)
+        self._update_source_buttons()
+
+    def _update_source_buttons(self):
+        """按当前选中插件刷新「应用/回滚源码插件」按钮可用状态。"""
+        if not hasattr(self, "plugin_apply_b"):
+            return
+        p = self._current_plugin() or {}
+        is_source = p.get("kind") == "source"
+        applied = bool(p.get("source_applied"))
+        self.plugin_apply_b.setEnabled(bool(is_source) and not applied)
+        self.plugin_revert_b.setEnabled(bool(is_source) and applied)
 
     def _current_plugin(self) -> dict:
         row = self.plugin_list.currentRow()
@@ -5275,6 +6076,364 @@ class _AgentSettingsDialog(QDialog):
         if 0 <= row < len(plugins):
             return plugins[row]
         return None
+
+    # ------------------------------------------------------------------
+    # Copilot 插件页（应用级独立插件体系，与 Agent 插件分开）
+    # ------------------------------------------------------------------
+    def _build_copilot_plugin_page(self) -> QWidget:
+        w = self._page(_ui("Copilot 插件"))
+        lay = self._page_body(w)
+        sub = QLabel(_ui("Copilot 插件是应用级插件（与 Agent 插件分开，应用范围更广）：可把功能源码插入任何源码文件、"
+                         "新建源码文件、一次修改多个源码文件集成功能，也可注册主窗口页面 / 后台服务 / 托盘动作 / 快捷键，"
+                         "还可附带 MCP 工具与技能。改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块都可以。"
+                         "安装版同样支持：变更写入源码覆盖层，重启后生效。所有插件在导入 / 生成 / 应用前都经插件校验系统检查（危险代码强制删除并提示）。"))
+        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        self.coplugin_overlay_lbl = QLabel("")
+        self.coplugin_overlay_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
+        self.coplugin_overlay_lbl.setWordWrap(True)
+        lay.addWidget(self.coplugin_overlay_lbl)
+        self._refresh_coplugin_overlay_label()
+        self.coplugin_list = QListWidget()
+        self.coplugin_list.setWordWrap(True)
+        self.coplugin_list.setStyleSheet(
+            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
+            f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
+            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"color: {self._ACCENT_HOVER}; }}")
+        lay.addWidget(self.coplugin_list, 1)
+        row = FlowLayout(spacing=SPACING_SM)
+        create_b = QPushButton(_line_icon("plus", 16), _ui("创建 Copilot 插件（自然语言）"))
+        create_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
+                               "border: none; border-radius: 8px; padding: 7px 14px; font-weight: 700;")
+        create_b.setAutoDefault(False)
+        create_b.setToolTip(_ui("输入自然语言描述，AI 生成源码变更清单（插入任何源码文件/新建文件/多文件综合修改）与应用扩展清单"))
+        create_b.clicked.connect(self._on_coplugin_create)
+        imp_zip = QPushButton(_line_icon("folder", 16), _ui("导入插件包"))
+        imp_zip.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                              "padding: 7px 14px; font-weight: 600;")
+        imp_zip.setAutoDefault(False)
+        imp_zip.setToolTip(_ui("导入 Copilot 插件 zip 包（含 plugin.json 与 source_ops/copilot.json）"))
+        imp_zip.clicked.connect(self._on_coplugin_import_zip)
+        self.coplugin_apply_b = QPushButton(_ui("应用源码变更"))
+        self.coplugin_apply_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
+                                            f"border: none; border-radius: 8px;"
+                                            "padding: 7px 14px; font-weight: 700;")
+        self.coplugin_apply_b.setAutoDefault(False)
+        self.coplugin_apply_b.setEnabled(False)
+        self.coplugin_apply_b.setToolTip(_ui("应用插件的源码变更：先过插件校验系统，再逐文件备份、应用、编译检查，失败整体回滚；改动重启应用后生效"))
+        self.coplugin_apply_b.clicked.connect(self._on_coplugin_apply)
+        self.coplugin_revert_b = QPushButton(_ui("回滚源码变更"))
+        self.coplugin_revert_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
+                                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                                             "padding: 7px 14px; font-weight: 600;")
+        self.coplugin_revert_b.setAutoDefault(False)
+        self.coplugin_revert_b.setEnabled(False)
+        self.coplugin_revert_b.setToolTip(_ui("按备份卸载回滚已应用的源码变更（新建的文件删除、修改的文件还原）"))
+        self.coplugin_revert_b.clicked.connect(self._on_coplugin_revert)
+        detail_b = QPushButton(_ui("详情/配置"))
+        detail_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                               "padding: 7px 14px; font-weight: 600;")
+        detail_b.setAutoDefault(False)
+        detail_b.setToolTip(_ui("查看插件详情（开发者/更新时间/源码变更/应用扩展/校验记录），编辑插件配置，导出插件包"))
+        detail_b.clicked.connect(self._on_coplugin_detail)
+        export_b = QPushButton(_ui("导出插件包"))
+        export_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                               "padding: 7px 14px; font-weight: 600;")
+        export_b.setAutoDefault(False)
+        export_b.setToolTip(_ui("把插件打包为 zip 分享给他人（含配置/图标/清单，不含本机备份与应用记录）"))
+        export_b.clicked.connect(self._on_coplugin_export)
+        toggle_b = QPushButton(_ui("启用/停用"))
+        toggle_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                               "padding: 7px 14px; font-weight: 600;")
+        toggle_b.setAutoDefault(False)
+        toggle_b.clicked.connect(self._on_coplugin_toggle)
+        del_b = QPushButton(_line_icon("trash", 16), _ui("删除"))
+        del_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
+                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                            "padding: 7px 14px; font-weight: 600;")
+        del_b.setAutoDefault(False)
+        del_b.setToolTip(_ui("删除插件（已应用的源码变更会先回滚）"))
+        del_b.clicked.connect(self._on_coplugin_delete)
+        self.coplugin_list.currentItemChanged.connect(
+            lambda *a: self._update_coplugin_buttons())
+        self.coplugin_list.itemDoubleClicked.connect(
+            lambda *a: self._on_coplugin_detail())
+        row.addWidget(create_b)
+        row.addWidget(imp_zip)
+        row.addWidget(detail_b)
+        row.addWidget(self.coplugin_apply_b)
+        row.addWidget(self.coplugin_revert_b)
+        row.addWidget(export_b)
+        row.addWidget(toggle_b)
+        row.addWidget(del_b)
+        lay.addLayout(row)
+        self._reload_coplugin_list()
+        return w
+
+    def _reload_coplugin_list(self):
+        if not hasattr(self, "coplugin_list") or self.coplugin_list is None:
+            return   # Copilot 插件页尚未懒加载构建时跳过
+        self.coplugin_list.clear()
+        self._refresh_coplugin_overlay_label()
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            plugins = copilot_plugins.list_plugins()
+        except Exception:
+            plugins = []
+        for p in plugins:
+            state = _ui("启用") if p.get("enabled", True) else _ui("停用")
+            bits = []
+            if p.get("author"):
+                bits.append(_uif("开发者: {a}", a=str(p.get("author"))))
+            if p.get("updated_at"):
+                bits.append(_uif("更新: {t}", t=str(p.get("updated_at"))))
+            bits.append("源码已应用" if p.get("source_applied")
+                        else _uif("源码未应用（{n} 条变更）", n=p.get("source_ops") or 0))
+            ext = p.get("manifest_ext") or {}
+            if any(ext.values()):
+                bits.append("扩展: " + "、".join(
+                    f"{k}×{v}" for k, v in ext.items() if v))
+            if p.get("has_agent_pkg"):
+                bits.append("含 Agent 能力")
+            item = QListWidgetItem(_uif(
+                "{name}   [{state}]   {desc}   |  {bits}",
+                name=p.get("name", "?"), state=state,
+                desc=str(p.get("description") or ""), bits=" | ".join(bits)))
+            try:
+                icon = copilot_plugins.plugin_icon_path(p.get("name", ""))
+                if icon is not None:
+                    item.setIcon(QIcon(str(icon)))
+            except Exception:
+                pass
+            self.coplugin_list.addItem(item)
+        self._update_coplugin_buttons()
+
+    def _update_coplugin_buttons(self):
+        if not hasattr(self, "coplugin_apply_b") or self.coplugin_apply_b is None:
+            return
+        p = self._current_coplugin() or {}
+        self.coplugin_apply_b.setEnabled(bool(p.get("name")) and not p.get("source_applied"))
+        self.coplugin_revert_b.setEnabled(bool(p.get("source_applied")))
+
+    def _refresh_coplugin_overlay_label(self):
+        """刷新「生效位置」状态行：插件变更的落点（安装版为源码覆盖层）。"""
+        lbl = getattr(self, "coplugin_overlay_lbl", None)
+        if lbl is None:
+            return
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            info = copilot_plugins.overlay_info()
+        except Exception:
+            lbl.setText("")
+            return
+        if info.get("mode") == "overlay":
+            n = len(info.get("modules") or [])
+            lbl.setText(_uif("生效位置：插件源码层 {root} · 已加载 {n} 个模块 · 应用/回滚后重启生效",
+                             root=info.get("root"), n=n))
+        else:
+            lbl.setText(_uif("生效位置：插件源码层 {root} · 应用/回滚后重启生效",
+                             root=info.get("root")))
+
+    def _current_coplugin(self) -> dict:
+        if not hasattr(self, "coplugin_list") or self.coplugin_list is None:
+            return {}
+        row = self.coplugin_list.currentRow()
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            plugins = copilot_plugins.list_plugins()
+        except Exception:
+            return {}
+        if 0 <= row < len(plugins):
+            return plugins[row]
+        return {}
+
+    def _coplugin_worker(self, desc: str):
+        """后台线程：AI 生成 Copilot 插件（source_ops + 应用扩展清单，不自动改源码）"""
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ok, msg = copilot_plugins.create_from_nl(
+                desc, on_status=lambda p, s: self.copilot_plugin_progress.emit(p, s))
+            self.copilot_plugin_done.emit("1" if ok else "0", msg)
+        except Exception as e:
+            self.copilot_plugin_done.emit("0", f"创建 Copilot 插件异常: {e}")
+
+    def _on_coplugin_create(self, *_):
+        """自然语言描述 → 后台线程 AI 生成 Copilot 插件（变更清单，确认后才应用）"""
+        text, ok = _MultiLineInputDialog.get(
+            self, "创建 Copilot 插件",
+            "描述 Copilot 插件要做什么：改哪些源码文件、新建什么模块、集成什么功能，"
+            "要不要主窗口页面/后台服务/托盘/快捷键（生成 source_ops 变更清单，不会自动改动源码）：",
+            "在 core 下新建一个每日待办模块，并在 agent_tools 的工具清单里登记两个工具，"
+            "再在设置面板加一个待办页面")
+        if not ok or not text.strip():
+            return
+        self._pbar_open("创建 Copilot 插件", "正在分析需求并设计源码变更清单…")
+        threading.Thread(target=self._coplugin_worker, args=(text.strip(),),
+                         daemon=True).start()
+
+    def _on_coplugin_progress(self, pct: int, text: str):
+        self._pbar_update(pct, text)
+
+    def _on_coplugin_done(self, ok: str, msg: str):
+        self._pbar_close()
+        self._reload_coplugin_list()
+        if ok == "1":
+            QMessageBox.information(self, _ui("Copilot 插件已创建"), msg)
+        else:
+            QMessageBox.warning(self, _ui("创建失败"), msg)
+
+    def _on_coplugin_import_zip(self, *_):
+        path, _ = QFileDialog.getOpenFileName(
+            self, _ui("选择 Copilot 插件包"), "", _ui("插件包 (*.zip)"))
+        if not path:
+            return
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ok, msg = copilot_plugins.import_plugin_zip(path)
+        except Exception as e:
+            ok, msg = False, f"导入失败: {e}"
+        self._reload_coplugin_list()
+        if ok:
+            QMessageBox.information(self, _ui("导入成功"), msg)
+        else:
+            QMessageBox.warning(self, _ui("导入失败"), msg)
+
+    def _on_coplugin_export(self, *_):
+        p = self._current_coplugin()
+        if not p.get("name"):
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
+            return
+        name = p.get("name", "")
+        path, _ = QFileDialog.getSaveFileName(
+            self, _ui("导出 Copilot 插件包"), f"{name}.zip", _ui("插件包 (*.zip)"))
+        if not path:
+            return
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ok, msg = copilot_plugins.export_plugin_zip(name, path)
+        except Exception as e:
+            ok, msg = False, f"导出失败: {e}"
+        if ok:
+            QMessageBox.information(self, _ui("导出成功"), msg)
+        else:
+            QMessageBox.warning(self, _ui("导出失败"), msg)
+
+    def _on_coplugin_apply(self, *_):
+        p = self._current_coplugin()
+        if not p.get("name"):
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
+            return
+        name = p.get("name", "")
+        ret = QMessageBox.question(
+            self, _ui("应用源码变更"),
+            _uif("将应用 Copilot 插件「{n}」的源码变更：\n"
+                 "· 先经插件校验系统检查（危险代码强制删除并提示用户）\n"
+                 "· 每个被改文件自动备份，全部应用后编译检查，失败整体回滚\n"
+                 "· 重启应用后生效\n\n确定应用？", n=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ok, msg = copilot_plugins.apply(name)
+        except Exception as e:
+            ok, msg = False, f"应用失败: {e}"
+        self._reload_coplugin_list()
+        if ok:
+            QMessageBox.information(self, _ui("应用完成"), msg)
+        else:
+            QMessageBox.warning(self, _ui("应用失败"), msg)
+
+    def _on_coplugin_revert(self, *_):
+        p = self._current_coplugin()
+        if not p.get("name"):
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
+            return
+        name = p.get("name", "")
+        ret = QMessageBox.question(
+            self, _ui("回滚源码变更"),
+            _uif("将按备份卸载回滚「{n}」已应用的源码变更：\n"
+                 "· 新建的文件删除、修改的文件还原为应用前内容\n"
+                 "· 应用后被手动改过的文件会跳过（不覆盖你的修改）\n\n确定回滚？", n=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ok, msg = copilot_plugins.revert(name)
+        except Exception as e:
+            ok, msg = False, f"回滚失败: {e}"
+        self._reload_coplugin_list()
+        if ok:
+            QMessageBox.information(self, _ui("回滚完成"), msg)
+        else:
+            QMessageBox.warning(self, _ui("回滚失败"), msg)
+
+    def _on_coplugin_toggle(self, *_):
+        p = self._current_coplugin()
+        if not p.get("name"):
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
+            return
+        name = p.get("name", "")
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ok, msg = copilot_plugins.set_enabled(name, not p.get("enabled", True))
+        except Exception as e:
+            ok, msg = False, f"操作失败: {e}"
+        self._reload_coplugin_list()
+        if not ok:
+            QMessageBox.warning(self, _ui("操作失败"), msg)
+
+    def _on_coplugin_delete(self, *_):
+        p = self._current_coplugin()
+        if not p.get("name"):
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
+            return
+        name = p.get("name", "")
+        ret = QMessageBox.question(
+            self, _ui("删除 Copilot 插件"),
+            _uif("确定删除 Copilot 插件「{n}」？\n"
+                 "已应用的源码变更会先自动回滚；其登记的 Agent 能力（技能/MCP）也会移除。", n=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins
+            ok, msg = copilot_plugins.delete_plugin(name)
+        except Exception as e:
+            ok, msg = False, f"删除失败: {e}"
+        self._reload_coplugin_list()
+        if ok:
+            QMessageBox.information(self, _ui("已删除"), msg)
+        else:
+            QMessageBox.warning(self, _ui("删除失败"), msg)
+
+    def _on_coplugin_detail(self, *_):
+        """打开 Copilot 插件详情/配置对话框（双击列表项或「详情/配置」按钮）"""
+        p = self._current_coplugin()
+        if not p.get("name"):
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
+            return
+        dlg = _CopilotPluginDetailDialog(p, self)
+        dlg.config_saved.connect(self._on_coplugin_config_saved)
+        dlg.exec()
+
+    def _on_coplugin_config_saved(self, *_):
+        """配置已保存：刷新列表与 MCP 服务器，并重连使 env 注入生效"""
+        self._reload_coplugin_list()
+        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._reload_mcp_list()
+        threading.Thread(target=self._init_mcp, daemon=True).start()
 
     def _on_plugin_create(self, *_):
         """自然语言描述 → 后台线程 AI 生成插件（真实 API），生成期间显示百分比进度"""
@@ -5306,6 +6465,90 @@ class _AgentSettingsDialog(QDialog):
             self.plugin_done.emit("1" if ok else "0", msg)
         except Exception as e:
             self.plugin_done.emit("0", f"创建插件异常: {e}")
+
+    def _plugin_source_worker(self, desc: str):
+        """后台线程：AI 生成源码级插件（source_ops 变更清单，不自动改源码）"""
+        try:
+            ok, msg = agent_plugins.create_source_plugin_from_nl(
+                desc, on_status=lambda p, s: self.plugin_progress.emit(p, s))
+            self.plugin_done.emit("1" if ok else "0", msg)
+        except Exception as e:
+            self.plugin_done.emit("0", f"创建源码插件异常: {e}")
+
+    def _on_plugin_create_source(self, *_):
+        """自然语言描述 → 后台线程 AI 生成源码级插件（变更清单，确认后才应用）"""
+        text, ok = _MultiLineInputDialog.get(
+            self, "创建源码插件",
+            "描述源码插件要做什么、改哪些模块、集成什么功能（生成 source_ops 变更清单，不会自动改动源码）：",
+            "在 core 下新建一个习惯打卡模块，并在 agent_tools 的工具清单里登记两个工具")
+        if not ok or not text.strip():
+            return
+        self._pbar_open("创建源码插件", "正在分析需求并设计源码变更清单…")
+        threading.Thread(target=self._plugin_source_worker, args=(text.strip(),),
+                         daemon=True).start()
+
+    def _on_plugin_detail(self, *_):
+        """打开插件详情/配置对话框（双击列表项或「详情/配置」按钮）"""
+        p = self._current_plugin()
+        if p is None:
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
+            return
+        dlg = _PluginDetailDialog(p, self)
+        dlg.config_saved.connect(self._on_plugin_config_saved)
+        dlg.exec()
+
+    def _on_plugin_config_saved(self, *_):
+        """插件配置已保存：刷新列表与 MCP 服务器，并重连使 env 注入生效"""
+        self._reload_plugin_list()
+        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._reload_mcp_list()
+        threading.Thread(target=self._init_mcp, daemon=True).start()
+
+    def _on_plugin_apply_source(self, *_):
+        """应用源码级插件的变更（插件校验 → 备份 → 应用 → 编译检查，失败整体回滚）"""
+        p = self._current_plugin()
+        if p is None:
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个源码插件"))
+            return
+        name = p.get("name", "")
+        ret = QMessageBox.question(
+            self, _ui("应用源码插件"),
+            _uif("将应用源码插件「{n}」的变更：\n"
+                 "· 先经插件校验系统检查（危险代码强制删除并提示用户）\n"
+                 "· 每个被改文件自动备份，全部应用后编译检查，失败整体回滚\n"
+                 "· 重启应用后生效\n\n确定应用？", n=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        ok, msg = agent_plugins.apply_source_plugin(name)
+        if ok:
+            QMessageBox.information(self, _ui("应用源码插件"), msg)
+        else:
+            QMessageBox.warning(self, _ui("应用失败"), msg)
+        self._reload_plugin_list()
+
+    def _on_plugin_revert_source(self, *_):
+        """卸载回滚源码插件已应用的变更（新建的删除、修改的还原）"""
+        p = self._current_plugin()
+        if p is None:
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个源码插件"))
+            return
+        name = p.get("name", "")
+        ret = QMessageBox.question(
+            self, _ui("回滚源码插件"),
+            _uif("将按备份还原源码插件「{n}」已应用的变更"
+                 "（新建的文件删除、修改的文件还原备份内容）。确定回滚？", n=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        ok, msg = agent_plugins.revert_source_plugin(name)
+        if ok:
+            QMessageBox.information(self, _ui("回滚源码插件"), msg)
+        else:
+            QMessageBox.warning(self, _ui("回滚失败"), msg)
+        self._reload_plugin_list()
 
     def _on_plugin_progress(self, pct: int, text: str):
         """生成期间更新进度百分比与文案"""
@@ -18869,8 +20112,15 @@ class AgentPanel(QDialog):
 
         走快照尺寸过渡（与最小化同一套浮层机制）：先抓当前画面，最大化/还原的真实
         重排被浮层遮住，屏幕上是平滑的缩放，不会「瞬间跳变」。
+
+        动画进行中的点击**直接忽略**：此时真实窗口状态正被动画接管（最大化动画一开场
+        就调 showMaximized），再插一次原生 showMaximized/showNormal 会和动画收尾互相
+        打架 —— 轻则状态错乱（几何满屏但状态普通，之后按钮全部失灵），重则连点的每
+        一次都各自阻塞主线程数百毫秒并排队叠加，观感就是「应用假死、点什么都没反应」。
         """
         try:
+            if self._fx.busy():
+                return
             if self.isMaximized():
                 if self._fx.start_restore_size():
                     return
@@ -20536,8 +21786,9 @@ class AgentPanel(QDialog):
         # 任务栏图标点击的最小化/恢复：拦截 SC_MINIMIZE / SC_RESTORE 走折叠动画
         self._install_taskbar_filter()
         # 预热折叠动画的离屏快照路径：首次 grab 有 300~500ms 懒初始化，不能让它压在
-        # 用户第一次点「最小化」上（表现为点了没反应半秒）。放到面板首帧之后再消化。
-        QTimer.singleShot(1200, self._prewarm_window_fx)
+        # 用户第一次点「最小化」上（表现为点了没反应半秒）。放在首帧与首轮子面板归位
+        # 之后（600ms）消化掉，既不影响启动，也把「刚打开就点最小化」的窗口期压到很小。
+        QTimer.singleShot(600, self._prewarm_window_fx)
         # 原生窗口显示后强制设置任务栏大/小图标，修复安装后任务栏显示默认图标
         set_native_window_icon(self, _app_icon_path())
         # 打开面板时同步显示左侧停靠面板（worktree→git→todos 自上而下堆叠）；
@@ -24053,13 +25304,19 @@ class AgentPanel(QDialog):
 
     def _download_auth_avatar(self, server: str, avatar_path: str,
                               cache_path: str = ""):
-        """后台下载头像：存本地缓存目录后发信号回主线程显示。"""
+        """后台下载头像：存本地缓存目录后发信号回主线程显示。
+
+        下载走 auth_client.http_get_bytes：内部对「边缘网关拦截页」
+        （403 + 未备案页，服务端 nginx 记为 499）做快速重试，
+        否则头像会因约一半概率的拦截而长期空白。
+        """
         try:
-            import urllib.request
+            from zhuzhu_Copilot.core.auth_client import http_get_bytes
             url = avatar_path if avatar_path.startswith("http") else \
                 server.rstrip("/") + avatar_path
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            data = urllib.request.urlopen(req, timeout=10).read()
+            data = http_get_bytes(url, timeout=10)
+            if not data:
+                raise RuntimeError("avatar download failed")
             p = cache_path or self._auth_avatar_cache_path(avatar_path)
             try:
                 os.makedirs(os.path.dirname(p), exist_ok=True)

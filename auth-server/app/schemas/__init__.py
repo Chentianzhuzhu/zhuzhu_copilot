@@ -48,6 +48,9 @@ class PointsConsumeRequest(BaseModel):
     amount: int = Field(..., gt=0)
     model: str = "agens"
     task_id: Optional[str] = None
+    # 幂等键：客户端为每次上报生成 uuid；被网关拦截重试时原样带回，
+    # 服务端同一 request_id 只扣一次（见 points_service.consume_points）
+    request_id: Optional[str] = None
 
 
 # ========== 商城相关 ==========

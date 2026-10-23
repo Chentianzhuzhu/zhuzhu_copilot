@@ -1634,6 +1634,110 @@ TOOLS = [
                            "required": ["description"]},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_source_plugin",
+            "description": "用自然语言描述创建**源码级插件**（开发者向，基于源码开发）：AI 生成对应用源码"
+                           "（src/ 为根）的变更清单 source_ops——可新建源码文件（create_file）、追加到"
+                           "现有代码模块之后（append）、在锚点后插入（insert_after）、替换模块"
+                           "（replace_module）、整体替换文件（replace_file），支持一次修改多个关联模块"
+                           "并集成功能。插件包含名称/开发者/更新时间/图标等元数据。创建后**不会自动改动"
+                           "源码**：先 read_file 审查 source_ops.json，确认后调用 apply_source_plugin "
+                           "应用。所有源码插件与应用动作都会经**插件校验系统**（静态危险规则 + LLM "
+                           "源码评审，内置唯一不可替换）检查，危险代码强制删除并提示用户。设计锚点前"
+                           "必须先 read_file 查看目标文件，锚点必须真实存在且唯一。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "description": {"type": "string",
+                                               "description": "用户自然语言描述：源码插件要改哪些模块、"
+                                                              "集成什么功能（涉及具体文件时先 read_file 确认锚点）"}},
+                           "required": ["description"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_source_plugin",
+            "description": "应用源码级插件的变更：先过插件校验系统（静态规则 + LLM 源码评审，"
+                           "危险即整体删除插件包并提示用户），再逐文件备份 → 应用变更 → py_compile "
+                           "编译检查，任一失败**整体回滚**（应用状态不变）。变更写入插件源码层"
+                           "（安装版为 ~/.zhuzhu_Copilot/source_overlay/，由导入钩子优先加载），"
+                           "重启应用后生效。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "name": {"type": "string",
+                                        "description": "源码插件名（插件目录名）"}},
+                           "required": ["name"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revert_source_plugin",
+            "description": "卸载回滚源码级插件：按 applied.json 清单与 backups/ 备份还原"
+                           "（新建的文件删除、修改的文件还原备份内容）；应用后被用户手动改过的文件"
+                           "会跳过并注明，不覆盖用户的修改。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "name": {"type": "string",
+                                        "description": "源码插件名（插件目录名）"}},
+                           "required": ["name"]},
+        },
+    },
+    # ---------- Copilot 插件工具（应用级独立体系，与 Agent 插件分开） ----------
+    {
+        "type": "function",
+        "function": {
+            "name": "create_copilot_plugin",
+            "description": "用自然语言描述创建**Copilot 插件**（应用级独立插件体系，与 Agent 插件"
+                           "分开、应用范围更广）：AI 生成 source_ops 源码变更清单——可把功能源码"
+                           "插入任何源码文件、新建源码文件、一次修改多个源码文件综合集成（改主题、"
+                           "自定义 Agent、自定义工具、自定义语言、增删替换任何模块），以及可选的"
+                           "copilot.json 应用扩展清单（主窗口页面/后台服务/托盘动作/快捷键），"
+                           "还可带 agent/ 子包附带 MCP 工具与技能。落盘后强制过插件校验系统"
+                           "（静态规则 + LLM 源码评审，危险代码强制删除并提示）。"
+                           "生成后不会自动改动源码：先 read_file 审查 source_ops.json，"
+                           "确认后调用 apply_copilot_plugin 应用（逐文件备份、编译检查、可回滚）。"
+                           "安装版同样支持：变更写源码覆盖层，重启生效。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "description": {"type": "string",
+                                               "description": "用户自然语言描述：Copilot 插件要做什么、"
+                                                              "改哪些源码文件/新建什么模块/集成什么功能、"
+                                                              "要不要页面/服务/托盘/快捷键"}},
+                           "required": ["description"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_copilot_plugin",
+            "description": "应用 Copilot 插件的源码变更到本机：先过插件校验系统（危险强制删除并提示），"
+                           "再逐文件备份、逐条应用、全部编译检查（任一失败整体回滚）。源码运行直接改 "
+                           "src/；打包运行写 ~/.zhuzhu_Copilot/source_overlay/ 源码覆盖层"
+                           "（导入钩子优先加载，重启应用生效）。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "name": {"type": "string",
+                                        "description": "Copilot 插件名（插件目录名）"}},
+                           "required": ["name"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revert_copilot_plugin",
+            "description": "卸载回滚 Copilot 插件已应用的源码变更：新建的文件删除、修改的文件还原备份"
+                           "（覆盖层模式下还原内容与原版一致时删掉覆盖层副本，模块回落原版）；"
+                           "应用后被用户手动改过的文件跳过并注明，不覆盖。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "name": {"type": "string",
+                                        "description": "Copilot 插件名（插件目录名）"}},
+                           "required": ["name"]},
+        },
+    },
     # ---------- 子 Agent 工具（主 Agent 派发只读子任务，执行由引擎调度） ----------
     {
         "type": "function",
@@ -3379,6 +3483,19 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
         if name == "create_plugin":
             return _create_plugin(str(args.get("description", "")),
                                   str(args.get("kind", "combined")), status_cb)
+        if name == "create_source_plugin":
+            return _create_source_plugin(str(args.get("description", "")), status_cb)
+        if name == "apply_source_plugin":
+            return _apply_source_plugin(str(args.get("name", "")))
+        if name == "revert_source_plugin":
+            return _revert_source_plugin(str(args.get("name", "")))
+        # ---- Copilot 插件（应用级独立体系） ----
+        if name == "create_copilot_plugin":
+            return _create_copilot_plugin(str(args.get("description", "")), status_cb)
+        if name == "apply_copilot_plugin":
+            return _apply_copilot_plugin(str(args.get("name", "")))
+        if name == "revert_copilot_plugin":
+            return _revert_copilot_plugin(str(args.get("name", "")))
         # ---- TTS 语音合成（Qwen-TTS 声音复刻，DashScope 真实 API） ----
         if name == "tts_create_voice":
             try:
@@ -5196,6 +5313,73 @@ def _create_plugin(description: str, kind: str, status_cb=None) -> dict:
     from zhuzhu_Copilot.core import agent_plugins
     ok, msg = agent_plugins.create_plugin_from_nl(
         description, kind, on_status=_generation_status_adapter(status_cb))
+    if ok:
+        return {"text": msg, "images": [], "reload_extensions": True}
+    return _blocked(msg)
+
+
+def _create_source_plugin(description: str, status_cb=None) -> dict:
+    """自然语言 → 源码级插件（AI 生成 source_ops 变更清单，过插件校验系统）。"""
+    from zhuzhu_Copilot.core import agent_plugins
+    ok, msg = agent_plugins.create_source_plugin_from_nl(
+        description, on_status=_generation_status_adapter(status_cb))
+    if ok:
+        return {"text": msg, "images": [], "reload_extensions": True}
+    return _blocked(msg)
+
+
+def _apply_source_plugin(name: str) -> dict:
+    """应用源码级插件的变更（校验 → 备份 → 应用 → 编译检查，失败整体回滚）。"""
+    from zhuzhu_Copilot.core import agent_plugins
+    if not name:
+        return _blocked("缺少插件名")
+    ok, msg = agent_plugins.apply_source_plugin(name)
+    if ok:
+        return {"text": msg, "images": [], "reload_extensions": True}
+    return _blocked(msg)
+
+
+def _revert_source_plugin(name: str) -> dict:
+    """卸载回滚源码级插件（按 applied.json + 备份还原）。"""
+    from zhuzhu_Copilot.core import agent_plugins
+    if not name:
+        return _blocked("缺少插件名")
+    ok, msg = agent_plugins.revert_source_plugin(name)
+    if ok:
+        return {"text": msg, "images": [], "reload_extensions": True}
+    return _blocked(msg)
+
+
+def _create_copilot_plugin(description: str, status_cb=None) -> dict:
+    """用自然语言描述创建 Copilot 插件（应用级独立体系）：AI 生成 source_ops
+    源码变更清单（插入任何源码文件/新建文件/多文件综合修改）与可选的 copilot.json
+    应用扩展清单（页面/服务/托盘/快捷键），落盘后强制过插件校验系统。"""
+    from zhuzhu_Copilot.core import copilot_plugins
+    ok, msg = copilot_plugins.create_from_nl(
+        description, on_status=_generation_status_adapter(status_cb))
+    if ok:
+        return {"text": msg, "images": [], "reload_extensions": True}
+    return _blocked(msg)
+
+
+def _apply_copilot_plugin(name: str) -> dict:
+    """应用 Copilot 插件的源码变更（校验 → 备份 → 应用 → 编译检查，失败整体回滚）。
+    变更写入插件源码层（安装版为源码覆盖层），重启应用后生效。"""
+    from zhuzhu_Copilot.core import copilot_plugins
+    if not name:
+        return _blocked("缺少插件名")
+    ok, msg = copilot_plugins.apply(name)
+    if ok:
+        return {"text": msg, "images": [], "reload_extensions": True}
+    return _blocked(msg)
+
+
+def _revert_copilot_plugin(name: str) -> dict:
+    """卸载回滚 Copilot 插件已应用的源码变更（新建文件删除、修改文件还原）。"""
+    from zhuzhu_Copilot.core import copilot_plugins
+    if not name:
+        return _blocked("缺少插件名")
+    ok, msg = copilot_plugins.revert(name)
     if ok:
         return {"text": msg, "images": [], "reload_extensions": True}
     return _blocked(msg)
