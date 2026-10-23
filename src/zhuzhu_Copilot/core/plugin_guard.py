@@ -59,17 +59,25 @@ _SCAN_EXTS = {".py", ".md", ".json", ".txt", ".html", ".htm", ".js", ".css",
 # 静态规则：(规则ID, 正则, 级别, 说明, 适用后缀或 None=全部)
 #   danger = 直接判定危险（无需 LLM）；warn = 存疑，交 LLM 复审裁定
 _RULES = [
-    ("dynamic_exec", r"\b(eval|exec)\s*\(", "danger", "动态执行代码（eval/exec）", None),
+    # 只拦「裸调用」eval(...) / exec(...)：Qt 的 dlg.exec()、os.execv 之类方法调用不算
+    ("dynamic_exec", r"(?<![\.\w])(?:eval|exec)\s*\(", "danger",
+     "动态执行代码（eval/exec）", None),
     ("import_hook", r"__import__\s*\(", "danger", "动态导入（__import__）", None),
     ("os_system", r"\bos\.system\s*\(", "danger", "直接执行系统命令（os.system）", None),
     ("shell_true", r"shell\s*=\s*True", "danger", "shell=True 子进程（可拼任意命令）", None),
-    ("registry", r"\b(?:winreg|_winreg)\b|\breg(?:\.exe)?\s+add\b|RegSetValue",
+    ("registry",
+     r"winreg\.(?:SetValue\w*|CreateKey\w*|DeleteKey\w*|SaveKey)"
+     r"|\breg(?:\.exe)?\s+add\b|\bReg(?:SetValue|DeleteKey|DeleteValue)\w*",
      "danger", "注册表写操作（持久化常用手法）", None),
-    ("system_path", r"[A-Za-z]:\\\\?[Ww]indows|/etc/(?:passwd|shadow|sudoers)",
-     "danger", "操作系统关键路径", None),
+    ("system_path",
+     r"(?:rmtree|os\.remove|os\.unlink|shutil\.[a-z]+|del\s+/[Ff]|format\s+[A-Za-z]:)"
+     r"[^\n]{0,120}(?:[A-Za-z]:\\?[Ww]indows|/etc/(?:passwd|shadow|sudoers))"
+     r"|(?:[A-Za-z]:\\?[Ww]indows|/etc/(?:passwd|shadow|sudoers))[^\n]{0,120}"
+     r"(?:rmtree|os\.remove|os\.unlink|del\s+/[Ff]|format\s+[A-Za-z]:)",
+     "danger", "破坏操作系统关键路径", None),
     ("persistence", r"(?i)schtasks|CurrentVersion\\\\?Run|\\\\Startup\\\\|StartupApproved",
      "danger", "开机自启动/计划任务持久化", None),
-    ("credential", r"(?i)Login Data|keylog|SetWindowsHookEx|pynput|keyboard\.hook",
+    ("credential", r"(?i)Login Data|keylog|pynput|keyboard\.hook|GetKeyboardState\s*\(.*log",
      "danger", "凭据窃取/键盘记录", None),
     ("mass_delete", r"shutil\.rmtree|\bformat\s+[A-Za-z]:|\bdel\s+/[Ff]\b|rm\s+-rf\s+/(?![A-Za-z])",
      "danger", "大规模删除/格式化", None),
@@ -289,17 +297,52 @@ def _force_remove(path: Path) -> bool:
     return False
 
 
+#: 插件入口/核心文件：校验**不得删除**（删了插件直接不可用，用户会以为导入失败）。
+#: 这些文件被判危险时改为「停用插件 + 明确告知」，由用户自己决定怎么处理。
+_NON_DELETABLE_FILES = frozenset({
+    "server.py", "SKILL.md", "plugin.json", "panel.py", "agent.py",
+    "tools.py", "llm.py", "mcp.json", "requirements.txt", "config.json",
+})
+
+
+def _is_non_deletable(rel: str) -> bool:
+    base = str(rel or "").replace("\\", "/").rsplit("/", 1)[-1]
+    return base in _NON_DELETABLE_FILES
+
+
+def _disable_plugin(d: Path) -> bool:
+    """把插件标记为停用（不删文件），让危险插件无法继续运行。"""
+    mf = d / "plugin.json"
+    try:
+        import json as _json
+        meta = _json.loads(mf.read_text(encoding="utf-8")) if mf.is_file() else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["enabled"] = False
+        mf.write_text(_json.dumps(meta, ensure_ascii=False, indent=2),
+                      encoding="utf-8")
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _apply_verdict(pkg_dir, name: str, detail: dict) -> str:
-    """按校验结论强制处置：删危险文件；无可信代码剩余则整体移除插件目录。
-    返回给用户的提示语（含删除明细与日志位置）。"""
+    """按校验结论强制处置：危险文件删除；插件入口文件只停用不删除；
+    无可信代码剩余时整体移除插件目录。返回给用户的提示语。"""
     d = Path(pkg_dir)
     dangerous = detail.get("dangerous_files") or {}
-    removed, failed = [], []
+    removed, failed, kept = [], [], []
     for rel in sorted(dangerous):
+        if _is_non_deletable(rel):
+            # 入口文件：保留文件、停用插件（用户可自行检查/修复后再启用）
+            kept.append(rel)
+            continue
         if _force_remove(d / rel):
             removed.append(rel)
         else:
             failed.append(rel)
+    if kept:
+        _disable_plugin(d)
     # plugin.json 自身危险，或删除后已无任何**代码**（仅剩元数据/图标）→ 整体移除
     remaining = [f for f in _scannable_files(d) if f.name != "plugin.json"] \
         if d.is_dir() else []
@@ -313,11 +356,14 @@ def _apply_verdict(pkg_dir, name: str, detail: dict) -> str:
                 "reasons": dangerous,
                 "llm_used": detail.get("llm_used"),
                 "llm_reason": (detail.get("llm") or {}).get("reason", "")})
-    parts = [f"插件校验系统：插件「{name}」包含危险代码，已强制删除并提示用户。"]
+    parts = [f"插件校验系统：插件「{name}」包含危险代码，已处置并提示用户。"]
     if removed:
-        parts.append("已删除：" + "、".join(removed))
+        parts.append("已删除危险文件：" + "、".join(removed))
     if failed:
         parts.append("删除失败（请手动检查）：" + "、".join(failed))
+    if kept:
+        parts.append("入口文件已保留并**停用插件**（未删除文件，请检查后手动启用）："
+                     + "、".join(kept))
     if removed_whole:
         parts.append("该插件已无可用代码，已整体移除。")
     parts.append("原因：" + "；".join(f"{k} → {v}" for k, v in sorted(dangerous.items())))

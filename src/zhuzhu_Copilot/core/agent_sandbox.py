@@ -383,6 +383,6 @@ def assess_tool(name: str, args: dict) -> tuple:
     if name in ("create_workflow", "delete_workflow", "edit_agent_file", "switch_workflow",
                 "use_workflow_agent",
                 "create_plugin", "create_plugin_from_nl",
-                "manage_uiux"):
-        return ("risky", f"{name} 涉及工作流/插件/UI/UX 核心代码写入或加载，需用户确认")
+                "create_copilot_plugin", "apply_copilot_plugin"):
+        return ("risky", f"{name} 涉及工作流/插件核心代码写入或加载，需用户确认")
     return "safe", ""

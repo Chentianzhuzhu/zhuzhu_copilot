@@ -88,12 +88,24 @@ def highlight_code(code: str, lang: str = "python") -> str:
 #: 匹配 _md_to_html 产出的代码块：<pre style='...'>…</pre>
 _PRE_RE = re.compile(r"(<pre\b[^>]*>)([\s\S]*?)(</pre>)", re.IGNORECASE)
 
+#: 超过该长度的正文不着色：流式渲染每帧都会调用本函数，超大正文优先保证不掉帧
+_MAX_HL_CHARS = 120_000
+#: 最近着色结果缓存（流式重渲染同一段文本时直接命中）
+_CACHE = {}
+_CACHE_MAX = 32
+
 
 def highlight_html(html_text: str) -> str:
     """给整篇正文 HTML 里的代码块着色（Python 代码才处理，其余原样返回）。"""
     src = str(html_text or "")
     if "<pre" not in src.lower():
         return src
+    if len(src) > _MAX_HL_CHARS:
+        return src
+    key = hash(src)
+    hit = _CACHE.get(key)
+    if hit is not None:
+        return hit
 
     def _repl(m):
         head, body, tail = m.group(1), m.group(2), m.group(3)
@@ -104,9 +116,13 @@ def highlight_html(html_text: str) -> str:
         return head + colored + tail
 
     try:
-        return _PRE_RE.sub(_repl, src)
+        out = _PRE_RE.sub(_repl, src)
     except Exception:
         return src
+    if len(_CACHE) >= _CACHE_MAX:
+        _CACHE.clear()
+    _CACHE[key] = out
+    return out
 
 
 def check_python(code: str) -> list:

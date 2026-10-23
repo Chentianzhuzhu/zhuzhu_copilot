@@ -53,12 +53,24 @@ from zhuzhu_Copilot.core import agent_plugins, plugin_guard
 MAX_OPS = 50                # 单插件 op 数上限（防病态包）
 MAX_CONTENT_CHARS = 512000  # 单 op 内容上限（512KB）
 
+#: 每种 op 的**必需**字段（寻址字段 anchor/start 与 line/start_line 二选一，
+#: 由 _check_op 单独校验，见 _OP_ADDRESS）
 _OP_FIELDS = {
     "create_file": ("path", "content"),
     "replace_file": ("path", "content"),
     "append": ("path", "content"),
-    "insert_after": ("path", "anchor", "content"),
-    "replace_module": ("path", "start", "content"),
+    "insert_after": ("path", "content"),      # 寻址：anchor 或 line
+    "insert_at": ("path", "line", "content"),  # 在第 line 行**之前**插入（1 起）
+    "replace_lines": ("path", "start_line", "content"),   # 替换第 start..end_line 行
+    "replace_module": ("path", "content"),     # 寻址：start/end 或 start_line/end_line
+}
+
+#: 寻址方式要求：op -> (文本锚点字段组, 行号字段组)，任一组齐全即可
+_OP_ADDRESS = {
+    "insert_after": (("anchor",), ("line",)),
+    "insert_at": ((), ("line",)),
+    "replace_lines": ((), ("start_line",)),
+    "replace_module": (("start",), ("start_line",)),
 }
 
 
@@ -184,6 +196,62 @@ def _find_line(lines: list, anchor: str, unique: bool):
     return hits[-1]
 
 
+def _present(v) -> bool:
+    """字段是否存在（0 是合法行号，不能被 `v or ''` 当成缺失）。"""
+    return v is not None and str(v).strip() != ""
+
+
+def _line_no(op: dict, key: str, default=None) -> int:
+    """读取 1 起的行号字段（允许数字字符串）；非法/越界由调用方判定。"""
+    raw = op.get(key, default)
+    if raw is None or str(raw).strip() == "":
+        raise ValueError(f"op {op.get('op')} 缺少行号字段：{key}")
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"op {op.get('op')} 的 {key} 必须是整数行号：{raw!r}")
+    if n < 1:
+        raise ValueError(f"op {op.get('op')} 的 {key} 必须 ≥1（行号从 1 开始）：{n}")
+    return n
+
+
+def _check_op(op: dict, idx: int = 0) -> tuple:
+    """校验单条 op 的结构与寻址字段。返回 (ok, msg)。
+
+    寻址两种方式（同一 op 二选一，行号优先）：
+      · 文本锚点：anchor / start（要求目标文件里真实存在且唯一）
+      · 行号    ：line / start_line..end_line（1 起，含边界）
+    行号方式适合「拿得到完整源码（如 GitHub 仓库）」的插件作者精确改指定行。
+    """
+    kind = str(op.get("op") or "").strip()
+    tag = f"第 {idx + 1} 条 op（{kind or '缺失'}）"
+    if kind not in _OP_FIELDS:
+        return False, f"第 {idx + 1} 条 op 类型未知：{kind or '(缺失)'}"
+    missing = [f for f in _OP_FIELDS[kind] if not _present(op.get(f))]
+    if missing:
+        return False, f"{tag}缺少字段：{', '.join(missing)}"
+    need = _OP_ADDRESS.get(kind)
+    if need:
+        text_fields, line_fields = need
+        has_text = all(_present(op.get(f)) for f in text_fields) if text_fields else False
+        has_line = all(_present(op.get(f)) for f in line_fields)
+        if not has_text and not has_line:
+            want = " 或 ".join(
+                x for x in ("/".join(text_fields) if text_fields else "",
+                            "/".join(line_fields)) if x)
+            return False, f"{tag}缺少寻址字段（{want}）"
+        if has_line:
+            try:
+                start = _line_no(op, line_fields[0])
+                if "end_line" in op and _present(op.get("end_line")):
+                    end = _line_no(op, "end_line")
+                    if end < start:
+                        return False, f"{tag}的 end_line（{end}）小于 start_line（{start}）"
+            except ValueError as e:
+                return False, f"{tag}{e}"
+    return True, ""
+
+
 def _write_keep_eol(target: Path, text: str, before: str) -> None:
     """按原文件的换行风格写回（CRLF 文件不被整篇改成 LF，避免全文件 diff）。"""
     eol = "\r\n" if "\r\n" in before else "\n"
@@ -197,16 +265,19 @@ def _write_keep_eol(target: Path, text: str, before: str) -> None:
 def _apply_op(root: Path, op: dict, orig_root=None) -> dict:
     """应用单条 op，返回 {path, action, before}。before = 原文本（新建为 None）。
 
+    寻址支持两种（行号优先，其次文本锚点）：
+      · 行号：line / start_line..end_line（1 起，含边界）—— 插件作者拿得到完整源码
+        （如 GitHub 仓库）时可按行精确落位；
+      · 锚点：anchor / start（要求目标文件里真实存在且唯一）—— 对版本差异更鲁棒。
+
     orig_root：覆盖层模式下原版源码的查找根（打包内/源码目录）。目标文件在
     root（覆盖层）里还不存在时，先把原版复制进来再改——保证「以当前生效的
     版本为基准」做追加/插入/替换，且备份里存的是原版内容。
     """
+    ok, why = _check_op(op, 0)
+    if not ok:
+        raise ValueError(why)
     kind = str(op.get("op") or "").strip()
-    if kind not in _OP_FIELDS:
-        raise ValueError(f"未知 op 类型：{kind or '(缺失)'}")
-    missing = [f for f in _OP_FIELDS[kind] if not str(op.get(f) or "").strip()]
-    if missing:
-        raise ValueError(f"op {kind} 缺少字段：{', '.join(missing)}")
     content = str(op.get("content") or "")
     if len(content) > MAX_CONTENT_CHARS:
         raise ValueError(f"op {kind} 内容超过 {MAX_CONTENT_CHARS} 字符上限")
@@ -237,25 +308,62 @@ def _apply_op(root: Path, op: dict, orig_root=None) -> dict:
         target.write_bytes(orig.read_bytes())
     before = target.read_bytes().decode("utf-8", errors="replace")
     lines = before.splitlines()
+    n = len(lines)
 
     if kind == "replace_file":
         after = content
     elif kind == "append":
         idx = _find_line(lines, str(op["after"]), unique=False) \
-            if str(op.get("after") or "").strip() else len(lines) - 1
+            if str(op.get("after") or "").strip() else n - 1
         after = "\n".join(lines[:idx + 1] + [""] + content.splitlines()
                           + lines[idx + 1:])
+    elif kind == "insert_at":
+        # 在第 line 行**之前**插入；line = n+1 等价于追加到文件末尾
+        idx = _line_no(op, "line") - 1
+        if idx > n:
+            raise ValueError(f"insert_at 行号越界：line={idx + 1} > 文件行数 {n}"
+                             f"（追加到末尾请用 line={n + 1}）")
+        after = "\n".join(lines[:idx] + content.splitlines() + lines[idx:])
     elif kind == "insert_after":
-        idx = _find_line(lines, str(op["anchor"]), unique=True)
-        after = "\n".join(lines[:idx + 1] + [""] + content.splitlines()
-                          + lines[idx + 1:])
-    else:   # replace_module
-        s = _find_line(lines, str(op["start"]), unique=True)
-        end = str(op.get("end") or "").strip()
-        e = _find_line(lines, end, unique=True) if end else len(lines) - 1
-        if e < s:
-            raise ValueError(f"模块结束锚点在起始锚点之前：{op.get('path')}")
-        after = "\n".join(lines[:s] + content.splitlines() + lines[e + 1:])
+        if _present(op.get("line")):
+            idx = _line_no(op, "line") - 1
+            if idx >= n:
+                raise ValueError(f"insert_after 行号越界：line={idx + 1} > 文件行数 {n}")
+            after = "\n".join(lines[:idx + 1] + [""] + content.splitlines()
+                              + lines[idx + 1:])
+        else:
+            idx = _find_line(lines, str(op["anchor"]), unique=True)
+            after = "\n".join(lines[:idx + 1] + [""] + content.splitlines()
+                              + lines[idx + 1:])
+    elif kind == "replace_lines":
+        s0 = _line_no(op, "start_line") - 1
+        e0 = (_line_no(op, "end_line") - 1
+              if _present(op.get("end_line")) else s0)
+        if s0 >= n:
+            raise ValueError(f"replace_lines 起始行越界：start_line={s0 + 1} > 文件行数 {n}")
+        if e0 >= n:
+            raise ValueError(f"replace_lines 结束行越界：end_line={e0 + 1} > 文件行数 {n}")
+        if e0 < s0:
+            raise ValueError("replace_lines 的 end_line 小于 start_line")
+        after = "\n".join(lines[:s0] + content.splitlines() + lines[e0 + 1:])
+    else:   # replace_module（锚点 或 行号区间）
+        if _present(op.get("start_line")):
+            s0 = _line_no(op, "start_line") - 1
+            e0 = (_line_no(op, "end_line") - 1
+                  if _present(op.get("end_line")) else n - 1)
+            if s0 >= n:
+                raise ValueError(f"replace_module 起始行越界：start_line={s0 + 1} > 文件行数 {n}")
+            if e0 >= n:
+                e0 = n - 1
+            if e0 < s0:
+                raise ValueError("replace_module 的 end_line 小于 start_line")
+        else:
+            s0 = _find_line(lines, str(op["start"]), unique=True)
+            end_a = str(op.get("end") or "").strip()
+            e0 = _find_line(lines, end_a, unique=True) if end_a else n - 1
+            if e0 < s0:
+                raise ValueError(f"模块结束锚点在起始锚点之前：{op.get('path')}")
+        after = "\n".join(lines[:s0] + content.splitlines() + lines[e0 + 1:])
 
     _write_keep_eol(target, after, before)
     return {"path": rel, "action": "modified", "before": before}
@@ -287,12 +395,9 @@ def validate_source_ops(ops: list) -> tuple:
     if len(ops) > MAX_OPS:
         return False, f"源码变更清单超过 {MAX_OPS} 条上限"
     for i, op in enumerate(ops):
-        kind = str(op.get("op") or "").strip()
-        if kind not in _OP_FIELDS:
-            return False, f"第 {i + 1} 条 op 类型未知：{kind or '(缺失)'}"
-        missing = [f for f in _OP_FIELDS[kind] if not str(op.get(f) or "").strip()]
-        if missing:
-            return False, f"第 {i + 1} 条 op（{kind}）缺少字段：{', '.join(missing)}"
+        ok, why = _check_op(op, i)
+        if not ok:
+            return False, why
     return True, ""
 
 

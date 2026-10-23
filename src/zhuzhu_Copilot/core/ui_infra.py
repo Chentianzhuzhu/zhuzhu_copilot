@@ -1,20 +1,16 @@
 # -*- coding: utf-8 -*-
-"""渲染与窗口基础工具。
+"""渲染与窗口基础工具（应用级基础设施，不是插件引擎）。
 
-历史说明：本模块原名 `agent_ui_ux`，曾承担「UI/UX 包管理 + 液态玻璃引擎」两大职责
-（热插拔自定义面板、Acrylic 毛玻璃、波纹、包导入导出等）。那套机制建立在
-「让模型生成 build_ui.py 代码并沙箱执行来重构界面」之上，脆弱且与「全局统一玻璃材质」
-的设计目标冲突，已于 2026-10-01 整体移除。
-
-保留的只有与「包」无关、被全应用依赖的四项基础设施（模块名沿用旧名以避免
-无谓的全仓重命名风险，职责以本文件为准）：
+职责仅四项，全部是「被全应用依赖的底层能力」：
   1. Markdown / HTML / 文本 / Web 预览   —— ``render_markdown_html`` 等
   2. QtWebEngine 可用性探测             —— ``web_engine_available`` / ``new_web_view``
   3. 窗口圆角蒙版                        —— ``apply_rounded_window``
   4. 主题色读取                          —— ``_panel_theme_col``
 
-背景图（壁纸）设置在 ``core/app_wallpaper.py``，与包机制无关，
-任何窗口都可以直接装配。
+历史上这里曾有一套「UI/UX 包引擎」（热插拔自定义面板、build_ui.py 沙箱执行、
+Acrylic 毛玻璃、面板 QSS 包），已于 2026-10 整体删除：界面/主题/任何模块的深度
+定制现在统一走 **Copilot 插件（源码级 source_ops）**，见 core/copilot_plugins.py。
+背景图（壁纸）设置在 core/app_wallpaper.py，与插件机制无关。
 """
 
 import os
@@ -35,7 +31,7 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
 # QCoreApplication instance is created"），导致 web_engine_available() 误判 False、
 # new_web_view() 返回 None，Web 预览降级为静态提示/外部浏览器。
 # 本模块在 main.py 中于 QApplication 创建前被链式导入（main.py 顶部 import
-# MainWindow → agent_panel → agent_ui_ux），此处模块级提前加载即可让后续
+# MainWindow → agent_panel → ui_infra），此处模块级提前加载即可让后续
 # web_engine_available()/new_web_view() 直接命中 sys.modules。
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401

@@ -6023,7 +6023,7 @@ def _inspect_customization() -> dict:
     """盘点当前全部可深度自定义维度（Cordis：一切皆可替换/热插拔），
     返回各维度现状与对应自定义工具，供 agent 引导用户选择自定义/新增功能。"""
     try:
-        from zhuzhu_Copilot.core import agent_ui_ux, agent_plugins
+        from zhuzhu_Copilot.core import agent_plugins
         from zhuzhu_Copilot.core import agent_skills
         _skills = _sub("agent_skills")
         lines = ["# 可深度自定义维度盘点（Cordis 一切皆可替换/热插拔）"]
@@ -6065,20 +6065,20 @@ def _inspect_customization() -> dict:
             lines.append("  工具: create_plugin（mcp/skill/combined/web 四型，AI 生成或 zip 导入）")
         except Exception as e:
             lines.append(f"## 插件（读取失败: {e}）")
-        # 4) UI/UX 包
+        # 4) Copilot 插件（应用级：界面/主题/语言/任意模块的源码级定制）
         try:
-            pkgs = agent_ui_ux.list_packages()
-            active = agent_ui_ux.get_active_package()
-            ux_lines = [f"{p.get('name')}{'●' if p.get('name') == active else ''}"
-                        for p in pkgs if p.get("name")]
-            lines.append(f"## UI/UX 包（{len(ux_lines)} 个，活跃: {active}）")
-            lines.append("  " + ("；".join(ux_lines) if ux_lines else "仅默认"))
-            lines.append("  工具: manage_uiux（create/read/update/set_qss/update_theme/deps/duplicate/"
-                         "export/import/activate/delete）—— 完整自定义 PyQt6 面板 + 主题色板 + panel.qss")
+            cps = _sub("copilot_plugins").list_plugins()
+            cp_lines = [f"{p.get('name')}{'[已应用]' if p.get('source_applied') else ''}"
+                        for p in cps if p.get("name")]
+            lines.append(f"## Copilot 插件（{len(cp_lines)} 个，应用级源码定制）")
+            lines.append("  " + ("；".join(cp_lines) if cp_lines else "暂无"))
+            lines.append("  工具: create_copilot_plugin / apply_copilot_plugin / revert_copilot_plugin"
+                         " —— 新建模块、按行号插入(insert_at)、按行号替换(replace_lines)、"
+                         "整段替换(replace_module)，可改主题/界面/语言/任何模块，改错一键回滚")
         except Exception as e:
-            lines.append(f"## UI/UX 包（读取失败: {e}）")
+            lines.append(f"## Copilot 插件（读取失败: {e}）")
         # 5) 面板按钮
-        lines.append("## 面板自定义按钮（与 UI/UX 解耦，恒显示）")
+        lines.append("## 面板自定义按钮（恒显示）")
         lines.append("  工具: register_panel_btn（register/unregister）—— 注册顶部按钮栏按钮")
         # 6) MCP 服务器
         try:
@@ -6106,16 +6106,16 @@ def _inspect_customization() -> dict:
                 if _sub("agent_panels").list_panels() else []
             lines.append(f"## 扩展功能面板（{len(names)} 个）")
             lines.append("  " + ("，".join(names) if names else "暂无（用 register_feature_panel 注入当前工作流）"))
-            lines.append("  工具: register_feature_panel（写入当前工作流 panel.py，不新建 UI/UX 包）")
+            lines.append("  工具: register_feature_panel（写入当前工作流 panel.py，成为扩展浮窗）")
         except Exception as e:
             lines.append(f"## 扩展功能面板（读取失败: {e}）")
         lines.append("")
         lines.append("优先级（必须遵守）：小功能的改动——新增功能面板/子 agent/工具/小 UI/小钩子——"
-                     "一律注入当前工作流或现有 UI/UX（register_sub_agent / register_feature_panel / "
-                     "edit_agent_file tools.py / manage_uiux read+set_qss/update_theme）；"
-                     "仅大而独立的功能才新建工作流/UI/UX 包。")
+                     "一律注入当前工作流（register_sub_agent / register_feature_panel / "
+                     "edit_agent_file tools.py），界面类改动走 Copilot 插件源码级 op；"
+                     "仅大而独立的功能才新建工作流或 Copilot 插件。")
         lines.append("引导：先用 ask_user 问清用户想自定义/新增的功能，再按上述维度调用对应工具落地，"
-                     "创建后提示用户立即生效（工作流/UI/UX 热插拔，插件/技能即时登记）。")
+                     "创建后提示用户生效方式（工作流热插拔、插件/技能即时登记、源码级变更需重启）。")
         return {"text": "\n".join(lines), "images": []}
     except Exception as e:
         return _blocked(f"[inspect_customization] {e}")
@@ -6459,9 +6459,9 @@ def _register_feature_panel(args: dict) -> dict:
             return _blocked(f"[register_feature_panel] 写入失败: {e}")
         return {"text": f"功能面板「{name}」已写入工作流「{wf}」的 panel.py（扩展浮窗）。"
                         "任务结束后自动扫描挂载，或让我立即重建界面查看。"
-                        "提示：该面板已注入现有工作流，未新建 UI/UX 包。"
+                        "提示：该面板已注入当前工作流，未新建插件包。"
                         "若面板代码含第三方 import，请用 set_feature_deps 声明并安装依赖。",
-                "images": [], "rebuild_uiux": True}
+                "images": []}
     except Exception as e:
         return _blocked(f"[register_feature_panel] {e}")
 

@@ -1357,16 +1357,21 @@ _SOURCE_OP_RULES = (
     '  create_file     新建源码文件：{"op":"create_file","path":"...","content":"完整文件内容"}\n'
     '  append          追加到现有代码模块之后：{"op":"append","path":"...","content":"...",'
     '"after":"锚点串(可选，缺省追加到文件末尾)"}\n'
-    '  insert_after    锚点后插入：{"op":"insert_after","path":"...",'
-    '"anchor":"锚点串(必须在目标文件中唯一)","content":"..."}\n'
+    '  insert_after    锚点/行号后插入：{"op":"insert_after","path":"...",'
+    '"anchor":"锚点串(唯一)","content":"..."} 或 {"op":"insert_after","path":"...","line":120,"content":"..."}\n'
+    '  insert_at       在第 N 行之前插入（1 起，N=行数+1 即追加到末尾）：'
+    '{"op":"insert_at","path":"...","line":120,"content":"..."}\n'
+    '  replace_lines   替换第 S..E 行（含边界）：{"op":"replace_lines","path":"...",'
+    '"start_line":100,"end_line":120,"content":"..."}\n'
     '  replace_module  替换模块：{"op":"replace_module","path":"...",'
-    '"start":"起始锚点","end":"结束锚点(可选，缺省替换到文件尾)","content":"..."}\n'
+    '"start":"起始锚点","end":"结束锚点(可选)","content":"..."} 或 '
+    '{"op":"replace_module","path":"...","start_line":100,"end_line":120,"content":"..."}\n'
     '  replace_file    整体替换文件：{"op":"replace_file","path":"...","content":"..."}\n'
     "硬性要求：\n"
     "  · 优先新建模块（create_file）再在现有模块里做最小侵入接线"
-    "（append/insert_after），不得大段重写无关代码；\n"
-    "  · 锚点必须取自目标文件里**真实存在且唯一**的字符串（函数签名 / 注释标记 / "
-    "注册表条目行），设计前应先 read_file 查看目标文件真实内容；\n"
+    "（append/insert_after/insert_at），不得大段重写无关代码；\n"
+    "  · 定位方式二选一：**行号**（line / start_line..end_line，1 起含边界）或"
+    "**文本锚点**（anchor / start，须真实存在且唯一）；设计前先 read_file 看清内容与行号；\n"
     "  · 严禁改动受保护核心程序：zhuzhu_Copilot/core/plugin_guard.py、"
     "security.py、security_engine/（整个目录）；\n"
     "  · 代码用 Python 3.13 标准库或已在依赖清单内的库，风格与目标文件一致；\n"

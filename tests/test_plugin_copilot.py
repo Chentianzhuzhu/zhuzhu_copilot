@@ -70,19 +70,38 @@ def _base_prompt_parts(agent: dict) -> list:
     return parts
 '''
 
-PKG_AGENT_TOOLS = '''"""agent_tools 桩（含示例插件要命中的锚点）"""
+PKG_AGENT_ENGINE = '''"""agent_engine 桩（含 agent-scorecard 的 replace_module 锚点）"""
 
-TOOLS = [
-    {"name": "read_file"},
-]
+_NO_WAIT_TIMEOUT_TOOLS = frozenset()
+_DOWNLOAD_WAIT_TIMEOUT_S = 3600.0
+_DEFAULT_WAIT_TIMEOUT_S = 40.0
 
 
-def dispatch(name, args):
-        if name == "revert_source_plugin":
-            return _revert_source_plugin(str(args.get("name", "")))
-        if name == "revert_copilot_plugin":
-            return _revert_copilot_plugin(str(args.get("name", "")))
+def _tool_wait_timeout(name: str):
+    """内置工具的等待上限（None = 不设上限）。"""
+    if name in _NO_WAIT_TIMEOUT_TOOLS:
+        return None
+    if name == "fast_download":
+        return _DOWNLOAD_WAIT_TIMEOUT_S
+    return _DEFAULT_WAIT_TIMEOUT_S
 '''
+
+# agent_tools 桩：把 TOOLS 精确排到第 269 行（与真实文件一致），
+# 这样 agent-scorecard 的「按行号插入 line=270」在桩环境里也能被真实验证。
+_TOOLS_FILLER = ["# 填充行：让 TOOLS 落在第 269 行，与真实 agent_tools.py 对齐"] * 268
+PKG_AGENT_TOOLS = "\n".join(_TOOLS_FILLER + [
+    "TOOLS = [",
+    '    {"name": "read_file"},',
+    "]",
+    "",
+    "",
+    "def dispatch(name, args):",
+    '        if name == "revert_source_plugin":',
+    '            return _revert_source_plugin(str(args.get("name", "")))',
+    '        if name == "revert_copilot_plugin":',
+    '            return _revert_copilot_plugin(str(args.get("name", "")))',
+]) + "\n"
+
 
 @pytest.fixture()
 def iso(tmp_path, monkeypatch):
@@ -111,6 +130,8 @@ def frozen(tmp_path, monkeypatch):
         PKG_AGENT_TOOLS, encoding="utf-8")
     (pkg_root / "zhuzhu_Copilot" / "core" / "agent_skills.py").write_text(
         PKG_AGENT_SKILLS, encoding="utf-8")
+    (pkg_root / "zhuzhu_Copilot" / "core" / "agent_engine.py").write_text(
+        PKG_AGENT_ENGINE, encoding="utf-8")
     overlay = tmp_path / "overlay"
     monkeypatch.setattr(plugin_source, "app_source_root", lambda: None)
     monkeypatch.setattr(plugin_source, "apply_root", lambda: (overlay, "overlay"))
@@ -277,6 +298,15 @@ def test_overlay_import_hook_subprocess(tmp_path):
                         "zhuzhu_Copilot/core/agent_tools.py":
                         ['"name": "check_python_syntax"',
                          'if name == "check_python_syntax":']}),
+    # 综合型：新建模块 + 按行号插入工具 + 替换引擎函数
+    ("agent-scorecard", {"zhuzhu_Copilot/core/agent_scorecard.py":
+                         ["def note_tool(", "def feedback_text(",
+                          "def build_dialog("],
+                         "zhuzhu_Copilot/core/agent_tools.py":
+                         ['"name": "score_last_task"',
+                          'if name == "score_last_task":'],
+                         "zhuzhu_Copilot/core/agent_engine.py":
+                         ["agent_scorecard.note_tool(name)"]}),
     # 源码级「替换」：把 agent_skills 的 return parts 换成插件代码
     ("prompt-optimizer", {"zhuzhu_Copilot/core/prompt_optimizer.py":
                           ["PROMPT_DISCIPLINE = (", "def optimize("],
@@ -413,6 +443,16 @@ def test_example_anchors_exist_in_real_source():
                 problems.append(f"{d.name}[{i}]: 目标文件不存在 {rel}")
                 continue
             lines = target.read_text(encoding="utf-8").splitlines()
+            # 行号寻址：1 ≤ line ≤ 行数+1（insert_at）/ start_line ≤ 行数
+            for key in ("line", "start_line", "end_line"):
+                raw = op.get(key)
+                if raw is None or str(raw).strip() == "":
+                    continue
+                n = int(str(raw))
+                limit = len(lines) + (1 if key == "line" else 0)
+                if not (1 <= n <= limit):
+                    problems.append(f"{d.name}[{i}]: {key}={n} 超出文件行数范围 "
+                                    f"(1..{limit}) in {rel}")
             for key in ("anchor", "start", "end"):
                 a = str(op.get(key) or "")
                 if not a:

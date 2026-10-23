@@ -106,6 +106,108 @@ def test_all_op_kinds_apply(iso):
     assert st["applied"] and st["ops"] == 4 and len(st["files"]) == 2
 
 
+# ══════════ 1b. 按行号寻址（插件作者拿得到完整源码时最直接） ══════════
+
+def test_insert_at_by_line(iso):
+    """insert_at：在第 N 行之前插入；line=行数+1 等价追加到末尾"""
+    src = iso
+    _target(src)
+    path = "zhuzhu_Copilot/core/agent_tools.py"
+    lines_before = (src / path).read_text(encoding="utf-8").splitlines()
+    # op 按顺序生效：先插末尾（行号以原文件计），再插文件头（第 1 行）
+    _mk_source_plugin("line1", [
+        {"op": "insert_at", "path": path, "line": len(lines_before) + 1,
+         "content": "# 插件：文件尾标记"},
+        {"op": "insert_at", "path": path, "line": 1,
+         "content": "# 插件：文件头标记"},
+    ])
+    ok, msg = plugin_source.apply_source_plugin("line1")
+    assert ok, msg
+    lines = (src / path).read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "# 插件：文件头标记"
+    assert lines[-1] == "# 插件：文件尾标记"
+    # 原文件内容整体后移一行，未被破坏
+    assert lines[1:1 + len(lines_before)] == lines_before
+
+
+def test_insert_after_by_line_and_replace_lines(iso):
+    """insert_after(line=) 按行插入；replace_lines 精确替换 S..E 行（含边界）"""
+    src = iso
+    path = "zhuzhu_Copilot/core/agent_tools.py"
+    _target(src, text="a = 1\nb = 2\nc = 3\nd = 4\n")
+    # ① insert_after(line=2)：新行落在第 2 行之后
+    _mk_source_plugin("line2a", [
+        {"op": "insert_after", "path": path, "line": 2, "content": "b2 = 22"},
+    ])
+    ok, msg = plugin_source.apply_source_plugin("line2a")
+    assert ok, msg
+    lines = (src / path).read_text(encoding="utf-8").splitlines()
+    # 与锚点版一致：插入块前留一个空行分隔
+    assert lines[:5] == ["a = 1", "b = 2", "", "b2 = 22", "c = 3"], lines
+    assert lines[-1] == "d = 4"
+    assert plugin_source.revert_source_plugin("line2a")[0]
+
+    # ② replace_lines(3..3)：只替换第 3 行，其余行原样
+    _mk_source_plugin("line2b", [
+        {"op": "replace_lines", "path": path, "start_line": 3, "end_line": 3,
+         "content": "c = 33"},
+    ])
+    ok, msg = plugin_source.apply_source_plugin("line2b")
+    assert ok, msg
+    lines = (src / path).read_text(encoding="utf-8").splitlines()
+    assert lines == ["a = 1", "b = 2", "c = 33", "d = 4"], lines
+
+
+def test_replace_module_by_line_range(iso):
+    """replace_module 用 start_line/end_line 替换指定行区间（不依赖锚点）"""
+    src = iso
+    path = "zhuzhu_Copilot/core/agent_tools.py"
+    _target(src, text="x = 0\ndef old():\n    return 1\n\ny = 9\n")
+    _mk_source_plugin("line3", [
+        {"op": "replace_module", "path": path, "start_line": 2, "end_line": 3,
+         "content": "def new():\n    return 2"},
+    ])
+    ok, msg = plugin_source.apply_source_plugin("line3")
+    assert ok, msg
+    text = (src / path).read_text(encoding="utf-8")
+    assert "def new():" in text and "def old():" not in text
+    assert text.splitlines()[0] == "x = 0" and "y = 9" in text
+
+
+def test_line_addressing_validation(iso):
+    """行号寻址的结构校验：缺寻址、行号非法、end<start 都在应用前拒绝"""
+    cases = [
+        ({"op": "insert_at", "path": "zhuzhu_Copilot/core/agent_tools.py",
+          "content": "x = 1"}, "line"),
+        ({"op": "insert_at", "path": "zhuzhu_Copilot/core/agent_tools.py",
+          "line": 0, "content": "x = 1"}, "≥1"),
+        ({"op": "insert_at", "path": "zhuzhu_Copilot/core/agent_tools.py",
+          "line": "abc", "content": "x = 1"}, "整数"),
+        ({"op": "replace_lines", "path": "zhuzhu_Copilot/core/agent_tools.py",
+          "start_line": 5, "end_line": 2, "content": "x = 1"}, "小于"),
+        ({"op": "insert_after", "path": "zhuzhu_Copilot/core/agent_tools.py",
+          "content": "x = 1"}, "寻址"),
+    ]
+    for op, needle in cases:
+        ok, msg = plugin_source.validate_source_ops([op])
+        assert not ok and needle in msg, (op, msg)
+
+
+def test_insert_at_out_of_range_rolls_back(iso):
+    """行号越界：应用前拒绝并整体回滚（文件一字未改）"""
+    src = iso
+    path = "zhuzhu_Copilot/core/agent_tools.py"
+    _target(src, text="a = 1\n")
+    _mk_source_plugin("line4", [
+        {"op": "create_file", "path": "zhuzhu_Copilot/core/side.py", "content": "X = 1\n"},
+        {"op": "insert_at", "path": path, "line": 99, "content": "b = 2"},
+    ])
+    ok, msg = plugin_source.apply_source_plugin("line4")
+    assert not ok and "越界" in msg
+    assert (src / path).read_text(encoding="utf-8") == "a = 1\n"
+    assert not (src / "zhuzhu_Copilot" / "core" / "side.py").exists()
+
+
 def test_replace_file_and_multi_module_integration(iso):
     """replace_file 整体替换 + 多文件综合修改（一次插件改两个关联模块）"""
     src = iso

@@ -20,6 +20,8 @@ z.close()"
 | `py-syntax-lint` | **Python 语法高亮与纠错**（源码级「插入」）：新模块给聊天代码块着色，并新增 `check_python_syntax` 工具定位语法错误（只解析不执行）。原有代码行**一行未改**——只在模块尾部追加了一个包装函数重绑定 `_md_to_html` | `create_file` + 3×`insert_after`（跨 3 文件） |
 | `prompt-optimizer` | **提示词优化**（源码级「替换」）：新增 `optimize_prompt` 工具把粗略提示词改写成六要素结构化提示词；并**替换** `agent_skills._base_prompt_parts` 的末行 `return parts`，把「提示词优化纪律」追加进系统提示词尾部 | `create_file` + `replace_module` + 2×`insert_after`（跨 3 文件） |
 
+| `agent-scorecard` | **Agent 能力评分**（综合型：三种形式齐用）：新建评分模块 + **按行号插入**工具 `score_last_task` + **替换**引擎的 `_tool_wait_timeout` 记录每次工具调用 + `copilot.json` 服务在任务结束时弹评分窗；用户评分后自动回传 Agent 并提示自我反省 | `create_file` + `insert_at`（按行号）+ `insert_after` + `replace_module`（跨 3 文件 + 应用服务） |
+
 > 「插入」与「替换」是源码级定制的两条路：
 > **插入**（`append` / `insert_after`）不改动任何已有代码行，风险最低，适合加能力、包装函数、接线；
 > **替换**（`replace_module` / `replace_file`）直接改写已有实现，用于改造既有行为，需自己保证替换后的代码完整可编译。
@@ -33,9 +35,19 @@ z.close()"
 {"op": "create_file",     "path": "zhuzhu_Copilot/core/x.py", "content": "完整文件内容"}
 {"op": "append",          "path": "zhuzhu_Copilot/core/x.py", "content": "…", "after": "锚点行(可选, 缺省追加到文件末尾)"}
 {"op": "insert_after",    "path": "zhuzhu_Copilot/core/x.py", "anchor": "必须唯一的锚点行", "content": "…"}
+{"op": "insert_after",    "path": "zhuzhu_Copilot/core/x.py", "line": 120, "content": "…"}
+{"op": "insert_at",       "path": "zhuzhu_Copilot/core/x.py", "line": 120, "content": "在第 120 行之前插入"}
+{"op": "replace_lines",   "path": "zhuzhu_Copilot/core/x.py", "start_line": 100, "end_line": 120, "content": "替换第 100~120 行"}
 {"op": "replace_module",  "path": "zhuzhu_Copilot/core/x.py", "start": "起始锚点", "end": "结束锚点(可选)", "content": "…"}
+{"op": "replace_module",  "path": "zhuzhu_Copilot/core/x.py", "start_line": 100, "end_line": 120, "content": "…"}
 {"op": "replace_file",    "path": "zhuzhu_Copilot/core/x.py", "content": "完整文件内容"}
 ```
+
+**两种定位方式**（同一 op 二选一）：
+- **行号**（`line` / `start_line`..`end_line`，1 起含边界）：插件作者拿得到完整源码（如 GitHub 仓库）时最直接；
+  `insert_at line=N` 表示「插到第 N 行之前」，`line=行数+1` 等价追加到文件末尾；
+- **文本锚点**（`anchor` / `start`，须真实存在且唯一）：对版本差异更鲁棒。
+- op 按**顺序**生效：前一条插入/替换会改变后续 op 看到的行号，多 op 改同一文件时请从后往前写行号。
 
 - `path` 一律相对源码根（`src/`），**禁止绝对路径与 `..` 穿越**；
 - `anchor`/`start` 必须取自目标文件里**真实存在且唯一**的字符串（先 `read_file` 看真实内容再设计）；

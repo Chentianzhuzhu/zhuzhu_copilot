@@ -362,8 +362,9 @@ _TASK_GROUPS = [
                 "inspect_customization", "list_sub_agents", "register_sub_agent",
                 "list_builtin_workflows", "shared_context",
                 "register_feature_panel",
-                # UI/UX 与插件生成：自定义任务裁剪后仍需可用（自然语言生成/手动管理）
-                "create_uiux", "manage_uiux", "create_plugin"})),
+                # 插件生成：自定义任务裁剪后仍需可用（自然语言生成/手动管理）
+                "create_plugin", "create_copilot_plugin", "apply_copilot_plugin",
+                "revert_copilot_plugin"})),
 ]
 _TASK_GROUP_TOOLS = {g: tools for g, _kw, tools in _TASK_GROUPS}
 
@@ -645,7 +646,6 @@ class AgentEngine:
                  allow_subagents: bool = True,
                  efficient_mode: bool = False,
                  on_engine_rebuild=None,
-                 on_uiux_rebuild=None,
                  on_btn_reg=None,
                  on_session_name=None,
                  on_preview=None,
@@ -728,7 +728,6 @@ class AgentEngine:
         # 高效模式：最小工具集 + 精简系统提示词（无 MCP/插件/技能规范），见 _EFFICIENT_TOOLS
         self.efficient_mode = bool(efficient_mode)
         self.on_engine_rebuild = on_engine_rebuild   # Cordis 工作流切换：Callable[[str], None] 接收新工作流名
-        self.on_uiux_rebuild = on_uiux_rebuild       # UI/UX 包切换回调：Callable[[], None]（主线程调用）
         self.on_btn_reg = on_btn_reg                 # 按钮注册回调：Callable[[dict], None]，UI 操作须回主线程
         self.on_session_name = on_session_name       # 会话命名回调：Callable[[str], None]（AI 给对话起名，UI 主线程写入）
         self.on_preview = on_preview                 # 文件预览回调：Callable[[str], None]（工具改/读文件时自动下发路径，主线程渲染）
@@ -1558,11 +1557,6 @@ class AgentEngine:
                     res = {k: v for k, v in res.items() if k != "__rebuild_engine__"}
                     if self.on_engine_rebuild:
                         self.on_engine_rebuild(None)
-                # UI/UX 包切换：返回重建标记 → 通知 UI 重建面板（热插拔）
-                if isinstance(res, dict) and res.get("rebuild_uiux"):
-                    res = {k: v for k, v in res.items() if k != "rebuild_uiux"}
-                    if self.on_uiux_rebuild:
-                        self.on_uiux_rebuild()
                 # 按钮注册：返回待应用载荷 → 通知 UI 在主线程注册/注销按钮
                 if isinstance(res, dict) and "btn_reg_pending" in res:
                     payload = res.get("btn_reg_pending")

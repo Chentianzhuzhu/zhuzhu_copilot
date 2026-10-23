@@ -788,8 +788,8 @@ class CopilotPanel(QFrame):
         """无边框窗口的圆角裁剪（Win11 DWM 优先，降级 SetWindowRgn）；失败静默不影响功能。
         注意：SetWindowRgn 与 setMask 是同一套窗口区域机制，生成动画期间必须让位给掩码。"""
         try:
-            from zhuzhu_Copilot.core import agent_ui_ux
-            agent_ui_ux.apply_rounded_window(self, self.ROUND_RADIUS)
+            from zhuzhu_Copilot.core import ui_infra
+            ui_infra.apply_rounded_window(self, self.ROUND_RADIUS)
         except Exception:
             pass
 

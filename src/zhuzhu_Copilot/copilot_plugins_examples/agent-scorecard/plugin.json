@@ -1,0 +1,10 @@
+{
+  "name": "agent-scorecard",
+  "kind": "copilot",
+  "author": "zhuzhu Copilot 示例",
+  "description": "Agent 能力评分：任务结束时弹出评分窗，展示执行时间、工具/MCP/技能/插件调用与 token 消耗，用户评分后回传 Agent 并提示自我反省（综合型：新建模块 + 按行号插入工具 + 替换引擎函数 + 应用服务）",
+  "enabled": true,
+  "created_at": "2026-10-23 23:30:00",
+  "updated_at": "2026-10-23 23:30:00",
+  "icon": ""
+}

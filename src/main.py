@@ -90,7 +90,7 @@ from zhuzhu_Copilot.utils.helpers import (
 
 # 启动动画窗口形状：矩形 + 圆角（单一数据源，改这里即整体生效）。
 # 尺寸为既有启动窗大小（宽 x 高），只把四角做成圆角 —— 不改变窗口大小。
-# 圆角半径与 UI/UX 主题面板圆角一致（agent_ui_ux.apply_rounded_window 默认 18）。
+# 圆角半径与 UI/UX 主题面板圆角一致（ui_infra.apply_rounded_window 默认 18）。
 SPLASH_W = 359
 SPLASH_H = 200
 SPLASH_RADIUS = 18
@@ -242,7 +242,7 @@ class SplashWindow(QWidget):
         故在 showEvent + 延时两档中重复套用（与 _RoundedFloatWindow 的既有做法一致）。
         """
         try:
-            from zhuzhu_Copilot.core.agent_ui_ux import apply_rounded_window
+            from zhuzhu_Copilot.core.ui_infra import apply_rounded_window
             apply_rounded_window(self, SPLASH_RADIUS)
         except Exception:
             pass
@@ -480,8 +480,6 @@ def main():
 
     # 确保默认 UI/UX 包与主题持久化（仅首次写入，已存在则不覆盖用户选择）
     _qs = app_identity.qsettings()
-    if not _qs.contains("agent_uiux"):
-        _qs.setValue("agent_uiux", "default")
     if not _qs.contains("agent_theme"):
         _qs.setValue("agent_theme", "light")   # 安装后默认浅色
 

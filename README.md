@@ -76,8 +76,10 @@
 | --- | --- |
 | `create_file` | 新建源码文件（创建新模块） |
 | `append` | 追加到现有代码模块之后（可给 `after` 锚点，缺省追加到文件末尾） |
-| `insert_after` | 在锚点（`anchor`，须唯一）之后插入 |
-| `replace_module` | 替换模块（`start`..`end` 两行之间，含边界；`end` 缺省到文件尾） |
+| `insert_after` | 在锚点（`anchor`，须唯一）或指定行（`line`）之后插入 |
+| `insert_at` | **按行号插入**：在第 `line` 行之前插入（1 起；`line=行数+1` 即追加到末尾） |
+| `replace_lines` | **按行号替换**：替换第 `start_line`..`end_line` 行（含边界） |
+| `replace_module` | 替换模块（`start`..`end` 锚点，或 `start_line`..`end_line` 行号；`end` 缺省到文件尾） |
 | `replace_file` | 整体替换文件 |
 
 **打包（安装版）同样能源码级定制**：安装目录不含源码、也无法在安装目录里改源码，变更写入用户数据目录的**插件源码层**（源码覆盖层 `~/.zhuzhu_Copilot/source_overlay/`，目录结构镜像源码相对路径），由 `src/_copilot_overlay_hook.py` 的导入钩子让 `zhuzhu_Copilot.*` 的导入**优先命中覆盖层**（覆盖层没有的模块回落打包内原版；`__file__` 指回原版路径，保证包内资源解析不回退）。随包分发源码快照 `_copilot_src/`（spec datas）作为「原版内容」基准，供插入/替换类 op 取当前生效版本。应用/回滚后**重启应用**生效。

@@ -136,7 +136,7 @@ from zhuzhu_Copilot.core import (
     agent_subagent,
     agent_tools,
     agent_tts,
-    agent_ui_ux,
+    ui_infra,
     agent_workflow,
     app_wallpaper,
     net_status,
@@ -3555,6 +3555,410 @@ def _split_args(s: str) -> list:
     return out
 
 
+class _CardBoard(QScrollArea):
+    """自适应卡片看板（插件 / Agent / 工作流管理页共用）。
+
+    视觉规则（对齐、无大片空白）：
+      · **一列一张**：卡片通栏排列（一个插件一行），左图标 + 中文字块 + 右徽标，
+        横向紧凑布局，高度只由文字行数决定；
+      · **高度随内容自适应**：按可用宽度用 QFontMetrics 量标题/描述/元信息换行后的
+        真实高度，逐卡定高；同一行只有一张卡，不存在互相撑高；
+      · **每屏最多 10 张**：按「10 张所需高度」定高，多出的用滚轮/滚动条查看，
+        页面不会被卡片撑长，也不会因为卡片少而出现大片空白（多余空间留在底部）；
+      · **交互按钮在卡片区下方**（页面里先 addWidget 本控件再 addLayout 按钮行，
+        卡片在上、操作在下 —— 先浏览内容再执行动作的阅读顺序）。
+
+    接口与 QListWidget 兼容（clear/addItem/currentRow/currentItem/setCurrentRow/
+    count + currentItemChanged/itemDoubleClicked 信号），页面既有逻辑无需重写。
+    """
+
+    MAX_VISIBLE = 10
+    GAP = 8
+    currentItemChanged = pyqtSignal(object, object)
+    itemDoubleClicked = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._host = QWidget()
+        self._host.setStyleSheet("background: transparent;")
+        self._rows_lay = QVBoxLayout(self._host)
+        self._rows_lay.setContentsMargins(0, 0, 4, 0)
+        self._rows_lay.setSpacing(self.GAP)
+        # 关键：让容器的最小高度 = 布局最小高度，否则 widgetResizable 会把容器压到
+        # 视口大小、内容被裁掉且**不出现滚动条**（卡片超过 10 张就看不到了）。
+        self._rows_lay.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self._rows_lay.addStretch(1)
+        self.setWidget(self._host)
+        self._cards = []
+        self._sel = -1
+        self._empty = None
+        self._need_h = 120            # 内容所需高度（≤10 张卡片）
+        self.setFixedHeight(120)      # 有内容前先占一行高，避免布局跳动
+
+    # ---- QListWidget 兼容接口 ----
+    def setWordWrap(self, _on=True):
+        pass
+
+    def count(self) -> int:
+        return len(self._cards)
+
+    def currentRow(self) -> int:
+        return self._sel
+
+    def currentItem(self):
+        return self._cards[self._sel] if 0 <= self._sel < len(self._cards) else None
+
+    def setCurrentRow(self, i: int):
+        self._select(int(i))
+
+    def clear(self):
+        for c in self._cards:
+            c.setParent(None)
+            c.deleteLater()
+        self._cards = []
+        self._sel = -1
+        self._clear_rows()
+        self.setFixedHeight(120)
+        self._ensure_empty()
+
+    def addItem(self, text):
+        """兼容旧调用：首行作标题（含 [徽标] 自动提取），其余行作描述。"""
+        lines = str(text or "").splitlines()
+        head = lines[0].strip() if lines else ""
+        badge = ""
+        if "[" in head and "]" in head:
+            badge = head[head.index("[") + 1:head.index("]")].strip()
+            head = (head[:head.index("[")] + head[head.index("]") + 1:]).strip()
+        return self.add_card(head, "\n".join(lines[1:]).strip(), badges=badge)
+
+    # ---- 卡片 API ----
+    def add_card(self, title, desc="", meta="", icon=None, badges="",
+                 icon_text=""):
+        self._hide_empty()
+        card = _Card(title=title, desc=desc, meta=meta, icon=icon,
+                     badges=badges, icon_text=icon_text, board=self)
+        card._index = len(self._cards)
+        self._cards.append(card)
+        self._relayout()
+        return card
+
+    def _hide_empty(self):
+        if self._empty is not None:
+            self._empty.setParent(None)
+            self._empty = None
+
+    def _ensure_empty(self):
+        if self._cards:
+            return
+        self._hide_empty()
+        lbl = QLabel("暂无内容")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; padding: 24px 0;")
+        self._rows_lay.insertWidget(0, lbl)
+        self._empty = lbl
+
+    def _clear_rows(self):
+        """清空布局但**保留卡片对象**（卡片由 self._cards 持有，重排时复用）。
+
+        单列布局下卡片本身就是布局项，绝不能 deleteLater——否则重排后引用的是
+        已销毁的 C++ 对象（表现为卡片不显示/崩溃）。只有空态提示这类临时控件才销毁。
+        """
+        while self._rows_lay.count() > 1:
+            item = self._rows_lay.takeAt(0)
+            w = item.widget()
+            if w is None:
+                continue
+            try:
+                w.setParent(None)
+            except Exception:
+                pass
+            if w not in self._cards and w is not self._empty:
+                w.deleteLater()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        # 只在**宽度**变化时重排：高度变化是本控件自己 setFixedHeight 引起的，
+        # 若也重排会把 _fit_height 收敛后的高度又顶回内容高（死循环 + 页面被撑高）。
+        w = self.viewport().width()
+        if w != getattr(self, "_last_w", -1):
+            self._last_w = w
+            self._relayout()
+
+    def showEvent(self, ev):
+        """切到本页时按当前视口重算高度（懒加载页面首次显示时布局才确定）。"""
+        super().showEvent(ev)
+        QTimer.singleShot(0, self._fit_height)
+
+    def _relayout(self):
+        """单列重排：逐卡按当前宽度量高，总高封顶 10 张。"""
+        self._clear_rows()
+        if not self._cards:
+            self._ensure_empty()
+            self.setFixedHeight(120)
+            return
+        avail = max(200, self.viewport().width() - 6)
+        total = 0
+        for i, c in enumerate(self._cards):
+            c.setParent(self._host)
+            c.set_card_width(avail)
+            self._rows_lay.insertWidget(self._rows_lay.count() - 1, c)
+            if i < self.MAX_VISIBLE:
+                total += c.height() + (self.GAP if i else 0)
+        self._need_h = max(120, total + 6)
+        self.setFixedHeight(self._need_h)
+        # 页面放不下时按可用高度收敛，避免「页面滚动 + 卡片区滚动」两层滚动条
+        QTimer.singleShot(0, self._fit_height)
+
+    def _below_space(self) -> int:
+        """卡片区下方同级控件（交互按钮行等）所需高度。
+
+        按钮行移到卡片下方后，卡片区定高必须先给下方控件留足空间，否则按
+        「视口高 − y」定高会把按钮行顶出视口，用户要滚页面才看得到按钮。
+        逐项取布局项高度：FlowLayout 等 hasHeightForWidth 布局按页宽折行算高，
+        普通布局/控件取 sizeHint，stretch（弹簧）计 0。异常一律回退 0
+        （退化为旧行为：页面自身滚动，不会布局崩坏）。
+        """
+        try:
+            page = self.parentWidget()
+            lay = page.layout() if page is not None else None
+            if lay is None:
+                return 0
+            idx = next((i for i in range(lay.count())
+                        if lay.itemAt(i) is not None
+                        and lay.itemAt(i).widget() is self), -1)
+            if idx < 0:
+                return 0
+            w = max(1, page.width())
+            total = 0
+            for i in range(idx + 1, lay.count()):
+                it = lay.itemAt(i)
+                if it is None:
+                    continue
+                sub = it.layout()
+                if sub is not None:
+                    h = (sub.heightForWidth(w) if sub.hasHeightForWidth()
+                         else sub.sizeHint().height())
+                elif it.widget() is not None:
+                    h = it.widget().sizeHint().height()
+                else:
+                    h = 0   # spacer / 空项
+                total += max(0, h) + lay.spacing()
+            return total
+        except Exception:
+            return 0
+
+    def _fit_height(self):
+        """把高度收敛到 min(内容高, **外层滚动区视口**可用高)：只保留一层滚动。
+
+        页面本身包在 QScrollArea 里（见 _wrap_page），若卡片区按内容高撑到 800+，
+        页面就会比视口高，出现「页面滚 + 卡片区滚」两层滚动条。这里以最近一层
+        外层滚动区的视口高度为准，卡片区自己滚，页面不动；卡片区下方还有
+        交互按钮行时先扣掉其所需高度（见 _below_space），保证按钮始终可见。
+        """
+        if getattr(self, "_fitting", False):
+            return
+        try:
+            need = max(120, int(self._need_h))
+            outer = self.parentWidget()
+            while outer is not None and not isinstance(outer, QScrollArea):
+                outer = outer.parentWidget()
+            avail = 0
+            if outer is not None:
+                avail = (int(outer.viewport().height()) - int(self.y())
+                         - self._below_space() - 10)
+            # 首次构建时布局还没跑完，self.y() 可能仍是 0（算出的可用高偏大）
+            # → 再等一轮事件循环重算，最多 3 次，避免卡片区把页面顶出视口。
+            if outer is not None and self.y() <= 0 and \
+                    int(getattr(self, "_fit_retry", 0)) < 3:
+                self._fit_retry = int(getattr(self, "_fit_retry", 0)) + 1
+                QTimer.singleShot(0, self._fit_height)
+                return
+            self._fit_retry = 0
+            h = need if avail <= 0 else min(need, max(140, avail))
+            if abs(h - self.height()) > 2:
+                self._fitting = True
+                try:
+                    self.setFixedHeight(h)
+                finally:
+                    self._fitting = False
+        except Exception:
+            pass
+
+    def _select(self, idx: int):
+        if idx == self._sel:
+            return
+        self._sel = idx if 0 <= idx < len(self._cards) else -1
+        for i, c in enumerate(self._cards):
+            c.set_selected(i == self._sel)
+        self.currentItemChanged.emit(self.currentItem(), None)
+
+    def _emit_double(self, idx: int):
+        self._select(idx)
+        self.itemDoubleClicked.emit(self.currentItem())
+
+
+class _Card(QFrame):
+    """单张卡片（通栏）：[图标] [标题 + 描述 + 元信息] [徽标]。
+
+    横向布局保证视觉对齐（图标与标题基线对齐、徽标贴右），高度只随文字行数变化。
+    """
+
+    _PAD_X = 12
+    _PAD_Y = 9
+    _ICON = 32
+
+    def __init__(self, title="", desc="", meta="", icon=None, badges="",
+                 icon_text="", board=None):
+        super().__init__(None)
+        self._board = board
+        self._index = -1
+        self._sel = False
+        self._hover = False
+        self._title_text = str(title or "")
+        self._desc_text = self._shorten(str(desc or ""), 220)
+        self._meta_text = self._shorten(str(meta or ""), 160)
+        self._badge_text = str(badges or "")
+        self.setObjectName("pluginCard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(self._PAD_X, self._PAD_Y, self._PAD_X, self._PAD_Y)
+        row.setSpacing(10)
+        # 图标：圆角方块 + 首字母（有图标文件则缩放显示）
+        self._icon = QLabel()
+        self._icon.setFixedSize(self._ICON, self._ICON)
+        self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._icon.setStyleSheet("border-radius: 9px; background: rgba(47,82,216,0.14);"
+                                 "font-size: 15px; font-weight: 700;")
+        # 占位字母只取首字符（icon_text 可能传的是整个名称）
+        letter = (str(icon_text or self._title_text or "?")[:1] or "?").upper()
+        self._icon.setText(letter)
+        if icon is not None:
+            pm = QPixmap(str(icon))
+            if not pm.isNull():
+                self._icon.setText("")
+                self._icon.setPixmap(pm.scaled(
+                    28, 28, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+        row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignTop)
+        # 文字块：标题 / 描述 / 元信息（左对齐、逐行贴合）
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        self._title = QLabel(self._title_text)
+        self._title.setWordWrap(True)
+        self._title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;"
+                                  "background: transparent;")
+        col.addWidget(self._title)
+        self._desc = None
+        if self._desc_text:
+            self._desc = QLabel(self._desc_text)
+            self._desc.setWordWrap(True)
+            self._desc.setStyleSheet(f"color: {TEXT}; font-size: 12px;"
+                                     "background: transparent;")
+            col.addWidget(self._desc)
+        self._meta = None
+        if self._meta_text:
+            self._meta = QLabel(self._meta_text)
+            self._meta.setWordWrap(True)
+            self._meta.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;"
+                                     "background: transparent;")
+            col.addWidget(self._meta)
+        row.addLayout(col, 1)
+        # 徽标：贴右对齐
+        self._badge = None
+        if self._badge_text:
+            self._badge = QLabel(self._badge_text)
+            self._badge.setStyleSheet(
+                f"color: {ACCENT_HOVER}; background: rgba(47,82,216,0.12);"
+                "border-radius: 8px; padding: 2px 8px; font-size: 11px;")
+            row.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
+        self._apply_style()
+
+    @staticmethod
+    def _shorten(text: str, limit: int) -> str:
+        t = " ".join(str(text or "").split())
+        return t if len(t) <= limit else t[:limit - 1] + "…"
+
+    # ---- 尺寸（按内容量算高度） ----
+    def set_card_width(self, width: int):
+        inner = max(80, int(width) - self._PAD_X * 2 - self._ICON - 10)
+        if self._badge is not None:
+            inner = max(80, inner - (self._badge.sizeHint().width() + 10))
+        h = self._PAD_Y * 2
+        h += self._text_h(self._title, self._title_text, inner)
+        if self._desc is not None:
+            h += 2 + self._text_h(self._desc, self._desc_text, inner)
+        if self._meta is not None:
+            h += 1 + self._text_h(self._meta, self._meta_text, inner)
+        self.setFixedHeight(max(52, int(h) + 2))
+
+    @staticmethod
+    def _text_h(label: QLabel, text: str, width: int) -> int:
+        """按可用宽度量出换行后高度（CJK 友好：按像素宽度换行）。"""
+        try:
+            from PyQt6.QtCore import QRect as _QRect
+            fm = QFontMetrics(label.font())
+            r = fm.boundingRect(
+                _QRect(0, 0, max(40, int(width)), 10000),
+                int(Qt.TextFlag.TextWordWrap.value), text)
+            return int(r.height()) + 2
+        except Exception:
+            return 18
+
+    def text(self) -> str:
+        return self._title_text
+
+    def setData(self, _role, value):
+        """兼容 QListWidgetItem.setData（页面用 UserRole 存业务主键）。"""
+        self._data = value
+
+    def data(self, _role=None):
+        return getattr(self, "_data", None)
+
+    def setToolTip(self, tip: str):
+        super().setToolTip(str(tip or ""))
+
+    # ---- 外观 ----
+    def _apply_style(self):
+        border = ACCENT if self._sel else (ACCENT_HOVER if self._hover else BORDER)
+        bg = CARD if (self._sel or self._hover) else PANEL
+        self.setStyleSheet(
+            f"QFrame#pluginCard {{ background: {bg};"
+            f" border: 1px solid {border}; border-radius: 10px; }}")
+
+    def set_selected(self, on: bool):
+        self._sel = bool(on)
+        self._apply_style()
+
+    def enterEvent(self, ev):
+        self._hover = True
+        self._apply_style()
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self._apply_style()
+        super().leaveEvent(ev)
+
+    def mousePressEvent(self, ev):
+        if self._board is not None:
+            self._board._select(self._index)
+        super().mousePressEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        if self._board is not None:
+            self._board._emit_double(self._index)
+        super().mouseDoubleClickEvent(ev)
+
+
 class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
@@ -3671,7 +4075,7 @@ class _AgentSettingsDialog(QDialog):
             self._build_wechat_page,
             self._build_membership_page,
         ]
-        self.stack.addWidget(self._page_builders[0]())
+        self.stack.addWidget(self._wrap_page(self._page_builders[0]()))
         # 页面栈显式透明背景：QStackedWidget 在样式表环境下会被风格系统置为
         # autoFillBackground 并按 app 级 palette 填充——主窗口移除后 app palette
         # 不再随主题更新（残留深色），浅色主题下内容区会渲染成大块纯黑（对话流/
@@ -3780,6 +4184,24 @@ class _AgentSettingsDialog(QDialog):
 
     def _page_body(self, w: QWidget) -> QVBoxLayout:
         return w.layout()
+
+    # 分组小节标题统一走 _section_label（唯一实现见会员页区块，勿在此重复定义）
+
+    def _wrap_page(self, w: QWidget) -> QScrollArea:
+        """给单个设置页套独立滚动容器。
+
+        为什么必须每页单独滚：QStackedWidget 的**最小高度取所有页的最大值**，
+        只要有一页内容很高（如"通用与记忆"），其余页都会被拉到同样高，布局便把
+        多余空间分摊到控件之间——表现就是标题在上、说明在底部、中间一大片空白
+        （用户截图里的样子）。每页各自滚动后，页高 = 自己内容高度，短页不再被撑开。
+        """
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.Shape.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sa.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        sa.setWidget(w)
+        return sa
 
     def _nav_col_w(self) -> int:
         """左侧导航列宽度：按**当前语言**的导航项译文实测宽度自适应。
@@ -3928,10 +4350,7 @@ class _AgentSettingsDialog(QDialog):
         reset_row.addWidget(reset_btn, 1)
         lay.addLayout(reset_row)
         # 面板偏好：四个子面板（工作树/Git/任务清单/代码预览）与主面板的关系
-        pref_lbl = QLabel(_ui("面板偏好"))
-        pref_lbl.setStyleSheet(
-            f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
-        lay.addWidget(pref_lbl)
+        lay.addWidget(self._section_label(_ui("面板偏好")))
         self.panel_mode_combo = _ArrowComboBox()
         self.panel_mode_combo.addItem(_ui("融入主面板（与主面板同一窗口）"), "dock")
         self.panel_mode_combo.addItem(_ui("贴附主面板（独立窗口靠边悬浮）"), "attach")
@@ -3951,9 +4370,7 @@ class _AgentSettingsDialog(QDialog):
         pref_sub.setWordWrap(True)
         lay.addWidget(pref_sub)
         # 能力开关：分别控制 MCP / 技能 / 插件，关闭后 AI 不再加载对应能力（settings cap_*）
-        cap_lbl = QLabel(_ui("能力开关"))
-        cap_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
-        lay.addWidget(cap_lbl)
+        lay.addWidget(self._section_label(_ui("能力开关")))
         self.cap_mcp_check = QCheckBox(_ui("启用 MCP 服务器（外部工具）"))
         self.cap_mcp_check.setChecked(agent_skills.cap_enabled("mcp"))
         self.cap_mcp_check.setToolTip(_ui("关闭后 AI 不再暴露任何 MCP 服务器工具"))
@@ -3971,10 +4388,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(self.cap_plugin_check)
         # 工具管控：禁用指定工具 / 禁用全部工具调用（系统层面：schema 与执行层双重生效，
         # 既有设置期也即时生效，提示词干预无法绕过）
-        tool_lbl = QLabel(_ui("工具管控"))
-        tool_lbl.setStyleSheet(
-            f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
-        lay.addWidget(tool_lbl)
+        lay.addWidget(self._section_label(_ui("工具管控")))
         self.disable_all_check = QCheckBox(_ui("禁用全部工具调用（AI 仅可对话回复）"))
         self.disable_all_check.setChecked(agent_sandbox.tools_disabled_all())
         self.disable_all_check.setToolTip(_ui("开启后 AI 无法调用任何工具（含 grep/read_file/web_search 等），只能以文本对话作答"))
@@ -3999,10 +4413,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(self.disable_tools_edit)
         # 网络代理：全局（系统代理指向本机转发器）或回退（仅失败时经 SSH 隧道）
         # 配置项：settings proxy_*（见 core/agent_proxy.py 顶部说明）
-        proxy_lbl = QLabel(_ui("网络代理（SSH 隧道）"))
-        proxy_lbl.setStyleSheet(
-            f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
-        lay.addWidget(proxy_lbl)
+        lay.addWidget(self._section_label(_ui("网络代理（SSH 隧道）")))
         self.proxy_check = QCheckBox(_ui("启用网络代理"))
         self.proxy_check.setChecked(
             str(s.get("proxy_enabled", "0")).strip().lower() in ("1", "true", "on", "yes"))
@@ -4023,6 +4434,8 @@ class _AgentSettingsDialog(QDialog):
         mode_row.setSpacing(8)
         mode_lbl = QLabel(_ui("模式"))
         mode_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        # 与本页「界面主题 / 界面语言」等行同宽标签列：下拉框左缘对齐（视觉对齐）
+        mode_lbl.setFixedWidth(self._label_col_w())
         self.proxy_mode_combo = QComboBox()
         self.proxy_mode_combo.addItem(_ui("全局（所有应用流量经代理）"), "global")
         self.proxy_mode_combo.addItem(_ui("回退（仅直连失败时中转）"), "fallback")
@@ -4102,9 +4515,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(self.proxy_status_lbl)
         self._refresh_proxy_status()
         # 趣味互动：AI 随机截屏分析屏幕并弹出俏皮锐评气泡（涉及周期性全屏截图，默认开启）
-        fun_lbl = QLabel(_ui("趣味互动"))
-        fun_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px; font-weight: 700; margin-top: 8px;")
-        lay.addWidget(fun_lbl)
+        lay.addWidget(self._section_label(_ui("趣味互动")))
         self.fun_check = QCheckBox(_ui("AI 趣味锐评（随机截屏分析并弹可爱气泡）"))
         self.fun_check.setChecked(
             str(app_identity.qsettings().value("agent_fun", "1"))
@@ -4461,7 +4872,10 @@ class _AgentSettingsDialog(QDialog):
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setPlaceholderText(_ui("补充的提示词…"))
         self.prompt_edit.setPlainText(str(s.get("custom_system_prompt") or ""))
-        lay.addWidget(self.prompt_edit, 1)
+        # 限高：整页一个大空框既难看也没必要，输入区 300px 足够，其余留白在底部
+        self.prompt_edit.setMaximumHeight(300)
+        lay.addWidget(self.prompt_edit)
+        lay.addStretch(1)
         return w
 
     def _build_bash_page(self, s) -> QWidget:
@@ -4475,7 +4889,10 @@ class _AgentSettingsDialog(QDialog):
         self.safe_edit.setPlaceholderText(_uim("如：\nnpm\npip\npython\ngit"))
         self.safe_edit.setPlainText(
             "\n".join(str(c) for c in (s.get("custom_safe_commands") or [])))
-        lay.addWidget(self.safe_edit, 1)
+        # 限高：白名单通常只有几行，300px 足够，避免整页一个空矩形
+        self.safe_edit.setMaximumHeight(300)
+        lay.addWidget(self.safe_edit)
+        lay.addStretch(1)
         return w
 
     def _build_model_page(self, s) -> QWidget:
@@ -5366,9 +5783,7 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(wf_row)
 
         # ---- 主 Agent ----
-        mh = QLabel(_ui("主 Agent"))
-        mh.setStyleSheet(f"color: {self._ACCENT}; font-size: 13px; font-weight: 700;")
-        lay.addWidget(mh)
+        lay.addWidget(self._section_label(_ui("主 Agent")))
         self.agent_main_info = QLabel("")
         self.agent_main_info.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         self.agent_main_info.setWordWrap(True)
@@ -5385,17 +5800,9 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(mrow)
 
         # ---- 子 Agent ----
-        sh = QLabel(_ui("子 Agent（本对话流注册）"))
-        sh.setStyleSheet(f"color: {self._ACCENT}; font-size: 13px; font-weight: 700;")
-        lay.addWidget(sh)
-        self.agent_sub_list = QListWidget()
-        self.agent_sub_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
-            f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
-            f"color: {self._ACCENT_HOVER}; }}")
-        lay.addWidget(self.agent_sub_list, 1)
+        lay.addWidget(self._section_label(_ui("子 Agent（本对话流注册）")))
+        # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
+        self.agent_sub_list = _CardBoard(self)
         srow = QHBoxLayout()
         srow.setSpacing(8)
         s_add = QPushButton(_ui("注册子 Agent"))
@@ -5412,7 +5819,9 @@ class _AgentSettingsDialog(QDialog):
         srow.addWidget(s_add)
         srow.addWidget(s_del)
         srow.addStretch(1)
-        lay.addLayout(srow)
+        lay.addWidget(self.agent_sub_list)   # 卡片看板在上（定高 ≤10 张）
+        lay.addLayout(srow)          # 交互按钮在卡片区下方（先浏览内容再执行操作）
+        lay.addStretch(1)            # 多余空间留底部，避免元素被拉开出现大片空白
         self._reload_agent_view()
         return w
 
@@ -5462,12 +5871,12 @@ class _AgentSettingsDialog(QDialog):
         for it in agent_subagent.registered_subagents(name):
             desc = (it["description"] or "").strip()
             goal = (it["goal"] or "").strip()
-            item = QListWidgetItem(it["name"])
-            item.setText(_uif('{a0}  {a1}\n    {a2}: {a3}', a0=it['name'], a1=desc[:30],
-                             a2=_ui("目标"), a3=goal[:60]))
-            item.setToolTip(goal)
-            item.setData(Qt.ItemDataRole.UserRole, it["name"])
-            self.agent_sub_list.addItem(item)
+            card = self.agent_sub_list.add_card(
+                it["name"], desc, meta=(_uif("{k}: {v}", k=_ui("目标"), v=goal)
+                                        if goal else ""),
+                icon_text=it["name"])
+            card.setToolTip(goal)
+            card.setData(Qt.ItemDataRole.UserRole, it["name"])
 
     def _on_agent_edit_main(self, *_):
         """编辑选中对话流的主 Agent 人格（agent.py）"""
@@ -5554,15 +5963,8 @@ class _AgentSettingsDialog(QDialog):
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
-        self.wf_list = QListWidget()
-        self.wf_list.setWordWrap(True)   # 长英文描述自动换行，避免被右缘挤压遮挡
-        self.wf_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
-            f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
-            f"color: {self._ACCENT_HOVER}; }}")
-        lay.addWidget(self.wf_list, 1)
+        # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
+        self.wf_list = _CardBoard(self)
 
         def _btn(text, accent=False, tip=""):
             b = QPushButton(text)
@@ -5598,7 +6000,6 @@ class _AgentSettingsDialog(QDialog):
         for b in (nl_b, add_b, edit_b, del_file_b, switch_b, toggle_b, del_b):
             row.addWidget(b)
         row.addStretch(1)
-        lay.addLayout(row)
 
         # 内置工作流预设：随包提供，一键创建（含核心文件与多个注册式子 Agent）
         preset_row = QHBoxLayout()
@@ -5615,7 +6016,10 @@ class _AgentSettingsDialog(QDialog):
                                 "与吏户礼兵刑工六部，共 8 个注册式子 Agent，编队共用共同上下文空间）"))
         preset_b.clicked.connect(self._on_workflow_create_builtin)
         preset_row.addWidget(preset_b)
-        lay.addLayout(preset_row)
+        lay.addWidget(self.wf_list)   # 卡片看板在上（定高 ≤10 张）
+        lay.addLayout(row)            # 交互按钮在卡片区下方（先浏览内容再执行操作）
+        lay.addLayout(preset_row)     # 内置预设创建行同样归入卡片区下方的操作区
+        lay.addStretch(1)             # 多余空间留底部，避免元素被拉开出现大片空白
         self._reload_builtin_presets()
         self._reload_workflow_list()
         return w
@@ -5657,10 +6061,11 @@ class _AgentSettingsDialog(QDialog):
         self._reload_workflow_list()
 
     def _reload_workflow_list(self):
+        """刷新工作流卡片看板（自适应卡片：名称 + 状态 + 描述 + 核心文件）。"""
         if not hasattr(self, "wf_list") or self.wf_list is None:
             return   # 工作流页尚未懒加载构建时跳过
-        # 由内置预设创建的工作流：描述改取**预设译文**，英文界面下才不会残留中文
-        # （预设描述随包提供、有英文译文；用户自建工作流的描述是用户数据，原样显示）。
+        # 由内置预设创建的工作流：描述改取**预设译文**，英文界面下不会残留中文
+        # （预设描述随包提供、有英文译文；用户自建工作流的描述是用户数据，原样显示）
         preset_desc = {}
         if _is_en():
             preset_desc = {p.get("id"): p.get("description", "")
@@ -5679,12 +6084,11 @@ class _AgentSettingsDialog(QDialog):
             pdesc = preset_desc.get(wf.get("preset") or "")
             if pdesc:
                 desc = _ui(pdesc)
-            if len(desc) > 40:
-                desc = desc[:40] + "…"
             files = ", ".join(wf["core_files"]) if wf["core_files"] else "—"
-            self.wf_list.addItem(_uif('{a0}  [{a1}]  {a2}\n    {a3}: {a4}',
-                                      a0=wf['name'], a1=tag, a2=desc,
-                                      a3=_ui("核心文件"), a4=files))
+            self.wf_list.add_card(
+                wf["name"], desc,
+                meta=_uif("{k}: {v}", k=_ui("核心文件"), v=files),
+                badges=tag, icon_text=wf["name"])
 
     def _current_workflow(self) -> dict:
         row = self.wf_list.currentRow()
@@ -5905,15 +6309,8 @@ class _AgentSettingsDialog(QDialog):
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
-        self.plugin_list = QListWidget()
-        self.plugin_list.setWordWrap(True)   # 长英文描述自动换行，避免被右缘挤压遮挡
-        self.plugin_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
-            f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
-            f"color: {self._ACCENT_HOVER}; }}")
-        lay.addWidget(self.plugin_list, 1)
+        # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
+        self.plugin_list = _CardBoard(self)
         # 换行布局：这一排七个按钮会把页面「最小宽度需求」顶到 742px（视口仅 759），
         # 只要字体/DPI 略大就撑破页面，把所有页的右侧内容（如外观页滑杆数值）
         # 推出视口裁掉 —— 改 FlowLayout 后最小需求降到单个按钮宽。
@@ -6011,11 +6408,14 @@ class _AgentSettingsDialog(QDialog):
         row.addWidget(call_b)
         row.addWidget(wf_b)
         row.addWidget(del_b)
-        lay.addLayout(row)
+        lay.addWidget(self.plugin_list)   # 卡片看板在上（定高 ≤10 张）
+        lay.addLayout(row)          # 交互按钮在卡片区下方（先浏览内容再执行操作）
+        lay.addStretch(1)            # 多余空间留底部，避免元素被拉开出现大片空白
         self._reload_plugin_list()
         return w
 
     def _reload_plugin_list(self):
+        """刷新插件卡片看板（自适应卡片：图标 + 名称 + 类型/状态 + 描述 + 元信息）。"""
         if not hasattr(self, "plugin_list") or self.plugin_list is None:
             return   # 插件页尚未懒加载构建时跳过
         self.plugin_list.clear()
@@ -6024,8 +6424,6 @@ class _AgentSettingsDialog(QDialog):
             kind = _uim(kind) if kind else str(p.get("kind", ""))
             state = _ui("启用") if p.get("enabled") else _ui("停用")
             bound = agent_plugins.plugin_workflows(p.get("name", ""))
-            wf = (_uif("   [工作流: {wfs}]", wfs=", ".join(bound))
-                  if bound else "")
             # 插件名是标识符（不译），类型/状态/描述是文案（走语言包）
             # 插件描述走提示词语言包（key: plugin.<name>.desc）：与注入 system prompt 时
             # 的翻译同源（agent_plugins._tp），内置插件有英文译文，用户自定义回退原文。
@@ -6035,29 +6433,26 @@ class _AgentSettingsDialog(QDialog):
                                             p.get("description", "") or "")
             except Exception:
                 _plugin_desc = p.get("description", "") or ""
-            # 插件包规范字段：开发者/公司、更新时间；源码插件附应用状态
-            _pkg = []
+            # 元信息行：开发者 / 更新时间 / 应用状态 / 绑定工作流
+            _meta = []
             _author = str(p.get("author") or "").strip()
             if _author:
-                _pkg.append(_uif("开发者: {a}", a=_author))
+                _meta.append(_uif("开发者: {a}", a=_author))
             _updated = str(p.get("updated_at") or "").strip()
             if _updated:
-                _pkg.append(_uif("更新: {t}", t=_updated))
+                _meta.append(_uif("更新: {t}", t=_updated))
             if p.get("kind") == "source":
-                _pkg.append("已应用" if p.get("source_applied") else "未应用")
-            _pkg_line = ("   " + " | ".join(_pkg)) if _pkg else ""
-            _item = QListWidgetItem(_uif(
-                "{name}   [{kind}]   {state}{wf}   {desc}{pkg}",
-                name=p.get("name", "?"), kind=kind, state=state, wf=wf,
-                desc=_plugin_desc, pkg=_pkg_line))
-            # 插件图标（plugin.json 的 icon 指向包内图标文件）
+                _meta.append("已应用" if p.get("source_applied") else "未应用")
+            if bound:
+                _meta.append(_uif("工作流: {wfs}", wfs=", ".join(bound)))
             try:
                 _icon = agent_plugins.plugin_icon_path(p.get("name", ""))
-                if _icon is not None:
-                    _item.setIcon(QIcon(str(_icon)))
             except Exception:
-                pass
-            self.plugin_list.addItem(_item)
+                _icon = None
+            self.plugin_list.add_card(
+                p.get("name", "?"), _plugin_desc,
+                meta="  |  ".join(_meta),
+                icon=_icon, badges=" · ".join(x for x in (kind, state) if x))
         self._update_source_buttons()
 
     def _update_source_buttons(self):
@@ -6095,15 +6490,8 @@ class _AgentSettingsDialog(QDialog):
         self.coplugin_overlay_lbl.setWordWrap(True)
         lay.addWidget(self.coplugin_overlay_lbl)
         self._refresh_coplugin_overlay_label()
-        self.coplugin_list = QListWidget()
-        self.coplugin_list.setWordWrap(True)
-        self.coplugin_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
-            f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
-            f"QListWidget::item:selected {{ background: {self._PANEL2};"
-            f"color: {self._ACCENT_HOVER}; }}")
-        lay.addWidget(self.coplugin_list, 1)
+        # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
+        self.coplugin_list = _CardBoard(self)
         row = FlowLayout(spacing=SPACING_SM)
         create_b = QPushButton(_line_icon("plus", 16), _ui("创建 Copilot 插件（自然语言）"))
         create_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
@@ -6173,7 +6561,9 @@ class _AgentSettingsDialog(QDialog):
         row.addWidget(export_b)
         row.addWidget(toggle_b)
         row.addWidget(del_b)
-        lay.addLayout(row)
+        lay.addWidget(self.coplugin_list)   # 卡片看板在上（定高 ≤10 张）
+        lay.addLayout(row)          # 交互按钮在卡片区下方（先浏览内容再执行操作）
+        lay.addStretch(1)            # 多余空间留底部，避免元素被拉开出现大片空白
         self._reload_coplugin_list()
         return w
 
@@ -6202,17 +6592,14 @@ class _AgentSettingsDialog(QDialog):
                     f"{k}×{v}" for k, v in ext.items() if v))
             if p.get("has_agent_pkg"):
                 bits.append("含 Agent 能力")
-            item = QListWidgetItem(_uif(
-                "{name}   [{state}]   {desc}   |  {bits}",
-                name=p.get("name", "?"), state=state,
-                desc=str(p.get("description") or ""), bits=" | ".join(bits)))
             try:
                 icon = copilot_plugins.plugin_icon_path(p.get("name", ""))
-                if icon is not None:
-                    item.setIcon(QIcon(str(icon)))
             except Exception:
-                pass
-            self.coplugin_list.addItem(item)
+                icon = None
+            self.coplugin_list.add_card(
+                p.get("name", "?"), str(p.get("description") or ""),
+                meta="  |  ".join(bits), icon=icon, badges=state,
+                icon_text=p.get("name", "?"))
         self._update_coplugin_buttons()
 
     def _update_coplugin_buttons(self):
@@ -7181,8 +7568,14 @@ class _AgentSettingsDialog(QDialog):
                 pass
 
     def _section_label(self, text: str) -> QLabel:
+        """分组小节标题（统一实现，勿再新增同名方法）。
+
+        会员订阅/积分包等页共用；样式取「次级文字色 + 12px 加粗 + 上边距」——
+        与页面标题（16px 主色）形成清晰层级：页题 > 分组 > 正文。
+        """
         lab = QLabel(text)
-        lab.setStyleSheet(f"color: {self._TEXT}; font-size: 14px; font-weight: 700;")
+        lab.setStyleSheet(f"color: {self._DIM}; font-size: 12px; font-weight: 700;"
+                          "margin-top: 8px;")
         return lab
 
     def _memb_product_card(self, p: dict) -> QFrame:
@@ -7832,20 +8225,21 @@ class _AgentSettingsDialog(QDialog):
         while self.stack.count() < len(self._page_builders):
             _page = self._page_builders[self.stack.count()]()
             _install_focus_glow_all(_page)   # 输入框聚焦泛光
-            self.stack.addWidget(_page)
+            self.stack.addWidget(self._wrap_page(_page))
 
     def _switch_page(self, idx: int):
         # 懒加载：只构建到目标页再切换（打开面板只构建第一页，避免卡顿）
         while self.stack.count() <= idx:
             _page = self._page_builders[self.stack.count()]()
             _install_focus_glow_all(_page)   # 输入框聚焦泛光
-            self.stack.addWidget(_page)
+            self.stack.addWidget(self._wrap_page(_page))
         self.stack.setCurrentIndex(idx)
-        # 切页后内容滚动回顶（页面包在 QScrollArea 中，避免长页面残留上一页滚动位置）
+        # 切页后内容滚动回顶：外层滚动区 + 当前页自己的滚动区都归零
         try:
-            sc = getattr(self, "_page_scroll", None)
-            if sc is not None:
-                sc.verticalScrollBar().setValue(0)
+            for sc in (getattr(self, "_page_scroll", None),
+                       self.stack.widget(self.stack.currentIndex())):
+                if isinstance(sc, QScrollArea):
+                    sc.verticalScrollBar().setValue(0)
         except Exception:
             pass
 
@@ -13043,7 +13437,7 @@ def _center_dialog_on_screen(w: QWidget) -> None:
 class _RoundedFloatWindow(QWidget):
     """无边框悬浮面板基类：统一切圆角，消除四角方形残留。
     覆盖 todos/git/worktree/code 四个停靠面板——它们是无边框窗口，
-    仅设背景色会留下方形边角，这里配合 agent_ui_ux.apply_rounded_window
+    仅设背景色会留下方形边角，这里配合 ui_infra.apply_rounded_window
     用 setMask 蒙版剪圆角，并在窗口尺寸变化/显示时重新套用。
     最大化/全屏时自动清蒙版（铺满屏幕无需圆角）。失败静默，绝不影响功能。
 
@@ -13155,8 +13549,8 @@ class _RoundedFloatWindow(QWidget):
                 return
             if not self.isVisible() or self.rect().isEmpty():
                 return
-            from zhuzhu_Copilot.core import agent_ui_ux
-            agent_ui_ux.apply_rounded_window(self, self._WINDOW_RADIUS)
+            from zhuzhu_Copilot.core import ui_infra
+            ui_infra.apply_rounded_window(self, self._WINDOW_RADIUS)
         except Exception:
             pass
 
@@ -14237,7 +14631,7 @@ class CodePreviewWindow(QWidget):
         """Markdown 文本 → 主题 HTML 预览"""
         self.title.setText(_ui("预览 · Markdown"))
         self._switch_mode("md")
-        html = agent_ui_ux.render_markdown_html(md_text or "")
+        html = ui_infra.render_markdown_html(md_text or "")
         self.html_view.setHtml(_preview_wrap_html(html, self.path_lbl.text()))
 
     def show_html(self, html: str):
@@ -20082,8 +20476,8 @@ class AgentPanel(QDialog):
         if not self._panel_frameless():
             return
         try:
-            from zhuzhu_Copilot.core import agent_ui_ux
-            agent_ui_ux.apply_rounded_window(self, self._WINDOW_RADIUS)
+            from zhuzhu_Copilot.core import ui_infra
+            ui_infra.apply_rounded_window(self, self._WINDOW_RADIUS)
         except Exception:
             pass
 
@@ -25941,9 +26335,6 @@ class AgentPanel(QDialog):
                 for sid in list(self._sess.keys()):
                     self._rebuild_engine(sid)
                 self._update_wf_label()   # 全局工作流变更后刷新顶部标签
-            if getattr(dlg, "_ui_ux_changed", False):
-                # UI/UX 包变更：就地重建面板 UI，与主题切换相同机制
-                self._retheme()
 
     def _apply_context_budget(self, eng, cfg: dict = None, model: str = None,
                               provider: dict = None) -> None:
