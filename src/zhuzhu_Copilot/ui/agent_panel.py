@@ -6779,6 +6779,25 @@ class _AgentSettingsDialog(QDialog):
         self._reload_coplugin_list()
         if not ok:
             QMessageBox.warning(self, _ui("操作失败"), msg)
+            return
+        # 刚启用且源码变更还没应用：功能不会生效（扩展/工具都来自源码变更）。
+        # 明确告知并给「立即应用」入口，避免用户以为启用即生效。
+        try:
+            from zhuzhu_Copilot.core import copilot_plugins as _cp
+            fresh = _cp.get_plugin(name) or {}
+        except Exception:
+            fresh = {}
+        if fresh.get("enabled") and not fresh.get("source_applied") \
+                and int(fresh.get("source_ops") or 0) > 0:
+            ret = QMessageBox.question(
+                self, _ui("需要应用源码变更"),
+                _uif("插件「{n}」有 {c} 条源码变更尚未应用，现在不会生效。\n"
+                     "是否立即应用？（会先经插件校验系统检查，失败自动整体回滚）",
+                     n=name, c=int(fresh.get("source_ops") or 0)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if ret == QMessageBox.StandardButton.Yes:
+                self._on_coplugin_apply()
 
     def _on_coplugin_delete(self, *_):
         p = self._current_coplugin()
@@ -17701,6 +17720,14 @@ class AgentPanel(QDialog):
         # 背景图由 core/app_wallpaper 统一驱动：换图 / 清除后即时重绘根背景
         app_wallpaper.subscribe(self._on_wallpaper_changed)
         self._eval_pending = None      # 任务难度评估待启动参数 (sid, ai_text, send_images, skill_names)
+        # Copilot 插件的应用级扩展（后台服务 / 托盘动作 / 快捷键）：主界面启动即加载。
+        # 之前只在 CopilotPanel.__init__ 里加载，而浮层是懒创建的 → 启用插件后
+        # 任何扩展都不会启动（用户看到的「启用了却没反应」）。
+        try:
+            from zhuzhu_Copilot.ui.main_window import load_copilot_extensions
+            load_copilot_extensions(panel=None)
+        except Exception:
+            pass
         self._eval_pending_at = 0.0    # _eval_pending 置位时间戳（卡死看门狗：评估超时未完成则复位按钮）
         # 趣味互动：全屏截屏 → 生成俏皮锐评 → 底部气泡，5 秒后消失；不计入上下文/本地记忆
         self._fun_bubble = None          # 底部可爱风气泡（懒创建）

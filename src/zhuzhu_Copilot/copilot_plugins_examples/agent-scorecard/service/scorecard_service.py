@@ -56,18 +56,34 @@ def start():
     global _bridge, _orig_run, _patched
     if _patched:
         return None
-    from zhuzhu_Copilot.core import agent_engine, agent_scorecard
+    from zhuzhu_Copilot.core import agent_engine
+    # agent_scorecard 由插件的 create_file op 生成；源码变更未应用时这里会缺模块，
+    # 因此改为**懒导入**——start() 仍然装上钩子，缺模块只影响统计与弹窗本身。
+    try:
+        from zhuzhu_Copilot.core import agent_scorecard as _as
+    except ImportError:
+        _as = None
     _bridge = _make_bridge()
     _orig_run = agent_engine.AgentEngine.run
 
     def _run(self, *args, **kwargs):
-        agent_scorecard.begin(self)
+        try:
+            from zhuzhu_Copilot.core import agent_scorecard as _as
+        except ImportError:
+            _as = None
+        if _as is not None:
+            try:
+                _as.begin(self)
+            except Exception:
+                pass
         try:
             return _orig_run(self, *args, **kwargs)
         finally:
+            if _as is None or _bridge is None:
+                return
             try:
-                snap = agent_scorecard.snapshot(self)
-                if _bridge is not None and int(snap.get("calls") or 0) > 0:
+                snap = _as.snapshot(self)
+                if int(snap.get("calls") or 0) > 0:
                     _bridge.scored.emit(snap)     # 排队到 GUI 线程弹窗
             except Exception:
                 pass

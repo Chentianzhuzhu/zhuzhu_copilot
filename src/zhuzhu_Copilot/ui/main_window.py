@@ -1590,48 +1590,22 @@ class CopilotPanel(QFrame):
     # ---------- Copilot 插件扩展（应用级，独立于 Agent 插件体系） ----------
 
     def _load_copilot_extensions(self):
-        """启动时加载启用中的 Copilot 插件扩展：主窗口页面 / 后台服务 / 托盘动作 /
-        全局快捷键（插件包 copilot.json 声明，module 指向包内源码文件）。
-
-        单个插件失败只跳过不阻塞（容错加载）；页面以新页签追加到
-        「应用/防护/通用/工具」之后；服务随进程常驻，shutdown 时统一停。
-        """
+        """加载本窗口可见的 Copilot 插件扩展（页面 + 应用级扩展）。"""
         self._copilot_ext = {"pages": [], "services": [], "tray": [],
                              "shortcuts": []}
-        try:
-            from zhuzhu_Copilot.core import copilot_plugins
-            plugins = [p for p in copilot_plugins.list_plugins()
-                       if p.get("enabled", True)]
-        except Exception:
-            return
-        for p in plugins:
-            name = str(p.get("name") or "")
-            try:
-                d = copilot_plugins.plugin_dir(name)
-                man = copilot_plugins.load_copilot_manifest(d)
-                for section, entry in copilot_plugins._iter_manifest_entries(man):
-                    self._register_copilot_entry(name, d, section, entry)
-            except Exception:
-                continue   # 单插件容错：不阻塞其余插件与主流程
+        load_copilot_extensions(panel=self)
 
     def _import_copilot_module(self, d: Path, rel: str):
         """从插件包目录动态导入模块（按文件路径加载；失败抛异常由调用方捕获）。"""
-        import importlib.util
-        import re as _re
-        p = (Path(d) / str(rel)).resolve()
-        if not str(p).startswith(str(Path(d).resolve())) or not p.is_file():
-            raise FileNotFoundError(f"模块不存在: {rel}")
-        mod_name = "zhuzhu_copilot_ext_" + _re.sub(r"\W", "_", str(rel))
-        spec = importlib.util.spec_from_file_location(mod_name, str(p))
-        if spec is None or spec.loader is None:
-            raise ImportError(f"无法加载模块: {rel}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        return import_copilot_module(d, rel)
 
     def _register_copilot_entry(self, name: str, d: Path, section: str,
                                 entry: dict):
         """登记单条扩展（pages/services/tray/shortcuts）。"""
+        return register_copilot_entry(self, name, d, section, entry)
+
+    def _register_copilot_entry_impl(self, name: str, d: Path, section: str,
+                                     entry: dict):
         if section == "pages":
             mod = self._import_copilot_module(d, entry.get("module"))
             widget_cls = getattr(mod, str(entry.get("widget") or ""), None)
@@ -2482,3 +2456,150 @@ class CopilotPanel(QFrame):
     def mousePressEvent(self, event):
         # 浮层不参与窗口拖动（由 AI 面板统一定位），仅记录点击以便外部收起逻辑判断
         super().mousePressEvent(event)
+
+
+# ════════════════════════════════════════════════════════════════
+# Copilot 插件扩展（模块级实现，AgentPanel 与 CopilotPanel 共用）
+# ════════════════════════════════════════════════════════════════
+
+#: 进程内已启动的应用级扩展（服务/托盘/快捷键）：保证只启动一次
+#: （主界面启动时加载一次；之后创建 Copilot 浮层不会重复 start）。
+_COPILOT_EXT_STATE = {"started": set(), "services": [], "tray": [], "shortcuts": []}
+
+
+def import_copilot_module(d: Path, rel: str):
+    """从插件包目录按文件路径动态导入模块（失败抛异常由调用方捕获）。"""
+    import importlib.util
+    import re as _re
+    p = (Path(d) / str(rel)).resolve()
+    if not str(p).startswith(str(Path(d).resolve())) or not p.is_file():
+        raise FileNotFoundError(f"模块不存在: {rel}")
+    mod_name = "zhuzhu_copilot_ext_" + _re.sub(r"\W", "_", str(rel))
+    spec = importlib.util.spec_from_file_location(mod_name, str(p))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载模块: {rel}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict):
+    """登记单条 Copilot 插件扩展。
+
+    · pages      —— 需要 Copilot 面板（panel 非 None 才登记，追加页签到面板）
+    · services   —— 进程级启动一次（主界面启动时即加载，不依赖浮层）
+    · tray       —— 追加到托盘菜单（需要面板有 tray）
+    · shortcuts  —— 全局快捷键（挂在 panel 上）
+    """
+    if section == "pages":
+        if panel is None:
+            return None          # 没有面板可挂页面：跳过（面板创建后再登记）
+        mod = import_copilot_module(d, entry.get("module"))
+        widget_cls = getattr(mod, str(entry.get("widget") or ""), None)
+        if widget_cls is None:
+            raise AttributeError(f"页面类不存在: {entry.get('widget')}")
+        idx = panel._pages.count()
+        b = QPushButton(_ui(str(entry.get("title") or name)))
+        b.setCheckable(True)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setMinimumHeight(26)
+        b.setStyleSheet(_tab_qss())
+        panel._tab_group.addButton(b, idx)
+        lay = panel._tab_wrap.layout()
+        lay.insertWidget(max(lay.count() - 1, 0), b)
+        page = widget_cls(panel._pages)
+        panel._pages.addWidget(page)
+        ext = getattr(panel, "_copilot_ext", None)
+        if ext is not None:
+            ext["pages"].append({"plugin": name, "id": entry.get("id"),
+                                 "index": idx})
+        return None
+
+    key = f"{name}:{section}:{entry.get('id')}"
+    if key in _COPILOT_EXT_STATE["started"]:
+        return None              # 已启动过：不重复注册
+    if section == "services":
+        mod = import_copilot_module(d, entry.get("module"))
+        start = getattr(mod, str(entry.get("entry") or ""), None)
+        if not callable(start):
+            raise AttributeError(f"服务入口函数不存在: {entry.get('entry')}")
+        handle = start()
+        _COPILOT_EXT_STATE["services"].append(
+            {"plugin": name, "id": entry.get("id"), "module": mod,
+             "stop": str(entry.get("stop") or ""), "handle": handle})
+    elif section == "tray":
+        mod = import_copilot_module(d, entry.get("module"))
+        action = getattr(mod, str(entry.get("action") or ""), None)
+        if not callable(action):
+            raise AttributeError(f"托盘动作函数不存在: {entry.get('action')}")
+        act = None
+        if panel is not None and getattr(panel, "tray", None) is not None:
+            menu = panel.tray.contextMenu()
+            act = menu.addAction(_ui(str(entry.get("title") or name)))
+            act.triggered.connect(lambda *a, _f=action: _f())
+        _COPILOT_EXT_STATE["tray"].append(
+            {"plugin": name, "id": entry.get("id"), "action": act,
+             "callable": action})
+    elif section == "shortcuts":
+        from PyQt6.QtGui import QKeySequence, QShortcut
+        mod = import_copilot_module(d, entry.get("module"))
+        action = getattr(mod, str(entry.get("action") or ""), None)
+        if not callable(action):
+            raise AttributeError(f"快捷键动作函数不存在: {entry.get('action')}")
+        sc = None
+        if panel is not None:
+            sc = QShortcut(QKeySequence(str(entry.get("hotkey") or "")), panel)
+            sc.activated.connect(lambda *a, _f=action: _f())
+        _COPILOT_EXT_STATE["shortcuts"].append(
+            {"plugin": name, "id": entry.get("id"), "shortcut": sc,
+             "callable": action})
+    _COPILOT_EXT_STATE["started"].add(key)
+    return None
+
+
+def load_copilot_extensions(panel=None) -> dict:
+    """加载启用中的 Copilot 插件扩展（页面 / 后台服务 / 托盘动作 / 快捷键）。
+
+    panel 传 CopilotPanel 实例时会登记页面类扩展；传 None（如主界面 AgentPanel
+    启动时）只加载应用级扩展（服务/托盘/快捷键）——这就是「启用 Copilot 插件后
+    立即生效、不依赖浮层是否打开」的关键。
+
+    单插件失败只跳过不阻塞；服务/托盘/快捷键进程内只启动一次。
+    """
+    state = _COPILOT_EXT_STATE
+    try:
+        from zhuzhu_Copilot.core import copilot_plugins
+        plugins = [p for p in copilot_plugins.list_plugins()
+                   if p.get("enabled", True)]
+    except Exception:
+        return state
+    for p in plugins:
+        name = str(p.get("name") or "")
+        try:
+            d = copilot_plugins.plugin_dir(name)
+            man = copilot_plugins.load_copilot_manifest(d)
+            for section, entry in copilot_plugins._iter_manifest_entries(man):
+                register_copilot_entry(panel, name, d, section, entry)
+        except Exception:
+            continue   # 单插件容错：不阻塞其余插件与主流程
+    return state
+
+
+def shutdown_copilot_extensions() -> None:
+    """退出清理：停后台服务（托盘/快捷键随进程退出自动失效）。"""
+    for svc in reversed(_COPILOT_EXT_STATE.get("services") or []):
+        stop = getattr(svc.get("module"), svc.get("stop") or "", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        handle = svc.get("handle")
+        closer = getattr(handle, "stop", None) or getattr(handle, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+    _COPILOT_EXT_STATE["started"].clear()
+    _COPILOT_EXT_STATE["services"] = []
