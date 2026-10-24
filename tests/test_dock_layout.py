@@ -414,7 +414,6 @@ def test_reset_panel_poses_keeps_todos_content_sized():
     host.git_win = _fresh(ap.GitLogWindow)
     host.todos_win = win
     host.code_win = None
-    host._ext_panels = {}
     host._applied_panel_mode = None
     host._request_side_sync = lambda *a, **k: None
     host._apply_panel_mode = lambda *a, **k: None
@@ -441,7 +440,7 @@ def test_caps_skipped_when_share_below_panel_minimum():
     lay.setSpacing(8)
     for p in order:
         lay.addWidget(p)
-    host.resize(280, 300)          # 可用高约 292 → 份额 5/8*292 ≈ 182 < 400
+    host.setFixedSize(280, 300)     # 固定栏高，避免布局最小高度把窗口撑高
     host.show()
     for _ in range(4):
         _app.processEvents()
@@ -464,7 +463,6 @@ def _fake_panel(dock_side: str):
     """轻代理：只带事件处理用到的属性（不构造完整 AgentPanel）；四面板均已显示。"""
     fake = ap.AgentPanel.__new__(ap.AgentPanel)
     fake._panel_minimized = False
-    fake._ext_panels = {}
     for name, cls in (("wt_win", ap.WorktreeWindow), ("git_win", ap.GitLogWindow),
                       ("todos_win", ap.TodosWindow), ("code_win", ap.CodePreviewWindow)):
         w = _fresh(cls)
@@ -495,6 +493,8 @@ def test_collapse_skips_docked_panels():
                                    floated.todos_win, floated.code_win)] == [True] * 4, \
         "浮出（贴附）面板仍须在最小化时收起"
     ap.AgentPanel._collapse_float_windows(floated)   # 幂等，不抛异常
+    for name in ("wt_win", "git_win", "todos_win", "code_win"):
+        getattr(floated, name).close()
 
 
 def test_dock_panels_survive_minimize_restore():
@@ -528,6 +528,5 @@ def test_event_handlers_use_collapse_helper():
     import inspect
     src = inspect.getsource(ap.AgentPanel.changeEvent)
     assert "_collapse_float_windows()" in src, "最小化分支未复用收起逻辑"
-    assert "_collapse_ext_panels()" in src
     hide_src = inspect.getsource(ap.AgentPanel.hideEvent)
     assert "_collapse_float_windows()" in hide_src, "hideEvent 未复用收起逻辑"

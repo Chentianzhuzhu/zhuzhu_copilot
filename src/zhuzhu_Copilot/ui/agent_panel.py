@@ -128,7 +128,6 @@ from zhuzhu_Copilot.core import (
     agent_background,
     agent_engine,
     agent_llm,
-    agent_panels,
     agent_plugins,
     agent_sandbox,
     agent_screen,
@@ -1161,6 +1160,16 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
         '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0'
         ' 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>'
         '<path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>'),
+    # 插件市场：店铺门面 —— 浏览 / 上传 / 下载社区插件
+    "market": _lucide(
+        '<path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/>'
+        '<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>'
+        '<path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/>'
+        '<path d="M2 7h20"/>'
+        '<path d="M22 7v3a2 2 0 0 1-2 2a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0'
+        'A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12'
+        'a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63'
+        '.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12a2 2 0 0 1-2-2V7"/>'),
     # 语音合成：声波刻度 —— 朗读音色与语速
     "tts": _lucide(
         '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/>'
@@ -1213,6 +1222,7 @@ _NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("MCP 服务器", "mcp"),
     ("Agent 插件", "plugins"),
     ("Copilot 插件", "copilot_plugins"),
+    ("插件市场", "market"),
     ("语音合成", "tts"),
     ("音乐", "music"),
     ("Agent 管理", "agents"),
@@ -3959,6 +3969,65 @@ class _Card(QFrame):
         super().mouseDoubleClickEvent(ev)
 
 
+class _MarketUploadDialog(QDialog):
+    """上传插件到市场：收集名称 / 描述 / 版本 / 开发者（公司）。"""
+
+    def __init__(self, defaults: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_ui("上传插件到市场"))
+        self.setMinimumWidth(520)
+        _bg, _bd = _base_color("PANEL"), _base_color("BORDER")
+        self.setStyleSheet(
+            f"QDialog {{ background: {_bg}; }}"
+            f"QLabel {{ color: {TEXT}; font-size: 12px; }}"
+            f"QLineEdit, QPlainTextEdit {{ background: {_bg}; color: {TEXT};"
+            f" border: 1px solid {_bd}; border-radius: 8px; padding: 7px 9px;"
+            " font-size: 13px; }")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        form = QFormLayout()
+        form.setSpacing(8)
+        self.name = QLineEdit(str(defaults.get("name") or ""))
+        self.desc = QPlainTextEdit(str(defaults.get("description") or ""))
+        self.desc.setFixedHeight(84)
+        self.version = QLineEdit(str(defaults.get("version") or "1.0.0"))
+        self.developer = QLineEdit(str(defaults.get("developer") or ""))
+        self.developer.setPlaceholderText(_ui("留空 = 使用账号的开发者/公司名称"))
+        form.addRow(_ui("名称"), self.name)
+        form.addRow(_ui("描述"), self.desc)
+        form.addRow(_ui("版本"), self.version)
+        form.addRow(_ui("开发者/公司"), self.developer)
+        lay.addLayout(form)
+        hint = QLabel(_ui("上传前会先经本地 LLM 深度安全校验；未通过或 LLM 不可用将拒绝上传。"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        lay.addWidget(hint)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton(_ui("取消"))
+        cancel.setStyleSheet(f"background: {_bg}; color: {TEXT};"
+                             f"border: 1px solid {_bd}; border-radius: 8px;"
+                             "padding: 7px 18px;")
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton(_ui("校验并上传"))
+        ok.setStyleSheet(f"background: {ACCENT}; color: #FFFFFF; border: none;"
+                         "border-radius: 8px; padding: 7px 22px; font-weight: 700;")
+        ok.setAutoDefault(False)
+        ok.clicked.connect(self.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        lay.addLayout(btns)
+        self.name.setFocus()
+
+    def values(self) -> dict:
+        return {"name": self.name.text().strip(),
+                "description": self.desc.toPlainText().strip(),
+                "version": self.version.text().strip() or "1.0.0",
+                "developer": self.developer.text().strip()}
+
+
 class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
@@ -3968,6 +4037,8 @@ class _AgentSettingsDialog(QDialog):
     workflow_progress = pyqtSignal(int, str)  # 工作流生成进度（百分比, 阶段提示），后台线程回主线程
     plugin_progress = pyqtSignal(int, str)    # 插件生成进度（百分比, 阶段提示），后台线程回主线程
     copilot_plugin_progress = pyqtSignal(int, str)  # Copilot 插件生成进度（百分比, 阶段提示）
+    market_done = pyqtSignal(str, str)   # 插件市场操作结果（ok, message），后台线程回主线程
+    market_items = pyqtSignal(object)    # 插件市场列表拉取结果（dict，后台线程回主线程）
     plugin_progress = pyqtSignal(int, str)  # 插件生成进度（百分比, 阶段提示）
     wechat_message_signal = pyqtSignal(str)   # 微信消息：后台线程 → 主线程分发
     #: /api/shop/products 拉取完成（后台线程 → 主线程重建会员卡片）。
@@ -4067,6 +4138,7 @@ class _AgentSettingsDialog(QDialog):
             self._build_mcp_page,
             self._build_plugin_page,
             self._build_copilot_plugin_page,
+            self._build_market_page,
             self._build_tts_page,
             self._build_music_page,
             self._build_agent_page,
@@ -4110,6 +4182,8 @@ class _AgentSettingsDialog(QDialog):
 
         self.plugin_done.connect(self._on_plugin_done)
         self.copilot_plugin_done.connect(self._on_coplugin_done)
+        self.market_done.connect(self._on_market_done)
+        self.market_items.connect(self._on_market_items)
         self.workflow_done.connect(self._on_workflow_done)
         self.workflow_progress.connect(self._on_workflow_progress)
         self.plugin_progress.connect(self._on_plugin_progress)
@@ -6566,6 +6640,298 @@ class _AgentSettingsDialog(QDialog):
         lay.addStretch(1)            # 多余空间留底部，避免元素被拉开出现大片空白
         self._reload_coplugin_list()
         return w
+
+    # ---------------- 插件市场（应用内上传 / 浏览 / 下载导入） ----------------
+    def _build_market_page(self):
+        w = self._page(_ui("插件市场"))
+        lay = self._page_body(w)
+        sub = QLabel(_ui("插件市场：浏览社区里的 Agent 插件与 Copilot 插件，也可上传自己做的插件。"
+                         "上传需要登录账号；上传前先经本地 LLM 深度安全校验，服务器再复核一次。"
+                         "下载后自动导入本地插件列表，再到对应页面应用/启用。"))
+        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        self.market_acct_lbl = QLabel("")
+        self.market_acct_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
+        self.market_acct_lbl.setWordWrap(True)
+        lay.addWidget(self.market_acct_lbl)
+
+        # 账号行：用户名 / 密码 / 登录 / 注册 / 退出
+        acct = QHBoxLayout()
+        acct.setSpacing(8)
+        self.market_user = QLineEdit()
+        self.market_user.setPlaceholderText(_ui("用户名（3-32 位小写字母/数字/下划线）"))
+        self.market_user.setMaximumWidth(210)
+        self.market_pass = QLineEdit()
+        self.market_pass.setPlaceholderText(_ui("密码（至少 8 位）"))
+        self.market_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self.market_pass.setMaximumWidth(180)
+        self.market_dev = QLineEdit()
+        self.market_dev.setPlaceholderText(_ui("开发者/公司（留空 = 用户名）"))
+        self.market_dev.setMaximumWidth(200)
+        login_b = QPushButton(_ui("登录"))
+        login_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
+                              "border-radius: 8px; padding: 7px 16px; font-weight: 700;")
+        login_b.setAutoDefault(False)
+        login_b.clicked.connect(self._on_market_login)
+        reg_b = QPushButton(_ui("注册"))
+        reg_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                            "padding: 7px 16px; font-weight: 600;")
+        reg_b.setAutoDefault(False)
+        reg_b.setToolTip(_ui("注册即用填写的开发者/公司名称（留空则默认用户名）"))
+        reg_b.clicked.connect(self._on_market_register)
+        self.market_dev_b = QPushButton(_ui("保存开发者"))
+        self.market_dev_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                                        f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                                        "padding: 7px 16px; font-weight: 600;")
+        self.market_dev_b.setAutoDefault(False)
+        self.market_dev_b.clicked.connect(self._on_market_set_developer)
+        self.market_logout_b = QPushButton(_ui("退出登录"))
+        self.market_logout_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
+                                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                                           "padding: 7px 16px; font-weight: 600;")
+        self.market_logout_b.setAutoDefault(False)
+        self.market_logout_b.clicked.connect(self._on_market_logout)
+        for wgt in (self.market_user, self.market_pass, self.market_dev,
+                    login_b, reg_b, self.market_dev_b, self.market_logout_b):
+            acct.addWidget(wgt)
+        acct.addStretch(1)
+        lay.addLayout(acct)
+
+        # 搜索行
+        search = QHBoxLayout()
+        search.setSpacing(8)
+        self.market_q = QLineEdit()
+        self.market_q.setPlaceholderText(_ui("按名称/描述搜索市场插件"))
+        self.market_q.returnPressed.connect(self._on_market_refresh)
+        search_b = QPushButton(_svg_icon(
+            _lucide('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
+            16, self._TEXT), _ui("搜索"))
+        search_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                               "padding: 7px 16px; font-weight: 600;")
+        search_b.setAutoDefault(False)
+        search_b.clicked.connect(self._on_market_refresh)
+        search.addWidget(self.market_q, 1)
+        search.addWidget(search_b)
+        lay.addLayout(search)
+        self.market_status = QLabel("")
+        self.market_status.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
+        self.market_status.setWordWrap(True)
+        lay.addWidget(self.market_status)
+
+        # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
+        self.market_list = _CardBoard(self)
+        self.market_list.itemDoubleClicked.connect(lambda *a: self._on_market_download())
+        self._market_rows = []
+        row = FlowLayout(spacing=SPACING_SM)
+        self.market_upload_b = QPushButton(_line_icon("plus", 16), _ui("上传插件到市场"))
+        self.market_upload_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
+                                           "border: none; border-radius: 8px;"
+                                           "padding: 7px 14px; font-weight: 700;")
+        self.market_upload_b.setAutoDefault(False)
+        self.market_upload_b.setToolTip(_ui("选择本地插件 zip：先本地 LLM 深度校验，再上传（需登录）"))
+        self.market_upload_b.clicked.connect(self._on_market_upload)
+        dl_b = QPushButton(_ui("下载并导入"))
+        dl_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                           "padding: 7px 14px; font-weight: 600;")
+        dl_b.setAutoDefault(False)
+        dl_b.setToolTip(_ui("下载选中的插件并自动导入本地（Copilot / Agent 插件自动分流）"))
+        dl_b.clicked.connect(self._on_market_download)
+        refresh_b = QPushButton(_svg_icon(
+            _lucide('<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>'
+                    '<path d="M21 3v5h-5"/>'), 16, self._TEXT), _ui("刷新"))
+        refresh_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
+                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+                                "padding: 7px 14px; font-weight: 600;")
+        refresh_b.setAutoDefault(False)
+        refresh_b.clicked.connect(self._on_market_refresh)
+        row.addWidget(self.market_upload_b)
+        row.addWidget(dl_b)
+        row.addWidget(refresh_b)
+        lay.addWidget(self.market_list)   # 卡片看板在上（定高 ≤10 张）
+        lay.addLayout(row)                # 交互按钮在卡片区下方
+        lay.addStretch(1)
+        self._market_sync_account()
+        self._on_market_refresh()
+        return w
+
+    def _market_sync_account(self):
+        """刷新账号状态行与登录相关按钮的可用性。"""
+        if not hasattr(self, "market_acct_lbl") or self.market_acct_lbl is None:
+            return
+        try:
+            from zhuzhu_Copilot.core import plugin_market
+            acc = plugin_market.account()
+        except Exception as e:
+            self.market_acct_lbl.setText(f"插件市场不可用：{e}")
+            return
+        if acc["logged_in"]:
+            self.market_acct_lbl.setText(_uif(
+                "已登录：{u} ｜ 开发者/公司：{d} ｜ 服务：{a}",
+                u=acc["username"], d=acc["developer"], a=acc["api_base"]))
+        else:
+            self.market_acct_lbl.setText(_uif(
+                "未登录（上传插件需先登录）｜ 服务：{a}", a=acc["api_base"]))
+        for name, enabled in (("market_logout_b", acc["logged_in"]),
+                              ("market_dev_b", acc["logged_in"]),
+                              ("market_upload_b", acc["logged_in"])):
+            b = getattr(self, name, None)
+            if b is not None:
+                b.setEnabled(enabled)
+
+    def _market_do(self, fn, *args):
+        """后台线程执行网络操作，结果经 market_done 回主线程。"""
+        def _work():
+            try:
+                ok, msg = fn(*args)
+            except Exception as e:
+                ok, msg = False, f"操作异常: {e}"
+            self.market_done.emit("1" if ok else "0", msg)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_market_login(self, *_):
+        from zhuzhu_Copilot.core import plugin_market
+        u = self.market_user.text().strip()
+        p = self.market_pass.text()
+        if not u or not p:
+            QMessageBox.information(self, _ui("插件市场"), _ui("请填写用户名和密码"))
+            return
+        self.market_status.setText(_ui("正在登录…"))
+        self._market_do(plugin_market.login, u, p)
+
+    def _on_market_register(self, *_):
+        from zhuzhu_Copilot.core import plugin_market
+        u = self.market_user.text().strip()
+        p = self.market_pass.text()
+        dev = self.market_dev.text().strip()
+        if not u or len(p) < 8:
+            QMessageBox.information(self, _ui("插件市场"),
+                                    _ui("用户名 3-32 位（小写字母/数字/下划线），密码至少 8 位"))
+            return
+        self.market_status.setText(_ui("正在注册…"))
+        self._market_do(plugin_market.register, u, p, dev)
+
+    def _on_market_set_developer(self, *_):
+        from zhuzhu_Copilot.core import plugin_market
+        dev = self.market_dev.text().strip()
+        if not dev:
+            QMessageBox.information(self, _ui("插件市场"), _ui("请填写开发者/公司名称"))
+            return
+        self._market_do(plugin_market.set_developer, dev)
+
+    def _on_market_logout(self, *_):
+        from zhuzhu_Copilot.core import plugin_market
+        self._market_do(plugin_market.logout)
+
+    def _on_market_refresh(self, *_):
+        q = self.market_q.text().strip() if hasattr(self, "market_q") else ""
+        if hasattr(self, "market_status"):
+            self.market_status.setText(_ui("正在从市场加载…"))
+
+        def _work():
+            try:
+                from zhuzhu_Copilot.core import plugin_market
+                ok, data = plugin_market.list_plugins(q=q, size=50)
+            except Exception as e:
+                ok, data = False, str(e)
+            self.market_items.emit({"ok": ok, "data": data})
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_market_items(self, payload):
+        """后台拉取结果回主线程：重建市场卡片（最多 10 张可视，超出滚动）。"""
+        if not hasattr(self, "market_list") or self.market_list is None:
+            return
+        self.market_list.clear()
+        self._market_rows = []
+        if not payload.get("ok"):
+            self.market_status.setText(_uif("市场加载失败：{e}", e=payload.get("data")))
+            return
+        data = payload.get("data") or {}
+        items = data.get("items") or []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            bits = []
+            if it.get("developer"):
+                bits.append(_uif("开发者: {d}", d=it.get("developer")))
+            if it.get("version"):
+                bits.append(_uif("v{v}", v=it.get("version")))
+            if it.get("downloads") is not None:
+                bits.append(_uif("下载 {n}", n=it.get("downloads")))
+            if it.get("size"):
+                bits.append(_uif("{k} KB", k=max(int(it.get("size") or 0) // 1024, 1)))
+            verdict = "已深度校验" if str(it.get("guardVerdict") or "") == "safe" else "未校验"
+            if it.get("serverScan") == "pass":
+                verdict += "·服务器复核通过"
+            self.market_list.add_card(
+                str(it.get("name") or it.get("slug") or "?"),
+                str(it.get("description") or ""),
+                meta="  |  ".join(bits), badges=verdict,
+                icon_text=str(it.get("name") or it.get("slug") or "?"))
+            self._market_rows.append(it)
+        self.market_status.setText(_uif(
+            "市场共 {n} 个插件（每页最多显示 10 张，超出用滚轮或拖动滚动条查看）",
+            n=int(data.get("total") or len(items))))
+
+    def _current_market_item(self) -> dict:
+        rows = getattr(self, "_market_rows", []) or []
+        if not hasattr(self, "market_list") or self.market_list is None:
+            return {}
+        r = self.market_list.currentRow()
+        return rows[r] if 0 <= r < len(rows) else {}
+
+    def _on_market_upload(self, *_):
+        from zhuzhu_Copilot.core import plugin_market
+        acc = plugin_market.account()
+        if not acc["logged_in"]:
+            QMessageBox.information(self, _ui("插件市场"), _ui("上传插件需要先登录账号"))
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, _ui("选择要上传的插件包"), "", _ui("插件包 (*.zip)"))
+        if not path:
+            return
+        defaults = {"name": Path(path).stem, "description": "",
+                    "version": "1.0.0", "developer": acc["developer"]}
+        try:
+            import json as _json
+            import zipfile
+            with zipfile.ZipFile(path) as zf:
+                info = _json.loads(zf.read("plugin.json").decode("utf-8"))
+            if isinstance(info, dict):
+                defaults["name"] = str(info.get("name") or defaults["name"])
+                defaults["description"] = str(info.get("description") or "")
+                defaults["version"] = str(info.get("version") or "1.0.0")
+        except Exception:
+            pass
+        dlg = _MarketUploadDialog(defaults, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        vals = dlg.values()
+        self.market_status.setText(_ui("正在本地 LLM 深度安全校验并上传…"))
+        self._market_do(plugin_market.upload_zip, path, vals["name"],
+                        vals["description"], vals["version"], vals["developer"])
+
+    def _on_market_download(self, *_):
+        from zhuzhu_Copilot.core import plugin_market
+        it = self._current_market_item()
+        if not it:
+            QMessageBox.information(self, _ui("插件市场"), _ui("请先在列表里选中一个插件"))
+            return
+        self.market_status.setText(_uif("正在下载并导入 {n}…", n=it.get("name") or it.get("slug")))
+        self._market_do(plugin_market.download_into_local,
+                        str(it.get("slug") or ""), str(it.get("version") or ""))
+
+    def _on_market_done(self, ok: str, msg: str):
+        """市场操作结果（登录/注册/上传/下载/退出）：刷新账号状态与列表。"""
+        self._market_sync_account()
+        if ok == "1":
+            QMessageBox.information(self, _ui("插件市场"), msg)
+            self._on_market_refresh()
+        else:
+            QMessageBox.warning(self, _ui("插件市场"), msg)
 
     def _reload_coplugin_list(self):
         if not hasattr(self, "coplugin_list") or self.coplugin_list is None:
@@ -13350,13 +13716,6 @@ def _reset_panel_poses(panel) -> None:
         q.remove("panel_width/codeWin")
     except Exception:
         pass
-    try:
-        q = app_identity.qsettings()
-        for w in (getattr(panel, "_ext_panels", None) or {}).values():
-            q.remove(f"panel_pos/{getattr(w, 'objectName', lambda: '')() or 'ext'}")
-            setattr(w, "_user_moved", False)
-    except Exception:
-        pass
     # 重置面板大小：清除持久化尺寸并恢复各面板的默认尺寸（DEFAULT_SIZE）。
     # 任务清单固定为「当前内容所需高度」定格值（reset 后不再随内容伸缩，超出即滚动），
     # 避免清单很短时被拉长留空、或清单很长时把左栏挤走。
@@ -15770,13 +16129,14 @@ class GitLogWindow(_RoundedFloatWindow):
             return
         rows = payload.get("rows") or []
         if self._view == "commit":
-            # 只有「分支头 == 上游头」（没有待推送提交）时才标注 origin/xxx，
-            # 且只标在上游指向的那条提交上
+            # origin/xxx 只标在「上游指向的那条提交」上（即最近一次成功推送的提交）。
+            # 不能按 pushed 门控：本地有未推送的新提交时 pushed=False，但旧提交
+            # 依然在远端 —— 此前门控导致「新提交完成后，以前推送过的提交上的
+            # origin/xxx 徽章整体消失」（用户反馈的 bug，2026-10-24 修复）。
             st = states.get(self._scope_ref or self._cur_branch) or {}
-            pushed = bool(st.get("pushed"))
             self._fill_commits(
                 rows,
-                st.get("upstream_hash", "") if pushed else "",
+                st.get("upstream_hash", ""),
                 st.get("upstream", ""))
         else:
             self._fill_branches(rows, states)
@@ -15826,8 +16186,10 @@ class GitLogWindow(_RoundedFloatWindow):
                 f'<div style="color:{TEXT_DIM};font-size:10px;">'
                 f'{_esc(c["author"])} · {_esc(c["date"])}</div>')
 
-    def _fill_commits(self, commits: list, pushed_hash: str = "",
-                      pushed_chip: str = ""):
+    def _fill_commits(self, commits: list, upstream_hash: str = "",
+                      upstream_chip: str = ""):
+        """填充提交历史。upstream_hash = 上游指向的短哈希（无论本地是否领先），
+        命中的那条提交右上角标 upstream_chip（origin/xxx 徽章）。"""
         self._commit_by_hash = {c["hash"]: c for c in commits}
         self._commit_items = {}
         # 正在查看非当前分支的提交：首行标注范围，避免与当前分支历史混淆
@@ -15844,8 +16206,10 @@ class GitLogWindow(_RoundedFloatWindow):
         self.list.setUpdatesEnabled(False)
         try:
             for c in commits:
-                # 只在上游指向的那条提交上标 origin/xxx（即最近一次成功推送的提交）
-                chip = pushed_chip if (pushed_hash and c["hash"] == pushed_hash) else ""
+                # origin/xxx 只标在上游指向的那条提交上（即使本地已有未推送的新提交，
+                # 该提交也确实在远端 —— 徽章不能因本地领先而丢失）
+                chip = (upstream_chip
+                        if (upstream_hash and c["hash"] == upstream_hash) else "")
                 # 自动按渲染高度计项高（long subject/author 换行后不遮挡作者时间行）
                 it = self._make_item(self._commit_html(c), chip=chip)
                 self._commit_items[c["hash"]] = it
@@ -16006,8 +16370,62 @@ class GitLogWindow(_RoundedFloatWindow):
             f"color: {color or TEXT_DIM}; font-size: 10px;")
 
 
+class _CheckNameList(QListWidget):
+    """点击行内任意位置（含文件名）即可切换勾选的列表（暂存面板用）。
+
+    Qt 默认只有精确点中复选框指示器才翻转勾选，点击文件名区域无响应；
+    目标 UX 是「直接点文件名勾选是否参与暂存」。实现：mouseReleaseEvent 里
+    命中复选框矩形的点击交还 Qt 原生翻转（避免二次翻转互相抵消），行内其余
+    位置手动翻转。双击序列（press/release/press/dblclick/release）含两次
+    release，若都翻转会「双击回到原点」——用 _dbl_pending 跳过第二次。
+    """
+
+    _TOLERANCE = 2   # 复选框命中矩形的容差（px）：贴边点击也算点中复选框
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dbl_pending = False
+
+    def _check_rect(self, item) -> QRect:
+        """条目内复选框指示器的矩形（与绘制路径同源：样式 subElementRect 计算）。"""
+        opt = QStyleOptionViewItem()
+        opt.features |= QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        opt.checkState = item.checkState()
+        opt.rect = self.visualItemRect(item)
+        r = self.style().subElementRect(
+            QStyle.SubElement.SE_ItemViewItemCheckIndicator, opt, self)
+        t = self._TOLERANCE
+        return r.adjusted(-t, -t, t, t)
+
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = ev.position().toPoint()
+        it = self.itemAt(pos)
+        if it is None or not (it.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+            return
+        # 一次性标志：无论下面走哪条路径都在本次 release 消费掉，
+        # 避免双击复选框（跳过手动翻转）后标志残留，吞掉下一次正常单击
+        dbl = self._dbl_pending
+        self._dbl_pending = False
+        if self._check_rect(it).contains(pos):
+            return   # 复选框本体：Qt 原生已翻转
+        if dbl:
+            return   # 双击的第二次 release：不重复翻转（双击等效单击）
+        it.setCheckState(
+            Qt.CheckState.Unchecked
+            if it.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked)
+
+    def mouseDoubleClickEvent(self, ev):
+        self._dbl_pending = True
+        super().mouseDoubleClickEvent(ev)
+
+
 class _StageFilesDialog(QDialog):
-    """暂存文件选择：列出 git status 改动，默认全选，返回勾选的路径。"""
+    """暂存文件选择：列出 git status 改动，默认全选，返回勾选的路径。
+    点击行内文件名（或复选框）即可切换该文件是否参与暂存。"""
 
     def __init__(self, rows: list, parent=None):
         super().__init__(parent)
@@ -16017,7 +16435,7 @@ class _StageFilesDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(8)
-        self.list = QListWidget()
+        self.list = _CheckNameList()
         self.list.setStyleSheet(
             f"QListWidget {{ background: {_panel_surface('PANEL')}; color: {TEXT};"
             f"border: 1px solid {_panel_stroke('BORDER')}; border-radius: 6px;"
@@ -16028,7 +16446,7 @@ class _StageFilesDialog(QDialog):
             it = QListWidgetItem(f"{r['code'].strip() or '?'}  {r['path']}")
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             it.setCheckState(Qt.CheckState.Checked)      # 默认全选
-            it.setToolTip(r["path"])
+            it.setToolTip(_uif("{p}（点击行内任意位置切换勾选）", p=r["path"]))
             self.list.addItem(it)
         lay.addWidget(self.list, 1)
         bar = QHBoxLayout()
@@ -16575,63 +16993,6 @@ class WorktreeWindow(_RoundedFloatWindow):
         else:
             idx = self.tree.indexOfTopLevelItem(item)
             self.tree.takeTopLevelItem(idx)
-
-
-class ExtPanelWindow(_RoundedFloatWindow):
-    """扩展功能面板浮窗：承载插件/工作流/代码注册的自定义 UI 面板。
-
-    无边框 + Tool（不占任务栏，随主窗口隐藏/最小化）；固定宽度、高度随内容，
-    支持鼠标拖拽移动（拖走后守卫仅抬升不强制归位）。内容由面板注册表的
-    build_panel(owner) 工厂构建，纯黑+淡灰+白+深蓝极简风格，无 emoji。"""
-
-    def __init__(self, name: str, title: str, widget, width: int, height: int,
-                 parent=None):
-        super().__init__(parent)
-        self.name = name
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint
-                            | Qt.WindowType.Tool)
-        self.setObjectName("extWin")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # 取原始色板（见 _base_color）：本窗口不绘制壁纸，transparent 会渲染成纯黑
-        self.setStyleSheet(f"QWidget#extWin {{ background: {_base_color('BG')}; }}")
-        self.setFixedWidth(width)
-        self.resize(width, max(int(height), 120))
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 10)
-        lay.setSpacing(6)
-        if title:
-            head = QLabel(str(title))
-            head.setStyleSheet(f"color: {ACCENT}; font-size: 13px; font-weight: 700;")
-            head.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            lay.addWidget(head)
-        if widget is not None:
-            lay.addWidget(widget, 1)
-        # 拖拽移动：记录是否正在拖拽及拖拽起始偏移
-        self._dragging = False
-        self._drag_offset = QPoint()
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._dragging = True
-            self._drag_offset = (e.globalPosition().toPoint()
-                                 - self.frameGeometry().topLeft())
-            e.accept()
-        else:
-            super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if self._dragging and (e.buttons() & Qt.MouseButton.LeftButton):
-            self.move(e.globalPosition().toPoint() - self._drag_offset)
-            e.accept()
-        else:
-            super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e):
-        if self._dragging:
-            self._dragging = False
-            e.accept()
-        else:
-            super().mouseReleaseEvent(e)
 
 
 class QueuePanel(QWidget):
@@ -17712,10 +18073,6 @@ class AgentPanel(QDialog):
         self._subagent_result = ""     # 子 Agent 最终总结文本
         self._task_auto_ids = set()   # 本次任务内"全部允许"的会话集合（任务结束自动失效）
         self._pending_rebuild = {}  # sid -> 待应用的工作流切换目标（None/""/工作流名），任务结束后再重建引擎
-        # 自定义按钮注册表（与 UI/UX 解耦）：btn_id -> {text, tooltip, callback, order, _btn}
-        self._btn_registry: dict = {}
-        self._custom_btn_bar = None      # 顶部按钮栏 QWidget（任意 UI/UX 下渲染注册按钮）
-        self._custom_btn_lay = None      # 按钮栏布局
         self._panel_minimized = False  # 面板最小化状态：最小化时同步收起 4 个子面板
         # 背景图由 core/app_wallpaper 统一驱动：换图 / 清除后即时重绘根背景
         app_wallpaper.subscribe(self._on_wallpaper_changed)
@@ -17859,13 +18216,6 @@ class AgentPanel(QDialog):
         self._guard_timer.timeout.connect(self._guard_panels)
         self._guard_timer.setInterval(800)
         self._guard_timer.start()
-
-        # 功能面板热更新：周期性检测扩展面板源文件（panel.py）是否被修改，
-        # 被修改的面板原位重建（保留几何/拖拽位置），实现"改动即热更"无需重启。
-        self._ext_hot_timer = QTimer(self)
-        self._ext_hot_timer.timeout.connect(self._hot_reload_ext_panels)
-        self._ext_hot_timer.setInterval(2000)
-        self._ext_hot_timer.start()
 
         # 工作目录/仓库刷新防抖：多次触发（设置保存路径会连续调用 git/文件树刷新，
         # 每次起 git 子进程+扫目录都会卡顿）合并为单次单帧刷新，让出 UI 事件循环。
@@ -18212,15 +18562,12 @@ class AgentPanel(QDialog):
             pass
 
     # ---------- UI ----------
-    def _build_ui(self, rescan_ext: bool = True):
+    def _build_ui(self):
         """构建面板 UI。
 
         壁纸在两处影响界面：根背景由 `core/app_wallpaper.paint` 绘制（与控件树无关），
         容器底色则在**构建前**就要确定（见 refresh_surface_mode）—— 控件 QSS 是构建时
         用色板常量拼出来的，构建完再改常量不会落到已有控件上，只能整树重建。
-
-        rescan_ext=False 供主题切换使用：只重建扩展面板控件，不重复扫盘发现（见
-        `_ensure_ext_panels` 的说明）。
         """
         # 重建前先丢弃统计浮层：其尺寸/配色随新主题与新顶栏重算，
         # 避免旧浮层残留（含解绑全局失焦守卫）。
@@ -18228,8 +18575,6 @@ class AgentPanel(QDialog):
         apply_theme()
         refresh_surface_mode()   # 启动时壁纸已设置 → 本次构建的容器底即为透明
         self.build_default_ui()
-        self._ensure_custom_btn_bar()   # 注册的自定义按钮与 UI/UX 解耦，恒渲染
-        self._ensure_ext_panels(rescan=rescan_ext)   # 扩展面板（插件/工作流/代码注册）恒挂载
         # 重建控件后把缩放热区重新抬到最上层（新建控件的堆叠顺序高于旧热区）
         self._repin_window_resize_slots()
 
@@ -18678,7 +19023,6 @@ class AgentPanel(QDialog):
     # ---------- 欢迎页（无对话时居中介绍 AI 功能） ----------
 
     def _build_welcome(self) -> QWidget:
-        # 优先使用自定义 UI/UX 包的欢迎页（热插拔）
         # 无卡片/无边框：直接居中排版文字，保持纯黑四色极简风格
         page = QWidget()
         page.setStyleSheet("background: transparent;")
@@ -19172,7 +19516,6 @@ class AgentPanel(QDialog):
             # 力度/显式要求重算），避免引擎重建后门槛突然放开
             allow_subagents=bool(st.get("allow_subagents", True)),
             on_engine_rebuild=lambda _wf=None, _sid=sid: self.evt_signal.emit(_sid, "rebuild", _wf),
-            on_btn_reg=lambda payload, _sid=sid: self.evt_signal.emit(_sid, "btn_reg", payload),
             on_session_name=lambda title, _sid=sid: self.evt_signal.emit(_sid, "sess_name", title),
             on_preview=lambda pth, _sid=sid: self.evt_signal.emit(_sid, "preview", pth),
             workflow=wf,
@@ -19230,10 +19573,6 @@ class AgentPanel(QDialog):
 
     def _route(self, sid: str, kind: str, payload):
         """会话事件路由（主线程）：前台会话走渲染，后台会话只更新内存缓冲"""
-        if kind == "btn_reg":
-            # register_panel_btn 工具：主线程应用按钮注册/注销（UI 操作必须回主线程）
-            self._apply_btn_reg(payload)
-            return
         if kind == "sess_name":
             # set_session_name 工具：AI Agent 给对话起名/改名（含后台会话，按 sid 落库）
             self._apply_session_name(sid, str(payload or ""), source="ai")
@@ -21030,7 +21369,7 @@ class AgentPanel(QDialog):
         return False
 
     def _left_stack_width(self) -> int:
-        """左侧三个子面板（wt/git/todos）的实际最大宽度（含 UI/UX 包自定义宽度）。
+        """左侧三个子面板（wt/git/todos）的实际最大宽度。
         左锚点须按最宽子面板计算，否则子面板右移、覆盖并挤压主面板。"""
         widths = []
         for name in ("wt_win", "git_win", "todos_win"):
@@ -21065,228 +21404,6 @@ class AgentPanel(QDialog):
             # base.x() 已是屏幕左缘（0），left_x=max(0,…)=0，贴合屏幕左缘
             return left_x, y
         return left_x, base.y()
-
-    # ---------- 自定义按钮注册 API（与 UI/UX 解耦） ----------
-    # 注册的自定义按钮始终渲染在面板顶部按钮栏：无论当前/以后切换任何 UI/UX 包、
-    # 甚至完全重构界面，按钮都保持可见且回调可用。注册表存放在面板实例上，
-    # UI 重建（切换主题/切换 UI/UX 包）不会清空，重建后自动重新渲染。
-    # 面板侧 action → 方法名映射（供 register_panel_btn 工具的 action 解析）：
-    # 必须与 agent_tools._PANEL_BTN_ACTIONS 的 action 集合保持一致，
-    # 新增 action 需同时更新两侧；不一致时 _apply_btn_reg 会跳过注册并告警。
-    _BTN_ACTIONS = {
-        "send": "_on_action_clicked",     # 发送 / 停止当前任务（随状态切换）
-        "new_session": "_new_session",    # 新建对话
-        "settings": "_open_settings",     # 打开设置
-        "attach": "_pick_attachments",    # 选择附件
-        "optimize": "_on_optimize_clicked",  # 优化提示词
-        "clear_chat": "_clear_chat",      # 清空并删除当前对话
-    }
-
-    def register_btn(self, btn_id: str, text: str = "", callback=None,
-                     tooltip: str = "", order: int = 0, icon: str = "",
-                     stylesheet: str = "", fixed_size=None, visible: bool = True):
-        """注册自定义按钮（稳定接口，供插件/工作流/AI build_ui 调用）：
-        - btn_id 唯一标识；同一 id 重复注册仅更新参数，不重复创建按钮；
-        - callback：点击回调（无参数 callable）。按钮渲染与回调均与 UI/UX 解耦，
-          任何界面下都自动出现在面板顶部按钮栏；
-        - icon：可选 Lucide 线条图标名（如 "send"/"trash"/"new"/"settings"/"magic"/"plus"），
-          经 _line_icon 渲染并着当前主题色；
-        - stylesheet：可选自定义 QSS，覆盖默认样式（深度自定义开发者按钮）；
-        - fixed_size：(w, h) 可选固定尺寸；
-        - visible：False 时注册但隐藏，之后可再 register 更新为 True 显示；
-        - 返回按钮注册数据 dict。
-        """
-        if not btn_id:
-            raise ValueError("register_btn 需要非空 btn_id")
-        d = self._btn_registry.get(btn_id) or {}
-        d.update({"text": text or "", "callback": callback,
-                  "tooltip": tooltip or "", "order": int(order or 0),
-                  "icon": icon or "", "stylesheet": stylesheet or "",
-                  "fixed_size": fixed_size, "visible": bool(visible)})
-        b = d.get("_btn")
-        if b is not None:   # 已渲染：仅更新文字/图标/提示/回调/样式
-            try:
-                if d["icon"]:
-                    b.setIcon(_line_icon(d["icon"], 18, TEXT))
-                    b.setText(d["text"] or "")
-                else:
-                    b.setText(d["text"] or "·")
-                if d["tooltip"]:
-                    b.setToolTip(d["tooltip"])
-                if d["stylesheet"]:
-                    b.setStyleSheet(d["stylesheet"])
-                if d["fixed_size"]:
-                    try:
-                        b.setFixedSize(int(d["fixed_size"][0]),
-                                       int(d["fixed_size"][1]))
-                    except Exception:
-                        pass
-                try:
-                    b.clicked.disconnect()
-                except TypeError:
-                    pass
-                if callback:
-                    b.clicked.connect(lambda _=False, f=callback: self._safe_btn_cb(f))
-                b.setVisible(d["visible"])
-            except Exception:
-                pass
-            self._btn_registry[btn_id] = d
-            return d
-        self._btn_registry[btn_id] = d
-        self._ensure_custom_btn_bar()   # 增量渲染新按钮
-        return d
-
-    def unregister_btn(self, btn_id: str):
-        """注销按钮：从注册表与按钮栏移除（同一 id 重新 register 即恢复）。"""
-        d = self._btn_registry.pop(btn_id, None)
-        if d is None:
-            return
-        b = d.get("_btn")
-        if b is not None:
-            lay = getattr(self, "_custom_btn_lay", None)
-            if lay is not None:
-                try:
-                    lay.removeWidget(b)
-                except Exception:
-                    pass
-            try:
-                b.deleteLater()
-            except Exception:
-                pass
-        # 注册表清空时隐藏空按钮栏（避免残留空行）；再次注册时 _ensure 会重新显示
-        if not self._btn_registry:
-            bar = getattr(self, "_custom_btn_bar", None)
-            if bar is not None:
-                try:
-                    bar.hide()
-                except Exception:
-                    pass
-
-    def list_registered_btns(self) -> list:
-        """已注册按钮 id 列表（按 order 升序）。"""
-        return sorted(self._btn_registry,
-                      key=lambda i: (self._btn_registry[i].get("order", 0), i))
-
-    def _safe_btn_cb(self, f):
-        try:
-            f()
-        except Exception as e:
-            import logging
-            logging.getLogger(app_identity.APP_SLUG).warning("自定义按钮回调失败: %s", e)
-
-    def _ensure_custom_btn_bar(self):
-        """把已注册的自定义按钮渲染为面板顶部按钮栏（与 UI/UX 解耦）：
-        任意构建（默认/自定义/完全重构）结束都会调用本方法，保证按钮始终可见。
-        按 order 升序渲染（order 越小越靠前，同序按 id 字典序），按钮栏存在时全量
-        重建以维持顺序语义（按钮数量极少，重建开销可忽略）。幂等。"""
-        if not getattr(self, "_btn_registry", None):
-            return
-        root = getattr(self, "_root_lay", None)
-        if root is None:
-            return
-        from PyQt6 import sip
-        bar = getattr(self, "_custom_btn_bar", None)
-        if bar is not None:
-            try:
-                if sip.isdeleted(bar):   # 已被 _clear_layout/重建清理 → 重建
-                    bar = None
-            except Exception:
-                bar = None
-        # 清理已失效的按钮引用（旧栏/旧按钮在重建时已被删除，重新渲染）
-        for d in self._btn_registry.values():
-            b = d.get("_btn")
-            if b is not None:
-                try:
-                    if sip.isdeleted(b):
-                        d["_btn"] = None
-                except Exception:
-                    d["_btn"] = None
-        if bar is None:
-            bar = QWidget(self)
-            bar.setObjectName("customBtnBar")
-            bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-            bar.setStyleSheet("QWidget#customBtnBar { background: transparent; }")
-            lay = QHBoxLayout(bar)
-            lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(6)
-            self._custom_btn_bar = bar
-            self._custom_btn_lay = lay
-            root.insertWidget(0, bar)   # 顶部按钮栏：任何布局都可见
-        else:
-            lay = self._custom_btn_lay
-            # 全量重建按钮并按其 order 排序，保证 order 顺序语义恒生效
-            while lay.count():
-                item = lay.takeAt(0)
-                w = item.widget()
-                if w is not None:
-                    try:
-                        w.deleteLater()
-                    except Exception:
-                        pass
-        lay = self._custom_btn_lay
-        for btn_id in sorted(self._btn_registry,
-                             key=lambda i: (self._btn_registry[i].get("order", 0), i)):
-            d = self._btn_registry[btn_id]
-            if not d.get("visible", True):
-                continue
-            icon = d.get("icon") or ""
-            text = d.get("text") or ""
-            if icon:
-                b = QPushButton(_line_icon(icon, 18, TEXT), text)
-            else:
-                b = QPushButton(text or "·")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setAutoDefault(False)
-            if d.get("stylesheet"):
-                b.setStyleSheet(d["stylesheet"])
-            else:
-                b.setStyleSheet(_BTN_GHOST)
-            if d.get("tooltip"):
-                b.setToolTip(d["tooltip"])
-            fs = d.get("fixed_size")
-            if fs:
-                try:
-                    b.setFixedSize(int(fs[0]), int(fs[1]))
-                except Exception:
-                    pass
-            cb = d.get("callback")
-            if cb:
-                b.clicked.connect(lambda _=False, f=cb: self._safe_btn_cb(f))
-            lay.addWidget(b)
-            d["_btn"] = b
-        try:
-            bar.show()
-        except Exception:
-            pass
-
-    def _apply_btn_reg(self, payload):
-        """主线程应用按钮注册/注销请求（来自 register_panel_btn 工具，经引擎回调路由）。"""
-        if not isinstance(payload, dict):
-            return
-        op = payload.get("op")
-        try:
-            if op == "register":
-                cb = None
-                act = payload.get("action")
-                m = self._BTN_ACTIONS.get(act) if act else None
-                f = getattr(self, m, None) if m else None
-                cb = f if callable(f) else None
-                if cb is None:
-                    # 防白名单漂移死按钮：register 必须带可解析成面板已有方法的 action；
-                    # action 缺失或无法解析时跳过注册并告警，避免注册一个点击无反应的
-                    # "死按钮"（工具侧 _PANEL_BTN_ACTIONS 与本侧 _BTN_ACTIONS 应一致）。
-                    import logging
-                    logging.getLogger(app_identity.APP_SLUG).warning(
-                        "register_panel_btn: action %r 无法解析到面板方法，已跳过注册", act)
-                    return
-                self.register_btn(str(payload.get("id") or ""),
-                                  text=payload.get("text") or "",
-                                  callback=cb,
-                                  tooltip=payload.get("tooltip") or "")
-            elif op == "unregister":
-                self.unregister_btn(str(payload.get("id") or ""))
-        except Exception:
-            pass
 
     def _call_panel(self, name: str, method: str, *args):
         """防御式调用子面板方法：AI 自定义子窗口可能未实现对应方法
@@ -21763,8 +21880,7 @@ class AgentPanel(QDialog):
             self._apply_reserve()
         except Exception:
             pass
-        for _fn in ("_sync_wt_win", "_sync_git_win", "_sync_todos_win", "_sync_code_win",
-                    "_sync_ext_panels"):
+        for _fn in ("_sync_wt_win", "_sync_git_win", "_sync_todos_win", "_sync_code_win"):
             _f = getattr(self, _fn, None)
             if callable(_f):
                 try:
@@ -21786,126 +21902,6 @@ class AgentPanel(QDialog):
                     _w.raise_()
                 except Exception:
                     pass
-        for _w in (getattr(self, "_ext_panels", None) or {}).values():
-            if _w is not None and _w.isVisible():
-                try:
-                    _w.raise_()
-                except Exception:
-                    pass
-
-    def _sync_ext_panels(self):
-        """扩展面板定位：按注册顺序堆叠于左侧列底部（todos 之下）。
-        仅创建/重新显示/守卫触发时归位；用户拖走后守卫只抬升不强制归位
-        （与 todos 面板行为一致）。"""
-        if self._panel_minimized:
-            return
-        wins = getattr(self, "_ext_panels", None) or {}
-        if not wins:
-            return
-        x, y = self._left_stack_origin()
-        tw = getattr(self, "todos_win", None)
-        if tw is not None and tw.isVisible():
-            y = tw.frameGeometry().y() + tw.height() + 10
-        for w in wins.values():
-            if w is None:
-                continue
-            # AI 接管（_ai_managed=True）：位置/显隐由 AI 全权控制，归位只恢复隐藏前状态
-            if getattr(w, "_ai_managed", False):
-                if (not w.isVisible() and getattr(w, "_ai_was_visible", False)):
-                    w.show()
-                    w.raise_()
-                    w._ai_was_visible = False
-                continue
-            if getattr(w, "_user_moved", False):
-                # 用户手动拖走：只保证可见与置于前台，不强制归位（保持自定义布局）
-                if not w.isVisible():
-                    w.show()
-                w.raise_()
-                continue
-            self._place_owned(w, x, y)
-            y = w.frameGeometry().y() + w.height() + 10
-
-    def _ensure_ext_panels(self, rescan: bool = True):
-        """扫描并挂载扩展面板（插件/工作流/代码注册），幂等：
-        仅创建新增面板，已存在的保留原窗口引用（含用户拖拽位置）。
-        任意构建（默认/自定义/完全重构）结束都会调用，保证面板恒挂载。
-
-        rescan=False 时跳过扫盘发现（`scan_panels` 要遍历插件/工作流目录 + 逐个
-        `is_file()`，Windows 上实测百毫秒级）：主题切换只需要**重建**这些面板的控件，
-        与「有哪些面板」无关 —— 注册表在启动扫描与热更新定时器里已经建好。
-        """
-        if getattr(self, "_ext_panels", None) is None:
-            self._ext_panels = {}
-        try:
-            from zhuzhu_Copilot.core import agent_panels
-        except Exception:
-            return
-        try:
-            if rescan:
-                agent_panels.scan_panels()
-            built = agent_panels.build_panel_widgets(self)
-        except Exception:
-            return
-        created = False
-        for name, title, width, height, widget in built:
-            if name in self._ext_panels:
-                if widget is not None:
-                    # 已存在同窗：丢弃本次新建的控件，保留原窗口内容
-                    try:
-                        widget.deleteLater()
-                    except Exception:
-                        pass
-                continue
-            if widget is None:
-                continue
-            self._ext_panels[name] = ExtPanelWindow(
-                name, title, widget, width, height, self)
-            created = True
-        if created:
-            self._sync_ext_panels()
-
-    def _hot_reload_ext_panels(self):
-        """功能面板热更新（由 _ext_hot_timer 周期性触发）：检测扩展面板源文件
-        （panel.py）变更，被修改的面板重新加载并原位重建窗口（保留几何/拖拽位置），
-        不改动其他面板。代码注册/未变更面板自动跳过，避免无谓重建。"""
-        try:
-            from zhuzhu_Copilot.core import agent_panels
-        except Exception:
-            return
-        try:
-            agent_panels.scan_panels()          # 新建面板即时发现（幂等，已注册跳过）
-            changed = agent_panels.reload_panels()
-        except Exception:
-            return
-        if not changed:
-            return
-        wins = getattr(self, "_ext_panels", None)
-        if wins is None:
-            self._ext_panels = {}
-            wins = self._ext_panels
-        for name in changed:
-            title, width, height, widget = agent_panels.build_panel(name, self)
-            if widget is None:
-                continue
-            old = wins.get(name)
-            geo = None
-            was_visible = True
-            if old is not None:
-                geo = (old.pos().x(), old.pos().y(), old.width(), old.height())
-                was_visible = old.isVisible()
-                try:
-                    old.close()
-                    old.deleteLater()
-                except Exception:
-                    pass
-            nw = ExtPanelWindow(name, title, widget, width, height, self)
-            if geo is not None:
-                nw.move(geo[0], geo[1])
-                nw.resize(geo[2], geo[3])
-                if was_visible:
-                    nw.show()
-                    nw.raise_()
-            wins[name] = nw
 
     def _sync_todos_win(self):
         """todos 独立窗口定位：工作树 → git → todos 自上而下堆叠于左侧锚点列；
@@ -22069,16 +22065,6 @@ class AgentPanel(QDialog):
                 sync()
             elif active:
                 w.raise_()
-        # 扩展面板（插件/工作流/代码注册）：无独立开关，默认恒显示；
-        # 可见则抬升（保持用户拖拽位置），不可见则重新归位显示
-        for w in (getattr(self, "_ext_panels", None) or {}).values():
-            if w is None or getattr(w, "_ai_managed", False):
-                continue
-            if not w.isVisible():
-                w.show()
-                w.raise_()
-            elif active:
-                w.raise_()
 
     def _sync_wt_win(self):
         """工作树只读面板定位：停靠左侧锚点列顶部（git / todos 依次排在其下方）。
@@ -22219,12 +22205,10 @@ class AgentPanel(QDialog):
         self._sync_git_win()
         self._sync_todos_win()
         self._sync_code_win()
-        self._sync_ext_panels()
         QTimer.singleShot(50, self._sync_wt_win)
         QTimer.singleShot(50, self._sync_git_win)
         QTimer.singleShot(50, self._sync_todos_win)
         QTimer.singleShot(50, self._sync_code_win)
-        QTimer.singleShot(50, self._sync_ext_panels)
         # 启动/复用打开时主面板可能稍晚才被 MainWindow 布局到最终位置，50ms 时锚点
         # 仍是旧位置 → 稍后经 _request_side_sync 聚合再归位一次，避免停靠面板
         # （worktree/git/todos）在左上角原处停留。
@@ -22433,8 +22417,6 @@ class AgentPanel(QDialog):
             w = getattr(self, name, None)
             if w is not None:
                 wins.append(w)
-        wins.extend(w for w in (getattr(self, "_ext_panels", None) or {}).values()
-                    if w is not None)
         for w in wins:
             try:
                 w.update()
@@ -22458,7 +22440,6 @@ class AgentPanel(QDialog):
                 # 面板最小化/隐藏：收起浮出的独立子窗口（hide 而非 showMinimized：
                 # 无边框 Tool 窗口最小化后无标题栏可恢复，隐藏最稳妥）。
                 self._collapse_float_windows()
-                self._collapse_ext_panels()
                 # Copilot 浮层同样是独立顶层窗口：面板最小化时一并收起，避免孤立在桌面
                 try:
                     self.close_copilot_panel()
@@ -22490,15 +22471,6 @@ class AgentPanel(QDialog):
             if w is None or getattr(w, "dock_state", "float") != "float":
                 continue
             # AI 接管窗口记录隐藏前可见状态，恢复时据此重新显示
-            if getattr(w, "_ai_managed", False):
-                w._ai_was_visible = w.isVisible()
-            w.hide()
-
-    def _collapse_ext_panels(self):
-        """收起扩展面板（独立浮窗，同样不随主面板最小化自动消失）"""
-        for w in (getattr(self, "_ext_panels", None) or {}).values():
-            if w is None:
-                continue
             if getattr(w, "_ai_managed", False):
                 w._ai_was_visible = w.isVisible()
             w.hide()
@@ -22680,7 +22652,7 @@ class AgentPanel(QDialog):
         tokens 取自引擎快照，工作流与模型属界面/会话状态，故在此注入。
         工作流优先取生效名（`_effective_workflow`，不带"当前工作流:"展示前缀），
         取不到时回退 wf_label 文本；全部用 __dict__/异常兜底：Qt 派生类 getattr 缺失会触达
-        类级访问器而报 RuntimeError，骨架期或自定义 UI/UX 包缺控件时必须安全跳过。"""
+        类级访问器而报 RuntimeError，骨架期或缺控件时必须安全跳过。"""
         try:
             wf = str(self._effective_workflow() or "")
         except Exception:
@@ -22788,7 +22760,7 @@ class AgentPanel(QDialog):
             anchor = btn.mapTo(self, QPoint(0, 0))
             x = anchor.x() + btn.width() - w
             below = anchor.y() + btn.height() + gap
-        else:   # 自定义 UI/UX 包未提供按钮（由 API 直接唤起）：左上角落位
+        else:   # 无按钮锚点（由 API 直接唤起）：左上角落位
             anchor, x, below = QPoint(margin, margin), margin, margin
         x = max(margin, min(x, max(margin, self.width() - w - margin)))
         y = below
@@ -28497,18 +28469,6 @@ class AgentPanel(QDialog):
                     w.deleteLater()
                 except Exception:
                     pass
-        # 扩展面板随主题重建一并销毁（工厂可能依赖主题色常量），
-        # _build_ui → _ensure_ext_panels(rescan=False) 随后按**已有注册表**重建控件
-        # （注册表由启动扫描与热更新定时器维护，与主题无关，无需再扫盘发现）。
-        for _name, w in list((getattr(self, "_ext_panels", None) or {}).items()):
-            if w is None:
-                continue
-            try:
-                w.close()
-                w.deleteLater()
-            except Exception:
-                pass
-        self._ext_panels = {}
         try:
             from PyQt6.QtCore import QCoreApplication, QEvent
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -28531,7 +28491,7 @@ class AgentPanel(QDialog):
         except Exception:
             self._bubble_reuse_pool = {}
 
-        # 3) 移除旧布局：自定义 UI/UX 包可能在 self 上额外套了一层外层布局（如
+        # 3) 移除旧布局：窗口上可能额外套了一层外层布局（如
         # titlebar+root 结构），仅删 _root_lay 会导致重建时 QVBoxLayout(self) 抛
         # "widget already has a layout" → 面板回退默认/按钮全部消失。因此同时删除窗口上
         # 实际安装的布局（self.layout()），确保重建可干净安装新布局。
@@ -28610,7 +28570,7 @@ class AgentPanel(QDialog):
                             pass
             except Exception:
                 pass
-            self._build_ui(rescan_ext=False)   # 主题切换：只重建控件，不重复扫盘发现扩展面板
+            self._build_ui()   # 主题切换：重建全部控件
         finally:
             _APP_QSS_DEFER = False
         # 重建后清理过渡型临时控件引用：旧转圈动画行/压缩提示行布局已随旧消息流
@@ -28701,7 +28661,7 @@ class AgentPanel(QDialog):
 
         # 8.1) 兜底显示：cleanup_custom_ui 还原窗口标志时 setWindowFlags 会把窗口
         #     隐藏（Qt 行为），重建后若不重新 show 主面板会"消失"（常见于切换到
-        #     非自定义主题/UI/UX 包）。此处统一补显，保证切换后主面板始终可见。
+        #     非当前主题）。此处统一补显，保证切换后主面板始终可见。
         try:
             if not self.isVisible():
                 self.show()
@@ -29398,7 +29358,7 @@ class AgentPanel(QDialog):
             self._refresh_ai_html()
             self._scroll_bottom()
         elif s.startswith("生成进度:"):
-            # 生成类任务（UI/UX 包 / 插件）实时进度：AI 通过 set_generation_progress
+            # 生成类任务（插件生成）实时进度：AI 通过 set_generation_progress
             # 工具上报，或生成内置回调经 on_status 透传。更新转圈行文案显示百分比。
             parts = s.split(":", 2)
             pct = parts[1] if len(parts) > 1 else ""

@@ -79,7 +79,7 @@ description: 插件创建：根据用户自然语言描述自动生成可运行�
    源码运行直接改 `src/`，**打包（安装版）写源码覆盖层** `~/.zhuzhu_Copilot/source_overlay/`
    （导入钩子优先加载，重启生效）——安装版同样能源码级定制。
 2. 除 source_ops 外可带 `copilot.json` 应用扩展清单（pages/services/tray/shortcuts，
-   `module` 指向**插件包内**源码文件，随包分发），以及可选 `agent/` 子包
+   `module` 指向**插件包内**模块文件，随包分发），以及可选 `agent/` 子包
    （SKILL.md + server.py，导入时登记为技能与 MCP，成为 Agent 插件的超集）。
 3. 学习示例：`src/zhuzhu_Copilot/copilot_plugins_examples/`（theme-deep-blue 改主题 /
    custom-hello-tool 自定义工具 / settings-page-demo 自定义设置页 /

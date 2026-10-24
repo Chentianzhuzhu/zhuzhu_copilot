@@ -4,10 +4,10 @@
 - **Agent 插件**（`agent_plugins.py`，目录 `~/.zhuzhu_Copilot/plugins/`）：
   只扩展 AI Agent 的能力——MCP 工具、SKILL.md 技能、Agent 面板用的本地网页界面。
 - **Copilot 插件**（本模块，目录 `~/.zhuzhu_Copilot/copilot_plugins/`）：
-  扩展**整个 Copilot 应用本身**，范围覆盖所有源码文件：
-    1. 源码级集成：`source_ops` 变更清单可把功能代码**插入到任何源码文件**
-       （追加到现有代码模块之后 / 锚点后插入 / 替换模块 / 整体替换），也可**新建
-       源码文件**，支持一次多条、跨多个源码文件综合修改并集成功能；
+  扩展**整个 Copilot 应用本身**，覆盖所有功能模块：
+    1. 源码级集成：`source_ops` 变更清单可把功能代码**接入任何现有模块**
+       （按行号或锚点追加/插入 / 按行号区间替换 / 替换模块 / 整体替换），也可
+       **新建功能模块**，支持一次多条、跨多个模块综合修改并集成功能；
     2. 声明式应用扩展：`copilot.json` 注册应用级能力——主窗口页面 / 后台服务 /
        托盘菜单动作 / 全局快捷键；
     3. 可选 `agent/` 子包：同时携带 MCP 工具与技能，成为 Agent 插件的超集。
@@ -210,7 +210,7 @@ def _manifest_summary(man: dict) -> dict:
 #                   "module": "pages/my_page.py", "action": "on_hotkey"}]
 # }
 #
-# module 指向插件包内源码文件，由主窗口启动时动态导入并调用其 entry/action；
+# module 指向插件包内模块文件，由主窗口启动时动态导入并调用其 entry/action；
 # id 全局唯一（同 id 后注册者被拒绝，防插件互相顶掉）。
 # ---------------------------------------------------------------------------
 
@@ -639,7 +639,7 @@ def import_plugin_zip(zip_path: str) -> tuple:
     n_ops = len(source_ops(name))
     n_files = len({str(op.get("path") or "") for op in source_ops(name)})
     ext = _manifest_summary(man)
-    msg = f"已导入 Copilot 插件「{name}」（{n_files} 个源码文件、{n_ops} 条变更）"
+    msg = f"已导入 Copilot 插件「{name}」（{n_files} 个插件文件、{n_ops} 条变更）"
     if any(ext.values()):
         msg += ("；应用扩展：" +
                 "、".join(f"{k}×{v}" for k, v in ext.items() if v))
@@ -692,7 +692,7 @@ def guard_log(name: str, limit: int = 50) -> list:
 _COPILOT_OP_RULES = (
     "可用 op（path 均为相对应用源码根（src/）的路径，"
     "如 zhuzhu_Copilot/core/xxx.py、zhuzhu_Copilot/ui/xxx.py）：\n"
-    '  create_file     新建源码文件：{"op":"create_file","path":"...","content":"完整文件内容"}\n'
+    '  create_file     新建功能模块：{"op":"create_file","path":"...","content":"完整文件内容"}\n'
     '  append          追加到现有代码模块之后：{"op":"append","path":"...","content":"...",'
     '"after":"锚点串(可选，缺省追加到文件末尾)"}\n'
     '  insert_after    锚点/行号后插入：{"op":"insert_after","path":"...",'
@@ -715,7 +715,7 @@ _COPILOT_OP_RULES = (
     "plugin_source.py、copilot_plugins.py、_copilot_overlay_hook.py、main.py；\n"
     "  · 代码用 Python 3.13 标准库或已在依赖清单内的库，风格与目标文件一致；\n"
     "  · 每条 op 的 content 必须是完整、可独立编译的代码；\n"
-    "  · 可以一次设计多条 op、跨多个源码文件综合修改并集成功能。\n"
+    "  · 可以一次设计多条 op、跨多个功能模块综合修改并集成功能。\n"
 )
 
 _COPILOT_MANIFEST_RULES = (
@@ -728,7 +728,7 @@ _COPILOT_MANIFEST_RULES = (
     '"action":"quick_do"}],\n'
     '             "shortcuts": [{"id":"...","title":"快捷键说明","hotkey":"ctrl+alt+m",'
     '"module":"pages/xxx.py","action":"on_hotkey"}]}\n'
-    "module 指向插件包内源码文件（需用 create_file 一并创建）；页面 widget 为"
+    "module 指向插件包内模块文件（需用 create_file 一并创建）；页面 widget 为"
     " QWidget 子类类名；服务 entry/stop 为模块级函数名。\n"
 )
 
@@ -742,7 +742,7 @@ def _ai_generate_copilot_spec(desc: str) -> dict:
                                  cfg.get("model") or agent_llm.DEFAULT_MODEL)
     sys_p = (
         "你是 Copilot 应用级插件设计专家。Copilot 插件与 Agent 插件分开，"
-        "扩展范围覆盖整个应用：既可以把功能源码插入任何源码文件/新建源码文件"
+        "扩展范围覆盖整个应用：既可以把功能代码接入任何现有模块/新建功能模块文件"
         "（跨多文件综合修改），也可以注册应用级能力（主窗口页面/后台服务/托盘/快捷键）。\n"
         + _COPILOT_OP_RULES + _COPILOT_MANIFEST_RULES +
         '输出严格 JSON（不要 markdown 代码块包裹）：\n'
@@ -847,13 +847,13 @@ def create_from_nl(description: str, on_status=None) -> tuple:
     _normalize_pkg_meta(name)
     n_files = len({str(op.get("path") or "") for op in ops if isinstance(op, dict)})
     ext = _manifest_summary(copilot if isinstance(copilot, dict) else {})
-    msg = (f"已创建 Copilot 插件「{name}」（{n_files} 个源码文件、{len(ops)} 条变更），"
+    msg = (f"已创建 Copilot 插件「{name}」（{n_files} 个插件文件、{len(ops)} 条变更），"
            "已通过插件校验系统。")
     if any(ext.values()):
         msg += ("\n应用扩展：" +
                 "、".join(f"{k}×{v}" for k, v in ext.items() if v))
     msg += (f"\n变更清单：{d / 'source_ops.json'}\n"
-            "**尚未改动源码**——确认无误后调用 apply_copilot_plugin 应用"
+            "**尚未应用变更**——确认无误后调用 apply_copilot_plugin 应用"
             "（逐文件备份、编译检查，可 revert_copilot_plugin 回滚）；"
             "也可以先 read_file 审查清单后再决定。")
     return True, msg

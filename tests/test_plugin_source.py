@@ -445,7 +445,7 @@ def test_create_source_plugin_from_nl_creates_package(iso, monkeypatch):
     assert meta["kind"] == "source" and meta["author"] == "某公司"
     assert meta.get("updated_at")
     assert (d / "source_ops.json").is_file()
-    assert "尚未改动源码" in msg and "apply_source_plugin" in msg
+    assert "尚未应用变更" in msg and "apply_source_plugin" in msg
     # 源码确实未被改动
     assert not (iso / "zhuzhu_Copilot" / "core" / "habit.py").exists()
 

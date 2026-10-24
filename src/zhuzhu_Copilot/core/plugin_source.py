@@ -4,7 +4,7 @@
 开发，插件包内 source_ops.json（或 plugin.json 的 "source_ops" 字段）描述对应用
 源码的变更，支持五类操作：
 
-  create_file     新建源码文件（创建新模块）           {op, path, content}
+  create_file     新建功能模块（创建新模块）           {op, path, content}
   append          追加到现有代码模块之后               {op, path, content, after?}
                   after 缺省 = 文件末尾；给出锚点串则插到该锚点所在行之后
   insert_after    在锚点之后插入                       {op, path, anchor, content}
@@ -13,7 +13,7 @@
   replace_file    整体替换文件                         {op, path, content}
 
 一个插件可携带多条 op、跨多个文件——即「源码级插入到任何源代码文件、新建源码
-文件、一次修改多个源码文件并集成功能」。
+文件、一次改多个功能模块并集成功能」。
 
 安全约束（与 plugin_guard 共同构成防线，缺一不可）：
   · 应用前必须通过 plugin_guard.guard_source_package（静态规则 + LLM 源码评审），

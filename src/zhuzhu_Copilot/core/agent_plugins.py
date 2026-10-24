@@ -14,7 +14,7 @@
   skill    仅提供标准技能 SKILL.md
   combined 同时提供技能与 MCP 工具
   web      三件套：SKILL.md 技能 + MCP 工具 + 本地 HTTP 浏览器界面（可视化交互类）
-  source   源码级插件：携带 source_ops 源码变更清单（新建源码文件 / 追加到现有
+  source   源码级插件：携带 source_ops 变更清单（新建功能模块 / 追加到现有
            代码模块之后 / 锚点后插入 / 替换模块 / 整体替换文件），可跨多个文件
            综合修改并集成功能。应用前必须通过插件校验系统，应用时逐文件备份、
            编译检查、可一键卸载回滚。
@@ -1352,9 +1352,9 @@ def _ai_generate_spec(desc: str, kind: str) -> dict:
 # ── 源码级插件：AI 生成 source_ops 变更清单 ──────────────────────────────
 
 _SOURCE_OP_RULES = (
-    "可用 op（path 均为相对应用源码根（src/）的路径，"
+    "可用 op（path 均为相对源码根（src/）的路径，"
     "如 zhuzhu_Copilot/core/xxx.py）：\n"
-    '  create_file     新建源码文件：{"op":"create_file","path":"...","content":"完整文件内容"}\n'
+    '  create_file     新建功能模块：{"op":"create_file","path":"...","content":"完整文件内容"}\n'
     '  append          追加到现有代码模块之后：{"op":"append","path":"...","content":"...",'
     '"after":"锚点串(可选，缺省追加到文件末尾)"}\n'
     '  insert_after    锚点/行号后插入：{"op":"insert_after","path":"...",'
@@ -1485,7 +1485,7 @@ def create_source_plugin_from_nl(description: str, on_status=None) -> tuple:
     n_files = len({str(op.get("path") or "") for op in ops if isinstance(op, dict)})
     return True, (f"已创建源码插件「{name}」（{n_files} 个文件、{len(ops)} 条变更），"
                   f"已通过插件校验系统。\n变更清单：{d / 'source_ops.json'}\n"
-                  "**尚未改动源码**——确认无误后调用 apply_source_plugin 应用"
+                  "**尚未应用变更**——确认无误后调用 apply_source_plugin 应用"
                   "（应用时逐文件备份、编译检查，可 revert_source_plugin 回滚）；"
                   "也可以先 read_file 审查清单后再决定。")
 

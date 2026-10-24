@@ -127,5 +127,5 @@ def test_progress_tool_always_available():
 
 def test_cordis_group_keeps_generation_tools():
     tools = agent_engine._TASK_GROUP_TOOLS.get("cordis", frozenset())
-    for name in ("create_uiux", "manage_uiux", "create_plugin"):
+    for name in ("create_plugin", "create_copilot_plugin", "apply_copilot_plugin"):
         assert name in tools, f"cordis 分组缺少 {name}，自定义任务裁剪后会丢失"

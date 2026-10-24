@@ -485,9 +485,7 @@ TOOL_ICON_SPEC = {
     "create_plugin": ("plug", "plus"),
     "set_app_background": ("image", "pencil"),
     "set_generation_progress": ("clock", "right"),
-    "register_panel_btn": ("grid", "plus"),
     "inspect_customization": ("grid", "info"),
-    "register_feature_panel": ("grid", "star"),
     "set_feature_deps": ("grid", "link"),
     # ---- MCP ----
     "create_mcp": ("server", "plus"),

@@ -264,7 +264,7 @@ _CORE_TOOLS = frozenset({
     "save_memory", "load_memory", "update_todo", "list_todo", "git_info",
     "explore_project",
     "inspect_customization",   # 深度自定义总入口：任何自定义/新增功能场景都需先盘点现状
-    "set_generation_progress",  # 生成类任务实时进度上报：UI/UX 包/插件生成时恒可用
+    "set_generation_progress",  # 生成类任务实时进度上报：插件生成时恒可用
     "shared_context",          # 共同上下文空间：编队协同（主 Agent 开启/成员双向读写）
     "set_session_name",        # 会话命名：AI 可给当前对话起名/改名（用户明确要求时必调）
     "register_sub_agent",      # 注册式子 Agent：用户任何措辞的「创建子 agent」都要能落到它
@@ -361,7 +361,6 @@ _TASK_GROUPS = [
                 "list_workflow_agents", "use_workflow_agent",
                 "inspect_customization", "list_sub_agents", "register_sub_agent",
                 "list_builtin_workflows", "shared_context",
-                "register_feature_panel",
                 # 插件生成：自定义任务裁剪后仍需可用（自然语言生成/手动管理）
                 "create_plugin", "create_copilot_plugin", "apply_copilot_plugin",
                 "revert_copilot_plugin"})),
@@ -646,7 +645,6 @@ class AgentEngine:
                  allow_subagents: bool = True,
                  efficient_mode: bool = False,
                  on_engine_rebuild=None,
-                 on_btn_reg=None,
                  on_session_name=None,
                  on_preview=None,
                  workflow: str = None,
@@ -728,7 +726,6 @@ class AgentEngine:
         # 高效模式：最小工具集 + 精简系统提示词（无 MCP/插件/技能规范），见 _EFFICIENT_TOOLS
         self.efficient_mode = bool(efficient_mode)
         self.on_engine_rebuild = on_engine_rebuild   # Cordis 工作流切换：Callable[[str], None] 接收新工作流名
-        self.on_btn_reg = on_btn_reg                 # 按钮注册回调：Callable[[dict], None]，UI 操作须回主线程
         self.on_session_name = on_session_name       # 会话命名回调：Callable[[str], None]（AI 给对话起名，UI 主线程写入）
         self.on_preview = on_preview                 # 文件预览回调：Callable[[str], None]（工具改/读文件时自动下发路径，主线程渲染）
         self._messages: list = []
@@ -1557,12 +1554,6 @@ class AgentEngine:
                     res = {k: v for k, v in res.items() if k != "__rebuild_engine__"}
                     if self.on_engine_rebuild:
                         self.on_engine_rebuild(None)
-                # 按钮注册：返回待应用载荷 → 通知 UI 在主线程注册/注销按钮
-                if isinstance(res, dict) and "btn_reg_pending" in res:
-                    payload = res.get("btn_reg_pending")
-                    res = {k: v for k, v in res.items() if k != "btn_reg_pending"}
-                    if self.on_btn_reg and payload is not None:
-                        self.on_btn_reg(payload)
                 # 会话命名：set_session_name 工具返回待应用标题 → 通知 UI 主线程改名
                 if isinstance(res, dict) and "__session_name__" in res:
                     title = res.get("__session_name__")

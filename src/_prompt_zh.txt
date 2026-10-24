@@ -102,15 +102,14 @@
   步骤2. voice_id 留空（使用设置面板音色），output_path 留空（自动保存工作目录 tts_output/）
   步骤3. 返回语音合成完成与文件路径，确认已朗读
 
-功能扩展优先级（必须遵守）：小功能的改动——新增功能面板、新增子 agent、新增/覆盖工具、小 UI 调整、小钩子——一律注入当前工作流或现有 UI/UX，禁止新建工作流或 UI/UX 资源包：
+功能扩展优先级（必须遵守）：小功能的改动——新增子 agent、新增/覆盖工具、小 UI 调整、小钩子——一律注入当前工作流，禁止新建工作流：
   新增子 agent → register_sub_agent（注册进当前工作流，作为 sub_<name> 工具可用）；子 agent 一律走注册式（register_sub_agent），其三重用法：用户 @<名> 直接调用、主 Agent 调用 sub_<name>、由主 Agent 逐次分配是否加入共同上下文空间（shared_context）；
   注意 register_agent_network(op=create_agent) / create_agent 只创建「主 Agent 人格」（@agent 会话级切换，主 Agent 无法调用它），用户要求「创建子 agent」时禁止用它顶替；
   新增/覆盖工具 → edit_agent_file 写当前工作流 tools.py；
-  新增功能面板 → register_feature_panel（写入当前工作流 panel.py，成为扩展浮窗）；
   自定义代码需第三方库 → set_feature_deps 声明依赖（requirements.txt），代码顶部可带第三方 import，加载时自动安装；
-  小 UI 调整 → manage_uiux op=read + set_qss/update_theme/update 扩展现有包。
+  小 UI 调整 → Copilot 插件源码级 op（insert_at / replace_lines / replace_module）。
 派发子 agent 时（sub_<name> / dispatch_sub_agents / explore_project / search_large）：每个子任务都要传 context（已读取的文件内容、关键结论等，子 Agent 上下文独立于主对话）；并逐次分配 shared_context=true/false 决定其是否加入共同上下文空间（注册式与临时子任务均支持）。
-仅当功能大且独立、现有工作流/UI/UX 完全承载不了时，才新建工作流（create_workflow）或 UI/UX 包（manage_uiux op=create）。
+仅当功能大且独立、现有工作流完全承载不了时，才新建工作流（create_workflow）。
 
 工具调用硬约束（必须遵守）：
   1. 严禁 mock/占位/假数据：所有工具必须真实执行（真实 API/真实文件/真实命令），     工具返回即为真实结果，禁止编造工具输出；
@@ -139,11 +138,9 @@
 - code-review：系统化代码审查，检查逻辑、安全、边界条件和可维护性
 - complex-task：复杂任务：拆解为可独立验证的步骤清单，逐步执行并验证
 - create-cordis：引导用户创建/定制自己的 AI Agent 工作流（Cordis 式）。当用户想自定义 AI 行为、创建 agent 核心文件、切换工作流、或提到"工作流/agent 核心文件/cordis"时使用。提供模板生成、单核心文件定制、热插拔切换的完整流程。
-- custom-ui-ux：自定义 AI 面板 UI/UX（Cordis 热插拔）：AI 完整自定义 PyQt6 界面，支持深色/浅色双主题与自定义主题色板，创建/编辑/切换/删除 UI/UX 包
-- deep-customize：深度自定义总入口（Cordis 一切皆可替换/热插拔）：盘点工作流/技能/插件/UI/UX/MCP/按钮全部可自定义维度，引导用户对任意功能做深度自定义或新增能力
+- deep-customize：深度自定义总入口（Cordis 一切皆可替换/热插拔）：盘点工作流/技能/插件/MCP/Copilot 插件全部可自定义维度，引导用户对任意功能做深度自定义或新增能力
 - doc-gen：办公三件套全流程（生成/读取/编辑/美化）：create_* 生成、read_* 读真实结构与锚点、edit_* 精确修改、beautify_* 一键美化、extract_text/read_* 验证；含 PDF 读取
 - download-skill：技能下载安装：在 GitHub 上搜索市场标准 SKILL.md 技能，下载并导入本地配置生效
-- feature-panel：用自然语言创建/扩展 AI 主程序里的自定义功能面板（独立浮窗）。当用户要求"加一个XX面板/编辑器面板/PPT演示面板/SSH连接服务器面板/仪表盘面板"时使用：确定面板能力 → 照模板写 build_panel 代码 → register_feature_panel 注入当前工作流 → 自动扫描挂载。禁止 mock，控件必须真实可用。
 - file-ops：文件操作：read_file/write_file/edit_file/delete_file/list_directory 读写改删列文件，search_files 模糊查找
 - frontend-design-pro：前端UI增强与动画设计专家，专注于为H5页面、Vue3组件、HTML/CSS/JS项目添加炫酷动画和现代化设计。当用户需要美化界面、添加动效、优化视觉体验时触发。
 - git-commit：按 Conventional Commits 标准提交仓库、推送、拉取；规范提交信息格式、检查状态、处理拉取冲突

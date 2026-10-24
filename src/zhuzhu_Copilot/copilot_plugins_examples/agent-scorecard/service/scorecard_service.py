@@ -79,14 +79,14 @@ def start():
         try:
             return _orig_run(self, *args, **kwargs)
         finally:
-            if _as is None or _bridge is None:
-                return
-            try:
-                snap = _as.snapshot(self)
-                if int(snap.get("calls") or 0) > 0:
-                    _bridge.scored.emit(snap)     # 排队到 GUI 线程弹窗
-            except Exception:
-                pass
+            # 注意：finally 里不能 return，否则会把 run 的异常吞掉
+            if _as is not None and _bridge is not None:
+                try:
+                    snap = _as.snapshot(self)
+                    if int(snap.get("calls") or 0) > 0:
+                        _bridge.scored.emit(snap)     # 排队到 GUI 线程弹窗
+                except Exception:
+                    pass
 
     agent_engine.AgentEngine.run = _run
     _patched = True

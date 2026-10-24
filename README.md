@@ -39,7 +39,6 @@
 - **任务编排**：`update_todo` / `list_todo`；记忆：`save_memory` / `load_memory`。
 - **工作流/技能/Agent 管理**：`list_workflows` / `create_workflow` / `switch_workflow` / `inspect_workflow` / `create_skill` / `create_plugin` / `create_source_plugin`（Agent 源码级插件：AI 生成 source_ops 变更清单）/ `apply_source_plugin` / `revert_source_plugin` / `create_copilot_plugin`（Copilot 应用级插件：AI 生成源码变更清单 + 应用扩展清单）/ `apply_copilot_plugin` / `revert_copilot_plugin` / `register_sub_agent` 等（`skill_manager.py` / `workflow_manager.py` / `sub_agent_manager.py`）。
 - **MCP 注册**：`create_mcp` / `list_mcp` / `set_mcp`。
-- **面板扩展**：`register_feature_panel`（注入浮动窗口）。
 - **微信 ClawBot**：`send_file_to_wechat` / `send_files_to_wechat`（推送文件到绑定的手机微信）；入站文件读取由 `wechat_bridge.py` 处理。
 - **进度反馈**：`set_generation_progress`（长耗时生成任务）。
 - **子 Agent 调度**：`dispatch_sub_agents` / `explore_project` / `search_large` / `ask_user`。
@@ -47,7 +46,7 @@
 
 ### 1.3 技能系统
 
-`src/zhuzhu_Copilot/core/skill_manager.py` 扫描 `~/.zhuzhu_Copilot/agent/skills/<name>/SKILL.md`。每个 SKILL.md 包含 description 与 instruction（可含 tool 白名单）。内置 23 个技能：brainstorming、browser-control、cmd-ops、code-review、complex-task、create-cordis、custom-ui-ux、deep-customize、doc-gen、download-skill、feature-panel、file-ops、frontend-design-pro、git-commit、image-gen、memory、plugin-create、skill-create、skill-mgmt、sub-agent、system-admin、systematic-debugging、test-driven-development、web-search、writing-plans。支持 `@skillname` 激活。
+`src/zhuzhu_Copilot/core/skill_manager.py` 扫描 `~/.zhuzhu_Copilot/agent/skills/<name>/SKILL.md`。每个 SKILL.md 包含 description 与 instruction（可含 tool 白名单）。内置 23 个技能：brainstorming、browser-control、cmd-ops、code-review、complex-task、create-cordis、deep-customize、doc-gen、download-skill、file-ops、frontend-design-pro、git-commit、image-gen、memory、plugin-create、skill-create、skill-mgmt、sub-agent、system-admin、systematic-debugging、test-driven-development、web-search、writing-plans。支持 `@skillname` 激活。
 
 ### 1.4 MCP 支持
 
@@ -74,7 +73,7 @@
 
 | op | 作用 |
 | --- | --- |
-| `create_file` | 新建源码文件（创建新模块） |
+| `create_file` | 新建功能模块（创建新模块） |
 | `append` | 追加到现有代码模块之后（可给 `after` 锚点，缺省追加到文件末尾） |
 | `insert_after` | 在锚点（`anchor`，须唯一）或指定行（`line`）之后插入 |
 | `insert_at` | **按行号插入**：在第 `line` 行之前插入（1 起；`line=行数+1` 即追加到末尾） |
@@ -86,7 +85,7 @@
 
 应用链路（`apply_copilot_plugin` / 插件页「应用源码变更」）：**插件校验系统**（危险即整体删除插件包并提示）→ 逐文件备份到插件目录 `backups/` → 逐条应用 → 全部 `py_compile`，任一失败**整体回滚**（源码一行不动）→ 写 `applied.json` 清单。`revert_copilot_plugin` 据此卸载回滚：新建的文件删除、修改的文件还原备份（覆盖层模式下还原内容与原版一致时直接删掉覆盖层副本，让模块回落原版）；应用后被用户手动改过的文件跳过不覆盖。路径仅限源码根内的相对路径（禁绝对路径/`..` 穿越）。
 
-**应用级扩展（copilot.json，仅 Copilot 插件）**：声明式注册应用能力，`module` 指向**插件包内**源码文件（随包分发、不走源码树），由主窗口启动时按文件路径动态导入并调用：
+**应用级扩展（copilot.json，仅 Copilot 插件）**：声明式注册应用能力，`module` 指向**插件包内**模块文件（随包分发、不走源码树），由主窗口启动时按文件路径动态导入并调用：
 
 ```json
 {
@@ -173,7 +172,6 @@ Cordis 式「一切皆可替换」，目录 `~/.zhuzhu_Copilot/workflows/`。核
 - **桌宠**：透明 GIF 动画，右键菜单快捷操作。
 - **内置浏览器**：WebView 多标签页，与系统浏览器隔离。
 - **全屏放映**：HTML 预览全屏模式。
-- **自定义面板**：`register_feature_panel` 挂载浮动窗口。
 - **本地 Web 服务**：`127.0.0.1:8765`，提供预览/调试接口。
 - **多语言**：简体中文 / English 双语界面，安装时选择，运行中可在设置切换；English 模式无中文硬编码残留。
 

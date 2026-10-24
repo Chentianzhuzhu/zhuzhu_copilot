@@ -514,7 +514,7 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
 2. **设计锚点前必须先 `read_file` 查看目标文件**，锚点取自真实存在且唯一的字符串
    （函数签名/注释标记/注册条目行），否则应用会因找不到锚点整体回滚。
 3. 严禁改动受保护核心程序：`plugin_guard.py`、`security.py`、`security_engine/`。
-4. 创建后**不会自动改动源码**：先读 `source_ops.json` 审查，确认后 `apply_source_plugin`
+4. 创建后**不会自动应用变更**：先读 `source_ops.json` 审查，确认后 `apply_source_plugin`
    应用（逐文件备份 → 应用 → py_compile，任一失败整体回滚）；`revert_source_plugin` 卸载回滚。
 5. 所有插件（含源码插件）在导入/生成/应用前都要过**插件校验系统**（`plugin_guard`，
    静态危险规则 + LLM 源码评审）：危险代码会被**强制删除**并提示用户，源码插件危险则
@@ -537,7 +537,7 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
     "   源码运行直接改 `src/`，**打包（安装版）写源码覆盖层** `~/.zhuzhu_Copilot/source_overlay/`\n"
     "   （导入钩子优先加载，重启生效）——安装版同样能源码级定制。\n"
     "2. 除 source_ops 外可带 `copilot.json` 应用扩展清单（pages/services/tray/shortcuts，\n"
-    "   `module` 指向**插件包内**源码文件，随包分发），以及可选 `agent/` 子包\n"
+    "   `module` 指向**插件包内**模块文件，随包分发），以及可选 `agent/` 子包\n"
     "   （SKILL.md + server.py，导入时登记为技能与 MCP，成为 Agent 插件的超集）。\n"
     "3. 学习示例：`src/zhuzhu_Copilot/copilot_plugins_examples/`（theme-deep-blue 改主题 /\n"
     "   custom-hello-tool 自定义工具 / settings-page-demo 自定义设置页 /\n"
@@ -612,7 +612,7 @@ browser_click/browser_type/browser_scroll/browser_eval/browser_html/browser_clos
 - 涉及账号密码/验证码/手机验证等敏感登录信息时，一律交给用户手动完成，AI 不代为填写、不猜测。""",
     },
     "deep-customize": {
-        "description": "深度自定义总入口（Cordis 一切皆可替换/热插拔）：盘点工作流/技能/插件/MCP/按钮全部可自定义维度，引导用户对任意功能做深度自定义或新增能力；界面/主题/任意模块的深度定制走 Copilot 插件（源码级）",
+        "description": "深度自定义总入口（Cordis 一切皆可替换/热插拔）：盘点工作流/技能/插件/MCP 全部可自定义维度，引导用户对任意功能做深度自定义或新增能力；界面/主题/任意模块的深度定制走 Copilot 插件（源码级）",
         "instruction": """# deep-customize：深度自定义 / 新增功能总入口（Cordis）
 
 当用户要求"深度自定义 / 深度定制 / 全面自定义 / 自定义功能 / 新增功能 / 添加功能 / 扩展功能 / 改造 / 把 xxx 改得更好用"时使用本技能。
@@ -620,18 +620,17 @@ browser_click/browser_type/browser_scroll/browser_eval/browser_html/browser_clos
 
 ## 0. 优先扩展、禁止滥新建（最高优先级，先于一切）
 **小功能的改动，一律先扩展现有资源，禁止新建工作流 / 插件包。** 判定与落地顺序：
-- **小功能 = 新增功能面板、新增子 agent、新增/微调工具、小 UI 调整、小钩子**，这类改动直接注入当前工作流：
+- **小功能 = 新增子 agent、新增/微调工具、小 UI 调整、小钩子**，这类改动直接注入当前工作流：
   - **新增子 agent** → `list_sub_agents` 看现状 → `register_sub_agent`（name/description/goal/allowed）注册进**当前工作流**，立即可作为 `sub_<name>` 工具被主 Agent 调用，不新建工作流。
-  - **新增功能面板** → **优先**用 `register_feature_panel`（title/width/height/python）把 panel.py 写进**当前工作流**，成为可拖拽扩展浮窗。
   - **新增/覆盖工具** → `edit_agent_file(name=<当前工作流>, file="tools.py")` 写入当前工作流 tools.py，绝不为单独一个工具新建工作流。
   - **自定义代码带第三方 import** → `set_feature_deps`（op=declare deps=["xxx"]）写入当前工作流 requirements.txt，代码顶部可带第三方 import，加载时自动补齐依赖。
   - **小 UI 调整 / 钩子** → 用 Copilot 插件（源码级 `insert_at` / `replace_lines`）精确改界面模块的指定行，或 `edit_agent_file` 改 agent.py 钩子。
 - **只有功能大且独立**（整套 Agent 人格、独立界面体系、专用工具集，现有工作流完全承载不了）时才新建工作流（`create_workflow`）或 Copilot 插件（`create_copilot_plugin`）。
-- 判断口诀：**能不能塞进现有工作流面板.py / 工具.py / 子agent 注册？能就绝不新建资源包。**
+- 判断口诀：**能不能塞进现有工作流工具.py / 子agent 注册？能就绝不新建。**
 
 ## 1. 先盘点再动手
 1. 信息不足先 `ask_user` 问清：想自定义/新增什么功能、目标效果、使用场景（禁止瞎猜）。
-2. 调用 `inspect_customization` 盘点当前全部可自定义维度现状（工作流/技能/插件/MCP/按钮/子agent/扩展面板），
+2. 调用 `inspect_customization` 盘点当前全部可自定义维度现状（工作流/技能/插件/MCP/子agent），
    把结果与用户需求对齐，确认要改哪个维度。
 3. 先按「第 0 节」判断是小功能还是大而独立的功能：**小功能直接走扩展通道注入现有工作流，不新建。**
 
@@ -650,16 +649,12 @@ browser_click/browser_type/browser_scroll/browser_eval/browser_html/browser_clos
   `replace_lines` 按行号替换、`replace_module` / `replace_file` 整段替换，跨多文件综合修改）
   → `apply_copilot_plugin` 应用（校验 → 备份 → 编译检查，失败整体回滚）→ 重启生效；
   改错了用 `revert_copilot_plugin` 一键回滚。老旧的「UI/UX 包」引擎已移除，界面定制一律走这里。
-- **面板按钮**：`register_panel_btn` op=register 注册顶部按钮栏按钮。
 - **子 agent（小功能的常用落地通道，绑定当前工作流）**：`list_sub_agents` 看现状 → `register_sub_agent`
   （name/description/goal/allowed）注册进当前工作流，立即作为 `sub_<name>` 工具可调用，不新建工作流。
   用户说「创建一个子 agent / 新增一个下属 agent」时必须走这条注册通道：注册式才同时支持
   @<名> 直接调用、主 Agent 调用 `sub_<name>`、以及由主 Agent 逐次分配是否加入共同上下文空间与
   传参 context。**不要用 `create_agent` / `register_agent_network(op=create_agent)` 顶替**——
   那只创建「主 Agent 人格」（@agent 会话级切换），主 Agent 调不到它。
-- **功能面板（小 UI 面板的常用落地通道，绑定当前工作流）**：`register_feature_panel`
-  （title/width/height/python，python 提供 build_panel(owner) 返回 QWidget）把 panel.py 写入当前工作流，
-  扫描后成为可拖拽扩展浮窗，不新建 UI/UX 包。
 - **依赖（自定义代码带第三方 import）**：`set_feature_deps` op=declare 声明（写入当前工作流 requirements.txt，
   deps=["pandas"]）；op=install 立即安装；op=list 查看。加载自定义代码时自动补齐缺失依赖，无需手动 pip。
 - **MCP 服务器**：通过插件（create_plugin kind=mcp/combined）或工作流 mcp.json 声明。
@@ -1937,9 +1932,6 @@ _SKILL_KEYWORDS = {
     "deep-customize": ["深度自定义", "深度定制", "全面自定义", "自定义功能", "新增功能",
                        "添加功能", "扩展功能", "改造", "深度定制 agent", "深度定制agent",
                        "自定义整个", "全功能自定义", "把 ai 改", "把ai改", "改得更", "更好用"],
-    "custom-ui-ux": ["ui/ux", "ui ux", "自定义界面", "自定义ui", "换个风格", "换皮肤", "换肤",
-                     "界面风格", "面板风格", "重新设计面板", "重新设计界面", "改界面", "改ui",
-                     "美化界面", "美化面板"],
     "test-driven-development": ["写测试", "测试用例", "tdd"],
     "systematic-debugging": ["调试", "排查问题", "修复bug"],
     "brainstorming": ["头脑风暴", "想创意", "方案点子"],
@@ -2060,18 +2052,17 @@ def _skill_router_block() -> str:
 
 
 def _extend_dont_create_rule() -> str:
-    """功能扩展硬性规则：小功能的改动（新增功能面板/子 agent/工具/小 UI/小钩子）一律
-    优先扩展现有工作流或现有 UI/UX，禁止新建工作流 / UI/UX 资源包。仅功能大且独立时才新建。
+    """功能扩展硬性规则：小功能的改动（新增子 agent/工具/小 UI/小钩子）一律
+    优先扩展现有工作流，禁止新建工作流 / 插件包。仅功能大且独立时才新建。
     该块固定无动态内容，保持 system 前缀缓存稳定。"""
-    return ("功能扩展优先级（必须遵守）：小功能的改动——新增功能面板、新增子 agent、"
-            "新增/覆盖工具、小 UI 调整、小钩子——一律注入当前工作流或现有 UI/UX，禁止新建工作流或 UI/UX 资源包：\n"
+    return ("功能扩展优先级（必须遵守）：小功能的改动——新增子 agent、"
+            "新增/覆盖工具、小 UI 调整、小钩子——一律注入当前工作流，禁止新建工作流或插件包：\n"
             "  新增子 agent → register_sub_agent（注册进当前工作流，作为 sub_<name> 工具可用）；"
             "子 agent 一律走注册式（register_sub_agent），其三重用法：用户 @<名> 直接调用、"
             "主 Agent 调用 sub_<name>、由主 Agent 逐次分配是否加入共同上下文空间（shared_context）；\n"
             "  注意 register_agent_network(op=create_agent) / create_agent 只创建「主 Agent 人格」"
             "（@agent 会话级切换，主 Agent 无法调用它），用户要求「创建子 agent」时禁止用它顶替；\n"
             "  新增/覆盖工具 → edit_agent_file 写当前工作流 tools.py；\n"
-            "  新增功能面板 → register_feature_panel（写入当前工作流 panel.py，成为扩展浮窗）；\n"
             "  自定义代码需第三方库 → set_feature_deps 声明依赖（requirements.txt），代码顶部可带第三方 import，加载时自动安装；\n"
             "  小 UI 调整 → Copilot 插件（create_copilot_plugin：按行号 insert_at / replace_lines 精确改界面模块）。\n"
             "派发子 agent 时（sub_<name> / dispatch_sub_agents / explore_project / search_large）："

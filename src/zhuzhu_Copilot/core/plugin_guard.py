@@ -403,7 +403,7 @@ def guard_source_package(pkg_dir, name: str, llm_review=None) -> tuple:
     所有待写入/待修改的代码内容，以及插件包自带的辅助文件。
 
     在 apply 之前调用；危险 → 强制删除整个插件包并提示（源码插件的全部价值
-    就是要写进源码树，任何危险内容都不可容忍）。
+    就是要落到插件源码层，任何危险内容都不可容忍）。
     """
     from zhuzhu_Copilot.core import plugin_source
     d = Path(pkg_dir)

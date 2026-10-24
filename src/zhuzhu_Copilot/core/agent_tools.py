@@ -1638,15 +1638,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_source_plugin",
-            "description": "用自然语言描述创建**源码级插件**（开发者向，基于源码开发）：AI 生成对应用源码"
-                           "（src/ 为根）的变更清单 source_ops——可新建源码文件（create_file）、追加到"
-                           "现有代码模块之后（append）、在锚点后插入（insert_after）、替换模块"
-                           "（replace_module）、整体替换文件（replace_file），支持一次修改多个关联模块"
-                           "并集成功能。插件包含名称/开发者/更新时间/图标等元数据。创建后**不会自动改动"
-                           "源码**：先 read_file 审查 source_ops.json，确认后调用 apply_source_plugin "
+            "description": "用自然语言描述创建**源码级插件**（开发者向）：AI 生成 source_ops "
+                           "变更清单——可新建功能模块（create_file）、在锚点或指定行之后追加"
+                           "（append/insert_after/insert_at）、按行号区间替换（replace_lines）、"
+                           "替换模块或整个文件（replace_module/replace_file），支持一次改多个功能模块"
+                           "并集成。插件包含名称/开发者/更新时间/图标等元数据。创建后**不会自动应用"
+                           "变更**：先 read_file 审查 source_ops.json，确认后调用 apply_source_plugin "
                            "应用。所有源码插件与应用动作都会经**插件校验系统**（静态危险规则 + LLM "
-                           "源码评审，内置唯一不可替换）检查，危险代码强制删除并提示用户。设计锚点前"
-                           "必须先 read_file 查看目标文件，锚点必须真实存在且唯一。",
+                           "源码评审，内置唯一不可替换）检查，危险代码强制删除并提示用户。设计定位前"
+                           "必须先 read_file 查看目标模块，锚点必须真实存在且唯一（也可用行号）。",
             "parameters": {"type": "object",
                            "properties": {
                                "description": {"type": "string",
@@ -1691,21 +1691,20 @@ TOOLS = [
         "function": {
             "name": "create_copilot_plugin",
             "description": "用自然语言描述创建**Copilot 插件**（应用级独立插件体系，与 Agent 插件"
-                           "分开、应用范围更广）：AI 生成 source_ops 源码变更清单——可把功能源码"
-                           "插入任何源码文件、新建源码文件、一次修改多个源码文件综合集成（改主题、"
-                           "自定义 Agent、自定义工具、自定义语言、增删替换任何模块），以及可选的"
-                           "copilot.json 应用扩展清单（主窗口页面/后台服务/托盘动作/快捷键），"
+                           "分开、应用范围更广）：AI 生成 source_ops 变更清单——可新建功能模块、"
+                           "把功能代码接入任何现有模块（按行号或锚点插入/替换），一次改多个模块综合"
+                           "集成（改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块），"
+                           "以及可选的 copilot.json 应用扩展清单（主窗口页面/后台服务/托盘动作/快捷键），"
                            "还可带 agent/ 子包附带 MCP 工具与技能。落盘后强制过插件校验系统"
                            "（静态规则 + LLM 源码评审，危险代码强制删除并提示）。"
-                           "生成后不会自动改动源码：先 read_file 审查 source_ops.json，"
+                           "生成后不会自动应用变更：先 read_file 审查 source_ops.json，"
                            "确认后调用 apply_copilot_plugin 应用（逐文件备份、编译检查、可回滚）。"
-                           "安装版同样支持：变更写源码覆盖层，重启生效。",
+                           "安装版同样支持：变更落到插件源码层（源码覆盖层），不碰安装目录，重启生效。",
             "parameters": {"type": "object",
                            "properties": {
                                "description": {"type": "string",
                                                "description": "用户自然语言描述：Copilot 插件要做什么、"
-                                                              "改哪些源码文件/新建什么模块/集成什么功能、"
-                                                              "要不要页面/服务/托盘/快捷键"}},
+                                                              "接入/新建哪些功能模块、要不要页面/服务/托盘/快捷键"}},
                            "required": ["description"]},
         },
     },
@@ -2124,7 +2123,7 @@ TOOLS = [
         "function": {
             "name": "set_generation_progress",
             "description": "实时上报当前**生成类任务**的进度（百分比 + 阶段说明），显示在面板状态行上，"
-                           "让用户看到进度而不是干等。用于 UI/UX 包生成、插件生成等耗时生成过程："
+                           "让用户看到进度而不是干等。用于插件生成等耗时生成过程："
                            "按阶段调用（如 5=分析需求、30=设计、70=写入文件、95=校验、100=完成）。"
                            "非生成类任务无需调用。",
             "parameters": {"type": "object",
@@ -2139,33 +2138,10 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "register_panel_btn",
-            "description": "注册/注销 AI 面板顶部按钮栏的自定义按钮（与 UI/UX 解耦：不管当前/以后切换任何"
-                           "UI/UX 包、甚至完全重构界面，按钮都保持可见且点击生效）。"
-                           "op=register 注册或更新（id 唯一；text 按钮文字；action 点击触发哪个内置功能；"
-                           "tooltip 可选悬浮提示）；op=unregister 注销（id）。"
-                           "action 可选：send(发送/停止当前任务)/new_session(新建对话)/settings(打开设置)/"
-                           "attach(选择附件)/optimize(优化提示词)/clear_chat(清空并删除当前对话)。",
-            "parameters": {"type": "object",
-                           "properties": {
-                               "op": {"type": "string",
-                                      "enum": ["register", "unregister"],
-                                      "description": "操作类型"},
-                               "id": {"type": "string", "description": "按钮唯一标识（英文/数字/下划线）"},
-                               "text": {"type": "string", "description": "按钮文字（默认用 id）"},
-                               "action": {"type": "string",
-                                          "description": "点击触发：send/new_session/settings/attach/optimize/clear_chat"},
-                               "tooltip": {"type": "string", "description": "可选悬浮提示"}},
-                           "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "inspect_customization",
             "description": "盘点当前全部可深度自定义维度（Cordis 理念：一切皆可替换/热插拔）："
                            "工作流（agent.py/llm.py/tools.py/skills/plugins/mcp.json）、技能、插件、"
-                           "面板自定义按钮、MCP 服务器。返回各维度现状与对应自定义工具，"
+                           "Copilot 插件（源码级）、MCP 服务器。返回各维度现状与对应自定义工具，"
                            "供引导用户选择要自定义/新增的功能（信息不足先用 ask_user 问清需求）。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -2414,29 +2390,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "register_feature_panel",
-            "description": "向当前工作流注册一个功能面板（小功能注入现有工作流，不改动面板外观）。"
-                           "生成 <当前工作流>/panel.py，扫描后成为可拖拽扩展浮窗。"
-                           "python 需提供 build_panel(owner)->QWidget 的完整代码（module 级暴露）："
-                           "TITLE（面板标题，缺省用 name）；WIDTH（默认 300）；HEIGHT（默认 240）；"
-                           "build_panel(owner) 返回一个 QWidget 控件（owner 为 AgentPanel 实例）。"
-                           "已存在同名面板会覆盖。所有控件请用纯黑+淡灰+白+深蓝极简风格，禁止 emoji。",
-            "parameters": {"type": "object",
-                           "properties": {
-                               "name": {"type": "string", "description": "面板唯一标识（字母/数字/下划线/中划线，英文）"},
-                               "title": {"type": "string", "description": "面板标题（显示在浮窗顶部，可中文）"},
-                               "width": {"type": "integer", "description": "面板固定宽度（默认 300）"},
-                               "height": {"type": "integer", "description": "面板初始高度（默认 240）"},
-                               "python": {"type": "string",
-                                          "description": "完整 panel.py 代码：TITLE/WIDTH/HEIGHT/build_panel(owner) 返回值"}},
-                           "required": ["name"]},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "set_feature_deps",
-            "description": "为当前工作流的 AI 自定义代码（tools.py/agent.py/llm.py/panel.py）声明并安装第三方依赖。"
+            "description": "为当前工作流的 AI 自定义代码（tools.py/agent.py/llm.py）声明并安装第三方依赖。"
                            "自定义代码允许顶部带第三方 import；先把需要的库写成 requirements.txt 声明，"
                            "加载自定义代码时才会自动安装。"
                            "op=declare 声明/合并依赖（deps=[""pandas"",""requests""]，[] 清空，写入 <当前工作流>/requirements.txt）；"
@@ -3036,8 +2991,6 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
             return _send_files_to_wechat(args)
         if name == "set_generation_progress":
             return _set_generation_progress(args, status_cb)
-        if name == "register_panel_btn":
-            return _manage_panel_btn(args)
         if name == "inspect_customization":
             return _inspect_customization()
         if name == "list_sub_agents":
@@ -3062,8 +3015,6 @@ def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
             return _list_agents_network(args)
         if name == "register_agent_network":
             return _register_agent_network(args)
-        if name == "register_feature_panel":
-            return _register_feature_panel(args)
         if name == "set_feature_deps":
             return _set_feature_deps(args)
         if name == "create_mcp":
@@ -5352,7 +5303,7 @@ def _revert_source_plugin(name: str) -> dict:
 
 def _create_copilot_plugin(description: str, status_cb=None) -> dict:
     """用自然语言描述创建 Copilot 插件（应用级独立体系）：AI 生成 source_ops
-    源码变更清单（插入任何源码文件/新建文件/多文件综合修改）与可选的 copilot.json
+    变更清单（新建功能模块/按行号或锚点接入现有模块/多模块综合修改）与可选的 copilot.json
     应用扩展清单（页面/服务/托盘/快捷键），落盘后强制过插件校验系统。"""
     from zhuzhu_Copilot.core import copilot_plugins
     ok, msg = copilot_plugins.create_from_nl(
@@ -5968,57 +5919,6 @@ def _delete_workflow(name: str) -> dict:
         return _blocked(f"[delete_workflow] {e}")
 
 
-# register_panel_btn 允许的 action → 说明（与面板 agent_panel._BTN_ACTIONS 的 action
-# 集合保持一致，新增 action 需同时更新两侧；引擎只把 action 名透传，由面板在主线程
-# 解析成已有方法，杜绝任意方法名调用。面板侧解析失败会跳过注册并告警，不会产生死按钮）
-_PANEL_BTN_ACTIONS = {
-    "send": "发送/停止当前任务",
-    "new_session": "新建对话",
-    "settings": "打开设置",
-    "attach": "选择附件",
-    "optimize": "优化提示词",
-    "clear_chat": "清空并删除当前对话",
-}
-
-
-def _manage_panel_btn(args: dict) -> dict:
-    """register_panel_btn 工具：注册/注销面板顶部按钮栏的自定义按钮。
-    仅返回待应用载荷（btn_reg_pending），由引擎回调解发到 UI 主线程真正注册。"""
-    try:
-        op = str(args.get("op") or "").strip().lower()
-        if not op:
-            return _blocked("[register_panel_btn] 请补充 op 参数：op=register 或 op=unregister。"
-                            "register 需 id/action/text/tooltip（action 可选：send/new_session/"
-                            "settings/attach/optimize/clear_chat），unregister 需 id")
-        if op in ("register", "update"):
-            bid = str(args.get("id") or "").strip()
-            if not bid:
-                return _blocked("[register_panel_btn] register 需要 id 参数（英文/数字/下划线）")
-            action = str(args.get("action") or "").strip()
-            if not action or action not in _PANEL_BTN_ACTIONS:
-                return _blocked("[register_panel_btn] action 必须是以下之一："
-                                + "、".join(f"{k}({v})" for k, v in _PANEL_BTN_ACTIONS.items()))
-            return {
-                "text": (f"面板按钮「{bid or action}」已注册：点击触发「{_PANEL_BTN_ACTIONS[action]}」。"
-                         "按钮显示在面板顶部按钮栏，与 UI/UX 解耦，切换/重构界面仍保持可见可用。"),
-                "images": [],
-                "btn_reg_pending": {"op": "register", "id": bid,
-                                    "text": str(args.get("text") or bid),
-                                    "action": action,
-                                    "tooltip": str(args.get("tooltip") or "")},
-            }
-        if op == "unregister":
-            bid = str(args.get("id") or "").strip()
-            if not bid:
-                return _blocked("[register_panel_btn] unregister 需要 id 参数")
-            return {"text": f"面板按钮「{bid}」已注销",
-                    "images": [],
-                    "btn_reg_pending": {"op": "unregister", "id": bid}}
-        return _blocked("[register_panel_btn] 未知 op，可选 register/unregister")
-    except Exception as e:
-        return _blocked(f"[register_panel_btn] {e}")
-
-
 def _inspect_customization() -> dict:
     """盘点当前全部可深度自定义维度（Cordis：一切皆可替换/热插拔），
     返回各维度现状与对应自定义工具，供 agent 引导用户选择自定义/新增功能。"""
@@ -6077,10 +5977,7 @@ def _inspect_customization() -> dict:
                          "整段替换(replace_module)，可改主题/界面/语言/任何模块，改错一键回滚")
         except Exception as e:
             lines.append(f"## Copilot 插件（读取失败: {e}）")
-        # 5) 面板按钮
-        lines.append("## 面板自定义按钮（恒显示）")
-        lines.append("  工具: register_panel_btn（register/unregister）—— 注册顶部按钮栏按钮")
-        # 6) MCP 服务器
+        # 5) MCP 服务器
         try:
             servers = agent_skills.load_mcp_servers()
             m_lines = [f"{s.get('name')}({s.get('type', '?')})" for s in servers if s.get("name")]
@@ -6088,7 +5985,7 @@ def _inspect_customization() -> dict:
             lines.append("  " + ("；".join(m_lines) if m_lines else "暂无"))
         except Exception as e:
             lines.append(f"## MCP 服务器（读取失败: {e}）")
-        # 7) 工作流子 Agent（小功能注入现有工作流的落地通道）
+        # 6) 工作流子 Agent（小功能注入现有工作流的落地通道）
         try:
             subs = _sub("agent_subagent").registered_subagents("")
             s_lines = [f"{s.get('name')}({s.get('description') or '-'})" for s in subs] \
@@ -6100,19 +5997,10 @@ def _inspect_customization() -> dict:
             lines.append("  工具: list_sub_agents / register_sub_agent（注册进当前工作流，不新建工作流）")
         except Exception as e:
             lines.append(f"## 子 Agent（读取失败: {e}）")
-        # 8) 扩展功能面板（小 UI 面板注入现有工作流的落地通道）
-        try:
-            names = [p["name"] for p in _sub("agent_panels").list_panels()] \
-                if _sub("agent_panels").list_panels() else []
-            lines.append(f"## 扩展功能面板（{len(names)} 个）")
-            lines.append("  " + ("，".join(names) if names else "暂无（用 register_feature_panel 注入当前工作流）"))
-            lines.append("  工具: register_feature_panel（写入当前工作流 panel.py，成为扩展浮窗）")
-        except Exception as e:
-            lines.append(f"## 扩展功能面板（读取失败: {e}）")
         lines.append("")
-        lines.append("优先级（必须遵守）：小功能的改动——新增功能面板/子 agent/工具/小 UI/小钩子——"
-                     "一律注入当前工作流（register_sub_agent / register_feature_panel / "
-                     "edit_agent_file tools.py），界面类改动走 Copilot 插件源码级 op；"
+        lines.append("优先级（必须遵守）：小功能的改动——新增子 agent/工具/小钩子——"
+                     "一律注入当前工作流（register_sub_agent / edit_agent_file tools.py），"
+                     "界面与模块类改动走 Copilot 插件源码级 op；"
                      "仅大而独立的功能才新建工作流或 Copilot 插件。")
         lines.append("引导：先用 ask_user 问清用户想自定义/新增的功能，再按上述维度调用对应工具落地，"
                      "创建后提示用户生效方式（工作流热插拔、插件/技能即时登记、源码级变更需重启）。")
@@ -6416,54 +6304,6 @@ def _shared_context(args: dict) -> dict:
                 "images": []}
     except Exception as e:
         return _blocked(f"[shared_context] {e}")
-
-
-def _register_feature_panel(args: dict) -> dict:
-    """register_feature_panel：把功能面板 panel.py 写入当前工作流（不新建 UI/UX 包）。
-    写好文件后可被 agent_panels.scan_panels 自动发现；登记为扩展面板，
-    由引擎在任务结束后通知 UI 重建扩展面板浮窗。"""
-    try:
-        from zhuzhu_Copilot.core import agent_workflow
-        name = str(args.get("name") or "").strip()
-        if any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-               for c in name):
-            return _blocked("[register_feature_panel] 面板名非法（仅字母/数字/下划线/中划线，英文）")
-        wf = agent_workflow.active_workflow() or agent_workflow.DEFAULT_WORKFLOW
-        try:
-            d = agent_workflow.workflow_dir(wf)
-        except Exception as e:
-            return _blocked(f"[register_feature_panel] 无法定位当前工作流: {e}")
-        if not d.is_dir():
-            return _blocked("[register_feature_panel] 当前工作流目录不可用")
-        python = str(args.get("python") or "").strip()
-        if not python:
-            return _blocked("[register_feature_panel] 缺少 python（build_panel(owner) 代码）")
-        if "build_panel" not in python:
-            return _blocked("[register_feature_panel] python 需定义 build_panel(owner) 函数并返回一个 QWidget")
-        title = str(args.get("title") or "").strip()
-        title_line = (f'TITLE = "{title}"\n' if title else "")
-        width = int(args.get("width") or 300)
-        height = int(args.get("height") or 240)
-        body = (
-            f'# 功能面板「{name}」——注册进工作流「{wf}」的扩展面板浮窗。\n'
-            f'# 由 register_feature_panel 生成；面板名 {name}，源 {wf}。\n'
-            + title_line
-            + f'WIDTH = {max(120, width)}\n'
-            + f'HEIGHT = {max(80, height)}\n'
-            + "\n"
-            + python.rstrip() + "\n")
-        panel_path = d / "panel.py"
-        try:
-            panel_path.write_text(body, encoding="utf-8")
-        except Exception as e:
-            return _blocked(f"[register_feature_panel] 写入失败: {e}")
-        return {"text": f"功能面板「{name}」已写入工作流「{wf}」的 panel.py（扩展浮窗）。"
-                        "任务结束后自动扫描挂载，或让我立即重建界面查看。"
-                        "提示：该面板已注入当前工作流，未新建插件包。"
-                        "若面板代码含第三方 import，请用 set_feature_deps 声明并安装依赖。",
-                "images": []}
-    except Exception as e:
-        return _blocked(f"[register_feature_panel] {e}")
 
 
 def _set_feature_deps(args: dict) -> dict:

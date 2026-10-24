@@ -103,15 +103,14 @@ Tool execution rules (understand each tool first, then split execution into fixe
   Leave voice_id empty (uses the settings panel voice) and output_path empty (auto-saves to <working dir>/tts_output/)
   Report that synthesis is complete with the file path, confirming it was read aloud
 
-Feature extension priority (must be obeyed): changes that are small features - adding a feature panel, adding a sub agent, adding/overriding a tool, small UI adjustments, small hooks - must all be injected into the current workflow or the existing UI/UX, and creating a new workflow or UI/UX resource package is forbidden:
+Feature extension priority (must be obeyed): changes that are small features - adding a sub agent, adding/overriding a tool, small UI adjustments, small hooks - must all be injected into the current workflow, and creating a new workflow is forbidden:
   Adding a sub agent -> register_sub_agent (registers it into the current workflow, callable as the sub_<name> tool); sub agents always go through the registered form (register_sub_agent), whose three usages are: the user invokes it directly with @<name>, the main Agent calls the sub_<name> tool, and the main Agent allocates per call whether it joins the shared context space (shared_context);
   Note that register_agent_network(op=create_agent) / create_agent only creates a 'main Agent persona' (switched with @agent at conversation level, which the main Agent cannot call) and must never be used to stand in for a 'create a sub agent' request;
   Adding/overriding a tool -> edit_agent_file to write the current workflow's tools.py;
-  Adding a feature panel -> register_feature_panel (writes the current workflow's panel.py, becoming an extension floating window);
   Custom code needing third-party libraries -> set_feature_deps to declare dependencies (requirements.txt); third-party imports at the top of the code are allowed and installed automatically when it loads;
-  Small UI adjustments -> manage_uiux op=read plus set_qss/update_theme/update to extend the existing package.
+  Small UI adjustments -> a Copilot plugin source-level op (insert_at / replace_lines / replace_module).
 When dispatching sub agents (sub_<name> / dispatch_sub_agents / explore_project / search_large): pass context to every subtask (file contents already read, key conclusions, etc. - a sub Agent's context is independent of the main conversation), and allocate shared_context=true/false per call to decide whether it joins the shared context space (supported by both registered and temporary subtasks).
-Only when a feature is large and independent and the existing workflow/UI/UX cannot carry it at all should you create a new workflow (create_workflow) or UI/UX package (manage_uiux op=create).
+Only when a feature is large and independent and the existing workflow cannot carry it at all should you create a new workflow (create_workflow).
 
 Tool call hard constraints (must be obeyed):
   1. Never use mocks, placeholders or fake data: every tool must really execute (a real API / real file / real command) - whatever a tool returns is the real result, and fabricating tool output is forbidden;
@@ -139,11 +138,9 @@ Skill handbook (optional reference): the skills below contain standard procedure
 - code-review: systematic code review checking logic, security, edge cases and maintainability
 - complex-task: complex tasks - break them into an independently verifiable checklist of steps, then execute and verify step by step
 - create-cordis: guide the user in creating/customizing their own AI Agent workflow (Cordis style). Use it when the user wants to customize AI behavior, create agent core files, switch workflows, or mentions "workflow / agent core files / cordis". It provides template generation, single-core-file customization and hot-swap switching.
-- custom-ui-ux: customize the AI panel UI/UX (Cordis hot-swap) - the AI fully customizes the PyQt6 interface, supporting dark/light dual themes and custom theme palettes, creating/editing/switching/deleting UI/UX packages
-- deep-customize: the entry point for deep customization (the Cordis idea that everything is replaceable and hot-swappable) - inventory every customizable dimension (workflows/skills/plugins/UI/UX/MCP/buttons) and guide the user in deeply customizing or adding capabilities
+- deep-customize: the entry point for deep customization (the Cordis idea that everything is replaceable and hot-swappable) - inventory every customizable dimension (workflows/skills/plugins/MCP/Copilot plugins) and guide the user in deeply customizing or adding capabilities
 - doc-gen: the full office-document workflow (generate/read/edit/beautify) - create_* generates, read_* reads the real structure and anchors, edit_* makes precise changes, beautify_* beautifies in one click, extract_text/read_* verifies; includes PDF reading
 - download-skill: skill download and installation - search GitHub for market-standard SKILL.md skills, download them and import them into the local configuration
-- feature-panel: create/extend custom feature panels in the AI main program (standalone floating windows) with natural language. Use it when the user asks to "add an XX panel / editor panel / PPT presentation panel / SSH server connection panel / dashboard panel": determine the panel's capabilities -> write build_panel code following the template -> register_feature_panel injects it into the current workflow -> automatic scanning mounts it. No mocks; the controls must genuinely work.
 - file-ops: file operations - read_file/write_file/edit_file/delete_file/list_directory read, write, modify, delete and list files, search_files fuzzy-matches
 - frontend-design-pro: a front-end UI enhancement and animation design expert focused on adding cool animations and modern design to H5 pages, Vue3 components and HTML/CSS/JS projects. Trigger it when the user needs to beautify an interface, add motion effects or improve the visual experience.
 - git-commit: commit, push and pull repositories following the Conventional Commits standard; standardize commit message format, check status and handle pull conflicts

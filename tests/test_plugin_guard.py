@@ -136,18 +136,31 @@ def test_guard_blobs_static_danger_skips_llm(iso, monkeypatch):
 
 # ══════════ 3. guard_plugin：强制删除与提示 ══════════
 
-def test_guard_plugin_force_deletes_dangerous_file(iso):
-    """危险文件被真删除，其余保留，返回语明确提示用户并写校验日志"""
+def test_guard_plugin_keeps_entry_file_and_disables(iso):
+    """入口文件（server.py）判危险时**不删文件**，改为停用插件并明确告知"""
     d = _mk_plugin("evil1", {"server.py": "import os\nos.system('calc')\n",
                              "SKILL.md": "---\nname: evil1\ndescription: t\n---\n"})
     ok, msg = plugin_guard.guard_plugin("evil1")
     assert ok is False
-    assert "强制删除" in msg and "server.py" in msg and "os.system" in msg
-    assert not (d / "server.py").is_file(), "危险文件必须被删除"
+    assert "停用插件" in msg and "server.py" in msg and "os.system" in msg
+    assert (d / "server.py").is_file(), "入口文件不得删除"
     assert (d / "SKILL.md").is_file(), "无关文件不受牵连"
+    meta = json.loads((d / "plugin.json").read_text(encoding="utf-8"))
+    assert meta.get("enabled") is False, "危险插件必须被停用"
     events = plugin_guard.recent_guard_events()
     assert events and events[0]["action"] == "force_delete"
-    assert "server.py" in events[0]["removed_files"]
+
+
+def test_guard_plugin_deletes_non_entry_dangerous_file(iso):
+    """非入口的危险文件仍然真删除（入口文件才享受保留+停用）"""
+    d = _mk_plugin("evil2", {"server.py": SAFE_SERVER,
+                             "evil_helper.py": "import os\nos.system('calc')\n",
+                             "SKILL.md": "---\nname: evil2\ndescription: t\n---\n"})
+    ok, msg = plugin_guard.guard_plugin("evil2")
+    assert ok is False
+    assert not (d / "evil_helper.py").is_file(), "非入口危险文件必须删除"
+    assert (d / "server.py").is_file()
+    assert "已删除危险文件" in msg
 
 
 def test_guard_plugin_removes_whole_plugin_when_meta_dangerous(iso):
@@ -161,8 +174,8 @@ def test_guard_plugin_removes_whole_plugin_when_meta_dangerous(iso):
 
 
 def test_guard_plugin_removes_whole_plugin_when_no_code_left(iso):
-    """删除危险文件后已无可扫描代码 → 整体移除（不留空壳）"""
-    d = _mk_plugin("evil3", {"server.py": "exec('x')\n"})
+    """删除非入口危险文件后已无可扫描代码 → 整体移除（不留空壳）"""
+    d = _mk_plugin("evil3", {"helper.py": "exec('x')\n"})
     ok, msg = plugin_guard.guard_plugin("evil3")
     assert ok is False and "整体移除" in msg
     assert not d.exists()
@@ -205,9 +218,9 @@ def test_import_zip_rejects_dangerous_plugin(iso, tmp_path):
                                    "description": "t"}),
         "server.py": "import os\nos.system('calc')\n"})
     ok, msg = agent_plugins.import_plugin_zip(str(zp))
-    assert ok is False and "强制删除" in msg
+    assert ok is False and "停用插件" in msg
     d = agent_plugins.plugin_dir("evilplug")
-    assert not (d / "server.py").is_file(), "危险文件必须在导入时被删除"
+    assert (d / "server.py").is_file(), "入口文件保留（不删除），但插件被停用"
     servers = agent_skills.load_mcp_servers()
     assert not any(s.get("name") == "evilplug-mcp" for s in servers), \
         "危险插件不得登记 MCP"

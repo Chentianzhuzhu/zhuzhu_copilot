@@ -81,7 +81,7 @@ a = Analysis(
            + _runtime_datas + _d3d_datas + _seed_datas + _src_snapshot_datas,
     hiddenimports=[
         # agent_tools 通过 importlib 动态导入 core 子模块（agent_find/agent_tts/
-        # agent_subagent/agent_panels/agent_deps 等），PyInstaller 静态分析发现不了，
+        # agent_subagent/agent_deps 等），PyInstaller 静态分析发现不了，
         # 必须全量收集 core 包，否则打包后运行时报 ModuleNotFoundError（如 search_files
         # 报 No module named 'zhuzhu_Copilot.core.agent_find'）。
         *collect_submodules('zhuzhu_Copilot.core'),
