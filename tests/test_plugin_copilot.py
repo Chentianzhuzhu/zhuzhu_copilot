@@ -298,16 +298,8 @@ def test_overlay_import_hook_subprocess(tmp_path):
                         "zhuzhu_Copilot/core/agent_tools.py":
                         ['"name": "check_python_syntax"',
                          'if name == "check_python_syntax":']}),
-    # 综合型：新建模块 + 按行号插入工具 + 替换引擎函数
-    ("agent-scorecard", {"zhuzhu_Copilot/core/agent_scorecard.py":
-                         ["def note_tool(", "def feedback_text(",
-                          "def build_dialog("],
-                         "zhuzhu_Copilot/core/agent_tools.py":
-                         ['"name": "score_last_task"',
-                          'if name == "score_last_task":'],
-                         "zhuzhu_Copilot/core/agent_engine.py":
-                         ["agent_scorecard.note_tool(name)"]}),
     # 源码级「替换」：把 agent_skills 的 return parts 换成插件代码
+    # （agent-scorecard 已改为纯运行时插件，不产生源码变更，见 test_scorecard_example）
     ("prompt-optimizer", {"zhuzhu_Copilot/core/prompt_optimizer.py":
                           ["PROMPT_DISCIPLINE = (", "def optimize("],
                           "zhuzhu_Copilot/core/agent_skills.py":
@@ -333,6 +325,73 @@ def test_examples_apply_and_revert(name, rel_checks, frozen, iso):
     assert ok, msg
     for rel in rel_checks:
         assert not (ov / rel).exists(), f"{rel} 回滚后应回到打包原版"
+
+
+def test_scorecard_example_is_runtime_only():
+    """agent-scorecard 是纯运行时插件：不写源码、start/stop 完全可逆。
+
+    回归（用户反馈「启用后完全没反应」）：它原先靠 source_ops 往应用源码里新建
+    模块 + 改工具表 + 替换引擎函数，服务又反过来 import 那个新模块。打包版没有
+    可写源码 → 应用失败 → 服务静默降级 → 评分窗与工具全部消失。
+    """
+    import importlib.util
+
+    from zhuzhu_Copilot.core import agent_engine, agent_tools
+
+    d = EXAMPLES / "agent-scorecard"
+    assert not (d / "source_ops.json").exists(), "评分插件不应再产生源码变更"
+    man = copilot_plugins.load_copilot_manifest(d)
+    assert [s["id"] for s in man["services"]] == ["agent-scorecard"]
+
+    spec = importlib.util.spec_from_file_location(
+        "scorecard_example_service", d / "service" / "scorecard_service.py")
+    svc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(svc)
+
+    orig_exec = agent_tools.execute_tool
+    orig_run = agent_engine.AgentEngine.run
+    n_tools = len(agent_tools.TOOLS)
+    svc.start()
+    try:
+        assert any(t.get("function", {}).get("name") == "score_last_task"
+                   for t in agent_tools.TOOLS)
+        names = {t.get("function", {}).get("name")
+                 for t in agent_tools.tool_schemas()}
+        assert "score_last_task" in names, "注入的工具 schema 必须对下一轮请求可见"
+        out = agent_tools.execute_tool("score_last_task", {})
+        assert "执行时间" in out["text"]
+
+        svc.begin(None)
+        svc.begin(None)                  # 子 Agent 嵌套：不重置主任务统计
+        svc.note_tool("read_file")
+        svc.note_tool("read_file")
+        svc.note_tool("sub_worker")
+        assert svc.end(None) is None, "嵌套层结束时不应弹评分窗"
+        snap = svc.end(None)
+        assert snap is not None and snap["calls"] == 3
+        assert ("read_file", 2) in snap["groups"]["tool"]
+        assert ("sub_worker", 1) in snap["groups"]["agent"]
+        assert "工具调用：3 次" in svc.format_metrics(snap)
+        assert "自我反省" in svc.feedback_text(snap, 5, "很好")
+        assert svc.last_snapshot()["calls"] == 3
+    finally:
+        svc.stop()
+    assert agent_tools.execute_tool is orig_exec
+    assert agent_engine.AgentEngine.run is orig_run
+    assert len(agent_tools.TOOLS) == n_tools
+    assert "score_last_task" not in {t.get("function", {}).get("name")
+                                     for t in agent_tools.tool_schemas()}
+
+
+def test_import_scorecard_zip_is_runtime_only(iso, tmp_path):
+    """评分插件打包成 zip 导入后：只有 services，没有源码变更（打包版可直接用）。"""
+    zp = _zip_dir(EXAMPLES / "agent-scorecard", tmp_path / "scorecard.zip")
+    ok, msg = copilot_plugins.import_plugin_zip(str(zp))
+    assert ok, msg
+    p = copilot_plugins.get_plugin("agent-scorecard")
+    assert p["manifest_ext"]["services"] == 1
+    assert int(p.get("source_ops") or 0) == 0
+    assert not p.get("source_applied")
 
 
 def test_example_manifest_and_package_files(iso):

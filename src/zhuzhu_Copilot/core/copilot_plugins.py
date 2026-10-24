@@ -639,14 +639,19 @@ def import_plugin_zip(zip_path: str) -> tuple:
     n_ops = len(source_ops(name))
     n_files = len({str(op.get("path") or "") for op in source_ops(name)})
     ext = _manifest_summary(man)
-    msg = f"已导入 Copilot 插件「{name}」（{n_files} 个插件文件、{n_ops} 条变更）"
+    msg = f"已导入 Copilot 插件「{name}」"
+    if n_ops:
+        msg += f"（{n_files} 个源码文件、{n_ops} 条变更）"
     if any(ext.values()):
         msg += ("；应用扩展：" +
                 "、".join(f"{k}×{v}" for k, v in ext.items() if v))
     if amsg:
         msg += f"；{amsg}"
-    msg += ("。源码变更尚未应用——确认后调用 apply_copilot_plugin 应用"
-            "（逐文件备份、编译检查，可 revert_copilot_plugin 回滚）")
+    if n_ops:
+        msg += ("。变更尚未写入——确认后调用 apply_copilot_plugin 写入转译层"
+                "（不修改应用源码文件；逐文件备份、编译检查，可 revert_copilot_plugin 回滚）")
+    else:
+        msg += "。该插件只含运行时扩展，启用后立即生效（无需写入源码）"
     return True, msg
 
 
@@ -853,7 +858,7 @@ def create_from_nl(description: str, on_status=None) -> tuple:
         msg += ("\n应用扩展：" +
                 "、".join(f"{k}×{v}" for k, v in ext.items() if v))
     msg += (f"\n变更清单：{d / 'source_ops.json'}\n"
-            "**尚未应用变更**——确认无误后调用 apply_copilot_plugin 应用"
-            "（逐文件备份、编译检查，可 revert_copilot_plugin 回滚）；"
+            "**尚未写入**——确认无误后调用 apply_copilot_plugin 写入转译层"
+            "（不修改应用源码文件；逐文件备份、编译检查，可 revert_copilot_plugin 回滚）；"
             "也可以先 read_file 审查清单后再决定。")
     return True, msg

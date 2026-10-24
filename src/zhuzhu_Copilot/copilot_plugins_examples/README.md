@@ -19,8 +19,11 @@ z.close()"
 | `tray-quick-note` | **应用扩展**：托盘动作 + 后台服务，模块随插件包分发、主窗口启动时动态加载 | 无源码变更，靠 `copilot.json` 声明 |
 | `py-syntax-lint` | **Python 语法高亮与纠错**（源码级「插入」）：新模块给聊天代码块着色，并新增 `check_python_syntax` 工具定位语法错误（只解析不执行）。原有代码行**一行未改**——只在模块尾部追加了一个包装函数重绑定 `_md_to_html` | `create_file` + 3×`insert_after`（跨 3 文件） |
 | `prompt-optimizer` | **提示词优化**（源码级「替换」）：新增 `optimize_prompt` 工具把粗略提示词改写成六要素结构化提示词；并**替换** `agent_skills._base_prompt_parts` 的末行 `return parts`，把「提示词优化纪律」追加进系统提示词尾部 | `create_file` + `replace_module` + 2×`insert_after`（跨 3 文件） |
+| `agent-scorecard` | **Agent 能力评分**（**纯运行时**，无源码变更）：包装 `execute_tool` / `AgentEngine.run` 采集耗时、工具/MCP/技能/子 Agent 调用与 token，任务结束弹评分窗，评分回传 Agent 并提示自我反省；运行时注入 `score_last_task` 工具 | 无源码变更，靠 `copilot.json` 服务 + 运行时挂钩 |
 
-| `agent-scorecard` | **Agent 能力评分**（综合型：三种形式齐用）：新建评分模块 + **按行号插入**工具 `score_last_task` + **替换**引擎的 `_tool_wait_timeout` 记录每次工具调用 + `copilot.json` 服务在任务结束时弹评分窗；用户评分后自动回传 Agent 并提示自我反省 | `create_file` + `insert_at`（按行号）+ `insert_after` + `replace_module`（跨 3 文件 + 应用服务） |
+> 源码级变更（`source_ops.json`）一律写入**转译层**（用户数据目录下的源码覆盖层），
+> 不直接改写应用源码文件：打包版安装目录只读、源码版也不污染工作区；重启应用后生效。
+> 不需要写源码的插件（如 `agent-scorecard` / `tray-quick-note`）启用即生效。
 
 > 「插入」与「替换」是源码级定制的两条路：
 > **插入**（`append` / `insert_after`）不改动任何已有代码行，风险最低，适合加能力、包装函数、接线；

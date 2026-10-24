@@ -34,16 +34,29 @@ def _existing():
 
 @pytest.fixture()
 def iso(tmp_path, monkeypatch):
-    """隔离插件目录/技能配置；把「应用源码根」指到临时目录；LLM 替身默认安全"""
+    """隔离插件目录/技能配置；把「应用源码根」指到临时目录；LLM 替身默认安全
+
+    转译层根也指到同一个临时目录：本文件只验证 op 的寻址/改写/回滚语义，
+    覆盖层与源目录分离时的行为由 test_plugin_copilot 的 frozen 夹具覆盖。
+    """
     monkeypatch.setattr(agent_plugins, "PLUGINS_DIR", tmp_path / "plugins")
     monkeypatch.setattr(agent_skills, "CONFIG_DIR", tmp_path / "agent")
     src = tmp_path / "src"
     (src / "zhuzhu_Copilot" / "core").mkdir(parents=True)
     monkeypatch.setattr(plugin_source, "app_source_root", lambda: src)
+    monkeypatch.setattr(plugin_source, "overlay_root", lambda: src)
     monkeypatch.setattr(plugin_guard, "_llm_review",
                         lambda blobs: {"verdict": "safe", "reason": "测试替身：安全"})
     agent_skills._MCP_CACHE["data"] = None
     return src
+
+
+def test_apply_root_never_writes_app_source(monkeypatch, tmp_path):
+    """源码级插件的唯一写入根必须是转译层（源码运行也不直接改源码文件）。"""
+    overlay = tmp_path / "overlay"
+    monkeypatch.setattr(plugin_source, "overlay_root", lambda: overlay)
+    root, mode = plugin_source.apply_root()
+    assert mode == "overlay" and root == overlay
 
 
 def _target(src, rel="zhuzhu_Copilot/core/agent_tools.py", text=TOOLS_PY):

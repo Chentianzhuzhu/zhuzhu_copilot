@@ -1,4 +1,4 @@
-"""源码变更引擎：把插件包的源码变更清单（source_ops）应用到插件源码层
+"""源码变更引擎：把插件包的变更清单（source_ops）写入应用**转译层**
 
 面向**源码级插件**（Agent 源码插件与 Copilot 插件共用本引擎）：开发者基于源码
 开发，插件包内 source_ops.json（或 plugin.json 的 "source_ops" 字段）描述对应用
@@ -25,11 +25,12 @@
   · applied.json 记录已应用的变更清单，revert 时据此卸载回滚；
     卸载时文件已被用户改动的（哈希不符）跳过该文件并注明，不覆盖用户劳动成果。
 
-**打包（frozen）形态同样支持**：安装目录不含源码，变更改写入用户数据目录的
-「源码覆盖层」~/.zhuzhu_Copilot/source_overlay/（目录结构镜像源码相对路径），
-由 src/_copilot_overlay_hook.py 的导入钩子让 zhuzhu_Copilot.* 的导入优先命中
-覆盖层——源码级插件因此可以改主题、自定义 Agent、自定义工具、自定义语言、
-增删替换任何模块，安装版与源码版行为一致（应用后重启生效）。
+**写入目标固定为转译层（与运行形态无关）**：源码运行与 exe 打包运行都不改应用
+源码文件，变更统一写入用户数据目录的「转译层」
+~/.zhuzhu_Copilot/source_overlay/（目录结构镜像源码相对路径），由
+src/_copilot_overlay_hook.py 的导入钩子让 zhuzhu_Copilot.* 的导入优先命中转译层
+——源码级插件因此可以改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何
+模块，安装版与源码版行为一致（写入后重启生效）。
 
 对外入口（包目录级，Agent / Copilot 两套插件体系通用）：
   load_source_ops_from(pkg_dir)      读取插件包的变更清单
@@ -75,14 +76,14 @@ _OP_ADDRESS = {
 
 
 def app_source_root():
-    """应用源码根目录（src/）；打包形态返回 None（此时走源码覆盖层）。"""
+    """应用原版源码根目录（src/，仅用于读取原版内容作基线）；打包形态返回 None。"""
     if getattr(sys, "frozen", False):
         return None
     return Path(__file__).resolve().parents[2]
 
 
 def overlay_root() -> Path:
-    """源码覆盖层根目录（打包形态下源码变更的落地处）。
+    """转译层根目录（所有源码级插件变更的唯一落地处）。
 
     与 src/_copilot_overlay_hook.py 的 overlay_dir() 同源；该模块在导入链最前端
     （main.py 里先于包导入安装钩子），此处经 import 取真值，失败时回落同规则计算。
@@ -96,14 +97,14 @@ def overlay_root() -> Path:
 
 
 def apply_root() -> tuple:
-    """源码变更的写入根目录与模式。
+    """源码级插件变更的写入根与模式：**始终为转译层**（overlay）。
 
-    返回 (root, mode)：mode = "source"（开发运行，落点为 src/）|
-    "overlay"（安装版，落点为用户数据目录的插件源码层，导入钩子负责优先加载）。
+    无论是源码运行还是 exe 打包运行，都不直接写入应用源码文件：
+      · 打包安装目录通常不可写（Program Files），直写源码必然失败；
+      · 源码运行直写会让插件变更与仓库工作区纠缠，回滚/升级都容易出错。
+    统一写入用户数据目录的转译层后，两种形态行为一致，导入钩子优先加载覆盖层，
+    回滚只需清理转译层（详见 _copilot_overlay_hook.py）。
     """
-    src = app_source_root()
-    if src is not None:
-        return src, "source"
     return overlay_root(), "overlay"
 
 
@@ -412,11 +413,11 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
     备份 → 逐条应用 → 全部 py_compile（任一失败整体回滚）→ 写 applied.json
     清单。返回 (ok, message)。
 
-    写入目标由运行形态决定：开发运行落点为 src/；安装版落点为用户数据目录的
-    插件源码层（导入钩子优先加载，重启生效）——安装版同样支持源码级插件。
+    写入目标固定为转译层（用户数据目录下的源码覆盖层）：打包版与源码版一致，
+    都不直接改写应用源码文件；导入钩子优先加载覆盖层，重启后生效。
     """
     root, mode = apply_root()
-    orig_root = app_source_root() if mode == "overlay" else None
+    orig_root = app_source_root()   # 打包态为 None → _apply_op 回落打包内源码快照
     d = Path(pkg_dir)
     meta = _pkg_meta(d)
     if not d.is_dir():
@@ -486,12 +487,8 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
 
     lines = [f"源码插件「{name}」已应用：{len(ops)} 条变更、{len(done)} 个文件。"]
     lines += [f"  · {r['action']} {r['path']}" for r in done]
-    if mode == "overlay":
-        lines.append(f"变更已写入源码覆盖层：{root}")
-        lines.append("重启应用后生效（导入钩子会优先加载覆盖层模块）。")
-    else:
-        lines.append("全部文件编译检查通过；备份在插件目录 backups/，"
-                     "可用 revert 卸载回滚。")
+    lines.append(f"变更已写入转译层：{root}")
+    lines.append("重启应用后生效（导入钩子会优先加载转译层模块，应用源码文件保持不变）。")
     return True, "\n".join(lines)
 
 
@@ -512,10 +509,10 @@ def _rollback(root: Path, done: list) -> None:
 def revert_source_ops(pkg_dir, name: str) -> tuple:
     """卸载回滚：按 applied.json 还原（创建的文件删除、修改的文件还原备份）。
 
-    覆盖层模式下同样适用（root = 源码覆盖层）。应用后已被用户手动改过的文件
-    （内容哈希与记录不符）跳过并注明，不覆盖。
+    root = 转译层（与写入时一致）。写入后已被用户手动改过的文件（内容哈希与记录
+    不符）跳过并注明，不覆盖。
     """
-    root, mode = apply_root()
+    root, _mode = apply_root()
     d = Path(pkg_dir)
     mf = d / "applied.json"
     if not mf.is_file():
@@ -547,15 +544,13 @@ def revert_source_ops(pkg_dir, name: str) -> tuple:
                 skipped.append(f"{rec['path']}（缺少备份）")
                 continue
             restored_bytes = bak.read_bytes()
-            if mode == "overlay":
-                # 覆盖层模式：还原内容若与打包原版一致，直接删掉覆盖层副本，
-                # 让模块回落原版（覆盖层不留残骸）；不一致（此前被其他插件
-                # 改过）才把备份内容写回去。
-                orig = _packaged_file(rec["path"])
-                if orig is not None and orig.read_bytes() == restored_bytes:
-                    target.unlink()
-                    restored.append(rec["path"])
-                    continue
+            # 还原内容若与应用原版一致，直接删掉转译层副本，让模块回落原版
+            # （转译层不留残骸）；不一致（此前被其他插件改过）才把备份内容写回去。
+            orig = _packaged_file(rec["path"])
+            if orig is not None and orig.read_bytes() == restored_bytes:
+                target.unlink()
+                restored.append(rec["path"])
+                continue
             target.write_bytes(restored_bytes)
             restored.append(rec["path"])
         except OSError as e:

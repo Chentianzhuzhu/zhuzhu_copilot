@@ -25,6 +25,7 @@ _KNOWN_FALSE_POSITIVES = {
     "Optional": "第 6173 行 `self._turn: Optional[QWidget]` 注解（typing 名未显式导入）",
     "_wf": "lambda 形参（默认参数写法，AST 未计入 defined）",
     "im": "lambda 形参",
+    "pr": "lambda 形参（会员购买按钮 `lambda _checked=False, pr=prod`）",
     "__file__": "模块内置名（部分 builtins 判定未覆盖）",
 }
 

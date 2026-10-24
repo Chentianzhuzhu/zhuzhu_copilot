@@ -1697,9 +1697,10 @@ TOOLS = [
                            "以及可选的 copilot.json 应用扩展清单（主窗口页面/后台服务/托盘动作/快捷键），"
                            "还可带 agent/ 子包附带 MCP 工具与技能。落盘后强制过插件校验系统"
                            "（静态规则 + LLM 源码评审，危险代码强制删除并提示）。"
-                           "生成后不会自动应用变更：先 read_file 审查 source_ops.json，"
-                           "确认后调用 apply_copilot_plugin 应用（逐文件备份、编译检查、可回滚）。"
-                           "安装版同样支持：变更落到插件源码层（源码覆盖层），不碰安装目录，重启生效。",
+                           "生成后不会自动写入：先 read_file 审查 source_ops.json，"
+                           "确认后调用 apply_copilot_plugin 写入转译层（逐文件备份、编译检查、可回滚）。"
+                           "变更一律写入**转译层**（用户数据目录的源码覆盖层），"
+                           "不修改应用源码文件；源码运行与 exe 打包运行行为一致，重启生效。",
             "parameters": {"type": "object",
                            "properties": {
                                "description": {"type": "string",
@@ -1712,10 +1713,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "apply_copilot_plugin",
-            "description": "应用 Copilot 插件的源码变更到本机：先过插件校验系统（危险强制删除并提示），"
-                           "再逐文件备份、逐条应用、全部编译检查（任一失败整体回滚）。源码运行直接改 "
-                           "src/；打包运行写 ~/.zhuzhu_Copilot/source_overlay/ 源码覆盖层"
-                           "（导入钩子优先加载，重启应用生效）。",
+            "description": "把 Copilot 插件的变更写入本机转译层：先过插件校验系统（危险强制删除并提示），"
+                           "再逐文件备份、逐条写入、全部编译检查（任一失败整体回滚）。"
+                           "变更只写 ~/.zhuzhu_Copilot/source_overlay/（转译层），"
+                           "**绝不修改应用源码文件**；导入钩子优先加载，重启应用生效。",
             "parameters": {"type": "object",
                            "properties": {
                                "name": {"type": "string",

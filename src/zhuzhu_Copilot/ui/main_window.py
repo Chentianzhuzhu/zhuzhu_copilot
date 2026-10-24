@@ -2557,6 +2557,52 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
     return None
 
 
+def start_copilot_plugin(name: str, panel=None) -> tuple:
+    """运行期启用插件：立即加载其扩展，不必重启应用。
+
+    只补启动尚未登记过的条目（`_COPILOT_EXT_STATE["started"]` 去重），
+    因此重复启用/多次调用都安全。返回 (ok, message)。
+    """
+    try:
+        from zhuzhu_Copilot.core import copilot_plugins
+        d = copilot_plugins.plugin_dir(name)
+        man = copilot_plugins.load_copilot_manifest(d)
+    except Exception as e:
+        return False, f"读取插件「{name}」失败：{e}"
+    try:
+        for section, entry in copilot_plugins._iter_manifest_entries(man):
+            register_copilot_entry(panel, name, d, section, entry)
+    except Exception as e:
+        return False, f"插件「{name}」扩展加载失败：{e}"
+    return True, ""
+
+
+def stop_copilot_plugin(name: str) -> None:
+    """运行期停用插件：停掉它的后台服务；页面/托盘/快捷键随进程退出或重建 UI 卸载。"""
+    kept = []
+    for svc in _COPILOT_EXT_STATE.get("services") or []:
+        if str(svc.get("plugin") or "") != name:
+            kept.append(svc)
+            continue
+        stop = getattr(svc.get("module"), svc.get("stop") or "", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        handle = svc.get("handle")
+        closer = getattr(handle, "stop", None) or getattr(handle, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+    _COPILOT_EXT_STATE["services"] = kept
+    _COPILOT_EXT_STATE["started"].difference_update(
+        {k for k in _COPILOT_EXT_STATE["started"]
+         if k.startswith(f"{name}:")})
+
+
 def load_copilot_extensions(panel=None) -> dict:
     """加载启用中的 Copilot 插件扩展（页面 / 后台服务 / 托盘动作 / 快捷键）。
 

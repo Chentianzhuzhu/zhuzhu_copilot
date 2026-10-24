@@ -1239,7 +1239,7 @@ _PLUGIN_KIND_LABEL = {
     "skill": "技能",
     "combined": "工具+技能",
     "web": "网页三件套",
-    "source": "源码插件",
+    "source": "转译层插件",
 }
 
 # 导航图标尺寸（px）：18px 下 brain-circuit / puzzle 这类细密图形的笔画才分得开
@@ -2400,9 +2400,9 @@ _OP_STATUS = {
     # ---- 扩展能力 ----
     "create_skill": "正在创建技能",
     "create_plugin": "正在创建插件",
-    "create_source_plugin": "正在创建源码插件",
-    "apply_source_plugin": "正在应用源码插件",
-    "revert_source_plugin": "正在回滚源码插件",
+    "create_source_plugin": "正在创建转译层插件",
+    "apply_source_plugin": "正在写入转译层",
+    "revert_source_plugin": "正在回滚转译层",
     "create_workflow": "正在创建工作流",
     "register_sub_agent": "正在注册子 Agent",
     "dispatch_sub_agents": "正在派发子 Agent",
@@ -2784,7 +2784,7 @@ class _PluginDetailDialog(QDialog):
         verified = self._plugin.get("verified")
         vtxt = ("通过" if verified else "未通过/未检") if verified is not None else "未检"
         detail = str(self._plugin.get("verify_detail") or "")
-        _row("冒烟自检", (vtx + (f"（{detail[:120]}）" if detail and not verified else ""))
+        _row("冒烟自检", (vtxt + (f"（{detail[:120]}）" if detail and not verified else ""))
             if verified is not None else "未检")
         self.tabs.addTab(w, _ui("基本信息"))
 
@@ -3565,6 +3565,22 @@ def _split_args(s: str) -> list:
     return out
 
 
+# ---- 管理页（插件 / Agent / 工作流 / 市场）视觉统一：单一数据源 ----
+_CARD_RADIUS = 10
+_CARD_ICON_RADIUS = 9
+_PAGE_BTN_RADIUS = 8
+_PAGE_BTN_PAD = "7px 14px"
+
+
+def _tint(color: str, alpha: float) -> str:
+    """把 #RRGGBB 主题色转成带透明度的 rgba()（卡片图标 / 徽标底色统一由此生成）。"""
+    c = str(color or "").lstrip("#")
+    if len(c) != 6:
+        return str(color or "transparent")
+    return (f"rgba({int(c[0:2], 16)},{int(c[2:4], 16)},"
+            f"{int(c[4:6], 16)},{alpha})")
+
+
 class _CardBoard(QScrollArea):
     """自适应卡片看板（插件 / Agent / 工作流管理页共用）。
 
@@ -3845,7 +3861,8 @@ class _Card(QFrame):
         self._icon = QLabel()
         self._icon.setFixedSize(self._ICON, self._ICON)
         self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon.setStyleSheet("border-radius: 9px; background: rgba(47,82,216,0.14);"
+        self._icon.setStyleSheet(f"border-radius: {_CARD_ICON_RADIUS}px;"
+                                 f" background: {_tint(ACCENT, 0.14)};"
                                  "font-size: 15px; font-weight: 700;")
         # 占位字母只取首字符（icon_text 可能传的是整个名称）
         letter = (str(icon_text or self._title_text or "?")[:1] or "?").upper()
@@ -3887,8 +3904,8 @@ class _Card(QFrame):
         if self._badge_text:
             self._badge = QLabel(self._badge_text)
             self._badge.setStyleSheet(
-                f"color: {ACCENT_HOVER}; background: rgba(47,82,216,0.12);"
-                "border-radius: 8px; padding: 2px 8px; font-size: 11px;")
+                f"color: {ACCENT_HOVER}; background: {_tint(ACCENT, 0.12)};"
+                f"border-radius: {_PAGE_BTN_RADIUS}px; padding: 2px 8px; font-size: 11px;")
             row.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
         self._apply_style()
 
@@ -3942,7 +3959,7 @@ class _Card(QFrame):
         bg = CARD if (self._sel or self._hover) else PANEL
         self.setStyleSheet(
             f"QFrame#pluginCard {{ background: {bg};"
-            f" border: 1px solid {border}; border-radius: 10px; }}")
+            f" border: 1px solid {border}; border-radius: {_CARD_RADIUS}px; }}")
 
     def set_selected(self, on: bool):
         self._sel = bool(on)
@@ -4007,13 +4024,14 @@ class _MarketUploadDialog(QDialog):
         btns.addStretch(1)
         cancel = QPushButton(_ui("取消"))
         cancel.setStyleSheet(f"background: {_bg}; color: {TEXT};"
-                             f"border: 1px solid {_bd}; border-radius: 8px;"
-                             "padding: 7px 18px;")
+                             f"border: 1px solid {_bd}; border-radius: {_PAGE_BTN_RADIUS}px;"
+                             f"padding: {_PAGE_BTN_PAD};")
         cancel.setAutoDefault(False)
         cancel.clicked.connect(self.reject)
         ok = QPushButton(_ui("校验并上传"))
         ok.setStyleSheet(f"background: {ACCENT}; color: #FFFFFF; border: none;"
-                         "border-radius: 8px; padding: 7px 22px; font-weight: 700;")
+                         f"border-radius: {_PAGE_BTN_RADIUS}px; padding: {_PAGE_BTN_PAD};"
+                         " font-weight: 700;")
         ok.setAutoDefault(False)
         ok.clicked.connect(self.accept)
         btns.addWidget(cancel)
@@ -4025,6 +4043,94 @@ class _MarketUploadDialog(QDialog):
         return {"name": self.name.text().strip(),
                 "description": self.desc.toPlainText().strip(),
                 "version": self.version.text().strip() or "1.0.0",
+                "developer": self.developer.text().strip()}
+
+
+class _MarketAuthDialog(QDialog):
+    """插件市场账号弹窗：登录 / 注册 / 设置开发者。
+
+    账号输入不再内联在页面里：点「登录/注册」弹出本对话框，登录状态与开发者
+    信息只在页面以一行文字展示（见 _market_sync_account）。
+    """
+
+    _TITLES = {
+        "auth": "登录 / 注册插件市场",
+        "developer": "设置开发者/公司",
+    }
+
+    def __init__(self, mode: str = "auth", defaults: dict | None = None,
+                 parent=None):
+        super().__init__(parent)
+        self.mode = mode if mode in self._TITLES else "auth"
+        self.action = ""
+        defaults = defaults or {}
+        self.setWindowTitle(_ui(self._TITLES[self.mode]))
+        self.setMinimumWidth(380)
+        _bg, _bd = _base_color("PANEL"), _base_color("BORDER")
+        self.setStyleSheet(
+            f"QDialog {{ background: {_bg}; }}"
+            f"QLabel {{ color: {TEXT}; font-size: 12px; }}"
+            f"QLineEdit {{ background: {_bg}; color: {TEXT};"
+            f" border: 1px solid {_bd}; border-radius: {_PAGE_BTN_RADIUS}px;"
+            " padding: 7px 9px; font-size: 13px; }")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        form = QFormLayout()
+        form.setSpacing(8)
+        self.user = QLineEdit(str(defaults.get("username") or ""))
+        self.user.setPlaceholderText(_ui("3-32 位小写字母/数字/下划线"))
+        self.pass_ = QLineEdit()
+        self.pass_.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pass_.setPlaceholderText(_ui("至少 8 位"))
+        self.developer = QLineEdit(str(defaults.get("developer") or ""))
+        self.developer.setPlaceholderText(_ui("留空 = 用户名"))
+        if self.mode == "auth":
+            form.addRow(_ui("用户名"), self.user)
+            form.addRow(_ui("密码"), self.pass_)
+        form.addRow(_ui("开发者/公司"), self.developer)
+        lay.addLayout(form)
+
+        def _ghost(text: str) -> QPushButton:
+            """次操作按钮：与设置页 _btn_qss('ghost') 同一套圆角/内边距常量。"""
+            b = QPushButton(text)
+            b.setStyleSheet(f"background: {_bg}; color: {TEXT};"
+                            f"border: 1px solid {_bd};"
+                            f"border-radius: {_PAGE_BTN_RADIUS}px;"
+                            f"padding: {_PAGE_BTN_PAD};")
+            b.setAutoDefault(False)
+            return b
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = _ghost(_ui("取消"))
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        if self.mode == "auth":
+            reg = _ghost(_ui("注册"))
+            reg.clicked.connect(lambda: self._done("register"))
+            btns.addWidget(reg)
+            ok = QPushButton(_ui("登录"))
+            ok.setToolTip(_ui("用上方用户名/密码登录"))
+        else:
+            ok = QPushButton(_ui("保存"))
+        ok.setStyleSheet(f"background: {ACCENT}; color: #FFFFFF; border: none;"
+                         f"border-radius: {_PAGE_BTN_RADIUS}px;"
+                         f"padding: {_PAGE_BTN_PAD}; font-weight: 700;")
+        ok.setAutoDefault(True)
+        ok.clicked.connect(lambda: self._done("developer" if self.mode == "developer"
+                                              else "login"))
+        btns.addWidget(ok)
+        lay.addLayout(btns)
+        (self.user if self.mode == "auth" else self.developer).setFocus()
+
+    def _done(self, action: str):
+        self.action = action
+        self.accept()
+
+    def values(self) -> dict:
+        return {"username": self.user.text().strip(),
+                "password": self.pass_.text(),
                 "developer": self.developer.text().strip()}
 
 
@@ -4258,6 +4364,25 @@ class _AgentSettingsDialog(QDialog):
 
     def _page_body(self, w: QWidget) -> QVBoxLayout:
         return w.layout()
+
+    def _btn_qss(self, kind: str = "ghost") -> str:
+        """卡片页交互按钮统一 QSS（单一数据源）：primary 主操作 / ghost 次操作 / dim 弱化。"""
+        if kind == "primary":
+            return (f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
+                    f" border-radius: {_PAGE_BTN_RADIUS}px; padding: {_PAGE_BTN_PAD};"
+                    " font-weight: 700;")
+        color = self._DIM if kind == "dim" else self._TEXT
+        return (f"background: {self._PANEL}; color: {color};"
+                f" border: 1px solid {self._BORDER};"
+                f" border-radius: {_PAGE_BTN_RADIUS}px; padding: {_PAGE_BTN_PAD};"
+                " font-weight: 600;")
+
+    def _status_label(self) -> QLabel:
+        """卡片页状态文字（账号/进度/覆盖层）：统一 12px 次级色 + 自动换行。"""
+        lbl = QLabel("")
+        lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        lbl.setWordWrap(True)
+        return lbl
 
     # 分组小节标题统一走 _section_label（唯一实现见会员页区块，勿在此重复定义）
 
@@ -5840,11 +5965,6 @@ class _AgentSettingsDialog(QDialog):
         """Agent 管理：主 Agent（每个对话流 agent.py 人格）+ 自定义子 Agent（sub_<名>）"""
         w = self._page(_ui("Agent 管理"))
         lay = self._page_body(w)
-        sub = QLabel(
-            _ui("管理每个对话流（工作流）的主 Agent 与自定义子 Agent：主 Agent 人格由该对话流agent.py 定义（可编辑）；子 Agent 以 sub_<名> 注册进指定对话流，对话中可直接调用。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
 
         # 对话流选择
         wf_row = QHBoxLayout()
@@ -5865,8 +5985,7 @@ class _AgentSettingsDialog(QDialog):
         mrow = QHBoxLayout()
         mrow.setSpacing(8)
         m_edit = QPushButton(_ui("编辑主 Agent（agent.py）"))
-        m_edit.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
-                             "border-radius: 8px; padding: 7px 14px; font-weight: 700;")
+        m_edit.setStyleSheet(self._btn_qss("primary"))
         m_edit.setAutoDefault(False)
         m_edit.clicked.connect(self._on_agent_edit_main)
         mrow.addWidget(m_edit)
@@ -5880,14 +5999,11 @@ class _AgentSettingsDialog(QDialog):
         srow = QHBoxLayout()
         srow.setSpacing(8)
         s_add = QPushButton(_ui("注册子 Agent"))
-        s_add.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
-                            "border-radius: 8px; padding: 7px 14px; font-weight: 700;")
+        s_add.setStyleSheet(self._btn_qss("primary"))
         s_add.setAutoDefault(False)
         s_add.clicked.connect(self._on_agent_add_sub)
         s_del = QPushButton(_ui("删除选中"))
-        s_del.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                            "padding: 7px 14px; font-weight: 600;")
+        s_del.setStyleSheet(self._btn_qss("ghost"))
         s_del.setAutoDefault(False)
         s_del.clicked.connect(self._on_agent_del_sub)
         srow.addWidget(s_add)
@@ -6032,23 +6148,12 @@ class _AgentSettingsDialog(QDialog):
         """工作流管理（Cordis）：列表 + 自然语言 AI 生成 + 添加/编辑/删除核心文件 + 切换/禁用/删除"""
         w = self._page(_ui("工作流"))
         lay = self._page_body(w)
-        sub = QLabel(
-            _ui("管理自定义 Agent 工作流（Cordis）：默认使用内置工作流，可用自然语言让 AI 生成核心文件，从下方「内置工作流」一键创建预设，或进入内置工作流添加/编辑核心文件；切换即热插拔生效。默认工作流 _default 内置只读，可添加/删除用户覆盖文件；用户工作流可整体启用/禁用或删除。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
         self.wf_list = _CardBoard(self)
 
         def _btn(text, accent=False, tip=""):
             b = QPushButton(text)
-            if accent:
-                b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
-                                "border-radius: 8px; padding: 7px 14px; font-weight: 700;")
-            else:
-                b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                "padding: 7px 14px; font-weight: 600;")
+            b.setStyleSheet(self._btn_qss("primary" if accent else "ghost"))
             b.setAutoDefault(False)
             if tip:
                 b.setToolTip(tip)
@@ -6379,10 +6484,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_plugin_page(self) -> QWidget:
         w = self._page(_ui("插件"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("统一管理插件：用自然语言描述即可创建可运行插件（MCP 工具 + 标准技能 SKILL.md），或导入插件包 / 标准技能。停用插件即时移除其 MCP 工具。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
         self.plugin_list = _CardBoard(self)
         # 换行布局：这一排七个按钮会把页面「最小宽度需求」顶到 742px（视口仅 759），
@@ -6390,81 +6491,60 @@ class _AgentSettingsDialog(QDialog):
         # 推出视口裁掉 —— 改 FlowLayout 后最小需求降到单个按钮宽。
         row = FlowLayout(spacing=SPACING_SM)
         create_b = QPushButton(_line_icon("plus", 16), _ui("创建插件（自然语言）"))
-        create_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
-                               "border: none; border-radius: 8px; padding: 7px 14px; font-weight: 700;")
+        create_b.setStyleSheet(self._btn_qss("primary"))
         create_b.setAutoDefault(False)
         create_b.setToolTip(_ui("输入自然语言描述，AI 自动生成可运行的插件（MCP server + SKILL.md + 脚本/资源/示例）"))
         create_b.clicked.connect(self._on_plugin_create)
         imp_zip = QPushButton(_line_icon("folder", 16), _ui("导入插件包"))
-        imp_zip.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                              "padding: 7px 14px; font-weight: 600;")
+        imp_zip.setStyleSheet(self._btn_qss("ghost"))
         imp_zip.setAutoDefault(False)
         imp_zip.setToolTip(_ui("导入 zip 插件包（含 plugin.json 的完整插件）"))
         imp_zip.clicked.connect(self._on_plugin_import_zip)
         imp_skill = QPushButton(_ui("导入标准技能"))
-        imp_skill.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                "padding: 7px 14px; font-weight: 600;")
+        imp_skill.setStyleSheet(self._btn_qss("ghost"))
         imp_skill.setAutoDefault(False)
         imp_skill.setToolTip(_ui("导入市场标准 SKILL.md（或含 SKILL.md 的 zip），包装为 skill 型插件"))
         imp_skill.clicked.connect(self._on_plugin_import_skill)
-        src_create_b = QPushButton(_ui("创建源码插件（自然语言）"))
-        src_create_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                                   f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                   "padding: 7px 14px; font-weight: 600;")
+        src_create_b = QPushButton(_ui("创建转译层插件（自然语言）"))
+        src_create_b.setStyleSheet(self._btn_qss("ghost"))
         src_create_b.setAutoDefault(False)
         src_create_b.setToolTip(_ui("开发者向：AI 生成对应用源码的变更清单（新建源码文件/追加到现有模块之后/"
-                                    "锚点插入/替换模块/多模块综合修改），经插件校验系统检查后由你确认应用"))
+                                    "锚点插入/替换模块/多模块综合修改），写入转译层，不改动应用源码文件"))
         src_create_b.clicked.connect(self._on_plugin_create_source)
-        self.plugin_apply_b = QPushButton(_ui("应用源码插件"))
-        self.plugin_apply_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
-                                          f"border: none; border-radius: 8px;"
-                                          "padding: 7px 14px; font-weight: 700;")
+        self.plugin_apply_b = QPushButton(_ui("应用到转译层"))
+        self.plugin_apply_b.setStyleSheet(self._btn_qss("primary"))
         self.plugin_apply_b.setAutoDefault(False)
         self.plugin_apply_b.setEnabled(False)
-        self.plugin_apply_b.setToolTip(_ui("应用源码插件的变更：先过插件校验系统（危险强制删除并提示），"
-                                           "再逐文件备份、应用、编译检查，失败整体回滚；改动重启应用后生效"))
+        self.plugin_apply_b.setToolTip(_ui("把插件的变更写入转译层（不修改应用源码文件）：先过插件校验系统，"
+                                           "再逐文件备份、写入、编译检查，失败整体回滚；重启应用后生效"))
         self.plugin_apply_b.clicked.connect(self._on_plugin_apply_source)
-        self.plugin_revert_b = QPushButton(_ui("回滚源码插件"))
-        self.plugin_revert_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
-                                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                           "padding: 7px 14px; font-weight: 600;")
+        self.plugin_revert_b = QPushButton(_ui("回滚转译层"))
+        self.plugin_revert_b.setStyleSheet(self._btn_qss("dim"))
         self.plugin_revert_b.setAutoDefault(False)
         self.plugin_revert_b.setEnabled(False)
-        self.plugin_revert_b.setToolTip(_ui("按备份卸载回滚已应用的源码变更（新建的文件删除、修改的文件还原）"))
+        self.plugin_revert_b.setToolTip(_ui("按备份卸载回滚已写入转译层的变更（新建的文件删除、修改的文件还原）"))
         self.plugin_revert_b.clicked.connect(self._on_plugin_revert_source)
         detail_b = QPushButton(_ui("详情/配置"))
-        detail_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                               "padding: 7px 14px; font-weight: 600;")
+        detail_b.setStyleSheet(self._btn_qss("ghost"))
         detail_b.setAutoDefault(False)
         detail_b.setToolTip(_ui("查看插件详情（开发者/更新时间/校验记录/源码变更），编辑插件配置（config.json，MCP 型以环境变量注入），导出插件包"))
         detail_b.clicked.connect(self._on_plugin_detail)
         call_b = QPushButton(_ui("调用"))
-        call_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                             "padding: 7px 14px; font-weight: 600;")
+        call_b.setStyleSheet(self._btn_qss("ghost"))
         call_b.setAutoDefault(False)
         call_b.setToolTip(_ui("关闭设置并回到对话页，输入框预填「/插件名 」，回车即调用该插件；调用时会把插件说明与调用规范直接交给模型"))
         call_b.clicked.connect(self._on_plugin_call)
         toggle_b = QPushButton(_ui("启用/停用"))
-        toggle_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                               "padding: 7px 14px; font-weight: 600;")
+        toggle_b.setStyleSheet(self._btn_qss("ghost"))
         toggle_b.setAutoDefault(False)
         toggle_b.clicked.connect(self._on_plugin_toggle)
         wf_b = QPushButton(_ui("分配工作流…"))
-        wf_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                           "padding: 7px 14px; font-weight: 600;")
+        wf_b.setStyleSheet(self._btn_qss("ghost"))
         wf_b.setAutoDefault(False)
         wf_b.setToolTip(_ui("指定插件可用的一个或多个工作流（空=全局所有工作流）；插件技能与 MCP 服务器随之绑定生效"))
         wf_b.clicked.connect(self._on_plugin_workflows)
         del_b = QPushButton(_line_icon("trash", 16), _ui("删除"))
-        del_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
-                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                            "padding: 7px 14px; font-weight: 600;")
+        del_b.setStyleSheet(self._btn_qss("dim"))
         del_b.setAutoDefault(False)
         del_b.clicked.connect(self._on_plugin_delete)
         self.plugin_list.currentItemChanged.connect(
@@ -6552,74 +6632,52 @@ class _AgentSettingsDialog(QDialog):
     def _build_copilot_plugin_page(self) -> QWidget:
         w = self._page(_ui("Copilot 插件"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("Copilot 插件是应用级插件（与 Agent 插件分开，应用范围更广）：可把功能源码插入任何源码文件、"
-                         "新建源码文件、一次修改多个源码文件集成功能，也可注册主窗口页面 / 后台服务 / 托盘动作 / 快捷键，"
-                         "还可附带 MCP 工具与技能。改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块都可以。"
-                         "安装版同样支持：变更写入源码覆盖层，重启后生效。所有插件在导入 / 生成 / 应用前都经插件校验系统检查（危险代码强制删除并提示）。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
-        self.coplugin_overlay_lbl = QLabel("")
-        self.coplugin_overlay_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
-        self.coplugin_overlay_lbl.setWordWrap(True)
+        self.coplugin_overlay_lbl = self._status_label()
         lay.addWidget(self.coplugin_overlay_lbl)
         self._refresh_coplugin_overlay_label()
         # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
         self.coplugin_list = _CardBoard(self)
         row = FlowLayout(spacing=SPACING_SM)
         create_b = QPushButton(_line_icon("plus", 16), _ui("创建 Copilot 插件（自然语言）"))
-        create_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
-                               "border: none; border-radius: 8px; padding: 7px 14px; font-weight: 700;")
+        create_b.setStyleSheet(self._btn_qss("primary"))
         create_b.setAutoDefault(False)
-        create_b.setToolTip(_ui("输入自然语言描述，AI 生成源码变更清单（插入任何源码文件/新建文件/多文件综合修改）与应用扩展清单"))
+        create_b.setToolTip(_ui("输入自然语言描述，AI 生成变更清单（插入任何源码文件/新建文件/多文件综合修改）与"
+                                "应用扩展清单；变更只写入转译层，不改动应用源码文件"))
         create_b.clicked.connect(self._on_coplugin_create)
         imp_zip = QPushButton(_line_icon("folder", 16), _ui("导入插件包"))
-        imp_zip.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                              f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                              "padding: 7px 14px; font-weight: 600;")
+        imp_zip.setStyleSheet(self._btn_qss("ghost"))
         imp_zip.setAutoDefault(False)
         imp_zip.setToolTip(_ui("导入 Copilot 插件 zip 包（含 plugin.json 与 source_ops/copilot.json）"))
         imp_zip.clicked.connect(self._on_coplugin_import_zip)
-        self.coplugin_apply_b = QPushButton(_ui("应用源码变更"))
-        self.coplugin_apply_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
-                                            f"border: none; border-radius: 8px;"
-                                            "padding: 7px 14px; font-weight: 700;")
+        self.coplugin_apply_b = QPushButton(_ui("应用到转译层"))
+        self.coplugin_apply_b.setStyleSheet(self._btn_qss("primary"))
         self.coplugin_apply_b.setAutoDefault(False)
         self.coplugin_apply_b.setEnabled(False)
-        self.coplugin_apply_b.setToolTip(_ui("应用插件的源码变更：先过插件校验系统，再逐文件备份、应用、编译检查，失败整体回滚；改动重启应用后生效"))
+        self.coplugin_apply_b.setToolTip(_ui("把插件的变更写入转译层（不修改应用源码文件）：先过插件校验系统，"
+                                             "再逐文件备份、写入、编译检查，失败整体回滚；重启应用后生效"))
         self.coplugin_apply_b.clicked.connect(self._on_coplugin_apply)
-        self.coplugin_revert_b = QPushButton(_ui("回滚源码变更"))
-        self.coplugin_revert_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
-                                             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                             "padding: 7px 14px; font-weight: 600;")
+        self.coplugin_revert_b = QPushButton(_ui("回滚转译层"))
+        self.coplugin_revert_b.setStyleSheet(self._btn_qss("dim"))
         self.coplugin_revert_b.setAutoDefault(False)
         self.coplugin_revert_b.setEnabled(False)
-        self.coplugin_revert_b.setToolTip(_ui("按备份卸载回滚已应用的源码变更（新建的文件删除、修改的文件还原）"))
+        self.coplugin_revert_b.setToolTip(_ui("按备份卸载回滚已写入转译层的变更（新建的文件删除、修改的文件还原）"))
         self.coplugin_revert_b.clicked.connect(self._on_coplugin_revert)
         detail_b = QPushButton(_ui("详情/配置"))
-        detail_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                               "padding: 7px 14px; font-weight: 600;")
+        detail_b.setStyleSheet(self._btn_qss("ghost"))
         detail_b.setAutoDefault(False)
         detail_b.setToolTip(_ui("查看插件详情（开发者/更新时间/源码变更/应用扩展/校验记录），编辑插件配置，导出插件包"))
         detail_b.clicked.connect(self._on_coplugin_detail)
         export_b = QPushButton(_ui("导出插件包"))
-        export_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                               "padding: 7px 14px; font-weight: 600;")
+        export_b.setStyleSheet(self._btn_qss("ghost"))
         export_b.setAutoDefault(False)
         export_b.setToolTip(_ui("把插件打包为 zip 分享给他人（含配置/图标/清单，不含本机备份与应用记录）"))
         export_b.clicked.connect(self._on_coplugin_export)
         toggle_b = QPushButton(_ui("启用/停用"))
-        toggle_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                               "padding: 7px 14px; font-weight: 600;")
+        toggle_b.setStyleSheet(self._btn_qss("ghost"))
         toggle_b.setAutoDefault(False)
         toggle_b.clicked.connect(self._on_coplugin_toggle)
         del_b = QPushButton(_line_icon("trash", 16), _ui("删除"))
-        del_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
-                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                            "padding: 7px 14px; font-weight: 600;")
+        del_b.setStyleSheet(self._btn_qss("dim"))
         del_b.setAutoDefault(False)
         del_b.setToolTip(_ui("删除插件（已应用的源码变更会先回滚）"))
         del_b.clicked.connect(self._on_coplugin_delete)
@@ -6645,56 +6703,28 @@ class _AgentSettingsDialog(QDialog):
     def _build_market_page(self):
         w = self._page(_ui("插件市场"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("插件市场：浏览社区里的 Agent 插件与 Copilot 插件，也可上传自己做的插件。"
-                         "上传需要登录账号；上传前先经本地 LLM 深度安全校验，服务器再复核一次。"
-                         "下载后自动导入本地插件列表，再到对应页面应用/启用。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
-        self.market_acct_lbl = QLabel("")
-        self.market_acct_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
-        self.market_acct_lbl.setWordWrap(True)
+        self.market_acct_lbl = self._status_label()
         lay.addWidget(self.market_acct_lbl)
 
-        # 账号行：用户名 / 密码 / 登录 / 注册 / 退出
+        # 账号行：只在页面展示登录态，账号输入统一走弹窗（_MarketAuthDialog）
         acct = QHBoxLayout()
         acct.setSpacing(8)
-        self.market_user = QLineEdit()
-        self.market_user.setPlaceholderText(_ui("用户名（3-32 位小写字母/数字/下划线）"))
-        self.market_user.setMaximumWidth(210)
-        self.market_pass = QLineEdit()
-        self.market_pass.setPlaceholderText(_ui("密码（至少 8 位）"))
-        self.market_pass.setEchoMode(QLineEdit.EchoMode.Password)
-        self.market_pass.setMaximumWidth(180)
-        self.market_dev = QLineEdit()
-        self.market_dev.setPlaceholderText(_ui("开发者/公司（留空 = 用户名）"))
-        self.market_dev.setMaximumWidth(200)
-        login_b = QPushButton(_ui("登录"))
-        login_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
-                              "border-radius: 8px; padding: 7px 16px; font-weight: 700;")
+        login_b = QPushButton(_ui("登录/注册"))
+        login_b.setStyleSheet(self._btn_qss("primary"))
         login_b.setAutoDefault(False)
+        login_b.setToolTip(_ui("登录或注册市场账号（弹窗输入用户名/密码）"))
         login_b.clicked.connect(self._on_market_login)
-        reg_b = QPushButton(_ui("注册"))
-        reg_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                            "padding: 7px 16px; font-weight: 600;")
-        reg_b.setAutoDefault(False)
-        reg_b.setToolTip(_ui("注册即用填写的开发者/公司名称（留空则默认用户名）"))
-        reg_b.clicked.connect(self._on_market_register)
-        self.market_dev_b = QPushButton(_ui("保存开发者"))
-        self.market_dev_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                                        f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                        "padding: 7px 16px; font-weight: 600;")
+        self.market_login_b = login_b
+        self.market_dev_b = QPushButton(_ui("开发者/公司"))
+        self.market_dev_b.setStyleSheet(self._btn_qss("ghost"))
         self.market_dev_b.setAutoDefault(False)
+        self.market_dev_b.setToolTip(_ui("设置上传插件时使用的开发者/公司名称（留空 = 用户名）"))
         self.market_dev_b.clicked.connect(self._on_market_set_developer)
         self.market_logout_b = QPushButton(_ui("退出登录"))
-        self.market_logout_b.setStyleSheet(f"background: {self._PANEL}; color: {self._DIM};"
-                                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                           "padding: 7px 16px; font-weight: 600;")
+        self.market_logout_b.setStyleSheet(self._btn_qss("dim"))
         self.market_logout_b.setAutoDefault(False)
         self.market_logout_b.clicked.connect(self._on_market_logout)
-        for wgt in (self.market_user, self.market_pass, self.market_dev,
-                    login_b, reg_b, self.market_dev_b, self.market_logout_b):
+        for wgt in (login_b, self.market_dev_b, self.market_logout_b):
             acct.addWidget(wgt)
         acct.addStretch(1)
         lay.addLayout(acct)
@@ -6708,17 +6738,13 @@ class _AgentSettingsDialog(QDialog):
         search_b = QPushButton(_svg_icon(
             _lucide('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
             16, self._TEXT), _ui("搜索"))
-        search_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                               f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                               "padding: 7px 16px; font-weight: 600;")
+        search_b.setStyleSheet(self._btn_qss("ghost"))
         search_b.setAutoDefault(False)
         search_b.clicked.connect(self._on_market_refresh)
         search.addWidget(self.market_q, 1)
         search.addWidget(search_b)
         lay.addLayout(search)
-        self.market_status = QLabel("")
-        self.market_status.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
-        self.market_status.setWordWrap(True)
+        self.market_status = self._status_label()
         lay.addWidget(self.market_status)
 
         # 卡片看板（自适应卡片，每屏最多 10 张，超出滚动查看）
@@ -6727,25 +6753,19 @@ class _AgentSettingsDialog(QDialog):
         self._market_rows = []
         row = FlowLayout(spacing=SPACING_SM)
         self.market_upload_b = QPushButton(_line_icon("plus", 16), _ui("上传插件到市场"))
-        self.market_upload_b.setStyleSheet(f"background: {self._ACCENT}; color: #FFFFFF;"
-                                           "border: none; border-radius: 8px;"
-                                           "padding: 7px 14px; font-weight: 700;")
+        self.market_upload_b.setStyleSheet(self._btn_qss("primary"))
         self.market_upload_b.setAutoDefault(False)
         self.market_upload_b.setToolTip(_ui("选择本地插件 zip：先本地 LLM 深度校验，再上传（需登录）"))
         self.market_upload_b.clicked.connect(self._on_market_upload)
         dl_b = QPushButton(_ui("下载并导入"))
-        dl_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                           f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                           "padding: 7px 14px; font-weight: 600;")
+        dl_b.setStyleSheet(self._btn_qss("ghost"))
         dl_b.setAutoDefault(False)
         dl_b.setToolTip(_ui("下载选中的插件并自动导入本地（Copilot / Agent 插件自动分流）"))
         dl_b.clicked.connect(self._on_market_download)
         refresh_b = QPushButton(_svg_icon(
             _lucide('<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>'
                     '<path d="M21 3v5h-5"/>'), 16, self._TEXT), _ui("刷新"))
-        refresh_b.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                "padding: 7px 14px; font-weight: 600;")
+        refresh_b.setStyleSheet(self._btn_qss("ghost"))
         refresh_b.setAutoDefault(False)
         refresh_b.clicked.connect(self._on_market_refresh)
         row.addWidget(self.market_upload_b)
@@ -6775,7 +6795,8 @@ class _AgentSettingsDialog(QDialog):
         else:
             self.market_acct_lbl.setText(_uif(
                 "未登录（上传插件需先登录）｜ 服务：{a}", a=acc["api_base"]))
-        for name, enabled in (("market_logout_b", acc["logged_in"]),
+        for name, enabled in (("market_login_b", not acc["logged_in"]),
+                              ("market_logout_b", acc["logged_in"]),
                               ("market_dev_b", acc["logged_in"]),
                               ("market_upload_b", acc["logged_in"])):
             b = getattr(self, name, None)
@@ -6793,30 +6814,44 @@ class _AgentSettingsDialog(QDialog):
         threading.Thread(target=_work, daemon=True).start()
 
     def _on_market_login(self, *_):
+        """登录/注册统一走弹窗：页面只展示登录态，不内联账号输入框。"""
         from zhuzhu_Copilot.core import plugin_market
-        u = self.market_user.text().strip()
-        p = self.market_pass.text()
+        try:
+            acc = plugin_market.account()
+        except Exception as e:
+            QMessageBox.information(self, _ui("插件市场"), f"{e}")
+            return
+        dlg = _MarketAuthDialog(
+            "auth", {"username": acc.get("username") or "",
+                     "developer": acc.get("developer") or ""}, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        v = dlg.values()
+        u, p = v["username"], v["password"]
+        if dlg.action == "register":
+            if not u or len(p) < 8:
+                QMessageBox.information(self, _ui("插件市场"),
+                                        _ui("用户名 3-32 位（小写字母/数字/下划线），密码至少 8 位"))
+                return
+            self.market_status.setText(_ui("正在注册…"))
+            self._market_do(plugin_market.register, u, p, v["developer"])
+            return
         if not u or not p:
             QMessageBox.information(self, _ui("插件市场"), _ui("请填写用户名和密码"))
             return
         self.market_status.setText(_ui("正在登录…"))
         self._market_do(plugin_market.login, u, p)
 
-    def _on_market_register(self, *_):
-        from zhuzhu_Copilot.core import plugin_market
-        u = self.market_user.text().strip()
-        p = self.market_pass.text()
-        dev = self.market_dev.text().strip()
-        if not u or len(p) < 8:
-            QMessageBox.information(self, _ui("插件市场"),
-                                    _ui("用户名 3-32 位（小写字母/数字/下划线），密码至少 8 位"))
-            return
-        self.market_status.setText(_ui("正在注册…"))
-        self._market_do(plugin_market.register, u, p, dev)
-
     def _on_market_set_developer(self, *_):
         from zhuzhu_Copilot.core import plugin_market
-        dev = self.market_dev.text().strip()
+        try:
+            cur = plugin_market.account().get("developer") or ""
+        except Exception:
+            cur = ""
+        dlg = _MarketAuthDialog("developer", {"developer": cur}, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        dev = dlg.values()["developer"]
         if not dev:
             QMessageBox.information(self, _ui("插件市场"), _ui("请填写开发者/公司名称"))
             return
@@ -6950,8 +6985,8 @@ class _AgentSettingsDialog(QDialog):
                 bits.append(_uif("开发者: {a}", a=str(p.get("author"))))
             if p.get("updated_at"):
                 bits.append(_uif("更新: {t}", t=str(p.get("updated_at"))))
-            bits.append("源码已应用" if p.get("source_applied")
-                        else _uif("源码未应用（{n} 条变更）", n=p.get("source_ops") or 0))
+            bits.append("已写入转译层" if p.get("source_applied")
+                        else _uif("待写入转译层（{n} 条变更）", n=p.get("source_ops") or 0))
             ext = p.get("manifest_ext") or {}
             if any(ext.values()):
                 bits.append("扩展: " + "、".join(
@@ -6976,7 +7011,7 @@ class _AgentSettingsDialog(QDialog):
         self.coplugin_revert_b.setEnabled(bool(p.get("source_applied")))
 
     def _refresh_coplugin_overlay_label(self):
-        """刷新「生效位置」状态行：插件变更的落点（安装版为源码覆盖层）。"""
+        """刷新「生效位置」状态行：插件变更的落点（转译层）。"""
         lbl = getattr(self, "coplugin_overlay_lbl", None)
         if lbl is None:
             return
@@ -6988,10 +7023,10 @@ class _AgentSettingsDialog(QDialog):
             return
         if info.get("mode") == "overlay":
             n = len(info.get("modules") or [])
-            lbl.setText(_uif("生效位置：插件源码层 {root} · 已加载 {n} 个模块 · 应用/回滚后重启生效",
+            lbl.setText(_uif("生效位置：转译层 {root} · 已加载 {n} 个模块 · 应用/回滚后重启生效",
                              root=info.get("root"), n=n))
         else:
-            lbl.setText(_uif("生效位置：插件源码层 {root} · 应用/回滚后重启生效",
+            lbl.setText(_uif("生效位置：转译层 {root} · 应用/回滚后重启生效",
                              root=info.get("root")))
 
     def _current_coplugin(self) -> dict:
@@ -7085,10 +7120,11 @@ class _AgentSettingsDialog(QDialog):
             return
         name = p.get("name", "")
         ret = QMessageBox.question(
-            self, _ui("应用源码变更"),
-            _uif("将应用 Copilot 插件「{n}」的源码变更：\n"
+            self, _ui("应用到转译层"),
+            _uif("将把 Copilot 插件「{n}」的变更写入转译层：\n"
+                 "· 应用源码文件保持不变，变更只落在用户数据目录的转译层\n"
                  "· 先经插件校验系统检查（危险代码强制删除并提示用户）\n"
-                 "· 每个被改文件自动备份，全部应用后编译检查，失败整体回滚\n"
+                 "· 每个被改文件自动备份，全部写入后编译检查，失败整体回滚\n"
                  "· 重启应用后生效\n\n确定应用？", n=name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
@@ -7112,10 +7148,10 @@ class _AgentSettingsDialog(QDialog):
             return
         name = p.get("name", "")
         ret = QMessageBox.question(
-            self, _ui("回滚源码变更"),
-            _uif("将按备份卸载回滚「{n}」已应用的源码变更：\n"
-                 "· 新建的文件删除、修改的文件还原为应用前内容\n"
-                 "· 应用后被手动改过的文件会跳过（不覆盖你的修改）\n\n确定回滚？", n=name),
+            self, _ui("回滚转译层"),
+            _uif("将按备份卸载回滚「{n}」已写入转译层的变更：\n"
+                 "· 新建的文件删除、修改的文件还原为写入前内容\n"
+                 "· 写入后被手动改过的文件会跳过（不覆盖你的修改）\n\n确定回滚？", n=name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes:
@@ -7146,19 +7182,31 @@ class _AgentSettingsDialog(QDialog):
         if not ok:
             QMessageBox.warning(self, _ui("操作失败"), msg)
             return
-        # 刚启用且源码变更还没应用：功能不会生效（扩展/工具都来自源码变更）。
-        # 明确告知并给「立即应用」入口，避免用户以为启用即生效。
+        # 运行期立即生效：启用即启动插件扩展（服务），停用即卸载其服务。
+        try:
+            from zhuzhu_Copilot.ui import main_window as _mw
+        except Exception:
+            _mw = None
         try:
             from zhuzhu_Copilot.core import copilot_plugins as _cp
             fresh = _cp.get_plugin(name) or {}
         except Exception:
             fresh = {}
+        if fresh.get("enabled", True):
+            if _mw is not None:
+                started, err = _mw.start_copilot_plugin(name)
+                if not started:
+                    QMessageBox.warning(self, _ui("插件未完全生效"), err)
+        elif _mw is not None:
+            _mw.stop_copilot_plugin(name)
+        # 源码变更（写入转译层）尚未应用：提示并给「立即应用」入口。
         if fresh.get("enabled") and not fresh.get("source_applied") \
                 and int(fresh.get("source_ops") or 0) > 0:
             ret = QMessageBox.question(
-                self, _ui("需要应用源码变更"),
+                self, _ui("需要应用到转译层"),
                 _uif("插件「{n}」有 {c} 条源码变更尚未应用，现在不会生效。\n"
-                     "是否立即应用？（会先经插件校验系统检查，失败自动整体回滚）",
+                     "是否立即应用到转译层？（不修改应用源码文件，会先经插件校验系统"
+                     "检查，失败自动整体回滚；重启应用后生效）",
                      n=name, c=int(fresh.get("source_ops") or 0)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes)
@@ -7245,17 +7293,18 @@ class _AgentSettingsDialog(QDialog):
                 desc, on_status=lambda p, s: self.plugin_progress.emit(p, s))
             self.plugin_done.emit("1" if ok else "0", msg)
         except Exception as e:
-            self.plugin_done.emit("0", f"创建源码插件异常: {e}")
+            self.plugin_done.emit("0", f"创建转译层插件异常: {e}")
 
     def _on_plugin_create_source(self, *_):
-        """自然语言描述 → 后台线程 AI 生成源码级插件（变更清单，确认后才应用）"""
+        """自然语言描述 → 后台线程 AI 生成转译层级插件（变更清单，确认后才写入）"""
         text, ok = _MultiLineInputDialog.get(
-            self, "创建源码插件",
-            "描述源码插件要做什么、改哪些模块、集成什么功能（生成 source_ops 变更清单，不会自动改动源码）：",
+            self, "创建转译层插件",
+            "描述插件要做什么、改哪些模块、集成什么功能（生成 source_ops 变更清单，"
+            "不会自动写入，也不会改动应用源码文件）：",
             "在 core 下新建一个习惯打卡模块，并在 agent_tools 的工具清单里登记两个工具")
         if not ok or not text.strip():
             return
-        self._pbar_open("创建源码插件", "正在分析需求并设计源码变更清单…")
+        self._pbar_open("创建转译层插件", "正在分析需求并设计变更清单…")
         threading.Thread(target=self._plugin_source_worker, args=(text.strip(),),
                          daemon=True).start()
 
@@ -7277,17 +7326,18 @@ class _AgentSettingsDialog(QDialog):
         threading.Thread(target=self._init_mcp, daemon=True).start()
 
     def _on_plugin_apply_source(self, *_):
-        """应用源码级插件的变更（插件校验 → 备份 → 应用 → 编译检查，失败整体回滚）"""
+        """把插件变更写入转译层（插件校验 → 备份 → 写入 → 编译检查，失败整体回滚）"""
         p = self._current_plugin()
         if p is None:
-            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个源码插件"))
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
             return
         name = p.get("name", "")
         ret = QMessageBox.question(
-            self, _ui("应用源码插件"),
-            _uif("将应用源码插件「{n}」的变更：\n"
+            self, _ui("应用到转译层"),
+            _uif("将把插件「{n}」的变更写入转译层：\n"
+                 "· 应用源码文件保持不变，变更只落在用户数据目录的转译层\n"
                  "· 先经插件校验系统检查（危险代码强制删除并提示用户）\n"
-                 "· 每个被改文件自动备份，全部应用后编译检查，失败整体回滚\n"
+                 "· 每个被改文件自动备份，全部写入后编译检查，失败整体回滚\n"
                  "· 重启应用后生效\n\n确定应用？", n=name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
@@ -7295,21 +7345,21 @@ class _AgentSettingsDialog(QDialog):
             return
         ok, msg = agent_plugins.apply_source_plugin(name)
         if ok:
-            QMessageBox.information(self, _ui("应用源码插件"), msg)
+            QMessageBox.information(self, _ui("应用到转译层"), msg)
         else:
             QMessageBox.warning(self, _ui("应用失败"), msg)
         self._reload_plugin_list()
 
     def _on_plugin_revert_source(self, *_):
-        """卸载回滚源码插件已应用的变更（新建的删除、修改的还原）"""
+        """卸载回滚已写入转译层的变更（新建的删除、修改的还原）"""
         p = self._current_plugin()
         if p is None:
-            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个源码插件"))
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
             return
         name = p.get("name", "")
         ret = QMessageBox.question(
-            self, _ui("回滚源码插件"),
-            _uif("将按备份还原源码插件「{n}」已应用的变更"
+            self, _ui("回滚转译层"),
+            _uif("将按备份还原插件「{n}」已写入转译层的变更"
                  "（新建的文件删除、修改的文件还原备份内容）。确定回滚？", n=name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
@@ -7317,7 +7367,7 @@ class _AgentSettingsDialog(QDialog):
             return
         ok, msg = agent_plugins.revert_source_plugin(name)
         if ok:
-            QMessageBox.information(self, _ui("回滚源码插件"), msg)
+            QMessageBox.information(self, _ui("回滚转译层"), msg)
         else:
             QMessageBox.warning(self, _ui("回滚失败"), msg)
         self._reload_plugin_list()
@@ -27989,10 +28039,57 @@ class AgentPanel(QDialog):
         for p in paths or []:
             self._add_attachment(p)
 
+    def _maybe_install_plugin_package(self, path: str) -> bool:
+        """对话时选的 zip 若是插件包：询问并直接导入，返回是否已按插件包处理。
+
+        打包版安装目录不含可写源码，插件只能装进用户数据目录后再写入转译层；
+        把导入入口放到对话输入区，用户不必先绕去设置页。
+        """
+        if os.path.splitext(path)[1].lower() != ".zip":
+            return False
+        try:
+            from zhuzhu_Copilot.core import plugin_market
+            kind = plugin_market.plugin_kind(path)
+        except Exception:
+            return False
+        if not kind:
+            return False
+        label = _ui("Copilot 插件") if kind == "copilot" else _ui("Agent 插件")
+        ret = QMessageBox.question(
+            self, _ui("导入插件包"),
+            _uif("检测到{k}包：{f}\n是否导入为插件？（导入后到设置页对应页面应用/启用）",
+                 k=label, f=os.path.basename(path)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if ret != QMessageBox.StandardButton.Yes:
+            return False
+        try:
+            if kind == "copilot":
+                from zhuzhu_Copilot.core import copilot_plugins
+                ok, msg = copilot_plugins.import_plugin_zip(path)
+                self._reload_coplugin_list()
+            else:
+                from zhuzhu_Copilot.core import agent_plugins, agent_skills
+                ok, msg = agent_plugins.import_plugin_zip(path)
+                self._reload_plugin_list()
+                self._mcp_servers = agent_skills.load_mcp_servers()
+                self._reload_mcp_list()
+                if ok:
+                    threading.Thread(target=self._init_mcp, daemon=True).start()
+        except Exception as e:
+            ok, msg = False, f"导入失败: {e}"
+        if ok:
+            QMessageBox.information(self, _ui("导入成功"), msg)
+        else:
+            QMessageBox.warning(self, _ui("导入失败"), msg)
+        return True
+
     def _add_attachment(self, path: str):
         path = os.path.abspath(path)
         if not os.path.exists(path):
             self._notify_blocked(f"文件不存在: {path}")
+            return
+        if self._maybe_install_plugin_package(path):
             return
         if self._text_only and os.path.splitext(path)[1].lower() in self._IMG_EXTS:
             return
