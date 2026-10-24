@@ -69,7 +69,7 @@
 
 **插件包规范**：每个插件包包含 `plugin.json` 元数据——插件名称（name）、开发者/公司（author）、更新时间（updated_at）、插件图标（icon，包内图标文件，如 `icon.png`），以及 description / kind / enabled 等；导入与创建时自动补齐，插件页列表展示开发者、更新时间与图标。
 
-**源码级定制（两套体系的核心能力，任何人都能把 Copilot 自定义成想要的样子）**：插件包内 `source_ops.json`（或 plugin.json 的 `source_ops` 字段）描述对应用源码（`src/` 为根）的变更清单——可把功能源码**插入到任何源代码文件**、**新建源码文件**、**一次修改多个源码文件并集成功能**。改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块，都是这条路：
+**源码级定制（两套体系的核心能力，任何人都能把 Copilot 自定义成想要的样子）**：插件包内 `source_ops.json`（或 plugin.json 的 `source_ops` 字段）描述对应用源码的变更清单（`path` 相对源码根 `src/`，但变更**一律写入转译层**，不改动应用源码文件）——可把功能源码**插入到任何源代码文件**、**新建源码文件**、**一次修改多个源码文件并集成功能**。改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块，都是这条路：
 
 | op | 作用 |
 | --- | --- |
@@ -81,9 +81,9 @@
 | `replace_module` | 替换模块（`start`..`end` 锚点，或 `start_line`..`end_line` 行号；`end` 缺省到文件尾） |
 | `replace_file` | 整体替换文件 |
 
-**打包（安装版）同样能源码级定制**：安装目录不含源码、也无法在安装目录里改源码，变更写入用户数据目录的**插件源码层**（源码覆盖层 `~/.zhuzhu_Copilot/source_overlay/`，目录结构镜像源码相对路径），由 `src/_copilot_overlay_hook.py` 的导入钩子让 `zhuzhu_Copilot.*` 的导入**优先命中覆盖层**（覆盖层没有的模块回落打包内原版；`__file__` 指回原版路径，保证包内资源解析不回退）。随包分发源码快照 `_copilot_src/`（spec datas）作为「原版内容」基准，供插入/替换类 op 取当前生效版本。应用/回滚后**重启应用**生效。
+**统一写入转译层（源码运行与安装版行为一致）**：变更不落应用源码目录，而是写入用户数据目录的**转译层**（`~/.zhuzhu_Copilot/source_overlay/`，目录结构镜像源码相对路径），由 `src/_copilot_overlay_hook.py` 的导入钩子让 `zhuzhu_Copilot.*` 的导入**优先命中转译层**（没有的模块回落原版；`__file__` 指回原版路径，保证包内资源解析不回退）。随包分发源码快照 `_copilot_src/`（spec datas）作为「原版内容」基准，供插入/替换类 op 取当前生效版本。**启用插件时自动写入并热加载，停用时自动回滚**；只有包根与持有进程级状态的模块（`agent_panel` / `main_window` / `styles`）会在下次启动时生效。
 
-应用链路（`apply_copilot_plugin` / 插件页「应用源码变更」）：**插件校验系统**（危险即整体删除插件包并提示）→ 逐文件备份到插件目录 `backups/` → 逐条应用 → 全部 `py_compile`，任一失败**整体回滚**（源码一行不动）→ 写 `applied.json` 清单。`revert_copilot_plugin` 据此卸载回滚：新建的文件删除、修改的文件还原备份（覆盖层模式下还原内容与原版一致时直接删掉覆盖层副本，让模块回落原版）；应用后被用户手动改过的文件跳过不覆盖。路径仅限源码根内的相对路径（禁绝对路径/`..` 穿越）。
+应用链路（启用插件自动执行 / `apply_copilot_plugin` 工具）：**插件校验系统**（危险即整体删除插件包并提示）→ 逐文件备份到插件目录 `backups/` → 逐条应用 → 全部 `py_compile`，任一失败**整体回滚**（源码一行不动）→ 写 `applied.json` 清单。停用或 `revert_copilot_plugin` 据此卸载回滚：新建的文件删除、修改的文件还原备份（还原内容与原版一致时直接删掉转译层副本，让模块回落原版）；应用后被用户手动改过的文件跳过不覆盖。路径仅限源码根内的相对路径（禁绝对路径/`..` 穿越）。
 
 **应用级扩展（copilot.json，仅 Copilot 插件）**：声明式注册应用能力，`module` 指向**插件包内**模块文件（随包分发、不走源码树），由主窗口启动时按文件路径动态导入并调用：
 
@@ -104,9 +104,9 @@
 
 **插件校验系统（`src/zhuzhu_Copilot/core/plugin_guard.py`，内置唯一、不可替换的程序）**：所有插件（两套体系）在导入 / AI 生成 / 源码应用之前都必须通过校验——① 静态危险规则扫描（动态执行 `eval/exec`、`os.system`/`shell=True`、注册表写、持久化、凭据窃取、大规模删除、关闭防护、混淆载荷、篡改校验程序等）；② LLM 源码评审（送当前配置的模型判定 safe/dangerous，LLM 不可用时降级为纯规则判定并在结论中注明）。判定危险的代码**直接强制删除**并明确提示用户（哪个插件、哪些文件、哪条规则、LLM 结论），源码级插件危险则整体移除插件包；删除记录写入 `plugins/.guard_log.jsonl`。受保护清单 `PROTECTED_CORE_FILES`（`plugin_guard.py` / `plugin_source.py` / `copilot_plugins.py` / `security.py` / `security_engine/` / `_copilot_overlay_hook.py` / `main.py`）内的程序任何源码插件不得改动，plugin.json 也没有任何字段可以跳过校验。
 
-**配置与管理（设置页，两套体系都有）**：双击插件或点「详情/配置」打开插件详情对话框——① **基本信息**：名称/类型/开发者/更新时间/描述/构成/校验结论；② **插件配置**：键值表编辑，保存到插件目录 `config.json`（仅文本/数字/布尔标量，禁配 `PATH`/`HOME` 等保留环境变量名）；对 MCP 型插件，配置以环境变量（键名自动大写，如 `api_key` → `API_KEY`）经 stdio 传输注入 server 子进程（继承当前进程环境后覆盖，`agent_mcp._StdioTransport`），保存即更新 `mcp_servers.json` 对应服务器 env 并自动重连生效；③ **源码变更**：`source_ops` 清单与应用状态预览（Copilot 插件另有**应用扩展**页签展示 copilot.json 注册的页面/服务/托盘/快捷键）；④ **校验记录**：该校验系统对该插件的拦截/通过日志。对话框内可**导出插件包**为 zip（含 plugin.json/配置/图标/源码，排除 `__pycache__`、`backups/`、`applied.json` 等本机数据），导出包可直接再导入，配置不丢。Copilot 插件页顶部显示当前**生效位置**（插件源码层路径与已加载模块数）。
+**配置与管理（设置页，两套体系都有）**：双击插件或点「详情/配置」打开插件详情对话框——① **基本信息**：名称/类型/开发者/更新时间/描述/构成/校验结论；② **插件配置**：键值表编辑，保存到插件目录 `config.json`（仅文本/数字/布尔标量，禁配 `PATH`/`HOME` 等保留环境变量名）；对 MCP 型插件，配置以环境变量（键名自动大写，如 `api_key` → `API_KEY`）经 stdio 传输注入 server 子进程（继承当前进程环境后覆盖，`agent_mcp._StdioTransport`），保存即更新 `mcp_servers.json` 对应服务器 env 并自动重连生效；③ **源码变更**：`source_ops` 清单与应用状态预览（Copilot 插件另有**应用扩展**页签展示 copilot.json 注册的页面/服务/托盘/快捷键）；④ **校验记录**：该校验系统对该插件的拦截/通过日志。对话框内可**导出插件包**为 zip（含 plugin.json/配置/图标/源码，排除 `__pycache__`、`backups/`、`applied.json` 等本机数据），导出包可直接再导入，配置不丢。Copilot 插件页顶部显示当前**生效位置**（转译层路径与已加载模块数），卡片状态显示「服务运行中 / 服务未运行 / 服务加载失败 / 已写入转译层」，用于快速判断插件是否真的生效。
 
-**开发者上手（示例插件）**：`src/zhuzhu_Copilot/copilot_plugins_examples/` 随包提供六个可导入学习的示例——`theme-deep-blue`（改主题）、`custom-hello-tool`（自定义工具：新模块 + TOOLS 登记 + 分发器接线）、`settings-page-demo`（自定义设置页：四条 op 跨两文件集成）、`tray-quick-note`（应用扩展：托盘动作 + 后台服务，模块随包分发）、`py-syntax-lint`（**Python 语法高亮与纠错**：源码级「插入」——新模块给代码块着色 + 新增 `check_python_syntax` 工具定位语法错误，原有代码行一行未改）、`prompt-optimizer`（**提示词优化**：源码级「替换」——新增 `optimize_prompt` 工具把粗略提示词改写成六要素结构化提示词，并替换 `_base_prompt_parts` 末行把「提示词优化纪律」追加进系统提示词）。每个示例都是一个标准插件包（plugin.json + source_ops.json / copilot.json），可直接在设置-Copilot 插件页「导入插件包」体验应用/回滚闭环；`copilot_plugins_examples/README.md` 有完整的 op 语法与锚点写法说明。
+**开发者上手（示例插件）**：`src/zhuzhu_Copilot/copilot_plugins_examples/` 随包提供七个可导入学习的示例——`theme-deep-blue`（改主题）、`custom-hello-tool`（自定义工具：新模块 + TOOLS 登记 + 分发器接线）、`settings-page-demo`（自定义设置页：四条 op 跨两文件集成）、`tray-quick-note`（应用扩展：托盘动作 + 后台服务，模块随包分发）、`py-syntax-lint`（**Python 语法高亮与纠错**：源码级「插入」——新模块给代码块着色 + 新增 `check_python_syntax` 工具定位语法错误，原有代码行一行未改）、`prompt-optimizer`（**提示词优化**：源码级「替换」——新增 `optimize_prompt` 工具把粗略提示词改写成六要素结构化提示词，并替换 `_base_prompt_parts` 末行把「提示词优化纪律」追加进系统提示词）、`agent-scorecard`（**Agent 能力评分**：纯运行时服务，任务结束弹评分窗展示耗时 / 工具调用 / token，评分回传 Agent 提示自我反省）。每个示例都是标准插件包（plugin.json + source_ops.json / copilot.json），在设置-Copilot 插件页「导入插件包」后**启用即自动写入并热加载**；`copilot_plugins_examples/README.md` 是完整的开发者指南，含三种源码级开发方法（新建文件 / 插入 / 替换）、综合插件写法、op 语法、生命周期与排错表。
 
 ### 1.6 子 Agent 与团队协作
 
@@ -138,7 +138,7 @@ Cordis 式「一切皆可替换」，目录 `~/.zhuzhu_Copilot/workflows/`。核
 - **执行守卫**：纯 Win32 监控新进程，拦截格机命令与无文件攻击。
 - **输入守卫**：全局低级钩子，AI 操控期间检测用户手动操作。
 - **插件校验**：`plugin_guard.py` 内置唯一、不可替换——所有插件（Agent 插件与 Copilot 插件，含源码级插件）导入/生成/应用前过静态危险规则 + LLM 源码评审，危险代码强制删除并提示用户（详见 1.5）。
-- **源码覆盖层**：`_copilot_overlay_hook.py` 导入钩子让 `zhuzhu_Copilot.*` 的导入优先命中用户数据目录的覆盖层，使源码级插件在**打包版**上同样生效；该钩子与应用入口（`main.py`）同列受保护清单，插件不得拆除。
+- **转译层（源码覆盖层）**：`_copilot_overlay_hook.py` 导入钩子让 `zhuzhu_Copilot.*` 的导入优先命中用户数据目录的转译层，源码级插件因此在**源码运行与打包版**上行为一致；该钩子与应用入口（`main.py`）同列受保护清单，插件不得拆除。
 
 ### 1.9 系统工具
 
@@ -223,7 +223,7 @@ zhuzhu Copilot/
 │   ├── main.py                          # 入口：迁移 → 崩溃钩子 → **覆盖层导入钩子安装** → QApplication → 启动动画 → AI 面板
 │   ├── _copilot_overlay_hook.py         # 源码覆盖层导入钩子（打包版源码级插件的地基，受保护）
 │   └── zhuzhu_Copilot/
-│       ├── copilot_plugins_examples/    # Copilot 插件示例（改主题/自定义工具/自定义设置页/应用扩展）
+│       ├── copilot_plugins_examples/    # Copilot 插件开发指南 + 示例（改主题/自定义工具/自定义设置页/应用扩展/Agent 评分）
 │       ├── core/
 │       │   ├── agent_engine.py          # Agent 核心循环（观察→调用→验证）
 │       │   ├── agent_background.py      # 后台并发任务管理器（命令/子Agent/跨工作流）
@@ -244,7 +244,8 @@ zhuzhu Copilot/
 │       │   ├── agent_plugins.py         # Agent 插件系统（mcp/skill/combined/web/source 五型）
 │       │   ├── copilot_plugins.py       # Copilot 插件系统（应用级独立体系：源码级定制 + 页面/服务/托盘/快捷键扩展）
 │       │   ├── plugin_guard.py          # 插件校验系统（内置唯一不可替换，危险强制删除）
-│       │   ├── plugin_source.py         # 源码级插件引擎（source_ops 应用/回滚，覆盖层/源码树双落地）
+│       │   ├── plugin_source.py         # 源码级插件引擎（source_ops 写入转译层 / 自动回滚）
+│       │   ├── hot_reload.py            # 转译层热加载（启用/停用后重载受影响模块）
 │       │   ├── workflow_manager.py      # 工作流管理
 │       │   ├── sub_agent_manager.py     # 子 Agent 管理
 │       │   ├── mcp_registry.py          # MCP 注册
