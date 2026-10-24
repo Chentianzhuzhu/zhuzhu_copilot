@@ -34,12 +34,18 @@ def _isolated_data_root(tmp_path_factory):
     迁移流程，仍可像 test_app_identity 那样在用例内覆盖这两个接缝。
     """
     from zhuzhu_Copilot import app_identity
+    from zhuzhu_Copilot.core import plugin_source
 
     mp = pytest.MonkeyPatch()
     home = tmp_path_factory.mktemp("home")
     (home / app_identity.DATA_DIR_NAME).mkdir(parents=True, exist_ok=True)
     mp.setattr(app_identity, "_home", lambda: home)
     mp.setattr(app_identity, "_migrated", True)
+    # 转译层也钉到临时目录（真实缺陷：应用/回滚类用例会把桩文件写进用户
+    # ~/.zhuzhu_Copilot/source_overlay，下次启动导入钩子优先加载桩模块 →
+    # agent_tools 缺 get_workdir，界面周期刷新直接 AttributeError）。
+    mp.setattr(plugin_source, "overlay_root",
+               lambda: home / app_identity.DATA_DIR_NAME / "source_overlay")
     yield home
     mp.undo()
 

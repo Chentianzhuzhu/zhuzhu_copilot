@@ -383,6 +383,19 @@ def test_scorecard_example_is_runtime_only():
                                      for t in agent_tools.tool_schemas()}
 
 
+def test_overlay_root_is_isolated_in_tests():
+    """回归：转译层根必须被 conftest 重定向到临时目录。
+
+    真实事故：应用/回滚用例未隔离 overlay_root，把桩文件写进用户
+    ~/.zhuzhu_Copilot/source_overlay；下次启动导入钩子优先加载桩模块，
+    agent_tools 缺 get_workdir，界面周期刷新直接 AttributeError。
+    """
+    from zhuzhu_Copilot import app_identity
+
+    ov = plugin_source.overlay_root().resolve()
+    assert str(ov).startswith(str(app_identity.data_root().resolve())), ov
+
+
 def test_import_scorecard_zip_is_runtime_only(iso, tmp_path):
     """评分插件打包成 zip 导入后：只有 services，没有源码变更（打包版可直接用）。"""
     zp = _zip_dir(EXAMPLES / "agent-scorecard", tmp_path / "scorecard.zip")
