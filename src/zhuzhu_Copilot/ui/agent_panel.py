@@ -6946,6 +6946,18 @@ class _AgentSettingsDialog(QDialog):
             if any(ext.values()):
                 bits.append("扩展: " + "、".join(
                     f"{k}×{v}" for k, v in ext.items() if v))
+            if ext.get("services"):
+                # 服务是否真的在本进程跑起来：直接回答「启用了却没反应」这类问题
+                try:
+                    from zhuzhu_Copilot.ui import main_window as _mw
+                    running = _mw.copilot_plugin_running(p.get("name", ""))
+                    err = _mw.copilot_plugin_error(p.get("name", ""))
+                except Exception:
+                    running, err = False, ""
+                if err:
+                    bits.append("服务加载失败")
+                else:
+                    bits.append("服务运行中" if running else "服务未运行")
             if p.get("has_agent_pkg"):
                 bits.append("含 Agent 能力")
             try:

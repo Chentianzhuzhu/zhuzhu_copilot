@@ -131,6 +131,18 @@ def last_snapshot() -> dict:
     return dict(_LAST or {})
 
 
+def _worth_scoring(snap: dict) -> bool:
+    """这轮是否值得弹窗：有工具调用 / 有 token 消耗 / 耗时 ≥1s 之一即可。
+
+    旧实现要求「必须有工具调用」，纯问答任务（如"你好"）跑完毫无反馈，
+    用户会误判成插件没生效。
+    """
+    snap = snap or {}
+    return (int(snap.get("calls") or 0) > 0
+            or float(snap.get("seconds") or 0) >= 1.0
+            or int((snap.get("tokens") or {}).get("total") or 0) > 0)
+
+
 def format_metrics(snap: dict) -> str:
     """把快照整理成可读文本（对话框 / 工具返回 / 回传消息共用）。"""
     snap = snap or {}
@@ -252,14 +264,27 @@ def _panel():
 
 
 def _send_to_agent(panel, text: str) -> None:
-    """把评分反馈作为用户消息发回当前会话（走面板既有发送链路）。"""
-    if panel is None:
-        return
-    try:
-        panel.input.setPlainText(text)
-        panel._send()
-    except Exception:
-        pass
+    """把评分反馈作为用户消息发回当前会话（走面板既有发送链路）。
+
+    任务刚结束时 `_task_active` 可能还没被轮询复位，此时 `_send` 只会把消息排进
+    队列，而"完成"状态已经处理过、不会再触发自动发送 → 反馈永远发不出去。
+    故先等任务标志回落（最多约 6 秒），再调用发送。
+    """
+    from PyQt6.QtCore import QTimer
+
+    def _deliver(tries: int = 0) -> None:
+        if panel is None:
+            return
+        if getattr(panel, "_task_active", False) and tries < 20:
+            QTimer.singleShot(300, lambda: _deliver(tries + 1))
+            return
+        try:
+            panel.input.setPlainText(text)
+            panel._send()
+        except Exception:
+            pass
+
+    _deliver()
 
 
 def _show(snap: dict) -> None:
@@ -340,7 +365,9 @@ def start():
             return _ORIG["run"](self, *args, **kwargs)
         finally:
             snap = end(self)
-            if snap and int(snap.get("calls") or 0) > 0 and _bridge is not None:
+            # 只要这轮真的跑了（有耗时 / 有 token / 有工具调用）就弹窗；
+            # 只要求"有工具调用"会让纯问答任务静默无反馈，用户以为插件没生效。
+            if snap and _bridge is not None and _worth_scoring(snap):
                 _bridge.scored.emit(snap)     # 排队到 GUI 线程弹窗
 
     agent_engine.AgentEngine.run = _run

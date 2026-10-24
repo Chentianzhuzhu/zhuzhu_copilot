@@ -2603,6 +2603,17 @@ def stop_copilot_plugin(name: str) -> None:
          if k.startswith(f"{name}:")})
 
 
+def copilot_plugin_running(name: str) -> bool:
+    """插件的后台服务是否已在本进程启动（UI 显示运行状态，便于排查「启用却没反应」）。"""
+    return any(str(s.get("plugin") or "") == name
+               for s in _COPILOT_EXT_STATE.get("services") or [])
+
+
+def copilot_plugin_error(name: str) -> str:
+    """该插件上次加载扩展时的失败原因（无失败返回空串）。"""
+    return str((_COPILOT_EXT_STATE.get("errors") or {}).get(name) or "")
+
+
 def restart_copilot_services(panel=None) -> None:
     """重载转译层后重建后台服务。
 
@@ -2643,8 +2654,10 @@ def load_copilot_extensions(panel=None) -> dict:
         from zhuzhu_Copilot.core import copilot_plugins
         plugins = [p for p in copilot_plugins.list_plugins()
                    if p.get("enabled", True)]
-    except Exception:
+    except Exception as e:
+        state["errors"] = {"": f"读取插件列表失败：{e}"}
         return state
+    errors = {}
     for p in plugins:
         name = str(p.get("name") or "")
         try:
@@ -2652,8 +2665,12 @@ def load_copilot_extensions(panel=None) -> dict:
             man = copilot_plugins.load_copilot_manifest(d)
             for section, entry in copilot_plugins._iter_manifest_entries(man):
                 register_copilot_entry(panel, name, d, section, entry)
-        except Exception:
-            continue   # 单插件容错：不阻塞其余插件与主流程
+        except Exception as e:
+            # 单插件容错：不阻塞其余插件；原因留给 UI 显示（旧实现静默吞掉，
+            # 用户只能看到「启用了却没反应」）
+            errors[name] = f"{type(e).__name__}: {e}"
+            continue
+    state["errors"] = errors
     return state
 
 
