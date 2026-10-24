@@ -422,6 +422,8 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
     meta = _pkg_meta(d)
     if not d.is_dir():
         return False, f"插件「{name}」不存在"
+    if (d / "applied.json").is_file():
+        return True, f"插件「{name}」的变更已在转译层，无需重复写入"
     if ops is None:
         ops = load_source_ops_from(d)
     ok, why = validate_source_ops(ops)
@@ -516,7 +518,7 @@ def revert_source_ops(pkg_dir, name: str) -> tuple:
     d = Path(pkg_dir)
     mf = d / "applied.json"
     if not mf.is_file():
-        return False, f"源码插件「{name}」没有已应用的变更记录"
+        return True, f"插件「{name}」没有已写入的变更，无需回滚"
     try:
         manifest = json.loads(mf.read_text(encoding="utf-8"))
     except (OSError, ValueError):

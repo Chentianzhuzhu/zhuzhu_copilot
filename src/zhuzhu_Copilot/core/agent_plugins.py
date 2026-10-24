@@ -662,11 +662,32 @@ def export_plugin_zip(name: str, dest_path: str) -> tuple:
 
 def set_plugin_enabled(name: str, enabled: bool) -> tuple:
     """启用/停用插件：停用时不删除文件，仅标记 enabled=False，并从 mcp_servers.json
-    移除/恢复对应 MCP 服务器配置（联动生效）。返回 (ok, message)。"""
+    移除/恢复对应 MCP 服务器配置（联动生效）。返回 (ok, message)。
+
+    source 型插件（带 source_ops 变更清单）在启用时自动写入转译层、停用时自动回滚，
+    保证「转译层内容 == 启用中的插件」，不需要用户手动应用/回滚。
+    """
     meta = _read_meta(name)
     if not meta:
         return False, f"插件「{name}」不存在"
-    meta["enabled"] = bool(enabled)
+    enabled = bool(enabled)
+    note = ""
+    if str(meta.get("kind") or "") == "source":
+        from zhuzhu_Copilot.core import plugin_source
+        d = plugin_dir(name)
+        applied = plugin_source.source_ops_status(d).get("applied")
+        if enabled and not applied and plugin_source.load_source_ops_from(d):
+            ok, msg = plugin_source.apply_source_plugin(name)
+            if not ok:
+                return False, f"插件「{name}」启用失败：{msg}"
+            note = "，变更已自动写入转译层"
+        elif not enabled and applied:
+            ok, msg = plugin_source.revert_source_plugin(name)
+            if not ok:
+                return False, f"插件「{name}」停用失败：{msg}"
+            note = "，变更已自动回滚"
+        meta = _read_meta(name) or meta      # apply/revert 会改写 source_applied
+    meta["enabled"] = enabled
     ok = _write_meta(name, meta)
     if not ok:
         return False, "写入插件配置失败"
@@ -684,7 +705,7 @@ def set_plugin_enabled(name: str, enabled: bool) -> tuple:
             agent_skills.save_mcp_servers(servers)
     except Exception:
         pass
-    return True, f"已{'启用' if enabled else '停用'}插件「{name}」"
+    return True, f"已{'启用' if enabled else '停用'}插件「{name}」{note}"
 
 
 def delete_plugin(name: str) -> tuple:

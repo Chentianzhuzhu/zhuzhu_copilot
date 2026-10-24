@@ -401,10 +401,11 @@ def test_revert_restores_original_after_multi_ops_same_file(iso):
 
 
 def test_revert_without_applied_manifest(iso):
+    """没有写入记录时回滚是幂等的（启用/停用可重复触发，不算失败）。"""
     _mk_source_plugin("never", [{"op": "create_file", "path": "a.py",
                                  "content": "x = 1\n"}])
     ok, msg = plugin_source.revert_source_plugin("never")
-    assert ok is False and "没有已应用" in msg
+    assert ok is True and "无需回滚" in msg
 
 
 # ══════════ 5. 校验闸门：危险源码插件应用前整体删除 ══════════

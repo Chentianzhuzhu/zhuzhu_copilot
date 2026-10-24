@@ -49,8 +49,9 @@ _NAV_ITEMS = (
 
 
 class _AgentSettingsDialog:
-    def _update_coplugin_buttons(self):
-        self.coplugin_revert_b.setEnabled(bool(p.get("source_applied")))
+    # ---- Copilot 插件扩展点：插件可在此之后追加页面构建方法 ----
+    def _current_coplugin(self) -> dict:
+        return {}
 
     def _setup_pages(self):
         self._page_builders = [
@@ -394,6 +395,54 @@ def test_overlay_root_is_isolated_in_tests():
 
     ov = plugin_source.overlay_root().resolve()
     assert str(ov).startswith(str(app_identity.data_root().resolve())), ov
+
+
+def test_set_enabled_auto_writes_and_reverts_overlay(frozen, iso):
+    """启用即自动写入转译层、停用即自动回滚（不再需要手动应用按钮）。"""
+    _mk_coplugin("auto1", [
+        {"op": "create_file", "path": "zhuzhu_Copilot/core/auto_mod.py",
+         "content": "VALUE = 1\n"},
+    ])
+    ov = frozen["overlay"]
+    ok, msg = copilot_plugins.set_enabled("auto1", True)
+    assert ok, msg
+    assert "自动写入转译层" in msg
+    assert (ov / "zhuzhu_Copilot" / "core" / "auto_mod.py").is_file()
+    assert copilot_plugins.status("auto1")["applied"]
+
+    ok, msg = copilot_plugins.set_enabled("auto1", False)
+    assert ok, msg
+    assert "自动回滚" in msg
+    assert not (ov / "zhuzhu_Copilot" / "core" / "auto_mod.py").exists()
+    assert not copilot_plugins.status("auto1")["applied"]
+
+
+def test_hot_reload_picks_up_overlay_module(tmp_path, monkeypatch):
+    """热插拔：转译层新增模块可立即导入，改写后 reload 取到新实现。"""
+    import importlib
+    import _copilot_overlay_hook as hook
+
+    from zhuzhu_Copilot.core import hot_reload
+
+    ov = tmp_path / "ov"
+    (ov / "zhuzhu_Copilot" / "core").mkdir(parents=True)
+    demos = ov / "zhuzhu_Copilot" / "core" / "hotdemo.py"
+    demos.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(hook, "overlay_dir", lambda: ov)
+    monkeypatch.setattr(plugin_source, "overlay_root", lambda: ov)
+    before = list(sys.meta_path)
+    try:
+        res = hot_reload.reload_overlay()
+        assert "zhuzhu_Copilot.core.hotdemo" in res["reloaded"], res
+        mod = importlib.import_module("zhuzhu_Copilot.core.hotdemo")
+        assert mod.VALUE == 1
+
+        demos.write_text("VALUE = 2\n", encoding="utf-8")
+        hot_reload.reload_overlay()
+        assert importlib.import_module("zhuzhu_Copilot.core.hotdemo").VALUE == 2
+    finally:
+        sys.meta_path[:] = before
+        sys.modules.pop("zhuzhu_Copilot.core.hotdemo", None)
 
 
 def test_import_scorecard_zip_is_runtime_only(iso, tmp_path):

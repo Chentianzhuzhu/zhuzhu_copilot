@@ -2603,6 +2603,32 @@ def stop_copilot_plugin(name: str) -> None:
          if k.startswith(f"{name}:")})
 
 
+def restart_copilot_services(panel=None) -> None:
+    """重载转译层后重建后台服务。
+
+    服务句柄绑定的是**旧模块对象**：热加载替换模块后，旧句柄不会自动用上新代码，
+    必须先停掉再按启用列表重新 start（幂等，未启用的插件不会启动）。
+    """
+    for svc in reversed(_COPILOT_EXT_STATE.get("services") or []):
+        stop = getattr(svc.get("module"), svc.get("stop") or "", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        handle = svc.get("handle")
+        closer = getattr(handle, "stop", None) or getattr(handle, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+    _COPILOT_EXT_STATE["services"] = []
+    _COPILOT_EXT_STATE["started"].difference_update(
+        {k for k in _COPILOT_EXT_STATE["started"] if ":services:" in k})
+    load_copilot_extensions(panel)
+
+
 def load_copilot_extensions(panel=None) -> dict:
     """加载启用中的 Copilot 插件扩展（页面 / 后台服务 / 托盘动作 / 快捷键）。
 

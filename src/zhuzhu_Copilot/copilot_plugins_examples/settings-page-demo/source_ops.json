@@ -19,7 +19,7 @@
   {
     "op": "append",
     "path": "zhuzhu_Copilot/ui/agent_panel.py",
-    "after": "        self.coplugin_revert_b.setEnabled(bool(p.get(\"source_applied\")))",
+    "after": "    # ---- Copilot 插件扩展点：插件可在此之后追加页面构建方法 ----",
     "content": "\n    def _build_quote_page(self) -> QWidget:\n        \"\"\"每日一句页（Copilot 插件 settings-page-demo 注入）。\"\"\"\n        from zhuzhu_Copilot.ui.page_quote import QuotePage\n        return QuotePage(self.stack)"
   }
 ]

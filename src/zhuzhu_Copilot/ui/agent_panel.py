@@ -6511,19 +6511,6 @@ class _AgentSettingsDialog(QDialog):
         src_create_b.setToolTip(_ui("开发者向：AI 生成对应用源码的变更清单（新建源码文件/追加到现有模块之后/"
                                     "锚点插入/替换模块/多模块综合修改），写入转译层，不改动应用源码文件"))
         src_create_b.clicked.connect(self._on_plugin_create_source)
-        self.plugin_apply_b = QPushButton(_ui("应用到转译层"))
-        self.plugin_apply_b.setStyleSheet(self._btn_qss("primary"))
-        self.plugin_apply_b.setAutoDefault(False)
-        self.plugin_apply_b.setEnabled(False)
-        self.plugin_apply_b.setToolTip(_ui("把插件的变更写入转译层（不修改应用源码文件）：先过插件校验系统，"
-                                           "再逐文件备份、写入、编译检查，失败整体回滚；重启应用后生效"))
-        self.plugin_apply_b.clicked.connect(self._on_plugin_apply_source)
-        self.plugin_revert_b = QPushButton(_ui("回滚转译层"))
-        self.plugin_revert_b.setStyleSheet(self._btn_qss("dim"))
-        self.plugin_revert_b.setAutoDefault(False)
-        self.plugin_revert_b.setEnabled(False)
-        self.plugin_revert_b.setToolTip(_ui("按备份卸载回滚已写入转译层的变更（新建的文件删除、修改的文件还原）"))
-        self.plugin_revert_b.clicked.connect(self._on_plugin_revert_source)
         detail_b = QPushButton(_ui("详情/配置"))
         detail_b.setStyleSheet(self._btn_qss("ghost"))
         detail_b.setAutoDefault(False)
@@ -6547,8 +6534,6 @@ class _AgentSettingsDialog(QDialog):
         del_b.setStyleSheet(self._btn_qss("dim"))
         del_b.setAutoDefault(False)
         del_b.clicked.connect(self._on_plugin_delete)
-        self.plugin_list.currentItemChanged.connect(
-            lambda *a: self._update_source_buttons())
         self.plugin_list.itemDoubleClicked.connect(
             lambda *a: self._on_plugin_detail())
         row.addWidget(create_b)
@@ -6556,8 +6541,6 @@ class _AgentSettingsDialog(QDialog):
         row.addWidget(imp_zip)
         row.addWidget(imp_skill)
         row.addWidget(detail_b)
-        row.addWidget(self.plugin_apply_b)
-        row.addWidget(self.plugin_revert_b)
         row.addWidget(toggle_b)
         row.addWidget(call_b)
         row.addWidget(wf_b)
@@ -6596,7 +6579,7 @@ class _AgentSettingsDialog(QDialog):
             if _updated:
                 _meta.append(_uif("更新: {t}", t=_updated))
             if p.get("kind") == "source":
-                _meta.append("已应用" if p.get("source_applied") else "未应用")
+                _meta.append("已写入转译层" if p.get("source_applied") else "未写入转译层")
             if bound:
                 _meta.append(_uif("工作流: {wfs}", wfs=", ".join(bound)))
             try:
@@ -6607,17 +6590,6 @@ class _AgentSettingsDialog(QDialog):
                 p.get("name", "?"), _plugin_desc,
                 meta="  |  ".join(_meta),
                 icon=_icon, badges=" · ".join(x for x in (kind, state) if x))
-        self._update_source_buttons()
-
-    def _update_source_buttons(self):
-        """按当前选中插件刷新「应用/回滚源码插件」按钮可用状态。"""
-        if not hasattr(self, "plugin_apply_b"):
-            return
-        p = self._current_plugin() or {}
-        is_source = p.get("kind") == "source"
-        applied = bool(p.get("source_applied"))
-        self.plugin_apply_b.setEnabled(bool(is_source) and not applied)
-        self.plugin_revert_b.setEnabled(bool(is_source) and applied)
 
     def _current_plugin(self) -> dict:
         row = self.plugin_list.currentRow()
@@ -6649,19 +6621,6 @@ class _AgentSettingsDialog(QDialog):
         imp_zip.setAutoDefault(False)
         imp_zip.setToolTip(_ui("导入 Copilot 插件 zip 包（含 plugin.json 与 source_ops/copilot.json）"))
         imp_zip.clicked.connect(self._on_coplugin_import_zip)
-        self.coplugin_apply_b = QPushButton(_ui("应用到转译层"))
-        self.coplugin_apply_b.setStyleSheet(self._btn_qss("primary"))
-        self.coplugin_apply_b.setAutoDefault(False)
-        self.coplugin_apply_b.setEnabled(False)
-        self.coplugin_apply_b.setToolTip(_ui("把插件的变更写入转译层（不修改应用源码文件）：先过插件校验系统，"
-                                             "再逐文件备份、写入、编译检查，失败整体回滚；重启应用后生效"))
-        self.coplugin_apply_b.clicked.connect(self._on_coplugin_apply)
-        self.coplugin_revert_b = QPushButton(_ui("回滚转译层"))
-        self.coplugin_revert_b.setStyleSheet(self._btn_qss("dim"))
-        self.coplugin_revert_b.setAutoDefault(False)
-        self.coplugin_revert_b.setEnabled(False)
-        self.coplugin_revert_b.setToolTip(_ui("按备份卸载回滚已写入转译层的变更（新建的文件删除、修改的文件还原）"))
-        self.coplugin_revert_b.clicked.connect(self._on_coplugin_revert)
         detail_b = QPushButton(_ui("详情/配置"))
         detail_b.setStyleSheet(self._btn_qss("ghost"))
         detail_b.setAutoDefault(False)
@@ -6679,17 +6638,13 @@ class _AgentSettingsDialog(QDialog):
         del_b = QPushButton(_line_icon("trash", 16), _ui("删除"))
         del_b.setStyleSheet(self._btn_qss("dim"))
         del_b.setAutoDefault(False)
-        del_b.setToolTip(_ui("删除插件（已应用的源码变更会先回滚）"))
+        del_b.setToolTip(_ui("删除插件（已写入转译层的变更会先回滚）"))
         del_b.clicked.connect(self._on_coplugin_delete)
-        self.coplugin_list.currentItemChanged.connect(
-            lambda *a: self._update_coplugin_buttons())
         self.coplugin_list.itemDoubleClicked.connect(
             lambda *a: self._on_coplugin_detail())
         row.addWidget(create_b)
         row.addWidget(imp_zip)
         row.addWidget(detail_b)
-        row.addWidget(self.coplugin_apply_b)
-        row.addWidget(self.coplugin_revert_b)
         row.addWidget(export_b)
         row.addWidget(toggle_b)
         row.addWidget(del_b)
@@ -7001,14 +6956,6 @@ class _AgentSettingsDialog(QDialog):
                 p.get("name", "?"), str(p.get("description") or ""),
                 meta="  |  ".join(bits), icon=icon, badges=state,
                 icon_text=p.get("name", "?"))
-        self._update_coplugin_buttons()
-
-    def _update_coplugin_buttons(self):
-        if not hasattr(self, "coplugin_apply_b") or self.coplugin_apply_b is None:
-            return
-        p = self._current_coplugin() or {}
-        self.coplugin_apply_b.setEnabled(bool(p.get("name")) and not p.get("source_applied"))
-        self.coplugin_revert_b.setEnabled(bool(p.get("source_applied")))
 
     def _refresh_coplugin_overlay_label(self):
         """刷新「生效位置」状态行：插件变更的落点（转译层）。"""
@@ -7023,12 +6970,13 @@ class _AgentSettingsDialog(QDialog):
             return
         if info.get("mode") == "overlay":
             n = len(info.get("modules") or [])
-            lbl.setText(_uif("生效位置：转译层 {root} · 已加载 {n} 个模块 · 应用/回滚后重启生效",
+            lbl.setText(_uif("生效位置：转译层 {root} · 已加载 {n} 个模块 · 启用/停用即自动热加载",
                              root=info.get("root"), n=n))
         else:
-            lbl.setText(_uif("生效位置：转译层 {root} · 应用/回滚后重启生效",
+            lbl.setText(_uif("生效位置：转译层 {root} · 启用/停用即自动热加载",
                              root=info.get("root")))
 
+    # ---- Copilot 插件扩展点：插件可在此之后追加页面构建方法 ----
     def _current_coplugin(self) -> dict:
         if not hasattr(self, "coplugin_list") or self.coplugin_list is None:
             return {}
@@ -7113,105 +7061,44 @@ class _AgentSettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("导出失败"), msg)
 
-    def _on_coplugin_apply(self, *_):
-        p = self._current_coplugin()
-        if not p.get("name"):
-            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
-            return
-        name = p.get("name", "")
-        ret = QMessageBox.question(
-            self, _ui("应用到转译层"),
-            _uif("将把 Copilot 插件「{n}」的变更写入转译层：\n"
-                 "· 应用源码文件保持不变，变更只落在用户数据目录的转译层\n"
-                 "· 先经插件校验系统检查（危险代码强制删除并提示用户）\n"
-                 "· 每个被改文件自动备份，全部写入后编译检查，失败整体回滚\n"
-                 "· 重启应用后生效\n\n确定应用？", n=name),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            from zhuzhu_Copilot.core import copilot_plugins
-            ok, msg = copilot_plugins.apply(name)
-        except Exception as e:
-            ok, msg = False, f"应用失败: {e}"
-        self._reload_coplugin_list()
-        if ok:
-            QMessageBox.information(self, _ui("应用完成"), msg)
-        else:
-            QMessageBox.warning(self, _ui("应用失败"), msg)
-
-    def _on_coplugin_revert(self, *_):
-        p = self._current_coplugin()
-        if not p.get("name"):
-            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
-            return
-        name = p.get("name", "")
-        ret = QMessageBox.question(
-            self, _ui("回滚转译层"),
-            _uif("将按备份卸载回滚「{n}」已写入转译层的变更：\n"
-                 "· 新建的文件删除、修改的文件还原为写入前内容\n"
-                 "· 写入后被手动改过的文件会跳过（不覆盖你的修改）\n\n确定回滚？", n=name),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            from zhuzhu_Copilot.core import copilot_plugins
-            ok, msg = copilot_plugins.revert(name)
-        except Exception as e:
-            ok, msg = False, f"回滚失败: {e}"
-        self._reload_coplugin_list()
-        if ok:
-            QMessageBox.information(self, _ui("回滚完成"), msg)
-        else:
-            QMessageBox.warning(self, _ui("回滚失败"), msg)
-
     def _on_coplugin_toggle(self, *_):
+        """启用/停用 Copilot 插件：自动写入/回滚转译层，并热加载、重建服务。"""
         p = self._current_coplugin()
         if not p.get("name"):
             QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
             return
         name = p.get("name", "")
+        target = not p.get("enabled", True)
         try:
             from zhuzhu_Copilot.core import copilot_plugins
-            ok, msg = copilot_plugins.set_enabled(name, not p.get("enabled", True))
+            from zhuzhu_Copilot.core import hot_reload
+            from zhuzhu_Copilot.ui import main_window as _mw
+        except Exception as e:
+            QMessageBox.warning(self, _ui("操作失败"), str(e))
+            return
+        # 停用前先停服务：避免热加载期间旧句柄仍在运行
+        if not target:
+            _mw.stop_copilot_plugin(name)
+        try:
+            # set_enabled 内部已自动 apply（启用）/ revert（停用）转译层
+            ok, msg = copilot_plugins.set_enabled(name, target)
         except Exception as e:
             ok, msg = False, f"操作失败: {e}"
-        self._reload_coplugin_list()
         if not ok:
+            # 停用流程可能已先停掉服务：失败时恢复原状
+            _mw.restart_copilot_services()
+            self._reload_coplugin_list()
             QMessageBox.warning(self, _ui("操作失败"), msg)
             return
-        # 运行期立即生效：启用即启动插件扩展（服务），停用即卸载其服务。
-        try:
-            from zhuzhu_Copilot.ui import main_window as _mw
-        except Exception:
-            _mw = None
-        try:
-            from zhuzhu_Copilot.core import copilot_plugins as _cp
-            fresh = _cp.get_plugin(name) or {}
-        except Exception:
-            fresh = {}
-        if fresh.get("enabled", True):
-            if _mw is not None:
-                started, err = _mw.start_copilot_plugin(name)
-                if not started:
-                    QMessageBox.warning(self, _ui("插件未完全生效"), err)
-        elif _mw is not None:
-            _mw.stop_copilot_plugin(name)
-        # 源码变更（写入转译层）尚未应用：提示并给「立即应用」入口。
-        if fresh.get("enabled") and not fresh.get("source_applied") \
-                and int(fresh.get("source_ops") or 0) > 0:
-            ret = QMessageBox.question(
-                self, _ui("需要应用到转译层"),
-                _uif("插件「{n}」有 {c} 条源码变更尚未应用，现在不会生效。\n"
-                     "是否立即应用到转译层？（不修改应用源码文件，会先经插件校验系统"
-                     "检查，失败自动整体回滚；重启应用后生效）",
-                     n=name, c=int(fresh.get("source_ops") or 0)),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes)
-            if ret == QMessageBox.StandardButton.Yes:
-                self._on_coplugin_apply()
+        result = hot_reload.reload_overlay()
+        _mw.restart_copilot_services()
+        self._reload_coplugin_list()
+        detail = hot_reload.summary(result)
+        text = f"{msg}\n{detail}" if detail else msg
+        if result.get("failed"):
+            QMessageBox.warning(self, _ui("插件"), text)
+        else:
+            QMessageBox.information(self, _ui("插件"), text)
 
     def _on_coplugin_delete(self, *_):
         p = self._current_coplugin()
@@ -7222,16 +7109,25 @@ class _AgentSettingsDialog(QDialog):
         ret = QMessageBox.question(
             self, _ui("删除 Copilot 插件"),
             _uif("确定删除 Copilot 插件「{n}」？\n"
-                 "已应用的源码变更会先自动回滚；其登记的 Agent 能力（技能/MCP）也会移除。", n=name),
+                 "已写入转译层的变更会先自动回滚；其登记的 Agent 能力（技能/MCP）也会移除。", n=name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes:
             return
         try:
-            from zhuzhu_Copilot.core import copilot_plugins
+            from zhuzhu_Copilot.core import copilot_plugins, hot_reload
+            from zhuzhu_Copilot.ui import main_window as _mw
+        except Exception as e:
+            QMessageBox.warning(self, _ui("删除失败"), str(e))
+            return
+        _mw.stop_copilot_plugin(name)      # 先停服务，避免热加载期间仍在运行
+        try:
             ok, msg = copilot_plugins.delete_plugin(name)
         except Exception as e:
             ok, msg = False, f"删除失败: {e}"
+        if ok:
+            hot_reload.reload_overlay()
+            _mw.restart_copilot_services()
         self._reload_coplugin_list()
         if ok:
             QMessageBox.information(self, _ui("已删除"), msg)
@@ -7325,53 +7221,6 @@ class _AgentSettingsDialog(QDialog):
         self._reload_mcp_list()
         threading.Thread(target=self._init_mcp, daemon=True).start()
 
-    def _on_plugin_apply_source(self, *_):
-        """把插件变更写入转译层（插件校验 → 备份 → 写入 → 编译检查，失败整体回滚）"""
-        p = self._current_plugin()
-        if p is None:
-            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
-            return
-        name = p.get("name", "")
-        ret = QMessageBox.question(
-            self, _ui("应用到转译层"),
-            _uif("将把插件「{n}」的变更写入转译层：\n"
-                 "· 应用源码文件保持不变，变更只落在用户数据目录的转译层\n"
-                 "· 先经插件校验系统检查（危险代码强制删除并提示用户）\n"
-                 "· 每个被改文件自动备份，全部写入后编译检查，失败整体回滚\n"
-                 "· 重启应用后生效\n\n确定应用？", n=name),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
-            return
-        ok, msg = agent_plugins.apply_source_plugin(name)
-        if ok:
-            QMessageBox.information(self, _ui("应用到转译层"), msg)
-        else:
-            QMessageBox.warning(self, _ui("应用失败"), msg)
-        self._reload_plugin_list()
-
-    def _on_plugin_revert_source(self, *_):
-        """卸载回滚已写入转译层的变更（新建的删除、修改的还原）"""
-        p = self._current_plugin()
-        if p is None:
-            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
-            return
-        name = p.get("name", "")
-        ret = QMessageBox.question(
-            self, _ui("回滚转译层"),
-            _uif("将按备份还原插件「{n}」已写入转译层的变更"
-                 "（新建的文件删除、修改的文件还原备份内容）。确定回滚？", n=name),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
-            return
-        ok, msg = agent_plugins.revert_source_plugin(name)
-        if ok:
-            QMessageBox.information(self, _ui("回滚转译层"), msg)
-        else:
-            QMessageBox.warning(self, _ui("回滚失败"), msg)
-        self._reload_plugin_list()
-
     def _on_plugin_progress(self, pct: int, text: str):
         """生成期间更新进度百分比与文案"""
         self._pbar_update(pct, text)
@@ -7418,15 +7267,24 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
 
     def _on_plugin_toggle(self, *_):
-        """启用/停用插件：停用移除 MCP 登记，启用恢复；刷新列表与 MCP 列表"""
+        """启用/停用插件：自动写入/回滚转译层、热加载模块，并联动 MCP 登记。"""
         p = self._current_plugin()
         if p is None:
             QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
             return
         name = p.get("name", "")
+        # set_plugin_enabled 内部已自动 apply（启用）/ revert（停用）转译层
         ok, msg = agent_plugins.set_plugin_enabled(name, not bool(p.get("enabled")))
+        detail = ""
         if ok:
-            QMessageBox.information(self, _ui("插件"), msg)
+            try:
+                from zhuzhu_Copilot.core import hot_reload
+                detail = hot_reload.summary(hot_reload.reload_overlay())
+            except Exception as e:
+                detail = f"热加载失败：{e}"
+        text = f"{msg}\n{detail}" if detail else msg
+        if ok:
+            QMessageBox.information(self, _ui("插件"), text)
         else:
             QMessageBox.warning(self, _ui("操作失败"), msg)
         self._reload_plugin_list()

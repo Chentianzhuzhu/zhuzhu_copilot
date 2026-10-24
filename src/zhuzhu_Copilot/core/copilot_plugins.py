@@ -418,14 +418,34 @@ def overlay_info() -> dict:
 # ---------------------------------------------------------------------------
 
 def set_enabled(name: str, enabled: bool) -> tuple:
+    """启用/停用插件：启用时自动把变更写入转译层，停用时自动回滚。
+
+    保证「转译层内容 == 启用中的插件」，用户不再需要手动点「应用/回滚」。
+    应用失败（校验不通过、编译失败）则启用失败并整体回滚，元数据保持停用。
+    """
     meta = _read_meta(name)
     if not meta:
         return False, f"插件「{name}」不存在"
-    meta["enabled"] = bool(enabled)
+    enabled = bool(enabled)
+    note = ""
+    if enabled:
+        if source_ops(name) and not status(name).get("applied"):
+            ok, msg = apply(name)
+            if not ok:
+                return False, f"插件「{name}」启用失败：{msg}"
+            note = "，变更已自动写入转译层"
+    elif status(name).get("applied"):
+        ok, msg = revert(name)
+        if not ok:
+            return False, f"插件「{name}」停用失败：{msg}"
+        note = "，变更已自动回滚"
+    # apply/revert 会改写同一份 plugin.json（source_applied 等），故重新读取再写
+    meta = _read_meta(name) or meta
+    meta["enabled"] = enabled
     meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     if not _write_meta(name, meta):
         return False, "写入插件元数据失败"
-    return True, ("已启用" if enabled else "已停用") + f"插件「{name}」（重启后完全生效）"
+    return True, ("已启用" if enabled else "已停用") + f"插件「{name}」{note}"
 
 
 def delete_plugin(name: str) -> tuple:
