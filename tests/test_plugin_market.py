@@ -23,6 +23,7 @@ import pytest                                                       # noqa: E402
 
 from zhuzhu_Copilot.core import (                                   # noqa: E402
     agent_plugins, agent_skills, copilot_plugins, plugin_guard, plugin_market,
+    plugin_source,
 )
 
 EXAMPLES = (Path(__file__).resolve().parents[1] / "src" / "zhuzhu_Copilot"
@@ -178,6 +179,10 @@ def market(tmp_path, monkeypatch):
     monkeypatch.setattr(copilot_plugins, "COPILOT_PLUGINS_DIR",
                         tmp_path / "copilot_plugins")
     monkeypatch.setattr(agent_skills, "CONFIG_DIR", tmp_path / "agent")
+    # 市场导入会自动应用 Copilot 插件：转译层按用例隔离，且校验 LLM 用替身
+    monkeypatch.setattr(plugin_source, "overlay_root", lambda: tmp_path / "overlay")
+    monkeypatch.setattr(plugin_guard, "_llm_review",
+                        lambda blobs: {"verdict": "safe", "reason": "测试替身：安全"})
     agent_skills._MCP_CACHE["data"] = None
     STATE["users"], STATE["tokens"], STATE["plugins"] = {}, {}, []
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _MarketHandler)

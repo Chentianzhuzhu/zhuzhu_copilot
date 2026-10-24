@@ -2512,6 +2512,20 @@ def _seg_sig(seg: dict) -> tuple:
     return (t,)
 
 
+def _hot_apply_plugins() -> None:
+    """插件导入/创建后的运行时收尾：热加载转译层并重建 Copilot 扩展服务。
+
+    不依赖任何设置页控件（设置页与对话页导入共用）；失败静默，不影响导入结果。
+    """
+    try:
+        from zhuzhu_Copilot.core import hot_reload
+        from zhuzhu_Copilot.ui import main_window as _mw
+        hot_reload.reload_overlay()
+        _mw.restart_copilot_services()
+    except Exception:
+        pass
+
+
 class _TypingDots(QWidget):
     """任务执行中 AI 气泡下方的打字指示器动画（iMessage 风格：三点依次弹起，
     相位错开 1/3 循环，随消息流滚动，无 emoji）"""
@@ -6856,17 +6870,39 @@ class _AgentSettingsDialog(QDialog):
             QMessageBox.information(self, _ui("插件市场"), _ui("请先在列表里选中一个插件"))
             return
         self.market_status.setText(_uif("正在下载并导入 {n}…", n=it.get("name") or it.get("slug")))
+        self._market_was_download = True
         self._market_do(plugin_market.download_into_local,
                         str(it.get("slug") or ""), str(it.get("version") or ""))
 
     def _on_market_done(self, ok: str, msg: str):
         """市场操作结果（登录/注册/上传/下载/退出）：刷新账号状态与列表。"""
         self._market_sync_account()
+        downloaded = getattr(self, "_market_was_download", False)
+        self._market_was_download = False
         if ok == "1":
+            if downloaded:
+                # 导入已自动启用：热加载 + 重建扩展服务 + 刷新两套插件列表
+                self._refresh_after_plugin_install()
             QMessageBox.information(self, _ui("插件市场"), msg)
             self._on_market_refresh()
         else:
             QMessageBox.warning(self, _ui("插件市场"), msg)
+
+    def _refresh_after_plugin_install(self):
+        """插件导入/创建后的统一收尾：运行时生效（热加载/重建服务）+ 刷新插件列表。
+
+        core 侧导入/创建已自动写入转译层；这里让界面与运行中的进程立即感知，
+        用户无需重开设置页，也无需手动「停用→启用」。
+        """
+        _hot_apply_plugins()
+        self._reload_coplugin_list()
+        self._reload_plugin_list()
+        try:
+            from zhuzhu_Copilot.core import agent_skills
+            self._mcp_servers = agent_skills.load_mcp_servers()
+            self._reload_mcp_list()
+        except Exception:
+            pass
 
     def _reload_coplugin_list(self):
         if not hasattr(self, "coplugin_list") or self.coplugin_list is None:
@@ -6958,11 +6994,11 @@ class _AgentSettingsDialog(QDialog):
             self.copilot_plugin_done.emit("0", f"创建 Copilot 插件异常: {e}")
 
     def _on_coplugin_create(self, *_):
-        """自然语言描述 → 后台线程 AI 生成 Copilot 插件（变更清单，确认后才应用）"""
+        """自然语言描述 → 后台线程 AI 生成 Copilot 插件（生成后自动写入转译层并启用）"""
         text, ok = _MultiLineInputDialog.get(
             self, "创建 Copilot 插件",
             "描述 Copilot 插件要做什么：改哪些源码文件、新建什么模块、集成什么功能，"
-            "要不要主窗口页面/后台服务/托盘/快捷键（生成 source_ops 变更清单，不会自动改动源码）：",
+            "要不要主窗口页面/后台服务/托盘/快捷键（变更写入转译层，不改应用源码文件）：",
             "在 core 下新建一个每日待办模块，并在 agent_tools 的工具清单里登记两个工具，"
             "再在设置面板加一个待办页面")
         if not ok or not text.strip():
@@ -6976,10 +7012,11 @@ class _AgentSettingsDialog(QDialog):
 
     def _on_coplugin_done(self, ok: str, msg: str):
         self._pbar_close()
-        self._reload_coplugin_list()
         if ok == "1":
+            self._refresh_after_plugin_install()
             QMessageBox.information(self, _ui("Copilot 插件已创建"), msg)
         else:
+            self._reload_coplugin_list()
             QMessageBox.warning(self, _ui("创建失败"), msg)
 
     def _on_coplugin_import_zip(self, *_):
@@ -6992,10 +7029,11 @@ class _AgentSettingsDialog(QDialog):
             ok, msg = copilot_plugins.import_plugin_zip(path)
         except Exception as e:
             ok, msg = False, f"导入失败: {e}"
-        self._reload_coplugin_list()
         if ok:
+            self._refresh_after_plugin_install()
             QMessageBox.information(self, _ui("导入成功"), msg)
         else:
+            self._reload_coplugin_list()
             QMessageBox.warning(self, _ui("导入失败"), msg)
 
     def _on_coplugin_export(self, *_):
@@ -27841,7 +27879,7 @@ class AgentPanel(QDialog):
         label = _ui("Copilot 插件") if kind == "copilot" else _ui("Agent 插件")
         ret = QMessageBox.question(
             self, _ui("导入插件包"),
-            _uif("检测到{k}包：{f}\n是否导入为插件？（导入后到设置页对应页面应用/启用）",
+            _uif("检测到{k}包：{f}\n是否导入为插件？（导入后自动启用并生效）",
                  k=label, f=os.path.basename(path)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes)
@@ -27851,13 +27889,14 @@ class AgentPanel(QDialog):
             if kind == "copilot":
                 from zhuzhu_Copilot.core import copilot_plugins
                 ok, msg = copilot_plugins.import_plugin_zip(path)
-                self._reload_coplugin_list()
+                if ok:
+                    _hot_apply_plugins()   # 对话页导入：立即生效，设置页下次打开即为最新
             else:
                 from zhuzhu_Copilot.core import agent_plugins, agent_skills
                 ok, msg = agent_plugins.import_plugin_zip(path)
-                self._reload_plugin_list()
                 self._mcp_servers = agent_skills.load_mcp_servers()
-                self._reload_mcp_list()
+                if hasattr(self, "_reload_mcp_list"):
+                    self._reload_mcp_list()
                 if ok:
                     threading.Thread(target=self._init_mcp, daemon=True).start()
         except Exception as e:

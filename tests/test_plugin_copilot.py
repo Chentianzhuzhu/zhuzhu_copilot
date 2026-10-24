@@ -109,6 +109,9 @@ def iso(tmp_path, monkeypatch):
     monkeypatch.setattr(copilot_plugins, "COPILOT_PLUGINS_DIR",
                         tmp_path / "copilot_plugins")
     monkeypatch.setattr(agent_skills, "CONFIG_DIR", tmp_path / "agent")
+    # 转译层按用例隔离：导入即自动应用，若共用会话级覆盖层，前一个用例写入的
+    # 新建文件会让后一个用例的 create_file 因「文件已存在」而启用失败。
+    monkeypatch.setattr(plugin_source, "overlay_root", lambda: tmp_path / "overlay")
     monkeypatch.setattr(plugin_guard, "_llm_review",
                         lambda blobs: {"verdict": "safe", "reason": "测试替身：安全"})
     agent_skills._MCP_CACHE["data"] = None
@@ -513,6 +516,34 @@ def test_import_export_roundtrip(iso, tmp_path):
     assert copilot_plugins.get_plugin_config("custom-hello-tool") == {
         "api_key": "sk-x", "debug": True}
     assert len(copilot_plugins.source_ops("custom-hello-tool")) == 3
+
+
+def test_import_auto_applies_overlay(iso, tmp_path):
+    """导入即生效：启用状态下导入后自动写入转译层，无需手动「停用→启用」。"""
+    zp = _zip_dir(EXAMPLES / "custom-hello-tool", tmp_path / "auto.zip")
+    ok, msg = copilot_plugins.import_plugin_zip(str(zp))
+    assert ok, msg
+    p = copilot_plugins.get_plugin("custom-hello-tool")
+    assert p["enabled"] is True
+    assert copilot_plugins.status("custom-hello-tool")["applied"] is True
+    assert "已自动写入转译层" in msg
+
+
+def test_import_keeps_disabled_plugin_unapplied(iso, tmp_path):
+    """插件包自带 enabled=false：导入保留停用状态，不写入转译层。"""
+    d = tmp_path / "pkg" / "off1"
+    d.mkdir(parents=True)
+    (d / "plugin.json").write_text(json.dumps(
+        {"name": "off1", "enabled": False, "description": "t"}, ensure_ascii=False),
+        encoding="utf-8")
+    (d / "source_ops.json").write_text(json.dumps([{
+        "op": "create_file", "path": "zhuzhu_Copilot/core/off_mod.py",
+        "content": "X = 1\n"}], ensure_ascii=False), encoding="utf-8")
+    zp = _zip_dir(tmp_path / "pkg", tmp_path / "off.zip")
+    ok, msg = copilot_plugins.import_plugin_zip(str(zp))
+    assert ok, msg
+    assert copilot_plugins.get_plugin("off1")["enabled"] is False
+    assert copilot_plugins.status("off1")["applied"] is False
 
 
 def test_config_validation(iso):

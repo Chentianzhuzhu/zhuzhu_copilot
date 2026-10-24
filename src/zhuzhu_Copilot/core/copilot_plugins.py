@@ -579,7 +579,7 @@ def import_plugin_zip(zip_path: str) -> tuple:
     """导入 Copilot 插件 zip 包（含 plugin.json + source_ops/copilot.json）。
 
     落盘 → 规范字段补齐 → **插件校验系统**（危险即强制删除并提示）→
-    登记 agent 子包（如有）。返回 (ok, message)。
+    登记 agent 子包（如有）→ 启用状态下自动写入转译层。返回 (ok, message)。
     """
     p = Path(zip_path or "")
     if not p.is_file():
@@ -667,11 +667,21 @@ def import_plugin_zip(zip_path: str) -> tuple:
                 "、".join(f"{k}×{v}" for k, v in ext.items() if v))
     if amsg:
         msg += f"；{amsg}"
-    if n_ops:
-        msg += ("。变更尚未写入——确认后调用 apply_copilot_plugin 写入转译层"
-                "（不修改应用源码文件；逐文件备份、编译检查，可 revert_copilot_plugin 回滚）")
-    else:
-        msg += "。该插件只含运行时扩展，启用后立即生效（无需写入源码）"
+    # 6. 导入即生效：启用状态下自动写入转译层（与「启用」按钮同一套逻辑）
+    meta = _read_meta(name) or {}
+    if meta.get("enabled", True):
+        eok, emsg = set_enabled(name, True)
+        if not eok:
+            failed = _read_meta(name) or meta
+            failed["enabled"] = False
+            _write_meta(name, failed)
+            return False, f"{msg}，但自动启用失败：{emsg}（插件已保持停用）"
+        if n_ops:
+            msg += "。变更已自动写入转译层并生效"
+        else:
+            msg += "。该插件只含运行时扩展，已启用"
+    elif n_ops:
+        msg += "。当前为停用状态，启用时会自动写入转译层"
     return True, msg
 
 
@@ -806,9 +816,9 @@ def _ai_generate_copilot_spec(desc: str) -> dict:
 
 def create_from_nl(description: str, on_status=None) -> tuple:
     """用自然语言描述创建 Copilot 插件：AI 设计 source_ops（+应用扩展清单）→
-    落盘插件包 → **插件校验系统**（危险即强制删除并提示）→ 返回应用指引。
+    落盘插件包 → **插件校验系统**（危险即强制删除并提示）→ 自动写入转译层。
 
-    返回 (ok, message)。源码变更不会自动应用，需显式调用 apply(name)。
+    返回 (ok, message)。创建即生效，无需再手动应用。
     """
     def rep(pct, msg):
         if callable(on_status):
@@ -877,8 +887,15 @@ def create_from_nl(description: str, on_status=None) -> tuple:
     if any(ext.values()):
         msg += ("\n应用扩展：" +
                 "、".join(f"{k}×{v}" for k, v in ext.items() if v))
-    msg += (f"\n变更清单：{d / 'source_ops.json'}\n"
-            "**尚未写入**——确认无误后调用 apply_copilot_plugin 写入转译层"
-            "（不修改应用源码文件；逐文件备份、编译检查，可 revert_copilot_plugin 回滚）；"
-            "也可以先 read_file 审查清单后再决定。")
+    msg += f"\n变更清单：{d / 'source_ops.json'}"
+    # 创建即生效：自动写入转译层（与「启用」按钮同一套逻辑）
+    rep(92, "正在写入转译层…")
+    eok, emsg = set_enabled(name, True)
+    if not eok:
+        failed = _read_meta(name) or meta
+        failed["enabled"] = False
+        _write_meta(name, failed)
+        return False, f"{msg}\n自动启用失败：{emsg}（插件已保持停用，可排查后手动启用）"
+    msg += ("\n变更已自动写入转译层并生效（不修改应用源码文件；逐文件备份、"
+            "编译检查，可 revert_copilot_plugin 回滚）")
     return True, msg
