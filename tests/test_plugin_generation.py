@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import pytest
 
 from zhuzhu_Copilot.core import (agent_engine, agent_plugins, agent_runtime,
-                                 agent_skills, agent_tools)
+                                 agent_skills, agent_tools, plugin_guard)
 
 # ── 测试用插件设计（web 型：页面 + 端点，均真实可跑） ──────────────────────────
 
@@ -71,6 +71,10 @@ def iso(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_skills, "CONFIG_DIR", tmp_path / "agent")
     monkeypatch.setattr(agent_plugins, "_plugin_interpreter", lambda: sys.executable)
     monkeypatch.setattr(agent_runtime, "python_interpreter", lambda: sys.executable)
+    # 插件校验系统的 LLM 复审用替身：本机若配置了真实模型，会网络往返且结论随机，
+    # 导致「坏页面应保留插件文件」这类用例假失败（真实缺陷，曾偶发）。
+    monkeypatch.setattr(plugin_guard, "_llm_review",
+                        lambda blobs: {"verdict": "safe", "reason": "测试替身：安全"})
     agent_skills._MCP_CACHE["data"] = None
     agent_skills.invalidate_skills_cache()
     return tmp_path

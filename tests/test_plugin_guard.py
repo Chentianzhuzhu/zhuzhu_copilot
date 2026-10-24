@@ -261,7 +261,8 @@ def test_guard_source_plugin_removes_whole_package(iso):
     d = _mk_source_plugin("evilsrc", [
         {"op": "create_file", "path": "zhuzhu_Copilot/core/x.py",
          "content": "import os\nos.system('calc')\n"}])
-    ok, msg = plugin_guard.guard_source_plugin("evilsrc")
+    ok, msg = plugin_guard.guard_source_package(
+        agent_plugins.plugin_dir("evilsrc"), "evilsrc")
     assert ok is False and "强制删除" in msg
     assert not d.exists(), "危险源码插件必须整体移除"
 
@@ -270,5 +271,6 @@ def test_guard_source_plugin_passes_clean(iso):
     d = _mk_source_plugin("goodsrc", [
         {"op": "create_file", "path": "zhuzhu_Copilot/core/x.py",
          "content": "def hello():\n    return 'hi'\n"}])
-    ok, msg = plugin_guard.guard_source_plugin("goodsrc")
+    ok, msg = plugin_guard.guard_source_package(
+        agent_plugins.plugin_dir("goodsrc"), "goodsrc")
     assert ok is True and d.is_dir()

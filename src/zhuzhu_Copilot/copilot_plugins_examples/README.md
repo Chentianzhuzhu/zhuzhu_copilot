@@ -110,7 +110,7 @@ my-plugin/
   {
     "op": "insert_after",
     "path": "zhuzhu_Copilot/core/agent_tools.py",
-    "anchor": "            return _revert_source_plugin(str(args.get(\"name\", \"\")))",
+    "anchor": "            return _revert_copilot_plugin(str(args.get(\"name\", \"\")))",
     "content": "        # 分发接线\n        if name == \"hello_demo\":\n            from zhuzhu_Copilot.core import tool_hello_demo\n            return tool_hello_demo.run(args)"
   }
 ]

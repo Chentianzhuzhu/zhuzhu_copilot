@@ -104,6 +104,10 @@ class _Eng:
     def __init__(self):
         self._auto_skills = []
         self._messages = [{"role": "system", "content": "system"}]
+        self.efficient_mode = False   # 引擎真实属性：高效模式下不注入技能/插件规范
+
+    # 直接复用引擎的真实实现（查找/删除末尾技能消息），避免在测试里重写逻辑
+    _skill_mark_index = agent_engine.AgentEngine._skill_mark_index
 
 
 def _sync(eng, skills, plugins):

@@ -1,9 +1,9 @@
 """插件校验系统（内置唯一、不可替换的插件安全闸门）
 
-定位：随应用分发的**核心程序**，不是插件。任何插件——包括源码级插件——在
-落盘 / 导入 / 应用源码变更之前，都必须通过本模块校验：
+定位：随应用分发的**核心程序**，不是插件。任何插件——包括 Copilot 插件的源码级
+变更——在落盘 / 导入 / 应用源码变更之前，都必须通过本模块校验：
   · plugin.json 里没有任何字段可以跳过或替换校验（本模块不读此类开关）；
-  · 源码级插件不得修改本文件与安全引擎（见 PROTECTED_CORE_FILES，
+  · 源码级变更不得修改本文件与安全引擎（见 PROTECTED_CORE_FILES，
     由 plugin_source 在应用前强制检查，静态规则 guard_tamper 亦会命中）。
 
 校验两道，全部真实执行：
@@ -19,11 +19,10 @@
   · 删除动作与原因追加写入校验日志（plugins/.guard_log.jsonl），并随返回值
     明确提示用户（哪个插件、哪些文件、哪条规则、LLM 结论）。
 
-对外入口（Agent 插件与 Copilot 插件两套体系通用，按插件包目录校验）：
+对外入口（Agent / Copilot 两套插件体系通用，按插件包目录校验）：
   guard_plugin_dir(pkg_dir, name)     校验已落盘插件包（导入 / AI 生成后调用）
-  guard_source_package(pkg_dir, name) 校验源码级插件的变更清单内容（应用前调用）
-  guard_plugin(name)                  Agent 插件入口（按名寻址，转调上面两者）
-  guard_source_plugin(name)           Agent 源码插件入口（按名寻址）
+  guard_source_package(pkg_dir, name) 校验 Copilot 插件源码级变更清单（应用前调用）
+  guard_plugin(name)                  Agent 插件入口（按名寻址，转调 guard_plugin_dir）
   guard_blobs(blobs, ...)             通用内容校验（dict: 文件名 → 源码文本）
   recent_guard_events(limit)          最近校验事件（供 UI/提示展示）
 """
@@ -36,7 +35,7 @@ from pathlib import Path
 from zhuzhu_Copilot.core import agent_plugins
 
 # ---------------------------------------------------------------------------
-# 受保护的核心文件（相对应用源码根目录）：源码级插件一律不得改动
+# 受保护的核心文件（相对应用源码根目录）：Copilot 插件源码级变更一律不得改动
 # 校验系统自身、源码变更引擎与整条安全引擎都在此列——这是「唯一不可替换」的落点。
 # ---------------------------------------------------------------------------
 PROTECTED_CORE_FILES = (
@@ -399,11 +398,11 @@ def guard_plugin_dir(pkg_dir, name: str, llm_review=None) -> tuple:
 
 
 def guard_source_package(pkg_dir, name: str, llm_review=None) -> tuple:
-    """校验源码级插件包（按包目录，Agent / Copilot 通用）：扫描 source_ops 里
+    """校验 Copilot 插件包的源码级变更（按包目录）：扫描 source_ops 里
     所有待写入/待修改的代码内容，以及插件包自带的辅助文件。
 
-    在 apply 之前调用；危险 → 强制删除整个插件包并提示（源码插件的全部价值
-    就是要落到插件源码层，任何危险内容都不可容忍）。
+    在 apply 之前调用；危险 → 强制删除整个插件包并提示（Copilot 插件源码级变更的
+    全部价值就是要落到转译层，任何危险内容都不可容忍）。
     """
     from zhuzhu_Copilot.core import plugin_source
     d = Path(pkg_dir)
@@ -447,9 +446,3 @@ def guard_plugin(name: str, llm_review=None) -> tuple:
     """（Agent 插件入口）校验已落盘插件（导入/AI 生成后、登记前调用）。"""
     return guard_plugin_dir(agent_plugins.plugin_dir(name), name,
                             llm_review=llm_review)
-
-
-def guard_source_plugin(name: str, llm_review=None) -> tuple:
-    """（Agent 源码插件入口）校验源码级插件的变更清单内容（应用前调用）。"""
-    return guard_source_package(agent_plugins.plugin_dir(name), name,
-                                llm_review=llm_review)

@@ -97,8 +97,6 @@ PKG_AGENT_TOOLS = "\n".join(_TOOLS_FILLER + [
     "",
     "",
     "def dispatch(name, args):",
-    '        if name == "revert_source_plugin":',
-    '            return _revert_source_plugin(str(args.get("name", "")))',
     '        if name == "revert_copilot_plugin":',
     '            return _revert_copilot_plugin(str(args.get("name", "")))',
 ]) + "\n"

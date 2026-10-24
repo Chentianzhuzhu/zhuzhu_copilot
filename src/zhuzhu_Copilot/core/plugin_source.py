@@ -1,8 +1,8 @@
 """源码变更引擎：把插件包的变更清单（source_ops）写入应用**转译层**
 
-面向**源码级插件**（Agent 源码插件与 Copilot 插件共用本引擎）：开发者基于源码
-开发，插件包内 source_ops.json（或 plugin.json 的 "source_ops" 字段）描述对应用
-源码的变更，支持五类操作：
+面向**Copilot 插件**（应用级插件；Agent 插件不涉及应用源码，见 agent_plugins）：
+开发者基于源码开发，插件包内 source_ops.json（或 plugin.json 的 "source_ops"
+字段）描述对应用源码的变更，支持五类操作：
 
   create_file     新建功能模块（创建新模块）           {op, path, content}
   append          追加到现有代码模块之后               {op, path, content, after?}
@@ -32,14 +32,11 @@ src/_copilot_overlay_hook.py 的导入钩子让 zhuzhu_Copilot.* 的导入优先
 ——源码级插件因此可以改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何
 模块，安装版与源码版行为一致（写入后重启生效）。
 
-对外入口（包目录级，Agent / Copilot 两套插件体系通用）：
+对外入口（包目录级，Copilot 插件使用）：
   load_source_ops_from(pkg_dir)      读取插件包的变更清单
   apply_source_ops(pkg_dir, name)    应用变更（校验→备份→应用→编译→记录）
   revert_source_ops(pkg_dir, name)   按 applied.json 卸载回滚
   source_ops_status(pkg_dir)         应用状态
-Agent 源码插件兼容包装（按插件名寻址）：
-  load_source_ops(name) / apply_source_plugin(name) /
-  revert_source_plugin(name) / source_plugin_status(name)
 """
 
 import hashlib
@@ -49,7 +46,7 @@ import sys
 import time
 from pathlib import Path
 
-from zhuzhu_Copilot.core import agent_plugins, plugin_guard
+from zhuzhu_Copilot.core import plugin_guard
 
 MAX_OPS = 50                # 单插件 op 数上限（防病态包）
 MAX_CONTENT_CHARS = 512000  # 单 op 内容上限（512KB）
@@ -158,11 +155,6 @@ def load_source_ops_from(pkg_dir) -> list:
     if not isinstance(ops, list):
         return []
     return [op for op in ops if isinstance(op, dict)]
-
-
-def load_source_ops(name: str) -> list:
-    """（Agent 源码插件兼容入口）读取源码变更清单。"""
-    return load_source_ops_from(agent_plugins.plugin_dir(name))
 
 
 # ------------------------------------------------------------
@@ -598,32 +590,3 @@ def source_ops_status(pkg_dir) -> dict:
             "applied_at": str(m.get("applied_at") or ""),
             "ops": int(m.get("ops") or 0),
             "files": files}
-
-
-# ------------------------------------------------------------
-# Agent 源码插件兼容包装（按插件名寻址，行为与通用版一致）
-# ------------------------------------------------------------
-
-def apply_source_plugin(name: str) -> tuple:
-    """（Agent 源码插件入口）应用源码插件的变更。"""
-    ok, msg = apply_source_ops(agent_plugins.plugin_dir(name), name)
-    try:
-        agent_plugins.invalidate_index()
-    except Exception:
-        pass
-    return ok, msg
-
-
-def revert_source_plugin(name: str) -> tuple:
-    """（Agent 源码插件入口）卸载回滚已应用的源码变更。"""
-    ok, msg = revert_source_ops(agent_plugins.plugin_dir(name), name)
-    try:
-        agent_plugins.invalidate_index()
-    except Exception:
-        pass
-    return ok, msg
-
-
-def source_plugin_status(name: str) -> dict:
-    """（Agent 源码插件入口）源码插件应用状态。"""
-    return source_ops_status(agent_plugins.plugin_dir(name))

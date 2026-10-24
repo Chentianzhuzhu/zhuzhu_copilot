@@ -37,7 +37,7 @@
 - **文档生成**：`create_docx` / `create_pptx` / `create_xlsx`；编辑：`edit_docx` / `edit_pptx` / `edit_xlsx`；美化：`beautify_*`。
 - **系统管理**：`system_info` / `get_time` / `env_var` / `optimize_memory`。
 - **任务编排**：`update_todo` / `list_todo`；记忆：`save_memory` / `load_memory`。
-- **工作流/技能/Agent 管理**：`list_workflows` / `create_workflow` / `switch_workflow` / `inspect_workflow` / `create_skill` / `create_plugin` / `create_source_plugin`（Agent 源码级插件：AI 生成 source_ops 变更清单）/ `apply_source_plugin` / `revert_source_plugin` / `create_copilot_plugin`（Copilot 应用级插件：AI 生成源码变更清单 + 应用扩展清单）/ `apply_copilot_plugin` / `revert_copilot_plugin` / `register_sub_agent` 等（`skill_manager.py` / `workflow_manager.py` / `sub_agent_manager.py`）。
+- **工作流/技能/Agent 管理**：`list_workflows` / `create_workflow` / `switch_workflow` / `inspect_workflow` / `create_skill` / `create_plugin`（Agent 插件：MCP server + SKILL.md + web 型本地 HTTP 页面）/ `create_copilot_plugin`（Copilot 应用级插件：AI 生成源码变更清单 + 应用扩展清单）/ `apply_copilot_plugin` / `revert_copilot_plugin` / `register_sub_agent` 等（`skill_manager.py` / `workflow_manager.py` / `sub_agent_manager.py`）。
 - **MCP 注册**：`create_mcp` / `list_mcp` / `set_mcp`。
 - **微信 ClawBot**：`send_file_to_wechat` / `send_files_to_wechat`（推送文件到绑定的手机微信）；入站文件读取由 `wechat_bridge.py` 处理。
 - **进度反馈**：`set_generation_progress`（长耗时生成任务）。
@@ -61,15 +61,15 @@
 | 目录 | `~/.zhuzhu_Copilot/plugins/` | `~/.zhuzhu_Copilot/copilot_plugins/` |
 | 设置页 | 设置 → **Agent 插件** | 设置 → **Copilot 插件** |
 | 代码 | `core/agent_plugins.py` | `core/copilot_plugins.py` |
-| 扩展对象 | 只扩展 **AI Agent** 的能力 | 扩展**整个 Copilot 应用**，范围更广 |
-| 能力 | MCP 工具、SKILL.md 技能、Agent 用的本地网页界面 | 源码级定制任何模块 + 应用级扩展（页面/服务/托盘/快捷键）+ 可附带 Agent 能力 |
-| 类型 kind | `mcp` / `skill` / `combined` / `web` / `source` | `copilot`（含 source_ops + 可选 copilot.json + 可选 agent/ 子包） |
+| 扩展对象 | 只扩展 **AI Agent** 的能力，**不涉及应用源码** | 扩展**整个 Copilot 应用**，可改应用全部源码（安全层除外） |
+| 能力 | MCP server 工具、SKILL.md 技能、web 型本地 HTTP 可视化展示页面 | 源码级定制任何模块 + 应用级扩展（页面/服务/托盘/快捷键）+ 可附带 Agent 能力 |
+| 类型 kind | `mcp` / `skill` / `combined` / `web` | `copilot`（含 source_ops + 可选 copilot.json + 可选 agent/ 子包） |
 
-两套体系**共用同一套源码变更引擎（`core/plugin_source.py`）与同一个插件校验系统（`core/plugin_guard.py`）**，安全边界完全一致。
+两套体系**共用同一个插件校验系统（`core/plugin_guard.py`）**，安全边界完全一致；源码变更引擎（`core/plugin_source.py`）**只服务于 Copilot 插件**。
 
 **插件包规范**：每个插件包包含 `plugin.json` 元数据——插件名称（name）、开发者/公司（author）、更新时间（updated_at）、插件图标（icon，包内图标文件，如 `icon.png`），以及 description / kind / enabled 等；导入与创建时自动补齐，插件页列表展示开发者、更新时间与图标。
 
-**源码级定制（两套体系的核心能力，任何人都能把 Copilot 自定义成想要的样子）**：插件包内 `source_ops.json`（或 plugin.json 的 `source_ops` 字段）描述对应用源码的变更清单（`path` 相对源码根 `src/`，但变更**一律写入转译层**，不改动应用源码文件）——可把功能源码**插入到任何源代码文件**、**新建源码文件**、**一次修改多个源码文件并集成功能**。改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块，都是这条路：
+**源码级定制（仅 Copilot 插件，改应用全部源码、安全层除外）**：插件包内 `source_ops.json`（或 plugin.json 的 `source_ops` 字段）描述对应用源码的变更清单（`path` 相对源码根 `src/`，但变更**一律写入转译层**，不改动应用源码文件）——可把功能源码**插入到任何源代码文件**、**新建源码文件**、**一次修改多个源码文件并集成功能**。改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块，都是这条路：
 
 | op | 作用 |
 | --- | --- |
@@ -81,7 +81,7 @@
 | `replace_module` | 替换模块（`start`..`end` 锚点，或 `start_line`..`end_line` 行号；`end` 缺省到文件尾） |
 | `replace_file` | 整体替换文件 |
 
-**统一写入转译层（源码运行与安装版行为一致）**：变更不落应用源码目录，而是写入用户数据目录的**转译层**（`~/.zhuzhu_Copilot/source_overlay/`，目录结构镜像源码相对路径），由 `src/_copilot_overlay_hook.py` 的导入钩子让 `zhuzhu_Copilot.*` 的导入**优先命中转译层**（没有的模块回落原版；`__file__` 指回原版路径，保证包内资源解析不回退）。随包分发源码快照 `_copilot_src/`（spec datas）作为「原版内容」基准，供插入/替换类 op 取当前生效版本。**启用插件时自动写入并热加载，停用时自动回滚**；只有包根与持有进程级状态的模块（`agent_panel` / `main_window` / `styles`）会在下次启动时生效。
+**统一写入转译层（Copilot 插件，源码运行与安装版行为一致）**：变更不落应用源码目录，而是写入用户数据目录的**转译层**（`~/.zhuzhu_Copilot/source_overlay/`，目录结构镜像源码相对路径），由 `src/_copilot_overlay_hook.py` 的导入钩子让 `zhuzhu_Copilot.*` 的导入**优先命中转译层**（没有的模块回落原版；`__file__` 指回原版路径，保证包内资源解析不回退）。随包分发源码快照 `_copilot_src/`（spec datas）作为「原版内容」基准，供插入/替换类 op 取当前生效版本。**启用插件时自动写入并热加载，停用时自动回滚**；只有包根与持有进程级状态的模块（`agent_panel` / `main_window` / `styles`）会在下次启动时生效。
 
 应用链路（启用插件自动执行 / `apply_copilot_plugin` 工具）：**插件校验系统**（危险即整体删除插件包并提示）→ 逐文件备份到插件目录 `backups/` → 逐条应用 → 全部 `py_compile`，任一失败**整体回滚**（源码一行不动）→ 写 `applied.json` 清单。停用或 `revert_copilot_plugin` 据此卸载回滚：新建的文件删除、修改的文件还原备份（还原内容与原版一致时直接删掉转译层副本，让模块回落原版）；应用后被用户手动改过的文件跳过不覆盖。路径仅限源码根内的相对路径（禁绝对路径/`..` 穿越）。
 
@@ -137,8 +137,8 @@ Cordis 式「一切皆可替换」，目录 `~/.zhuzhu_Copilot/workflows/`。核
 - **网络防御**：ARP/SYN/端口扫描检测，命中后防火墙封禁。
 - **执行守卫**：纯 Win32 监控新进程，拦截格机命令与无文件攻击。
 - **输入守卫**：全局低级钩子，AI 操控期间检测用户手动操作。
-- **插件校验**：`plugin_guard.py` 内置唯一、不可替换——所有插件（Agent 插件与 Copilot 插件，含源码级插件）导入/生成/应用前过静态危险规则 + LLM 源码评审，危险代码强制删除并提示用户（详见 1.5）。
-- **转译层（源码覆盖层）**：`_copilot_overlay_hook.py` 导入钩子让 `zhuzhu_Copilot.*` 的导入优先命中用户数据目录的转译层，源码级插件因此在**源码运行与打包版**上行为一致；该钩子与应用入口（`main.py`）同列受保护清单，插件不得拆除。
+- **插件校验**：`plugin_guard.py` 内置唯一、不可替换——所有插件（Agent 插件与 Copilot 插件）导入/生成/应用前过静态危险规则 + LLM 源码评审，危险代码强制删除并提示用户（详见 1.5）。
+- **转译层（源码覆盖层）**：`_copilot_overlay_hook.py` 导入钩子让 `zhuzhu_Copilot.*` 的导入优先命中用户数据目录的转译层，Copilot 插件的源码级变更因此在**源码运行与打包版**上行为一致；该钩子与应用入口（`main.py`）同列受保护清单，插件不得拆除。
 
 ### 1.9 系统工具
 
@@ -221,7 +221,7 @@ Cordis 式「一切皆可替换」，目录 `~/.zhuzhu_Copilot/workflows/`。核
 zhuzhu Copilot/
 ├── src/
 │   ├── main.py                          # 入口：迁移 → 崩溃钩子 → **覆盖层导入钩子安装** → QApplication → 启动动画 → AI 面板
-│   ├── _copilot_overlay_hook.py         # 源码覆盖层导入钩子（打包版源码级插件的地基，受保护）
+│   ├── _copilot_overlay_hook.py         # 源码覆盖层导入钩子（Copilot 插件源码级定制的地基，受保护）
 │   └── zhuzhu_Copilot/
 │       ├── copilot_plugins_examples/    # Copilot 插件开发指南 + 示例（改主题/自定义工具/自定义设置页/应用扩展/Agent 评分）
 │       ├── core/
@@ -241,10 +241,10 @@ zhuzhu Copilot/
 │       │   ├── browser_control.py       # 浏览器自动化
 │       │   ├── screen_control.py        # 屏幕操控
 │       │   ├── skill_manager.py         # 技能加载
-│       │   ├── agent_plugins.py         # Agent 插件系统（mcp/skill/combined/web/source 五型）
+│       │   ├── agent_plugins.py         # Agent 插件系统（mcp/skill/combined/web 四型，不涉及应用源码）
 │       │   ├── copilot_plugins.py       # Copilot 插件系统（应用级独立体系：源码级定制 + 页面/服务/托盘/快捷键扩展）
 │       │   ├── plugin_guard.py          # 插件校验系统（内置唯一不可替换，危险强制删除）
-│       │   ├── plugin_source.py         # 源码级插件引擎（source_ops 写入转译层 / 自动回滚）
+│       │   ├── plugin_source.py         # 源码变更引擎（仅 Copilot 插件：source_ops 写入转译层 / 自动回滚）
 │       │   ├── hot_reload.py            # 转译层热加载（启用/停用后重载受影响模块）
 │       │   ├── workflow_manager.py      # 工作流管理
 │       │   ├── sub_agent_manager.py     # 子 Agent 管理

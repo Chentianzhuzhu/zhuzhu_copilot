@@ -555,9 +555,6 @@ def _context_image(data_url: str) -> str:
 _NO_WAIT_TIMEOUT_TOOLS = frozenset({
     "run_command",      # 长命令（构建/训练/长脚本）天然无上限，由停止按钮取消
     "create_plugin",    # 生成类：内部是完整 LLM 往返（设计 + 自检 + 可能自修），远超 40s
-    "create_source_plugin",   # 生成类：完整 LLM 往返（source_ops 设计 + 插件校验），远超 40s
-    "apply_source_plugin",    # 源码应用：备份 + 多文件写入 + 逐文件编译检查，可超 40s
-    "revert_source_plugin",   # 源码回滚：多文件还原，可超 40s
     "create_copilot_plugin",  # 生成类：完整 LLM 往返（source_ops + 扩展清单设计 + 校验）
     "apply_copilot_plugin",   # 源码应用：备份 + 多文件写入 + 逐文件编译检查，可超 40s
     "revert_copilot_plugin",  # 源码回滚：多文件还原，可超 40s

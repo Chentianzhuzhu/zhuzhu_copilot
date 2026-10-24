@@ -1239,7 +1239,6 @@ _PLUGIN_KIND_LABEL = {
     "skill": "技能",
     "combined": "工具+技能",
     "web": "网页三件套",
-    "source": "转译层插件",
 }
 
 # 导航图标尺寸（px）：18px 下 brain-circuit / puzzle 这类细密图形的笔画才分得开
@@ -2400,9 +2399,6 @@ _OP_STATUS = {
     # ---- 扩展能力 ----
     "create_skill": "正在创建技能",
     "create_plugin": "正在创建插件",
-    "create_source_plugin": "正在创建转译层插件",
-    "apply_source_plugin": "正在写入转译层",
-    "revert_source_plugin": "正在回滚转译层",
     "create_workflow": "正在创建工作流",
     "register_sub_agent": "正在注册子 Agent",
     "dispatch_sub_agents": "正在派发子 Agent",
@@ -2646,14 +2642,16 @@ class _MultiLineInputDialog(QDialog):
 
 
 class _PluginDetailDialog(QDialog):
-    """插件详情与配置（设置-插件页）：基本信息 / 插件配置 / 源码变更 / 校验记录。
+    """插件详情与配置（设置-插件页）：基本信息 / 插件配置 / 校验记录。
 
     - 基本信息：名称、类型、开发者/公司、更新时间、描述、构成、校验结论；
     - 插件配置：键值编辑，保存到插件目录 config.json；对 MCP 型插件以环境变量
       （键名大写）注入 server 子进程，保存后需重连生效（config_saved 信号通知
       父窗口重连 MCP）；
-    - 源码变更：源码级插件的 source_ops 清单与应用状态（只读预览）；
     - 校验记录：插件校验系统对该插件的拦截/通过日志。
+
+    Agent 插件只扩展 Agent 能力（MCP server / SKILL.md / web 页面），不涉及应用源码；
+    源码级变更属于 Copilot 插件（见 _CopilotPluginDetailDialog）。
     """
 
     config_saved = pyqtSignal()   # 配置已保存（父窗口据此重连 MCP / 刷新列表）
@@ -2725,8 +2723,6 @@ class _PluginDetailDialog(QDialog):
         lay.addWidget(self.tabs, 1)
         self._build_info_tab()
         self._build_config_tab()
-        if self._plugin.get("kind") == "source":
-            self._build_source_tab()
         self._build_guard_tab()
 
         # ---- 底部按钮 ----
@@ -2884,47 +2880,6 @@ class _PluginDetailDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("保存失败"), msg)
 
-    # ---------- 页签：源码变更（source 型） ----------
-
-    def _build_source_tab(self):
-        from zhuzhu_Copilot.core import plugin_source
-        w = QWidget()
-        col = QVBoxLayout(w)
-        col.setContentsMargins(14, 12, 14, 12)
-        col.setSpacing(8)
-        st = plugin_source.source_plugin_status(self._name)
-        state = QLabel(_uif("应用状态：{s}", s="已应用" if st.get("applied") else "未应用")
-                       + (_uif("（{n} 个文件，{t}）", n=len(st.get("files") or []),
-                              t=st.get("applied_at") or "") if st.get("applied") else ""))
-        state.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-        state.setWordWrap(True)
-        col.addWidget(state)
-        table = QTableWidget(0, 2)
-        table.setHorizontalHeaderLabels([_ui("操作"), _ui("目标文件（相对源码根）")])
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.verticalHeader().setVisible(False)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setStyleSheet(
-            f"QTableWidget {{ background: {_base_color('PANEL')}; color: {TEXT};"
-            f"border: 1px solid {_base_color('BORDER')}; border-radius: 8px;"
-            "gridline-color: transparent; }}")
-        try:
-            ops = plugin_source.load_source_ops(self._name)
-        except Exception:
-            ops = []
-        for op in ops:
-            r = table.rowCount()
-            table.insertRow(r)
-            table.setItem(r, 0, QTableWidgetItem(str(op.get("op") or "")))
-            table.setItem(r, 1, QTableWidgetItem(str(op.get("path") or "")))
-        col.addWidget(table, 1)
-        hint = QLabel(_ui("完整变更清单见插件目录 source_ops.json（可编辑后重新导入，"
-                          "或用应用/回滚按钮管理）。"))
-        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-        hint.setWordWrap(True)
-        col.addWidget(hint)
-        self.tabs.addTab(w, _ui("源码变更"))
-
     # ---------- 页签：校验记录 ----------
 
     def _build_guard_tab(self):
@@ -2941,9 +2896,8 @@ class _PluginDetailDialog(QDialog):
         lst.setWordWrap(True)
         events = [e for e in plugin_guard.recent_guard_events(50)
                   if str(e.get("plugin") or "") == self._name]
-        _ACT = {"pass": "通过", "pass_source": "通过（源码）",
-                "force_delete": "强制删除危险代码",
-                "force_delete_source_plugin": "强制删除源码插件包"}
+        _ACT = {"pass": "通过",
+                "force_delete": "强制删除危险代码"}
         if not events:
             item = QListWidgetItem(_ui("暂无校验记录（导入/创建/应用时会自动记录）"))
             item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -6505,16 +6459,10 @@ class _AgentSettingsDialog(QDialog):
         imp_skill.setAutoDefault(False)
         imp_skill.setToolTip(_ui("导入市场标准 SKILL.md（或含 SKILL.md 的 zip），包装为 skill 型插件"))
         imp_skill.clicked.connect(self._on_plugin_import_skill)
-        src_create_b = QPushButton(_ui("创建转译层插件（自然语言）"))
-        src_create_b.setStyleSheet(self._btn_qss("ghost"))
-        src_create_b.setAutoDefault(False)
-        src_create_b.setToolTip(_ui("开发者向：AI 生成对应用源码的变更清单（新建源码文件/追加到现有模块之后/"
-                                    "锚点插入/替换模块/多模块综合修改），写入转译层，不改动应用源码文件"))
-        src_create_b.clicked.connect(self._on_plugin_create_source)
         detail_b = QPushButton(_ui("详情/配置"))
         detail_b.setStyleSheet(self._btn_qss("ghost"))
         detail_b.setAutoDefault(False)
-        detail_b.setToolTip(_ui("查看插件详情（开发者/更新时间/校验记录/源码变更），编辑插件配置（config.json，MCP 型以环境变量注入），导出插件包"))
+        detail_b.setToolTip(_ui("查看插件详情（开发者/更新时间/校验记录），编辑插件配置（config.json，MCP 型以环境变量注入），导出插件包"))
         detail_b.clicked.connect(self._on_plugin_detail)
         call_b = QPushButton(_ui("调用"))
         call_b.setStyleSheet(self._btn_qss("ghost"))
@@ -6537,7 +6485,6 @@ class _AgentSettingsDialog(QDialog):
         self.plugin_list.itemDoubleClicked.connect(
             lambda *a: self._on_plugin_detail())
         row.addWidget(create_b)
-        row.addWidget(src_create_b)
         row.addWidget(imp_zip)
         row.addWidget(imp_skill)
         row.addWidget(detail_b)
@@ -6578,8 +6525,6 @@ class _AgentSettingsDialog(QDialog):
             _updated = str(p.get("updated_at") or "").strip()
             if _updated:
                 _meta.append(_uif("更新: {t}", t=_updated))
-            if p.get("kind") == "source":
-                _meta.append("已写入转译层" if p.get("source_applied") else "未写入转译层")
             if bound:
                 _meta.append(_uif("工作流: {wfs}", wfs=", ".join(bound)))
             try:
@@ -7194,28 +7139,6 @@ class _AgentSettingsDialog(QDialog):
         except Exception as e:
             self.plugin_done.emit("0", f"创建插件异常: {e}")
 
-    def _plugin_source_worker(self, desc: str):
-        """后台线程：AI 生成源码级插件（source_ops 变更清单，不自动改源码）"""
-        try:
-            ok, msg = agent_plugins.create_source_plugin_from_nl(
-                desc, on_status=lambda p, s: self.plugin_progress.emit(p, s))
-            self.plugin_done.emit("1" if ok else "0", msg)
-        except Exception as e:
-            self.plugin_done.emit("0", f"创建转译层插件异常: {e}")
-
-    def _on_plugin_create_source(self, *_):
-        """自然语言描述 → 后台线程 AI 生成转译层级插件（变更清单，确认后才写入）"""
-        text, ok = _MultiLineInputDialog.get(
-            self, "创建转译层插件",
-            "描述插件要做什么、改哪些模块、集成什么功能（生成 source_ops 变更清单，"
-            "不会自动写入，也不会改动应用源码文件）：",
-            "在 core 下新建一个习惯打卡模块，并在 agent_tools 的工具清单里登记两个工具")
-        if not ok or not text.strip():
-            return
-        self._pbar_open("创建转译层插件", "正在分析需求并设计变更清单…")
-        threading.Thread(target=self._plugin_source_worker, args=(text.strip(),),
-                         daemon=True).start()
-
     def _on_plugin_detail(self, *_):
         """打开插件详情/配置对话框（双击列表项或「详情/配置」按钮）"""
         p = self._current_plugin()
@@ -7279,24 +7202,15 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
 
     def _on_plugin_toggle(self, *_):
-        """启用/停用插件：自动写入/回滚转译层、热加载模块，并联动 MCP 登记。"""
+        """启用/停用插件：标记 enabled 并联动 MCP 登记（Agent 插件不涉及应用源码）。"""
         p = self._current_plugin()
         if p is None:
             QMessageBox.information(self, _ui("提示"), _ui("请先选择一个插件"))
             return
         name = p.get("name", "")
-        # set_plugin_enabled 内部已自动 apply（启用）/ revert（停用）转译层
         ok, msg = agent_plugins.set_plugin_enabled(name, not bool(p.get("enabled")))
-        detail = ""
         if ok:
-            try:
-                from zhuzhu_Copilot.core import hot_reload
-                detail = hot_reload.summary(hot_reload.reload_overlay())
-            except Exception as e:
-                detail = f"热加载失败：{e}"
-        text = f"{msg}\n{detail}" if detail else msg
-        if ok:
-            QMessageBox.information(self, _ui("插件"), text)
+            QMessageBox.information(self, _ui("插件"), msg)
         else:
             QMessageBox.warning(self, _ui("操作失败"), msg)
         self._reload_plugin_list()
@@ -27912,7 +27826,7 @@ class AgentPanel(QDialog):
     def _maybe_install_plugin_package(self, path: str) -> bool:
         """对话时选的 zip 若是插件包：询问并直接导入，返回是否已按插件包处理。
 
-        打包版安装目录不含可写源码，插件只能装进用户数据目录后再写入转译层；
+        打包版安装目录不含可写源码，Copilot 插件只能装进用户数据目录后再写入转译层；
         把导入入口放到对话输入区，用户不必先绕去设置页。
         """
         if os.path.splitext(path)[1].lower() != ".zip":

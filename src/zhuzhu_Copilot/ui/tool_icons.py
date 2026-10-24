@@ -483,10 +483,16 @@ TOOL_ICON_SPEC = {
     # ---- 技能 / 插件 / 定制 ----
     "create_skill": ("puzzle", "plus"),
     "create_plugin": ("plug", "plus"),
+    "create_copilot_plugin": ("puzzle", "right"),
+    "apply_copilot_plugin": ("plug", "check"),
+    "revert_copilot_plugin": ("plug", "swap"),
     "set_app_background": ("image", "pencil"),
     "set_generation_progress": ("clock", "right"),
     "inspect_customization": ("grid", "info"),
     "set_feature_deps": ("grid", "link"),
+    # ---- 后台任务 ----
+    "background_task_status": ("clock", "list"),
+    "cancel_background_task": ("clock", "cross"),
     # ---- MCP ----
     "create_mcp": ("server", "plus"),
     "list_mcp": ("server", "list"),
