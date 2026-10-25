@@ -278,6 +278,8 @@ class McpManager:
         self._name_to_server: dict = {}
         self._tool_raw: dict = {}      # 聚合工具名 -> 服务器原始工具名
         self._tools: list = []
+        self._last_servers: list = []   # 最近一次成功/尝试的服务器配置（自愈用）
+        self._healing = False           # 自愈进行中：避免并发重复重连
         self.errors: list = []   # 各服务器连接失败信息
         # 最近一次 reload 的动作摘要（热加载后回填进工具结果文案，让模型知道新增了什么）
         self.last_reload: dict = {"added": [], "updated": [], "removed": []}
@@ -342,6 +344,7 @@ class McpManager:
         self.errors = []
         self.last_reload = {"added": [str(c.get("name") or "mcp") for c in servers],
                             "updated": [], "removed": []}
+        self._last_servers = [dict(c) for c in servers]
         for cfg in servers:
             self._connect(cfg)
         return self._rebuild_aggregate()
@@ -375,6 +378,7 @@ class McpManager:
             if self._connect(cfg) and name not in updated:
                 added.append(name)
         self.last_reload = {"added": added, "updated": updated, "removed": removed}
+        self._last_servers = [want[k] for k in want]
         return self._rebuild_aggregate()
 
     def tool_schemas(self) -> list:
@@ -391,9 +395,31 @@ class McpManager:
         """工具所属服务器名（空 = 未知/非 MCP 工具）"""
         return self._name_to_server.get(name, "")
 
+    def _self_heal(self) -> bool:
+        """工具表为空时按上次的配置重连一次（有界：不并发、只此一次）。
+
+        为什么需要：主程序可能比插件子进程早几秒起来，第一次握手失败 → `_clients`
+        空 → 聚合工具表空 → 之后再也不补。用户侧看到的就是「未知 MCP 工具: xxx」，
+        而插件进程明明好着（手动连立刻成功）。只在整个连接表为空时才自愈，
+        不会把「模型拼错工具名」误触发成重连。
+        """
+        if self._healing or not self._last_servers:
+            return False
+        self._healing = True
+        try:
+            self.connect_all(self._last_servers)
+            return bool(self._clients)
+        except Exception:
+            return False
+        finally:
+            self._healing = False
+
     def call_tool(self, name: str, arguments: dict) -> tuple:
         """调用工具，返回 (文本结果, 图片 data URL 列表)（与 McpClient.call_tool 一致）"""
         server = self._name_to_server.get(name)
+        if not server and not self._clients:
+            if self._self_heal():
+                server = self._name_to_server.get(name)
         if not server:
             raise McpError(f"未知 MCP 工具: {name}")
         # 用服务器原始工具名调用（去重后的前缀名在客户端 _call_map 中还原）

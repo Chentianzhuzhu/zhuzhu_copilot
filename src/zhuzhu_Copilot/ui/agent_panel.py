@@ -18961,6 +18961,35 @@ class AgentPanel(QDialog):
         QTimer.singleShot(0, self._update_system_stats)
 
         threading.Thread(target=self._init_mcp, daemon=True).start()
+        self._start_mcp_watchdog()
+
+    def _start_mcp_watchdog(self):
+        """MCP 工具表自愈看门狗。
+
+        启动竞态实测存在：主进程比插件子进程早 7 秒起来，第一次握手失败后
+        `_clients` 空 → 聚合工具表空 → **之后再也不会补**。用户侧看到的是
+        「未知 MCP 工具: screen_shot」，而插件进程明明好着（手动连立刻成功）。
+        有了这个看门狗，最多 20 秒后自动重连，用户不需要重启应用。
+        """
+        if getattr(self, "_mcp_watchdog", None) is not None:
+            return
+        self._mcp_watchdog = QTimer(self)
+        self._mcp_watchdog.setInterval(20000)
+        self._mcp_watchdog.timeout.connect(self._mcp_self_heal)
+        self._mcp_watchdog.start()
+
+    def _mcp_self_heal(self):
+        """工具表为空但配了服务器 → 后台重连一次，并把状态告诉用户。"""
+        try:
+            if self._mcp.tool_schemas():
+                return                      # 有工具：正常，不用管
+            servers = agent_skills.load_mcp_servers()
+            if not servers:
+                return                      # 没配服务器：不是故障
+            self.mcp_signal.emit("MCP: 工具表为空，正在重连…")
+            threading.Thread(target=self._init_mcp, daemon=True).start()
+        except Exception:
+            pass
 
     # ---------- 顶栏时钟与网络状态 ----------
     def _update_clock(self):
