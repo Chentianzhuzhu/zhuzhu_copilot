@@ -357,7 +357,7 @@ def test_restored_turn_shows_frozen_cost_and_time_row(panel):
         b = p._ai_bubble
         assert b is not None, "恢复后没有渲染出回合"
         assert not b._ribbon.isHidden(), "重启后耗时徽章消失（最后一轮的 cost 没落盘）"
-        assert b._ribbon._text.text() == "12.4s"
+        assert b._ribbon.text() == "已处理 12秒"
         assert not b._sys.isHidden(), "重启后系统时间行消失（最后一轮的 meta 没落盘）"
         assert b._sys.text() == "14:02:31 → 14:02:43"
     finally:

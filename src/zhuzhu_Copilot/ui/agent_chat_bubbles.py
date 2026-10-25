@@ -38,6 +38,7 @@ from typing import Callable, Optional
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
+    QFont,
     QFontMetrics,
     QIcon,
     QImage,
@@ -91,9 +92,15 @@ BUBBLE_PAD_H = 18
 AI_TURN_PAD_TOP = 8            # demo 18 → 8（收紧）
 AI_TURN_PAD_BOTTOM = 3         # demo 6  → 3
 AI_TURN_GAP = 10               # demo 30 → 10（回合间距；原值在紧凑界面里像大片空白）
-# 计时行高度（2026-10-25 重构）：原 RIBBON_H=21 是「骑线 pill 徽章」的外壳高度；
-# 现左上角只留一行纯文本（无外壳/无图标/无描边），高度 = 12px 字号单行行高。
-TIMER_ROW_H = 17
+# 计时行（2026-10-25 二次微调，用户反馈）：字号由 FONT_SMALL(12) 升一档到
+# FONT_BODY(13) 解决偏小；字间距 +1px 让中文与数字不再互相挤压；文本整体上移
+# TIMER_TEXT_RAISE 像素，与下方虚线拉开呼吸位（原先字底几乎贴住虚线）。
+TIMER_FONT_PX = FONT_BODY        # 计时行字号（原 FONT_SMALL=12 偏小）
+TIMER_LETTER_SPACING = 1.0       # 字间距（px）：QSS 无 letter-spacing，只能走 QFont
+TIMER_TEXT_RAISE = 2             # 文本整体上移量（px）
+# 行盒高度 = 13px 单行行高(≈18) + 上移余量 2 + 底部呼吸 2；虚线位置由它推出，
+# 故改它等于同时改「回合顶部留白」，不要为局部观感单独调。
+TIMER_ROW_H = 22
 # 计时行底边到顶部虚线的间距（px）：文本与虚线之间留 1px 呼吸位
 TIMER_DASH_GAP = 1
 LEFT_GUTTER = 14               # 顶部虚线的起画 x（原为左侧竖虚线 demo .vline left:-14px
@@ -2668,6 +2675,28 @@ class UserBubble(QLabel):
         self._apply_style(style)
 
 
+def qss_font_families(stack: str) -> list:
+    """QSS 字体栈字符串 → ``QFont.setFamilies`` 需要的族名列表。
+
+    为什么要转换：主题字体栈只有一份定义（`ChatStyle.font_numeric`，QSS 语法），
+    而**字间距 qss 设置不了**、只能走 QFont —— 这里解析同一份定义复用，避免在
+    QFont 里另写一遍字体名（两处各写一份必然走样）。
+    """
+    return [s.strip().strip('"\'') for s in stack.split(",") if s.strip()]
+
+
+_QSS_WEIGHTS = (100, 200, 300, 400, 500, 600, 700, 800, 900)
+
+
+def qfont_weight(weight: int) -> QFont.Weight:
+    """QSS 字重数值 → ``QFont.Weight``。
+
+    ``QFont.Weight`` 只有 100~900 这九档：主题表将来若填了 550 之类的非档位值，
+    直接 ``QFont.Weight(550)`` 会抛 ValueError 把整条聊天流带崩，这里就近取档。
+    """
+    return QFont.Weight(min(_QSS_WEIGHTS, key=lambda w: abs(w - int(weight))))
+
+
 class CostRibbon(QFrame):
     """回合左上角计时行（demo `.cost-ribbon` 节点；2026-10-25 重构为简化版）。
 
@@ -2680,10 +2709,11 @@ class CostRibbon(QFrame):
         （过程区 / 正文输出内容）
 
     实现要点：
-    - 无外壳：QFrame 不设任何样式表背景（不填底、不描边、不圆角），只有内部
-      一个 QLabel 承载文本；
-    - 等宽数字：文本字体走 ChatStyle.font_numeric（tabular figures），
-      逐秒刷新时每位数字同宽，不会整串乱跳（招 4）；
+    - **自绘文本而非 QLabel**：QSS 没有 letter-spacing，且 QLabel 只能垂直居中、
+      无法在行盒内做 2px 级上移。两件用户明确要求的细节（字间距、整体上移）都
+      只能在 QFont + QPainter 里落地；
+    - 等宽数字：字体走 ChatStyle.font_numeric（tabular figures），逐秒刷新时每位
+      数字同宽，不会整串乱跳（招 4）；
     - 位置由 ChatTurn._place_ribbon 绝对定位到 (LEFT_GUTTER, 0)，高度钉
       TIMER_ROW_H；计时逻辑（start/freeze/freeze_unknown + 200ms 节拍）不变。
     """
@@ -2692,13 +2722,8 @@ class CostRibbon(QFrame):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._style = style
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        self._text = QLabel("")
-        lay.addWidget(self._text)
-        # 子控件建好后再统一套样式（`_apply_style` 会写 `_text`，顺序不能反）
-        self._apply_style(style)
+        self._label = ""          # 当前文本（自绘，无子控件）
+        self._apply_style(style)  # 建字体/文字色（_font / _fg）
         self.setFixedHeight(TIMER_ROW_H)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._t0 = 0.0
@@ -2708,29 +2733,67 @@ class CostRibbon(QFrame):
         self._timer.timeout.connect(self._tick)
 
     def _apply_style(self, style: ChatStyle):
-        """计时行文本 QSS（构造与 restyle 共用）：无外壳，只有一行次要色文本。"""
-        self._text.setStyleSheet(
-            f"background: transparent; border: none; color: {style.text_dim};"
-            f" font-size: {FONT_SMALL}px; font-weight: {style.w_emphasis};"
-            # 招 4：耗时数字每秒刷新，锁等宽字体（tabular figures）防抖动
-            f" font-family: {style.font_numeric};")
+        """字体/文字色（构造与 restyle 共用）：无外壳，只有一行次要色文本。"""
+        f = QFont()
+        f.setFamilies(qss_font_families(style.font_numeric))
+        f.setPixelSize(TIMER_FONT_PX)
+        f.setWeight(qfont_weight(style.w_emphasis))
+        # 字间距只有 QFont 支持（qss 无 letter-spacing）
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, TIMER_LETTER_SPACING)
+        self._font = f
+        self._fg = QColor(style.text_dim)
+        self.update()
 
     def restyle(self, style: ChatStyle):
-        """原地换肤计时行"""
+        """原地换肤计时行（字号/字间距可能变 → 宽度重算）"""
         self._style = style
         self._apply_style(style)
+        self.adjustSize()
 
+    # ---------- 文本 ----------
+    def text(self) -> str:
+        return self._label
+
+    def setText(self, text: str):
+        """换文本（200ms 节拍调用）：同秒不重绘，位数变化才重算宽度。"""
+        if text == self._label:
+            return
+        self._label = text
+        w = QFontMetrics(self._font).horizontalAdvance(text) + 1
+        if w != self.width():
+            self.resize(w, TIMER_ROW_H)
+        self.update()
+
+    # ---------- 几何 ----------
+    def sizeHint(self) -> QSize:
+        return QSize(QFontMetrics(self._font).horizontalAdvance(self._label) + 1,
+                     TIMER_ROW_H)
+
+    def paintEvent(self, _e):
+        if not self._label:
+            return
+        p = QPainter(self)
+        p.setFont(self._font)
+        p.setPen(self._fg)
+        fm = p.fontMetrics()
+        # 行盒内先垂直居中，再整体上移 TIMER_TEXT_RAISE（与下方虚线拉开呼吸位）。
+        # clamp 到 0：极端字体度量下行高可能吃满行盒，宁可少上移也不裁掉字头。
+        top = max(0, (self.height() - fm.height()) // 2 - TIMER_TEXT_RAISE)
+        p.drawText(0, top + fm.ascent(), self._label)
+        p.end()
+
+    # ---------- 计时 ----------
     def start(self, t0: float = None):
         self._t0 = float(t0 or time.time())
         self._live = True
-        self._text.setText(fmt_elapsed(time.time() - self._t0))
+        self.setText(fmt_elapsed(time.time() - self._t0))
         self.show()
         self._timer.start()
 
     def freeze(self, seconds: float):
         self._live = False
         self._timer.stop()
-        self._text.setText(fmt_elapsed(seconds))
+        self.setText(fmt_elapsed(seconds))
         self.show()
 
     def freeze_unknown(self):
@@ -2742,11 +2805,11 @@ class CostRibbon(QFrame):
         """
         self._live = False
         self._timer.stop()
-        self._text.setText(RIBBON_UNKNOWN_TEXT)
+        self.setText(RIBBON_UNKNOWN_TEXT)
         self.show()
 
     def _tick(self):
-        self._text.setText(fmt_elapsed(time.time() - self._t0))
+        self.setText(fmt_elapsed(time.time() - self._t0))
 
     @property
     def is_live(self) -> bool:

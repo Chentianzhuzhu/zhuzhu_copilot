@@ -365,7 +365,7 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
     assert all(not r.widget.isHidden() for r in turn._items if not r.is_proc), \
         "正文块应保持可见"
     assert not turn._toggle.isHidden() and turn._toggle.text() == "查看执行过程"
-    assert turn._ribbon._text.text() == "已处理 12秒"
+    assert turn._ribbon.text() == "已处理 12秒"
     assert turn._sys.text() == "14:02:31 → 14:02:43"
 
     # 折叠后高度必须真实收缩（否则正文与开关之间会留大片空白）
@@ -561,7 +561,7 @@ def test_cost_ribbon_stays_visible_when_cost_missing():
                 live=False, sys_meta="14:02:31 → 14:02:43", done=True)
     host.w.update()
     assert not turn._ribbon.isHidden(), "无 cost 数据时徽章也必须常驻（不得隐藏）"
-    assert turn._ribbon._text.text() == "已处理 12秒", "应由系统时间行的起止差推导耗时"
+    assert turn._ribbon.text() == "已处理 12秒", "应由系统时间行的起止差推导耗时"
 
 
 def test_cost_ribbon_falls_back_to_placeholder_without_any_time_data():
@@ -572,7 +572,7 @@ def test_cost_ribbon_falls_back_to_placeholder_without_any_time_data():
                 live=False, sys_meta="", done=True)
     host.w.update()
     assert not turn._ribbon.isHidden(), "任何情况下都不隐藏徽章，保证样式一致"
-    assert turn._ribbon._text.text() == cb.RIBBON_UNKNOWN_TEXT
+    assert turn._ribbon.text() == cb.RIBBON_UNKNOWN_TEXT
 
 
 def test_cost_from_meta_parses_only_well_formed_ranges():
@@ -859,7 +859,7 @@ def test_fmt_elapsed_drops_zero_units():
 
 
 def test_timer_row_is_borderless_plain_text():
-    """计时行无外壳：QFrame 不设样式表背景，文本行用次要色 + 等宽数字字体。"""
+    """计时行无外壳：纯自绘文本，字号/字间距走 QFont（QSS 不支持 letter-spacing）。"""
     style = cb.ChatStyle(card="#1F232C", border="#272C36", border_soft="#333A46",
                          dash="#333A46", text="#F3F5F9", text_dim="#9BA3B0",
                          accent="#2F52D8", muted="#9BA3B0", icon_shell="#272C36",
@@ -870,12 +870,14 @@ def test_timer_row_is_borderless_plain_text():
     rb = cb.CostRibbon(style)
     rb.freeze(75)
     assert rb.styleSheet() == "", "计时行外壳不设任何样式表（无底、无描边、无圆角）"
-    qss = rb._text.styleSheet()
-    assert "border: none" in qss, "文本行不描边"
-    assert style.text_dim in qss, "文本用次要色（ quiet caption ）"
-    assert "tabular" not in qss and style.font_numeric in qss, \
-        "数字走等宽字体栈（tabular figures）"
-    assert rb._text.text() == "已处理 1分钟15秒"
+    f = rb._font
+    assert f.pixelSize() == cb.TIMER_FONT_PX, "字号取 TIMER_FONT_PX（12px 偏小已上调）"
+    assert f.letterSpacing() == cb.TIMER_LETTER_SPACING > 0, \
+        "字间距走 QFont 绝对间距（中文与数字不再互相挤压）"
+    assert "Segoe UI" in f.families(), "数字走等宽字体栈（tabular figures 防抖动）"
+    # 行盒必须容得下 13px 单行行高 + 上移余量，否则字形会被裁
+    assert cb.TIMER_ROW_H >= cb.TIMER_FONT_PX + 2 * cb.TIMER_TEXT_RAISE
+    assert rb.text() == "已处理 1分钟15秒"
     assert rb.height() == cb.TIMER_ROW_H
 
 
