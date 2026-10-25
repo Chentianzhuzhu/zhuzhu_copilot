@@ -15,7 +15,9 @@ import urllib.request
 import urllib.error
 
 MCP_VERSION = "2024-11-05"
-_REQ_TIMEOUT = 30
+# 单次 MCP 请求的最长等待。原 30s 太长：插件工具实测都在 400ms 以内，30s 只会在
+# 真的出问题时让用户干等 ——「5 分钟没完成」就是好几次 30s 超时累积出来的。
+_REQ_TIMEOUT = 8
 
 
 def _safe_stdio_command(config: dict) -> str:
@@ -68,6 +70,10 @@ class _StdioTransport:
         self._pending: dict = {}
         self._lock = threading.Lock()
         self._id = 0
+        self._dead = ""           # 读循环死亡原因（空=活着）。死了就必须立刻失败，
+                                  # 绝不能白等满超时 —— 那正是「MCP 请求超时」的来源。
+        self._req_lock = threading.Lock()   # stdio 是单通道：请求必须串行，
+                                            # 否则两个线程交错写 stdin 会让 JSON 行错乱
         threading.Thread(target=self._read_loop, daemon=True).start()
 
     def _read_loop(self):
@@ -80,31 +86,87 @@ class _StdioTransport:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(msg, dict) and "id" in msg:
-                    q = self._pending.pop(msg["id"], None)
+                    with self._lock:
+                        q = self._pending.pop(msg["id"], None)
                     if q:
                         q.put(msg)
-        except Exception:
-            pass
+        except Exception as e:
+            self._dead = f"{type(e).__name__}: {e}"
+        finally:
+            # 读循环一死，主程序再也收不到任何响应。这里做两件事：
+            # ① 记下死因，让 request() 立刻抛错而不是干等 8 秒；
+            # ② 把还在等待的请求全部唤醒（否则它们只能等超时）。
+            self._dead = self._dead or "MCP 读循环退出（子进程可能已退出）"
+            while True:
+                try:
+                    with self._lock:
+                        _rid, q = self._pending.popitem()
+                except KeyError:
+                    break
+                q.put({"error": {"code": -32000, "message": self._dead}})
 
     def request(self, method: str, params: dict) -> dict:
-        with self._lock:
-            self._id += 1
-            rid = self._id
-            q = queue.Queue()
-            self._pending[rid] = q
-        payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
-        try:
-            self._proc.stdin.write(json.dumps(payload).encode() + b"\n")
-            self._proc.stdin.flush()
-        except Exception as e:
-            raise McpError(f"MCP 发送失败: {e}")
-        try:
-            resp = q.get(timeout=_REQ_TIMEOUT)
-        except queue.Empty:
-            raise McpError(f"MCP 请求超时: {method}")
+        """单次请求（串行 + 读循环死亡即失败）。"""
+        if self._dead:
+            raise McpError(f"MCP 连接已断开：{self._dead}")
+        # stdio 是单通道：整个「写 → 等 → 收」必须串行，否则两个线程的 JSON 行
+        # 会在管道里交错，谁也解析不出完整的一行 → 双方一起干等到超时。
+        with self._req_lock:
+            if self._dead:
+                raise McpError(f"MCP 连接已断开：{self._dead}")
+            with self._lock:
+                self._id += 1
+                rid = self._id
+                q = queue.Queue()
+                self._pending[rid] = q
+            payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+            try:
+                self._proc.stdin.write(json.dumps(payload).encode() + b"\n")
+                self._proc.stdin.flush()
+            except Exception as e:
+                raise McpError(f"MCP 发送失败: {e}")
+            try:
+                resp = q.get(timeout=_REQ_TIMEOUT)
+            except queue.Empty:
+                raise McpError(f"MCP 请求超时: {method}")
         if "error" in resp:
             raise McpError(f"MCP 错误: {resp['error']}")
+        # 契约：返回 **result 段**（不是整个信封）。调用方 list_tools 取
+        # result["tools"]、call_tool 取 result["content"]，都按这个约定写的。
+        # 曾经这里误写成 `return resp`，于是 tools 永远取不到 → 工具表为空 →
+        # 模型一调就「未知 MCP 工具」。
         return resp.get("result", {})
+
+    def notify(self, method: str, params: dict) -> None:
+        """JSON-RPC 通知：不发 id、**不等任何响应**。
+
+        通知本来就不该有响应；等它只会白烧一个超时，还会把请求序号表搅乱
+        （后面的 tools/list 会拿到错位的响应 → 工具表为空 → 「未知 MCP 工具」）。
+        """
+        with self._req_lock:
+            try:
+                self._proc.stdin.write(json.dumps(
+                    {"jsonrpc": "2.0", "method": method,
+                     "params": params}).encode() + b"\n")
+                self._proc.stdin.flush()
+            except Exception as e:
+                raise McpError(f"MCP 发送失败: {e}")
+
+    def call(self, method: str, params: dict) -> dict:
+        """带一次重试的请求：管道抖动 / 子进程刚就绪时不该直接失败。
+
+        连接已断开不重试（重试没意义）—— 直接抛给上层，让 McpManager 自愈重连。
+        """
+        last = None
+        for attempt in (0, 1):
+            try:
+                return self.request(method, params)
+            except McpError as e:
+                last = e
+                if "已断开" in str(e) or attempt:
+                    raise
+                time.sleep(0.12)
+        raise last
 
     def close(self):
         try:
@@ -208,20 +270,21 @@ class McpClient:
         self._init()
 
     def _init(self):
-        self._transport.request("initialize", {
+        self._transport.call("initialize", {
             "protocolVersion": MCP_VERSION,
             "capabilities": {},
             "clientInfo": {"name": "winapp-migrator", "version": "1.0"},
         })
-        # notifications/initialized（无 id 的通知，直接发送即可）
-        try:
-            self._transport.request("notifications/initialized", {})
-        except McpError:
-            pass
+        # notifications/initialized 是**通知**（无 id，协议规定不产生响应），必须走
+        # notify 直接写出去。早先这里走的是普通 request，于是为一个永远不该有响应的
+        # 通知白等满超时（原 30s，后来 8s 还要重试一次 = 16s）：每次建连都白烧
+        # 16 秒，还把请求序号表搅乱（紧接着的 tools/list 会拿到错位的响应 →
+        # 工具表为空 → 「未知 MCP 工具」）。用户侧的「5 分钟没完成」很大一块在这。
+        self._transport.notify("notifications/initialized", {})
 
     def list_tools(self) -> list:
         """返回 OpenAI function schema 列表"""
-        result = self._transport.request("tools/list", {})
+        result = self._transport.call("tools/list", {})
         out = []
         for t in result.get("tools", []):
             raw = t.get("name", "")
@@ -247,7 +310,7 @@ class McpClient:
         丢弃图片会让「需要看屏幕」的 MCP 工具退化成盲操作。
         """
         raw = self._call_map.get(name, name)
-        result = self._transport.request("tools/call", {"name": raw, "arguments": arguments})
+        result = self._transport.call("tools/call", {"name": raw, "arguments": arguments})
         texts, images = [], []
         for item in result.get("content", []):
             if item.get("type") == "text":
@@ -420,6 +483,13 @@ class McpManager:
         if not server and not self._clients:
             if self._self_heal():
                 server = self._name_to_server.get(name)
+        # 连接还在、但底层读循环已经死了（子进程退出 / 管道被关）→ 也自愈一次。
+        # 否则工具表看着有工具，一调用就「连接已断开」，用户侧仍是不可用。
+        if server:
+            cli = self._clients.get(server)
+            if cli is not None and getattr(getattr(cli, "_transport", None), "_dead", ""):
+                if self._self_heal():
+                    server = self._name_to_server.get(name)
         if not server:
             raise McpError(f"未知 MCP 工具: {name}")
         # 用服务器原始工具名调用（去重后的前缀名在客户端 _call_map 中还原）

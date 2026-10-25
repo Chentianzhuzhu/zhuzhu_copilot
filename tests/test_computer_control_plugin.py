@@ -718,9 +718,12 @@ def test_overlay_windows_are_hidden_from_window_list():
     mod = _load_module()
     assert mod.OVERLAY_WIN_PREFIX == "zhuzhu-aura"
     # 过滤靠窗口标题前缀，所以建窗用的名字必须带这个前缀
+    # （光带现在是四条独立边条：top/bottom/left/right）
     aura_src = AURA.read_text(encoding="utf-8")
-    assert '"zhuzhu-aura-ring"' in aura_src
     assert '"zhuzhu-aura-hint"' in aura_src
+    assert 'zhuzhu-aura-{name}' in aura_src, "光带窗口名应由边名拼出"
+    for side in ("top", "bottom", "left", "right"):
+        assert f'"{side}"' in aura_src, f"缺少 {side} 边条"
     wins = mod.list_windows()
     leaked = [w for w in wins
               if str(w.get("title", "")).startswith(mod.OVERLAY_WIN_PREFIX)]

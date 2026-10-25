@@ -519,6 +519,9 @@ class Aura:
         self._stop_ts = 0.0
         self._frame_cost = 0.0      # 最近一帧的实际耗时（秒），用于自动限速
         self._hint_error = ""       # 胶囊窗建窗/渲染异常（不静默吞掉，供排障）
+        self._bands = []            # 四条边条窗口（上/下/左/右）
+        self._band_core = []        # 每条边的核心像素（局部偏移）
+        self._band_glow = []        # 每条边的泛光像素（局部偏移）
         self._last_top_ts = 0.0      # 上次重申 topmost 的时间（防任务栏盖住底边）
 
     # ---- 对外接口 ----
@@ -646,9 +649,12 @@ class Aura:
             self._error = f"{type(e).__name__}: {e}"
             self._stop.set()
         finally:
-            if self._ring:
-                self._ring.destroy()
-                self._ring = None
+            for lw in getattr(self, "_bands", None) or []:
+                lw.destroy()
+            self._bands = []
+            self._band_core = []
+            self._band_glow = []
+            self._ring = None
 
     def _run_hint(self):
         interval = 1.0 / max(1, AURA_HINT_FPS)
@@ -686,18 +692,43 @@ class Aura:
                 self._hint.destroy()
                 self._hint = None
 
-    # ---- 光带：建窗 ----
+    # ---- 光带：建窗（四条独立边条，不是一个全屏大窗）----
     def _create_ring(self) -> bool:
+        """建上/下/左/右四条边条窗口。
+
+        **为什么从「一个全屏分层窗口」改成四条边条**（实测结论，别改回去）：
+        全屏方案要为 1920×1080 开一块 **8MB 的 DIB**，每帧还要遍历 198 万个像素
+        （哪怕只有 12px 宽的那一圈有用）。在内存紧张、或叠了一堆大型应用的机器上，
+        这块 DIB 的分配/提交会失败或慢到看不出效果 —— 用户侧现象是「胶囊在、光带
+        没有」，而异常被 `_run_ring` 的 finally 吞掉，**一点线索都不留**。
+        四条边条的总内存是 368KB（1/20），每帧像素 7 万（1/28），且任一条边建窗失败
+        都能精确定位是哪条。
+        """
         wx, wy, width, height = _work_area()
         if width <= 0 or height <= 0:
             self._failed, self._error = True, "无法获取可用桌面区域"
             return False
-        ring = _LayeredWindow("zhuzhu-aura-ring")
-        if not ring.create(wx, wy, width, height):
-            self._failed = True
-            self._error = ring._error
-            return False
-        self._ring = ring
+        thick = max(2, self.core + self.glow)
+        specs = [
+            ("top", wx, wy, width, thick),
+            ("bottom", wx, wy + height - thick, width, thick),
+            ("left", wx, wy, thick, height),
+            ("right", wx + width - thick, wy, thick, height),
+        ]
+        bands = []
+        for name, bx, by, bw, bh in specs:
+            lw = _LayeredWindow(f"zhuzhu-aura-{name}")
+            if not lw.create(bx, by, bw, bh):
+                for old in bands:
+                    old.destroy()
+                self._failed = True
+                self._error = f"{name} 边建窗失败：{lw._error}"
+                return False
+            bands.append(lw)
+        self._bands = bands
+        # 记住工作区尺寸：_build_pixels 的「全屏坐标」要用它（不能读某条边的小尺寸）
+        self._width, self._height = width, height
+        self._ring = bands[0]        # 兼容旧字段（自检/日志用）
         self._build_luts()
         self._build_pixels()
         self._paint_static()
@@ -743,11 +774,11 @@ class Aura:
         """
         core, glow = self.core, self.glow
         total = core + glow
-        if self._ring is not None:
-            w, h = self._ring._w, self._ring._h
-        else:
-            w = int(getattr(self, "_width", 0) or getattr(self, "_w", 1920))
-            h = int(getattr(self, "_height", 0) or getattr(self, "_h", 1080))
+        # 全屏（工作区）尺寸：优先用建窗时记下的，其次才是测试里手填的
+        w = int(getattr(self, "_width", 0) or 0)
+        h = int(getattr(self, "_height", 0) or 0)
+        if not w or not h:
+            w, h = 1920, 1080
         steps = 256
         core_px, glow_px = [], []
         seen = set()
@@ -793,54 +824,85 @@ class Aura:
                 _emit(x, y)
         self._core_px = core_px
         self._glow_px = glow_px
+        self._split_into_bands()
         return core_px + glow_px
 
-    # ---- 光带：静态层（泛光 + 核心带的初始帧） ----
+    def _split_into_bands(self):
+        """把全屏坐标的像素清单按所属边条重新编组（局部字节偏移）。
+
+        全屏坐标只在自检/测试里用；真正绘制时每条边只写自己那一小块 DIB，
+        所以这里把 `off4`（全屏偏移）换算成各边条内的局部偏移。
+        """
+        bands = getattr(self, "_bands", None) or []
+        self._band_core = [[] for _ in bands]
+        self._band_glow = [[] for _ in bands]
+        if not bands:
+            return
+        w = self._width
+        for lst, px in ((self._band_core, self._core_px),
+                        (self._band_glow, self._glow_px)):
+            for off4, pi, di in px:
+                off = off4 >> 2
+                x, y = off % w, off // w
+                for i, lw in enumerate(bands):
+                    lx, ly = x - lw._x, y - lw._y
+                    if 0 <= lx < lw._w and 0 <= ly < lw._h:
+                        lst[i].append(((ly * lw._w + lx) << 2, pi, di))
+                        break
+
+    # ---- 光带：静态层（泛光 + 核心带的初始帧），逐边条写 ----
     def _paint_static(self):
-        mv = self._ring._mv
         glow_lut = self._glow_lut
-        for off4, pi, di in self._glow_px:
-            b, g, r, a = glow_lut[pi][di]
-            mv[off4] = b
-            mv[off4 + 1] = g
-            mv[off4 + 2] = r
-            mv[off4 + 3] = a
         core_lut = self._core_lut
-        for off4, pi, di in self._core_px:
-            b, g, r, a = core_lut[pi][di]
-            mv[off4] = b
-            mv[off4 + 1] = g
-            mv[off4 + 2] = r
-            mv[off4 + 3] = a
-        self._ring.push(0)
+        for i, lw in enumerate(getattr(self, "_bands", None) or []):
+            mv = lw._mv
+            if mv is None:
+                continue
+            for off4, pi, di in self._band_glow[i]:
+                b, g, r, a = glow_lut[pi][di]
+                mv[off4] = b
+                mv[off4 + 1] = g
+                mv[off4 + 2] = r
+                mv[off4 + 3] = a
+            for off4, pi, di in self._band_core[i]:
+                b, g, r, a = core_lut[pi][di]
+                mv[off4] = b
+                mv[off4 + 1] = g
+                mv[off4 + 2] = r
+                mv[off4 + 3] = a
+            lw.push(0)
 
     # ---- 光带：动画帧 ----
     def _draw_ring(self, now: float):
         self._sync_timers(now)
         fade = self._fade_at(now)
         if not self._active and fade <= 0.004:
-            self._ring.push(0)
+            for lw in getattr(self, "_bands", None) or []:
+                lw.push(0)
             self._stop.set()      # 淡出完成 → 线程收尾并清理
             return
-        mv = self._ring._mv
-        if mv is None:
-            return
-        # 周期性重申置顶（1.2s 一次，开销只有一次 SetWindowPos）：
-        # 任务栏是 topmost，会在我们之后抢到更前的位置，把底部光带整条盖掉。
+        # 周期性重申置顶（2s 一次）：任务栏是 topmost，会在我们之后抢到更前的位置，
+        # 把底部光带整条盖掉。四条边都要重申。
         if now - self._last_top_ts >= 2.0:
             self._last_top_ts = now
-            self._ring.raise_top()
+            for lw in getattr(self, "_bands", None) or []:
+                lw.raise_top()
             if self._hint is not None:
                 self._hint.raise_top()
         lut = self._core_lut
         shift = int(now * AURA_FLOW_SPEED * 256) & 255
-        for off4, pi, di in self._core_px:
-            b, g, r, a = lut[(pi + shift) & 255][di]
-            mv[off4] = b
-            mv[off4 + 1] = g
-            mv[off4 + 2] = r
-            mv[off4 + 3] = a
-        self._ring.push(int(self._pulse(now) * fade))
+        sca = int(self._pulse(now) * fade)
+        for i, lw in enumerate(getattr(self, "_bands", None) or []):
+            mv = lw._mv
+            if mv is None:
+                continue
+            for off4, pi, di in self._band_core[i]:
+                b, g, r, a = lut[(pi + shift) & 255][di]
+                mv[off4] = b
+                mv[off4 + 1] = g
+                mv[off4 + 2] = r
+                mv[off4 + 3] = a
+            lw.push(sca)
 
     # ---- 胶囊提示窗 ----
     def _create_hint(self) -> bool:
