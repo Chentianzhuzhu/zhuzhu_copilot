@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     admin_max_fail: int = 5
     admin_lock_minutes: int = 15
 
+    # Cloudflare Turnstile 人机验证：应用账户注册/登录必须点过验证组件。
+    # site key 是公开信息（随页面下发）；secret 只存服务端，务必用环境变量
+    # TURNSTILE_SECRET_KEY 配置——缺失时 verify 一律失败（fail-closed）。
+    turnstile_enabled: bool = True
+    turnstile_site_key: str = "0x4AAAAAAFkPdJ6msoFqH2a4"
+    turnstile_secret_key: str = ""
+
     # CORS：生产环境建议配置为具体前端来源（逗号分隔），禁止使用 * 搭配 credentials
     cors_origins: str = "*"
 

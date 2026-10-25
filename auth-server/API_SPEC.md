@@ -121,6 +121,18 @@
 
 > 服务端 `REQUIRE_LOGIN_STATE=true` 时，未携带有效 state 的登录/注册一律 400。
 
+### 0c. 人机验证配置（Cloudflare Turnstile）
+`GET /api/auth/captcha`
+
+登录页在渲染前调用，取回公开的站点密钥（secret 永不出服务端）。
+```json
+{ "code": 0, "message": "ok", "data": { "enabled": true, "sitekey": "0x4AAAAA..." } }
+```
+- `enabled=false`：服务端关闭校验（仅本地开发），登录页隐藏验证组件；
+- 注册/登录都必须携带 `turnstile_token`（一次性、约 5 分钟有效），服务端向
+  Cloudflare `siteverify` 复核；**校验服务不可用/无 token 一律拒绝**（fail-closed）。
+- 站点密钥只对 Cloudflare 控制台里绑定的域名生效：用 IP 访问时组件会拒绝渲染。
+
 ### 0b. 登录结果中转回跳（解决浏览器 localhost 回调被拦截）
 
 桌面应用除监听 `http://127.0.0.1:<port>/callback` 外，还会**轮询**本接口取回登录结果。
@@ -152,7 +164,8 @@
   "security_question": "string",
   "security_answer": "string",
   "avatar": "string (base64编码图片, 可选，默认使用系统头像)",
-  "state": "string (登录握手 state，必填)"
+  "state": "string (登录握手 state，必填)",
+  "turnstile_token": "string (人机验证一次性 token，必填)"
 }
 ```
 
@@ -182,20 +195,14 @@
 {
   "username": "string",
   "password": "string",
-  "state": "string (登录握手 state，必填)"
+  "state": "string (登录握手 state，必填)",
+  "turnstile_token": "string (人机验证一次性 token，必填)"
 }
 ```
 
 > `state` 无效或已被使用返回 `400 登录校验已失效，请返回应用重新登录`；
+> 未通过人机验证返回 `400 人机验证未通过，请点击验证框后重试`；
 > 凭证错误返回 `401`（统一提示，含 `X-Attempts-Left` 剩余尝试次数）。
-
-请求体：
-```json
-{
-  "username": "string",
-  "password": "string"
-}
-```
 
 成功响应：
 ```json

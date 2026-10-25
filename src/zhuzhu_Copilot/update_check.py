@@ -14,7 +14,7 @@ import urllib.request
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-APP_VERSION = "7.0.0"          # 当前客户端版本（发新版时同步修改）
+APP_VERSION = "7.0.1"          # 当前客户端版本（发新版时同步修改）
 POLL_INTERVAL_MS = 30_000      # 30s 轮询
 POLL_MAX_MS = 300_000          # 连续失败最长退避到 5 分钟（受限网络里不反复打洞）
 DEFAULT_SERVER = "https://chentian.dpdns.org"   # 默认更新服务器（可被 QSettings/环境变量覆盖）

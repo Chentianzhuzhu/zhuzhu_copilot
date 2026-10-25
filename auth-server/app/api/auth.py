@@ -13,9 +13,12 @@ from app.core import login_state
 from app.config import settings
 from app.schemas import (RegisterRequest, LoginRequest, LoginResultRequest,
                          SecurityQuestionRequest, ResetPasswordRequest)
-from app.services import auth_service, avatar_service
+from app.services import auth_service, avatar_service, turnstile
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
+
+#: 人机验证失败的统一提示（登录页据此重新拉起验证组件）
+CAPTCHA_ERROR = "人机验证未通过，请点击验证框后重试"
 
 # 头像落盘/校验已抽到 services/avatar_service（管理后台建号共用）；
 # 此处保留别名以兼容既有引用。
@@ -51,6 +54,20 @@ async def _verify_login_state(redis, state: str) -> bool:
 def validate_image_header(file_bytes: bytes) -> bool:
     """用 Pillow 验证图片文件头是否合法（转发到共享实现，避免两份逻辑）。"""
     return avatar_service.validate_image_header(file_bytes)
+
+
+@router.get("/captcha")
+async def captcha_config():
+    """人机验证配置：只下发公开的站点密钥（secret 永不出服务端）。
+
+    登录页用它在本地渲染 Cloudflare Turnstile 组件；enabled=false 时页面不渲染
+    组件、后端也不校验（仅本地开发会关）。
+    """
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {"enabled": turnstile.enabled(), "sitekey": turnstile.site_key()},
+    }
 
 
 @router.post("/state")
@@ -135,6 +152,10 @@ async def register(
 
     ip = get_client_ip(request)
 
+    # 人机验证：注册必须点过 Cloudflare Turnstile 组件（token 一次性、约 5 分钟有效）
+    if not await turnstile.verify(req.turnstile_token or "", ip):
+        raise HTTPException(status_code=400, detail=CAPTCHA_ERROR)
+
     # 处理 base64 头像（落盘逻辑见 services/avatar_service，管理后台建号共用）
     avatar_url = None
     if req.avatar:
@@ -187,6 +208,10 @@ async def login(
         raise HTTPException(status_code=400, detail="登录校验已失效，请返回应用重新登录")
 
     ip = get_client_ip(request)
+
+    # 人机验证：登录同样必须通过 Turnstile（拦撞库 / 脚本爆破）
+    if not await turnstile.verify(req.turnstile_token or "", ip):
+        raise HTTPException(status_code=400, detail=CAPTCHA_ERROR)
 
     try:
         result = await auth_service.login_user(

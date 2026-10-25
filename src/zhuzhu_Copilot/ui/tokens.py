@@ -48,6 +48,21 @@ SPACING_MD = 12
 SPACING_LG = 16
 SPACING_XL = 24
 
+# 等宽数字字体栈（招 4「数字锁死等宽」）：
+# 实时跳动的数字（token 计数 / 耗时徽章 / 统计值）若用比例数字，每位宽度不一，
+# 流式刷新时整串文字会左右抖动。这条栈里的字体（Segoe UI / Microsoft YaHei UI）
+# 数字均为等宽字形（tabular figures），末位回退 monospace 保证任何环境都不抖。
+# 用法：QSS `font-family: {NUMERIC_FONT_STACK};` 或 HTML `<span style=...>`。
+NUMERIC_FONT_STACK = '"Segoe UI", "Microsoft YaHei UI", "Cascadia Mono", Consolas, monospace'
+
+# 暗色模式字重微调档位（招 2「暗色字重悄悄减细」）：
+# 深色底上粗体视觉上更「糊」，同一字重暗色比浅色显胖一档，故暗色统一降一档使用。
+# 浅色用常规档，暗色降一档（700→600 / 600→500 / 500→400）。
+FONT_WEIGHT = {
+    "light": {"title": 700, "strong": 600, "button": 600, "emphasis": 500},
+    "dark": {"title": 600, "strong": 500, "button": 500, "emphasis": 400},
+}
+
 # 动效时长（ms）：hover / 弹层的过渡节奏，统一避免各处手感不一
 ANIM_FAST = 120    # 颜色 / 透明度微反馈
 ANIM_NORMAL = 200  # 开关 / 滑入滑出

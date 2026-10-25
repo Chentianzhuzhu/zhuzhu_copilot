@@ -29,3 +29,10 @@ spring:
 market:
   storage-dir: /var/lib/plugin-market/files
   max-uploads-per-day: 30
+  # Cloudflare Turnstile 人机验证（**当前关闭**：产品口径是只用于应用账户登录，
+  # 市场登录不做人机验证；把 enabled 设为 true 即可启用注册/登录校验）。
+  # site-key 为公开信息；secret-key 只在服务端使用。生产环境建议用环境变量覆盖。
+  turnstile:
+    enabled: ${TURNSTILE_ENABLED:false}
+    site-key: ${TURNSTILE_SITE_KEY:0x4AAAAAAFkPdJ6msoFqH2a4}
+    secret-key: ${TURNSTILE_SECRET_KEY:0x4AAAAAAFkPdLOg8IrlZXj8ZlDbT0s6YNU}

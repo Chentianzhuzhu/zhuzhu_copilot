@@ -79,6 +79,24 @@
     color: var(--text);
     font-weight: 600;
   }
+  /* ========== 人机验证（Cloudflare Turnstile） ========== */
+  .cf-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 16px;
+  }
+  .cf-box.hidden { display: none; }
+  .cf-hint {
+    font-size: 12px;
+    color: var(--text-dim);
+    min-height: 16px;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .cf-hint.ok { color: var(--success); }
+  .cf-hint.err { color: var(--error); }
   /* ========== 表单 ========== */
   .form-group { margin-bottom: 16px; }
   .form-group label {
@@ -324,6 +342,11 @@
         <input type="password" id="loginPassword" data-i18n-ph="ph.password" placeholder="请输入密码" autocomplete="current-password"
                oninput="clearFieldError('loginPassword')">
       </div>
+      <!-- 人机验证：输入框下方、提交按钮上方（登录/注册各一个，token 互不混用） -->
+      <div class="cf-box" id="cfBoxLogin">
+        <div id="cfWidgetLogin"></div>
+        <div class="cf-hint" id="cfHintLogin" data-i18n="cf.loading">正在加载人机验证…</div>
+      </div>
       <button type="submit" class="btn-submit" id="loginBtn" data-i18n="btn.login">登 录</button>
       <div class="footer-note" style="margin-top:12px;">
         <a href="javascript:void(0)" id="forgotLink" onclick="showForgot()" data-i18n="link.forgot">忘记密码？</a>
@@ -375,6 +398,11 @@
           <button type="button" class="avatar-upload-btn" onclick="document.getElementById('avatarInput').click()" data-i18n="btn.chooseImage">选择图片</button>
           <input type="file" id="avatarInput" accept="image/jpeg,image/png,image/gif" onchange="handleAvatar(event)">
         </div>
+      </div>
+      <!-- 人机验证：输入框下方、提交按钮上方 -->
+      <div class="cf-box" id="cfBoxRegister">
+        <div id="cfWidgetRegister"></div>
+        <div class="cf-hint" id="cfHintRegister" data-i18n="cf.loading">正在加载人机验证…</div>
       </div>
       <button type="submit" class="btn-submit" id="regBtn" data-i18n="btn.register">注 册</button>
     </form>
@@ -526,6 +554,15 @@ var I18N = {
     'msg.returningDesc': '正在将登录信息传递到桌面应用，请稍候...',
     'msg.noAppPort': '未检测到桌面应用在本地监听回调端口（{port}）。请确保应用已启动，或手动复制下方 Token 粘贴到应用中。',
     'msg.relayed': '登录信息已发送到桌面应用，如果应用未自动登录，可手动复制下方 Token 粘贴到应用中。',
+    'cf.loading': '正在加载人机验证…',
+    'cf.pending': '请点击下方验证框完成人机验证',
+    'cf.passed': '人机验证已通过',
+    'cf.expired': '验证已过期，请重新点击验证框',
+    'cf.error': '验证组件加载失败（{code}），请刷新重试',
+    'cf.noKey': '服务端未配置验证站点密钥',
+    'cf.scriptFail': '验证脚本加载失败，请检查网络后刷新',
+    'cf.fetchFail': '无法获取验证配置，请刷新重试',
+    'err.captchaRequired': '请先完成人机验证',
     'q.unset': '（未设置）'
   },
   'en': {
@@ -609,6 +646,15 @@ var I18N = {
     'msg.returningDesc': 'Passing your login to the desktop app, please wait...',
     'msg.noAppPort': 'No desktop app was detected listening on the local callback port ({port}). Make sure the app is running, or manually copy the Token below into the app.',
     'msg.relayed': 'Your login has been sent to the desktop app. If it does not sign in automatically, manually copy the Token below into the app.',
+    'cf.loading': 'Loading human verification...',
+    'cf.pending': 'Please tick the verification box below',
+    'cf.passed': 'Verification passed',
+    'cf.expired': 'Verification expired, please tick the box again',
+    'cf.error': 'Verification widget failed to load ({code}), please refresh',
+    'cf.noKey': 'Site key is not configured on the server',
+    'cf.scriptFail': 'Verification script failed to load, check your network and refresh',
+    'cf.fetchFail': 'Could not load verification config, please refresh',
+    'err.captchaRequired': 'Please complete the human verification first',
     'q.unset': '(not set)'
   }
 };
@@ -670,6 +716,16 @@ function applyLang() {
   // 刷新动态按钮（其文案可能正处于 loading 或需按语言重建）
   refreshDynamicTexts();
   applyQuestionOptions();
+  cfRefreshHints();      // data-i18n 会把验证提示重置成"加载中"，按真实状态改回来
+}
+
+/* 语言切换后恢复人机验证的真实提示（已通过 / 待验证） */
+function cfRefreshHints() {
+  if (typeof CF === 'undefined' || !CF.enabled) return;
+  ['login', 'register'].forEach(function (w) {
+    var ok = !!CF.token[w];
+    cfHint(w, ok ? t('cf.passed') : t('cf.pending'), ok ? 'ok' : '');
+  });
 }
 
 /* 切换语言并记忆。 */
@@ -876,6 +932,113 @@ function loadAvatarLimits() {
 }
 
 /* ============================================================
+ * 人机验证（Cloudflare Turnstile）
+ *
+ * 站点密钥由服务端下发（GET /api/auth/captcha），secret 只在服务端。
+ * 登录表单与注册表单**各有一个组件**，位置在输入框下方、提交按钮上方；
+ * 两个 token 互不混用（一次性、约 5 分钟有效，提交失败必须重置）。
+ * ============================================================ */
+var CF = {
+  enabled: false,
+  token: { login: '', register: '' },
+  widgetId: { login: null, register: null }
+};
+
+function cfSuffix(which) { return which === 'register' ? 'Register' : 'Login'; }
+
+function cfHint(which, text, cls) {
+  var el = document.getElementById('cfHint' + cfSuffix(which));
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'cf-hint' + (cls ? ' ' + cls : '');
+}
+
+function cfReset(which) {
+  CF.token[which] = '';
+  var id = CF.widgetId[which];
+  if (id !== null && window.turnstile) {
+    try { window.turnstile.reset(id); } catch (e) { /* 忽略 */ }
+  }
+  if (CF.enabled) cfHint(which, t('cf.pending'), '');
+}
+
+function cfOnPass(which) {
+  return function (token) {
+    CF.token[which] = token || '';
+    cfHint(which, t('cf.passed'), 'ok');
+  };
+}
+function cfOnExpire(which) {
+  return function () { CF.token[which] = ''; cfHint(which, t('cf.expired'), 'err'); };
+}
+function cfOnError(which) {
+  return function (code) {
+    CF.token[which] = '';
+    cfHint(which, t('cf.error', { code: code }), 'err');
+  };
+}
+
+/* 当前 tab 对应的验证通道 */
+function cfCurrent() { return currentTab === 'register' ? 'register' : 'login'; }
+
+/* 提交前拦截：没通过验证就不发请求（服务端同样会拒绝，这是第一道闸） */
+function cfRequire() {
+  if (!CF.enabled) return true;          // 服务端关闭校验（仅本地开发）
+  var w = cfCurrent();
+  if (CF.token[w]) return true;
+  showError(t('err.captchaRequired'));
+  cfHint(w, t('cf.pending'), 'err');
+  return false;
+}
+
+function cfInit() {
+  fetch(API_BASE + '/api/auth/captcha', { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var d = (j && j.data) || {};
+      if (!d.enabled) {                  // 服务端未启用：整块隐藏，不挡提交
+        CF.enabled = false;
+        ['cfBoxLogin', 'cfBoxRegister'].forEach(function (id) {
+          var b = document.getElementById(id);
+          if (b) b.classList.add('hidden');
+        });
+        return;
+      }
+      CF.enabled = true;
+      if (!d.sitekey) {
+        cfHint('login', t('cf.noKey'), 'err');
+        cfHint('register', t('cf.noKey'), 'err');
+        return;
+      }
+      if (!window.turnstile) {
+        cfHint('login', t('cf.scriptFail'), 'err');
+        cfHint('register', t('cf.scriptFail'), 'err');
+        return;
+      }
+      ['login', 'register'].forEach(function (w) {
+        var host = document.getElementById('cfWidget' + cfSuffix(w));
+        if (!host) return;
+        CF.widgetId[w] = window.turnstile.render(host, {
+          sitekey: d.sitekey,
+          theme: 'dark',
+          language: (typeof LANG !== 'undefined' && LANG === 'en') ? 'en' : 'zh-cn',
+          callback: cfOnPass(w),
+          'expired-callback': cfOnExpire(w),
+          'error-callback': cfOnError(w)
+        });
+        cfHint(w, t('cf.pending'), '');
+      });
+    })
+    .catch(function () {
+      cfHint('login', t('cf.fetchFail'), 'err');
+      cfHint('register', t('cf.fetchFail'), 'err');
+    });
+}
+
+/* Cloudflare 脚本 onload 回调（?render=explicit&onload=cfOnload） */
+function cfOnload() { cfInit(); }
+
+/* ============================================================
  * Tab 切换
  * ============================================================ */
 function switchTab(tab) {
@@ -1057,6 +1220,7 @@ function doLogin(e) {
   else if (username.length > 32) { setFieldError('loginUsername', t('err.usernameTooLong')); valid = false; }
   if (!password) { setFieldError('loginPassword', t('err.passwordRequired')); valid = false; }
   if (!valid) return false;
+  if (!cfRequire()) return false;        // 人机验证未通过：不发请求
 
   var btn = document.getElementById('loginBtn');
   btn.disabled = true;
@@ -1065,7 +1229,8 @@ function doLogin(e) {
   fetch(API_BASE + '/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username, password: password, state: LOGIN_STATE })
+    body: JSON.stringify({ username: username, password: password,
+                           state: LOGIN_STATE, turnstile_token: CF.token.login })
   })
   .then(function(res) {
     return res.json().then(function(data) { return { status: res.status, data: data, headers: res.headers }; });
@@ -1082,12 +1247,14 @@ function doLogin(e) {
       deliverToken(d.token, d.user);
     } else {
       handleLoginError(r.status, r.data, r.headers);
+      cfReset('login');                   // token 已消费，重试必须重新验证
     }
   })
   .catch(function(err) {
     btn.disabled = false;
     btn.innerHTML = t('btn.login');
     showError(t('err.network'));
+    cfReset('login');
   });
   return false;
 }
@@ -1125,6 +1292,7 @@ function doRegister(e) {
     showError(t('err.questionRequired')); return false;
   }
   if (!answer) { showError(t('err.answerRequired')); return false; }
+  if (!cfRequire()) return false;        // 人机验证未通过：不发请求
 
   var btn = document.getElementById('regBtn');
   btn.disabled = true;
@@ -1135,7 +1303,8 @@ function doRegister(e) {
     password: password,
     password_confirm: password2,
     security_question: question,
-    security_answer: answer
+    security_answer: answer,
+    turnstile_token: CF.token.register
   };
   if (avatarBase64) body.avatar = avatarBase64;
   if (LOGIN_STATE) body.state = LOGIN_STATE;
@@ -1169,12 +1338,14 @@ function doRegister(e) {
       if (r.status === 409) showError(r.data.message || t('err.usernameExists'));
       else if (r.status === 429) showError(t('err.registerTooFrequent'));
       else showError(r.data.message || t('err.registerFailed'));
+      cfReset('register');                // token 已消费，重试必须重新验证
     }
   })
   .catch(function() {
     btn.disabled = false;
     btn.innerHTML = t('btn.register');
     showError(t('err.network'));
+    cfReset('register');
   });
   return false;
 }
@@ -1424,12 +1595,24 @@ if (document.readyState === 'loading') {
     syncAgreementLink();
     applyLang();
     loadAvatarLimits();
+    cfWatchdog();
   });
 } else {
   syncAgreementLink();
   applyLang();
   loadAvatarLimits();
+  cfWatchdog();
+}
+
+/* 验证脚本加载兜底：10s 内没就绪就给出可读提示（CF 域名被网络阻断时常见） */
+function cfWatchdog() {
+  setTimeout(function () {
+    if (window.turnstile) return;
+    cfHint('login', t('cf.scriptFail'), 'err');
+    cfHint('register', t('cf.scriptFail'), 'err');
+  }, 10000);
 }
 </script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=cfOnload" async defer></script>
 </body>
 </html>

@@ -15,12 +15,14 @@ class RegisterRequest(BaseModel):
     security_answer: str = Field(..., max_length=255)
     avatar: Optional[str] = None  # base64 编码图片
     state: Optional[str] = None   # 登录握手 state（防 CSRF / 重放）
+    turnstile_token: Optional[str] = None   # Cloudflare Turnstile 一次性 token
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
     state: Optional[str] = None   # 登录握手 state（防 CSRF / 重放）
+    turnstile_token: Optional[str] = None   # Cloudflare Turnstile 一次性 token
 
 
 class LoginResultRequest(BaseModel):

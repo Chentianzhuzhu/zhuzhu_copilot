@@ -3,8 +3,13 @@
 主面板、各对话框、WebView 面板共用同一套 PALETTE 与 GLOBAL_QSS，
 修改色板即可全局换肤。风格：简约、高效、深色基调。
 
-美化版：纯黑 #000 柔化为石墨色阶（直出纯黑太生硬，且选中/边框在纯黑上不可见），
-保留黑/灰/白/深蓝的极简语言，补全 hover / pressed / focus 全交互态。
+美化版（客户端 UI/UX 五招落地）：
+- 招 1 微对比色阶分层：层级 bg → card → elevated 每层亮度差 1%~3%，
+  **不画边框线**；输入框/文本框做成「凹陷字段」（比卡片暗一档），聚焦时
+  背景整体加深做出温润咬合感，不用亮线描边。
+- 招 2 暗色字重减细：深色底上粗体视觉发糊，标题/按钮字重按主题降一档
+  （档位表见 tokens.FONT_WEIGHT）。
+- 招 4 等宽数字：numeric_font_css() 供实时跳动的数字控件使用。
 """
 
 from PyQt6.QtCore import QByteArray, Qt
@@ -18,6 +23,8 @@ from zhuzhu_Copilot.ui.tokens import (
     FONT_CAPTION,
     FONT_LARGE,
     FONT_SMALL,
+    FONT_WEIGHT,
+    NUMERIC_FONT_STACK,
     RADIUS_MD,
     RADIUS_SM,
     RADIUS_XS,
@@ -25,11 +32,42 @@ from zhuzhu_Copilot.ui.tokens import (
     SPACING_SM,
 )
 
+
+def _mix(a: str, b: str, t: float) -> str:
+    """两色按比例混合（t=0 取 a，t=1 取 b），用于派生层级色。"""
+    ca, cb = QColor(a), QColor(b)
+    return QColor(
+        int(round(ca.red() * (1 - t) + cb.red() * t)),
+        int(round(ca.green() * (1 - t) + cb.green() * t)),
+        int(round(ca.blue() * (1 - t) + cb.blue() * t)),
+    ).name()
+
+
+def _is_dark() -> bool:
+    """当前色板是否为深色（按主背景明度判定，供字重降档等主题相关决策）。"""
+    return QColor(PALETTE["bg_top"]).lightness() < 128
+
+
+def _weights() -> dict:
+    """当前主题的字重档位表（浅色常规档 / 暗色降一档）。"""
+    return FONT_WEIGHT["dark" if _is_dark() else "light"]
+
+
+def numeric_font_css() -> str:
+    """等宽数字字体声明（招 4）：拼进 QSS 的 font-family，或 HTML span 的
+    font-family。用于 token 计数 / 耗时 / 统计值等**实时跳动**的数字文本。"""
+    return f"font-family: {NUMERIC_FONT_STACK};"
+
+
 # 极简四色系：石墨黑 + 淡灰 + 白 + 深蓝
+# 层级（招 1）：bg → card → elevated 每层亮度差 1%~3%，绝不用纯黑；
+# field 为「凹陷字段」色（输入框/文本框，比卡片暗一档，做凹陷咬合感）。
 DARK_PALETTE = {
     "bg_top": "#101216",            # 石墨黑（柔化纯黑，保留深色质感）
     "bg_bottom": "#0B0D11",         # 近黑
     "card": "#181B21",              # 卡片（深灰偏蓝，层次高于背景）
+    "elevated": "#22262F",          # 悬浮层（菜单/提示/下拉，比卡片亮 ~3%）
+    "field": "#12151B",             # 凹陷字段（输入框，比卡片暗一档）
     "primary": "#2F52D8",           # 深蓝（主色，提亮后深色底下更清晰）
     "primary_hover": "#4464EE",
     "primary_pressed": "#2643B0",   # 按压态
@@ -37,7 +75,7 @@ DARK_PALETTE = {
     "text": "#F3F5F9",              # 白
     "text_secondary": "#9BA3B0",    # 淡灰
     "border": "#272C36",
-    "hover": "#1F232C",
+    "hover": "#272C36",
     "success": "#34D399",
     "warning": "#FBBF24",
     "danger": "#F87171",
@@ -48,6 +86,8 @@ LIGHT_PALETTE = {
     "bg_top": "#F7F8FB",
     "bg_bottom": "#EDF0F5",
     "card": "#FFFFFF",
+    "elevated": "#FFFFFF",          # 悬浮层（浅色下白面板浮在灰底上即分层）
+    "field": "#EEF1F7",             # 凹陷字段（比白卡片暗一档）
     "primary": "#1E40AF",
     "primary_hover": "#2B51D1",
     "primary_pressed": "#1A368F",   # 按压态
@@ -86,11 +126,25 @@ def _scrollbar_handle_hover() -> str:
 def _build_global_qss() -> str:
     """按当前 PALETTE 生成全局 QSS（主窗口基础样式，浅色/深色随主题重建）
 
+    招 1（不画边框，微对比分层）：输入类控件一律「凹陷字段」——
+    底比卡片暗一档（field），hover / focus 逐档加深，**不描边**；
+    聚焦的可见性由「背景整体加深 + 光标闪烁」承担（现代大厂客户端的做法，
+    参见 macOS 聚焦搜索 / Win11 搜索框均无聚焦亮线）。
+    菜单 / 提示 / 下拉弹层用 elevated 层（比卡片亮 ~3%）浮起，同样不描边。
+
+    招 2（暗色字重减细）：标题 / 按钮字重按 tokens.FONT_WEIGHT 取档，
+    深色主题自动降一档。
+
     下拉箭头**不在这里画**：Qt 的 QSS 不支持 CSS 那种「透明边框拼三角」的写法，
     `border-top` + 透明左右边会被渲染成一个实心小方块（用户反馈的「下拉箭头是方块」）。
     箭头统一由 `ui/widgets.ArrowComboBox` 在 paintEvent 里自绘（可随 hover/展开换色），
     这里只保留与自绘箭头等宽的 `::drop-down` 预留位。
     """
+    w = _weights()
+    field = PALETTE["field"]                       # 凹陷字段（输入框底）
+    field_hover = _mix(PALETTE["field"], PALETTE["hover"], 0.55)
+    field_focus = _mix(PALETTE["field"], PALETTE["hover"], 1.0)
+    elevated = PALETTE["elevated"]                 # 悬浮层（弹层底）
     return f"""
 QMainWindow {{
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -110,7 +164,7 @@ QLabel {{
 
 QLabel#title {{
     font-size: {FONT_LARGE}px;
-    font-weight: 700;
+    font-weight: {w['title']};
     color: {PALETTE['primary_hover']};
 }}
 
@@ -126,7 +180,7 @@ QPushButton {{
     border: none;
     border-radius: {RADIUS_SM}px;
     padding: 10px 24px;
-    font-weight: 600;
+    font-weight: {w['button']};
 }}
 
 QPushButton:hover {{
@@ -143,14 +197,15 @@ QPushButton:disabled {{
 }}
 
 QPushButton#secondary {{
-    background: {PALETTE['card']};
+    background: {field};
     color: {PALETTE['text']};
-    border: 1px solid {PALETTE['border']};
+    border: none;
+    border-radius: {RADIUS_SM}px;
 }}
 
 QPushButton#secondary:hover {{
-    background: {PALETTE['hover']};
-    border-color: {PALETTE['primary_hover']};
+    background: {field_hover};
+    color: {PALETTE['primary_hover']};
 }}
 
 QPushButton#secondary:pressed {{
@@ -158,9 +213,9 @@ QPushButton#secondary:pressed {{
 }}
 
 QLineEdit, QComboBox {{
-    background-color: {PALETTE['card']};
+    background-color: {field};
     color: {PALETTE['text']};
-    border: 1px solid {PALETTE['border']};
+    border: none;
     border-radius: {RADIUS_SM}px;
     padding: 8px 12px;
     min-height: 20px;
@@ -169,11 +224,11 @@ QLineEdit, QComboBox {{
 }}
 
 QLineEdit:hover, QComboBox:hover {{
-    border: 1px solid {PALETTE['text_secondary']};
+    background-color: {field_hover};
 }}
 
 QLineEdit:focus, QComboBox:focus {{
-    border: 1px solid {PALETTE['primary_hover']};
+    background-color: {field_focus};
 }}
 
 QComboBox::drop-down {{
@@ -182,11 +237,11 @@ QComboBox::drop-down {{
 }}
 
 QComboBox QAbstractItemView {{
-    border: 1px solid {PALETTE['border']};
+    border: none;
     border-radius: {RADIUS_SM}px;
     padding: 4px;
     outline: none;
-    background-color: {PALETTE['card']};
+    background-color: {elevated};
     color: {PALETTE['text']};
     selection-background-color: {PALETTE['primary']};
     selection-color: #FFFFFF;
@@ -215,7 +270,7 @@ QProgressBar::chunk {{
 
 QListWidget {{
     background-color: {PALETTE['card']};
-    border: 1px solid {PALETTE['border']};
+    border: none;
     border-radius: {RADIUS_MD}px;
     padding: 6px;
     outline: none;
@@ -292,9 +347,9 @@ QScrollBar::sub-line:horizontal, QScrollBar::add-line:horizontal {{
 }}
 
 QTextEdit {{
-    background-color: {PALETTE['card']};
+    background-color: {field};
     color: {PALETTE['text']};
-    border: 1px solid {PALETTE['border']};
+    border: none;
     border-radius: {RADIUS_MD}px;
     padding: 12px;
     selection-background-color: {PALETTE['primary']};
@@ -302,22 +357,22 @@ QTextEdit {{
 }}
 
 QTextEdit:focus {{
-    border: 1px solid {PALETTE['primary_hover']};
+    background-color: {field_hover};
 }}
 
 QToolTip {{
-    background-color: {PALETTE['card']};
+    background-color: {elevated};
     color: {PALETTE['text']};
-    border: 1px solid {PALETTE['border']};
+    border: none;
     border-radius: {RADIUS_XS}px;
     padding: 5px 9px;
     font-size: {FONT_SMALL}px;
 }}
 
 QMenu {{
-    background-color: {PALETTE['card']};
+    background-color: {elevated};
     color: {PALETTE['text']};
-    border: 1px solid {PALETTE['border']};
+    border: none;
     border-radius: {RADIUS_MD}px;
     padding: 5px;
 }}
@@ -333,7 +388,7 @@ QMenu::item:selected {{
 
 QMenu::separator {{
     height: 1px;
-    background: {PALETTE['border']};
+    background: {PALETTE['hover']};
     margin: 5px 10px;
 }}
 

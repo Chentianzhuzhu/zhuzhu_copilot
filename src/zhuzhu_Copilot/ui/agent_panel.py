@@ -153,6 +153,8 @@ from zhuzhu_Copilot.ui.tokens import (
     FONT_HERO,
     FONT_SMALL,
     FONT_TITLE,
+    FONT_WEIGHT,
+    NUMERIC_FONT_STACK,
     RADIUS_LG,
     RADIUS_MD,
     RADIUS_SM,
@@ -173,6 +175,10 @@ _THEMES = {
         "ACCENT_HOVER": "#4464EE", "LINK_COLOR": "#5B82F6", "USER_BG": "#2F52D8",
         "AI_BG": "#1F232C", "OK": "#34D399", "WARN": "#FBBF24", "ERR": "#F87171",
         "HOVER": "#272C36", "CODE_ACCENT": "#7EA0F8", "CODE_BG": "#14161B",
+        # 悬浮层（招 1）：菜单 / 提示 / 下拉弹层，比 CARD 亮 ~3% 浮起，不描边
+        "ELEVATED": "#22262F",
+        # 凹陷字段（招 1）：输入框 / 文本框，比 CARD 暗一档，聚焦时逐档加深
+        "FIELD": "#12151B",
     },
     "light": {
         "BG": "#F7F8FB", "BG_BOTTOM": "#EDF0F5", "PANEL": "#FFFFFF",
@@ -181,6 +187,9 @@ _THEMES = {
         "ACCENT_HOVER": "#2B51D1", "LINK_COLOR": "#2B51D1", "USER_BG": "#1E40AF",
         "AI_BG": "#FFFFFF", "OK": "#16A34A", "WARN": "#D97706", "ERR": "#DC2626",
         "HOVER": "#EDF1F8", "CODE_ACCENT": "#2B4BD8", "CODE_BG": "#F0F3F9",
+        # 悬浮层：浅色下白面板浮在灰底上即分层；凹陷字段比白卡片暗一档
+        "ELEVATED": "#FFFFFF",
+        "FIELD": "#EEF1F7",
     },
 }
 
@@ -401,6 +410,29 @@ _THEME_VERSION = 0
 # 将来要单独调色只改这里；同时避免与「正文次要文字色」耦合带来的误改。
 ICON_GRAY = _THEMES["dark"]["TEXT_DIM"]
 
+# 悬浮层 / 凹陷字段（招 1 微对比分层，随主题在 _apply_colors 里刷新）：
+# ELEVATED —— 菜单 / 提示 / 下拉弹层的浮起层（比 CARD 亮 ~3%，不描边）；
+# FIELD    —— 输入框 / 文本框的凹陷层（比 CARD 暗一档，聚焦时逐档加深）。
+# 两者都进 _SURFACE_KEYS：壁纸透出模式下主界面上的同类表面让位给壁纸；
+# 独立窗口（对话框/弹层）一律经 _base_color 取原始色板，不会拿到 transparent。
+ELEVATED = _THEMES["dark"]["ELEVATED"]
+FIELD = _THEMES["dark"]["FIELD"]
+
+# 字重档位（招 2 暗色字重悄悄减细）：深色底上粗体视觉发糊，按主题降一档。
+# 派生 QSS（_BTN_* / _QCOMBO 等）在 _apply_colors 里随主题重建时取用。
+_W_TITLE = FONT_WEIGHT["dark"]["title"]
+_W_STRONG = FONT_WEIGHT["dark"]["strong"]
+_W_BUTTON = FONT_WEIGHT["dark"]["button"]
+_W_EMPHASIS = FONT_WEIGHT["dark"]["emphasis"]
+
+
+def _numeric_css() -> str:
+    """招 4：等宽数字字体声明（与 styles.numeric_font_css 同源）。
+
+    面板内不 import styles（模块级有环风险，见 1021 行的惰性导入），直接取
+    tokens.NUMERIC_FONT_STACK 拼装。"""
+    return f"font-family: {NUMERIC_FONT_STACK};"
+
 # 最近一次已应用的色板：_apply_colors 幂等判断用。apply_package_theme 会先 apply_theme
 # 再 apply_theme_custom 连续触发 _apply_colors，色板未变时跳过，避免 _THEME_VERSION 无谓
 # 自增导致渲染缓存整体失效、QSS 字符串重复生成（主题切换/面板重建的卡顿来源之一）。
@@ -449,7 +481,7 @@ def _mix_hex(top: str, bottom: str, alpha: float) -> str:
 #   色板——它们身后没有壁纸可透，QSS 拿到 transparent 后不填底，窗口按「未绘制」
 #   渲染成纯黑（浅色模式下最刺眼：设置页 / 子面板整片发黑）。
 _SURFACE_KEYS = ("BG", "BG_BOTTOM", "PANEL", "CARD", "AI_BG", "HOVER", "CODE_BG",
-                 "BORDER", "BORDER_SOFT")
+                 "BORDER", "BORDER_SOFT", "ELEVATED", "FIELD")
 _BASE_PALETTE: dict = {}          # 未覆盖的原始色板（壁纸压暗纱必须用真实底色）
 _SURFACE_TRANSPARENT = None       # 上一次应用的透明态（判断是否值得就地重建）
 
@@ -564,12 +596,25 @@ def _input_fg() -> str:
 
 
 def _input_qss() -> str:
-    """底部输入框完整样式（构建与离屏预览共用同一来源，避免两处漂移）。"""
-    border = _input_border()
-    return (f"QPlainTextEdit {{ background: {_input_bg()}; color: {_input_fg()};"
-            f" border: 1px solid {border};"
+    """底部输入框完整样式（构建与离屏预览共用同一来源，避免两处漂移）。
+
+    招 1（不画边框，微对比分层）：非壁纸模式下输入框是「凹陷字段」——
+    底比面板暗一档（FIELD），聚焦时整体加深一档（温润咬合），**不描边**；
+    聚焦的可见性由背景加深 + 光标闪烁 + `_install_focus_glow` 的柔光承担。
+    壁纸透出模式是唯一例外：透明底压在自定义背景上，保留 1px 淡灰发丝线
+    保证边界可辨（见 _input_border 的历史实测注释）。
+    """
+    if _feedback_boosted():
+        border = _input_border()
+        return (f"QPlainTextEdit {{ background: {_input_bg()}; color: {_input_fg()};"
+                f" border: 1px solid {border};"
+                f"border-radius: {_INPUT_RADIUS}px; padding: 5px 10px; font-size: 14px; }}"
+                f"QPlainTextEdit:focus {{ border: 1px solid {border}; }}")
+    focus_bg = _mix_hex(HOVER, FIELD, 0.55)
+    return (f"QPlainTextEdit {{ background: {FIELD}; color: {_input_fg()};"
+            f" border: none;"
             f"border-radius: {_INPUT_RADIUS}px; padding: 5px 10px; font-size: 14px; }}"
-            f"QPlainTextEdit:focus {{ border: 1px solid {border}; }}")
+            f"QPlainTextEdit:focus {{ background: {focus_bg}; border: none; }}")
 
 
 def refresh_surface_mode() -> bool:
@@ -617,6 +662,8 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     global CODE_ACCENT
     global CODE_BG
     global ICON_GRAY
+    global ELEVATED, FIELD
+    global _W_TITLE, _W_STRONG, _W_BUTTON, _W_EMPHASIS
     global _BTN_GHOST, _BTN_COMPACT, _BTN_GHOST_ACCENT, _BTN_PRIMARY, _BTN_DIM
     global _BTN_GHOST_FRAMED
     global _QCOMBO, _HOME_COMBO, _BTN_ICON, _BTN_DANGER
@@ -647,48 +694,65 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     OK = t["OK"]; WARN = t["WARN"]; ERR = t["ERR"]; HOVER = t["HOVER"]
     CODE_ACCENT = t["CODE_ACCENT"]
     CODE_BG = t.get("CODE_BG") or PANEL   # 代码块背景：浅色下区别于白色气泡，深色下略高于面板
+    ELEVATED = t.get("ELEVATED") or CARD  # 悬浮层（弹层浮起，招 1）
+    FIELD = t.get("FIELD") or PANEL       # 凹陷字段（输入框，招 1）
+    # 字重档位随主题刷新（招 2）：深色降一档，派生 QSS 重建时生效。
+    # 按背景明度判定深浅而非字典身份：自定义主题包（apply_package_theme）传的是
+    # 合并后的新字典，身份判断会误落到 dark 档。
+    _w = FONT_WEIGHT["dark" if QColor(t["BG"]).lightness() < 128 else "light"]
+    _W_TITLE = _w["title"]; _W_STRONG = _w["strong"]
+    _W_BUTTON = _w["button"]; _W_EMPHASIS = _w["emphasis"]
     # 设了自定义背景 → 容器表面色整体改透明（透出模糊壁纸），派生皮肤随后按新值生成
     _apply_surface_mode(t)
     # 重建模块级派生样式常量（以更新后的颜色重新生成字符串；几何/字距规格取自 Design Tokens）
-    _BTN_GHOST = (f"QPushButton {{ background: transparent; color: {TEXT_DIM};"
-                  f"border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
+    #
+    # 招 1（不画边框，微对比分层）：ghost 类按钮不再描边，改用「低透明填充」
+    # （BORDER 以 ~14% 压在表面色上）划出轮廓 —— 视觉上是一层「磨砂」而不是线条；
+    # hover 时填充加深、文字提亮；壁纸透明态下填充随表面色一起让位（见 _soft_fill）。
+    def _soft_fill(surface: str, ratio: float = 0.14) -> str:
+        """把描边色以低比例压在表面上，得到「无边框的柔和填充」。"""
+        return _mix_hex(BORDER, surface, ratio)
+
+    _ghost_fill = _soft_fill(PANEL)
+    _ghost_fill_hover = _soft_fill(PANEL, 0.24)
+    _BTN_GHOST = (f"QPushButton {{ background: {_ghost_fill}; color: {TEXT_DIM};"
+                  f"border: none; border-radius: {RADIUS_SM}px;"
                   f"padding: {SPACING_SM}px {SPACING_MD}px;"
-                  f"font-size: {FONT_SMALL}px; font-weight: 600; }}"
-                  f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
-                  f"background: {HOVER}; }}")
+                  f"font-size: {FONT_SMALL}px; font-weight: {_W_BUTTON}; }}"
+                  f"QPushButton:hover {{ color: {TEXT};"
+                  f"background: {_ghost_fill_hover}; }}")
     # 垂直内边距取 SPACING_XS：与同排的文本框/标签（padding 6px）等高，
     # 否则按钮会被同行更高的控件挤成一条（外观页「选择图片 / 清除」曾矮到 16px）
-    _BTN_COMPACT = (f"QPushButton {{ background: transparent; color: {TEXT_DIM};"
-                    f"border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
+    _BTN_COMPACT = (f"QPushButton {{ background: {_ghost_fill}; color: {TEXT_DIM};"
+                    f"border: none; border-radius: {RADIUS_SM}px;"
                     f"padding: {SPACING_XS}px {SPACING_SM}px;"
                     f"font-size: {FONT_SMALL}px; }}"
-                    f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
-                    f"background: {HOVER}; }}")
-    # 顶栏「清空对话」等删除类入口的 ghost：描边与同排其他 ghost 按钮（_BTN_GHOST）
-    # 同源取当前主题 BORDER 色，保证四个按钮描边颜色一致（壁纸透明态下 BORDER 被
-    # 覆写为 transparent 时也随同排一起失去轮廓，保持整排观感统一）；
+                    f"QPushButton:hover {{ color: {TEXT};"
+                    f"background: {_ghost_fill_hover}; }}")
+    # 顶栏「清空对话」等删除类入口的 ghost：填充与同排其他 ghost 按钮（_BTN_GHOST）
+    # 同源，保证四个按钮观感一致（壁纸透明态下填充随表面色一起透明，整排统一）；
     # hover 仍用主题强调色提示可交互。
-    _BTN_GHOST_FRAMED = (f"QPushButton {{ background: transparent; color: {TEXT_DIM};"
-                         f"border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
+    _BTN_GHOST_FRAMED = (f"QPushButton {{ background: {_ghost_fill}; color: {TEXT_DIM};"
+                         f"border: none; border-radius: {RADIUS_SM}px;"
                          f"padding: {SPACING_SM}px {SPACING_MD}px;"
-                         f"font-size: {FONT_SMALL}px; font-weight: 600; }}"
-                         f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; color: {TEXT};"
-                         f"background: {HOVER}; }}")
-    _BTN_GHOST_ACCENT = (f"QPushButton {{ background: transparent; color: {ACCENT_HOVER};"
-                         f"border: 1px solid {BORDER_SOFT}; border-radius: {RADIUS_SM}px;"
+                         f"font-size: {FONT_SMALL}px; font-weight: {_W_BUTTON}; }}"
+                         f"QPushButton:hover {{ color: {TEXT};"
+                         f"background: {_ghost_fill_hover}; }}")
+    _BTN_GHOST_ACCENT = (f"QPushButton {{ background: {_ghost_fill}; color: {ACCENT_HOVER};"
+                         f"border: none; border-radius: {RADIUS_SM}px;"
                          f"padding: {SPACING_SM}px {SPACING_MD}px;"
-                         f"font-size: {FONT_SMALL}px; font-weight: 600; }}"
-                         f"QPushButton:hover {{ border-color: {ACCENT_HOVER}; background: {HOVER}; }}")
+                         f"font-size: {FONT_SMALL}px; font-weight: {_W_BUTTON}; }}"
+                         f"QPushButton:hover {{ background: {_ghost_fill_hover}; }}")
     _BTN_PRIMARY = (f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
                     f"stop:0 {ACCENT_HOVER}, stop:1 {ACCENT}); color: #FFFFFF; border: none;"
                     f"border-radius: 17px; padding: 0 {SPACING_LG}px;"
-                    f"font-size: {FONT_BODY}px; font-weight: 700; }}"
+                    f"font-size: {FONT_BODY}px; font-weight: {_W_TITLE}; }}"
                     f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
                     f"QPushButton:pressed {{ background: {QColor(ACCENT).darker(118).name()}; }}"
                     f"QPushButton:disabled {{ background: {CARD}; color: {TEXT_DIM}; }}")
     _BTN_DIM = (f"QPushButton {{ background: #94A3B8; color: #FFFFFF; border: none;"
                 f"border-radius: 17px; padding: 0 {SPACING_LG}px;"
-                f"font-size: {FONT_BODY}px; font-weight: 700; }}"
+                f"font-size: {FONT_BODY}px; font-weight: {_W_TITLE}; }}"
                 f"QPushButton:hover {{ background: #64748B; }}"
                 f"QPushButton:disabled {{ background: {CARD}; color: {TEXT_DIM}; }}")
     # 下拉框（选择框）**本体与弹出列表一律取原始色板**（_base_color），不再跟随
@@ -702,46 +766,46 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     #
     # 交互控件的底/边属于「控件自身皮肤」，不是容器表面：壁纸透出模式只该让**大面积
     # 容器底**透明（见 _apply_surface_mode），弹层与控件本体保持实色才可读。
-    _combo_bg = _base_color("PANEL")
-    _combo_bd = _base_color("BORDER")
+    #
+    # 招 1：本体改「凹陷字段」底（FIELD，比面板暗一档）不描边，hover/focus 逐档
+    # 加深；弹出列表用 ELEVATED 浮起层，同样不描边。
+    _combo_bg = _base_color("FIELD")
+    _combo_elev = _base_color("ELEVATED")
     _combo_hover = _base_color("HOVER")
     _QCOMBO = (f"QComboBox {{ background: {_combo_bg}; color: {TEXT};"
-               f" border: 1px solid {_combo_bd};"
+               f" border: none;"
                f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                f"font-size: {FONT_SMALL}px; }}"
-               f"QComboBox:hover {{ border-color: {ACCENT_HOVER}; }}"
-               f"QComboBox:focus {{ border-color: {ACCENT_HOVER}; }}"
-               f"QComboBox:disabled {{ background: {_combo_hover}; color: {TEXT_DIM};"
-               f" border-color: {_combo_bd}; }}"
+               f"QComboBox:hover {{ background: {_mix_hex(_combo_hover, _combo_bg, 0.55)}; }}"
+               f"QComboBox:focus {{ background: {_combo_hover}; }}"
+               f"QComboBox:disabled {{ background: {_combo_hover}; color: {TEXT_DIM}; }}"
                f"QComboBox::drop-down {{ border: none; width: {COMBO_ARROW_W}px; }}"
-               f"QComboBox QAbstractItemView {{ background: {_combo_bg};"
+               f"QComboBox QAbstractItemView {{ background: {_combo_elev};"
                f" color: {TEXT};"
-               f"border: 1px solid {_combo_bd};"
+               f"border: none;"
                f" selection-background-color: {_combo_hover};"
                f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
-    # 主页下拉菜单（会话 / 模型选择器）：本体跟随容器表面色（壁纸模式下透明底+透明描边，
+    # 主页下拉菜单（会话 / 模型选择器）：本体跟随容器表面色（壁纸模式下透明底，
     # 让自定义背景透出来），弹出列表（QAbstractItemView 是独立窗口）保持实色才可读。
-    # 与 _QCOMBO 的区别仅在本体 background/border：_QCOMBO 本体始终实色（用于设置对话框等
+    # 与 _QCOMBO 的区别仅在本体 background：_QCOMBO 本体始终实色（用于设置对话框等
     # 独立不透明窗口），_HOME_COMBO 本体在壁纸模式下透明（用于主面板上的下拉菜单）。
     _home_surf = _panel_surface("PANEL")
-    _home_bd = _panel_stroke("BORDER")
     _HOME_COMBO = (f"QComboBox {{ background: {_home_surf}; color: {TEXT};"
-                   f" border: 1px solid {_home_bd};"
+                   f" border: none;"
                    f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                    f"font-size: {FONT_SMALL}px; }}"
-                   f"QComboBox:hover {{ border-color: {ACCENT_HOVER}; }}"
-                   f"QComboBox:focus {{ border-color: {ACCENT_HOVER}; }}"
-                   f"QComboBox:disabled {{ background: {_combo_hover}; color: {TEXT_DIM};"
-                   f" border-color: {_home_bd}; }}"
+                   f"QComboBox:hover {{ background: {HOVER}; }}"
+                   f"QComboBox:focus {{ background: {HOVER}; }}"
+                   f"QComboBox:disabled {{ background: {HOVER}; color: {TEXT_DIM}; }}"
                    f"QComboBox::drop-down {{ border: none; width: {COMBO_ARROW_W}px; }}"
-                   f"QComboBox QAbstractItemView {{ background: {_combo_bg};"
+                   f"QComboBox QAbstractItemView {{ background: {_combo_elev};"
                    f" color: {TEXT};"
-                   f"border: 1px solid {_combo_bd};"
+                   f"border: none;"
                    f" selection-background-color: {_combo_hover};"
                    f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
-    _BTN_ICON = (f"QPushButton {{ background: transparent; border: 1px solid {BORDER};"
+    _BTN_ICON = (f"QPushButton {{ background: {_soft_fill(CARD)}; border: none;"
                  f"border-radius: {RADIUS_SM}px; }}"
-                 f"QPushButton:hover {{ background: {HOVER}; border-color: {BORDER_SOFT}; }}")
+                 f"QPushButton:hover {{ background: {HOVER}; }}")
     _BTN_DANGER = (f"QPushButton {{ background: {ERR}; color: #FFFFFF; border: none;"
                    f"border-radius: {RADIUS_SM}px; padding: 0; }}"
                    f"QPushButton:hover {{ background: #EF4444; }}"
@@ -770,14 +834,18 @@ def _round_icon_btn_qss_active(diameter: int) -> str:
 def _round_icon_btn_qss(diameter: int) -> str:
     """输入行圆形图标按钮的统一皮肤（上传 / 优化共用，两者观感必须完全一致）。
 
-    描边用浅色边缘色 —— 无描边时圆角看不出来，按钮就成了一个裸图标
-    （用户反馈「没有圆形的 UI 附着样式」）。
+    招 1：不描边，用「比输入框亮一档的实心圆盘」划出轮廓 —— 圆盘本身即形状，
+    不需要线条（用户反馈「没有圆形的 UI 附着样式」的现代解法）；hover 再提亮一档。
+    壁纸透明态下圆盘让位给壁纸（background 取 transparent），与输入框一致。
     """
-    return (f"QPushButton {{ background: {PANEL};"
-            f"border: 1px solid {BORDER};"
+    disc = _mix_hex(HOVER, FIELD, 0.45) if not _feedback_boosted() else "transparent"
+    # 壁纸透明态：常态隐形（让壁纸透出），hover 用中性半透明磨砂盘 —— 任意明暗
+    # 壁纸上都看得见，又不依赖主题色（壁纸下主题对比度不可靠）
+    hover_disc = HOVER if not _feedback_boosted() else "rgba(148,163,184,0.28)"
+    return (f"QPushButton {{ background: {disc};"
+            f"border: none;"
             f"border-radius: {diameter // 2}px; }}"
-            f"QPushButton:hover {{ border: 1px solid {ACCENT_HOVER};"
-            f"background: {HOVER}; }}")
+            f"QPushButton:hover {{ background: {hover_disc}; }}")
 
 
 def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
@@ -826,6 +894,11 @@ def _global_dialog_qss() -> str:
     QToolTip 等）：用当前主题常量实时换色，实现默认 UI/UX 双模式自适应。
     仅作用于未自带样式的对话框类控件，面板/设置页自身样式（widget 级 QSS）优先级更高，
     不会被覆盖。
+
+    招 1（不画边框，微对比分层）：按钮 / 输入框 / 列表一律「凹陷字段」底（FIELD），
+    下拉 / 菜单 / 提示用「悬浮层」底（ELEVATED，比字段亮约 3%），全部不描边；
+    hover / focus 逐档加深。分隔线（表头下沿、菜单 separator）保留 —— 那是结构
+    分隔不是描边，且压到底色同色系不抢眼。
     下拉/菜单/提示统一用当前主题的不透明面板色 + 浅色描边，随深浅主题实时换色
     （字体/字号与主风格参数均不变）。"""
     # 原生对话框不是半透明窗口：用半透明底会与窗口默认底色叠加成「纯黑」。
@@ -834,17 +907,15 @@ def _global_dialog_qss() -> str:
     # 表面色一律取**原始色板**（_base_color）：壁纸透出模式会把 PANEL/BORDER/
     # HOVER 覆写为 transparent，而这些弹层都是独立窗口 —— 拿到 transparent 后
     # 不填底、渲染成纯黑（浅色模式下尤其刺眼）。
-    _popup_bg = _base_color("PANEL")
-    _popup_bd = _base_color("BORDER")
-    # 悬停 / 选中是叠在面板底上的交互反馈（见 HOVER）。
+    _popup_elev = _base_color("ELEVATED")
+    _popup_field = _base_color("FIELD")
     _popup_hover = _base_color("HOVER")
     _popup_sel = _base_color("HOVER")
     _dlg_bg = _base_color("PANEL")
-    _in_bg = _base_color("PANEL")
-    _in_hover = _base_color("HOVER")
-    _tip_bg = _base_color("PANEL")   # Tooltip：与弹层同源的面板色（原始色板，防黑底）
-    _tip_bd = ACCENT
-    _menu_bg = _base_color("PANEL")
+    _in_bg = _base_color("FIELD")
+    _in_hover = _mix_hex(_popup_hover, _popup_field, 0.55)
+    _tip_bg = _base_color("ELEVATED")   # Tooltip：悬浮层（比面板亮一档，防黑底）
+    _menu_bg = _base_color("ELEVATED")
     _menu_sel = _base_color("HOVER")
     _menu_hover = _base_color("HOVER")
     _ctrl_qss = ""
@@ -855,43 +926,40 @@ def _global_dialog_qss() -> str:
         f"QProgressDialog QLabel {{ color: {TEXT}; }}"
         f"QMessageBox QPushButton, QInputDialog QPushButton, QFileDialog QPushButton,"
         f"QColorDialog QPushButton, QDialogButtonBox QPushButton {{"
-        f" background: {_in_bg}; color: {TEXT}; border: 1px solid {_popup_bd};"
-        f" border-top: 1px solid rgba(255,255,255,240);"
+        f" background: {_in_bg}; color: {TEXT}; border: none;"
         f" border-radius: 8px; padding: 6px 18px; min-width: 60px; }}"
         f"QMessageBox QPushButton:hover, QInputDialog QPushButton:hover,"
         f"QFileDialog QPushButton:hover, QColorDialog QPushButton:hover,"
-        f"QDialogButtonBox QPushButton:hover {{ border-color: {_popup_bd};"
+        f"QDialogButtonBox QPushButton:hover {{"
         f" color: {TEXT}; background: {_in_hover}; }}"
         f"QMessageBox QPushButton:default, QInputDialog QPushButton:default,"
         f"QDialogButtonBox QPushButton:default {{ background: {ACCENT}; color: #FFFFFF;"
         f" border: none; }}"
         f"QInputDialog QLineEdit, QFileDialog QLineEdit, QFileDialog QComboBox,"
         f"QColorDialog QLineEdit {{ background: {_in_bg}; color: {TEXT};"
-        f" border: 1px solid {_popup_bd}; border-top: 1px solid rgba(255,255,255,240);"
-        f" border-radius: 6px; padding: 5px 10px; }}"
+        f" border: none; border-radius: 6px; padding: 5px 10px; }}"
         f"QFileDialog QListView, QFileDialog QTreeView, QFileDialog QListWidget,"
         f"QColorDialog QListView {{ background: {_in_bg}; color: {TEXT};"
-        f" border: 1px solid {_popup_bd}; }}"
+        f" border: none; }}"
         f"QFileDialog QHeaderView::section {{ background: {_in_bg}; color: {TEXT_DIM};"
-        f" border: none; border-bottom: 1px solid {_popup_bd}; padding: 4px 8px; }}"
-        f"QFileDialog QSplitter::handle {{ background: {_popup_bd}; }}"
-        f"QComboBox QAbstractItemView {{ background: {_popup_bg}; color: {TEXT};"
-        f" border: 1px solid {_popup_bd}; border-radius: 12px; padding: 4px;"
+        f" border: none; border-bottom: 1px solid {_popup_hover}; padding: 4px 8px; }}"
+        f"QFileDialog QSplitter::handle {{ background: {_popup_hover}; }}"
+        f"QComboBox QAbstractItemView {{ background: {_popup_elev}; color: {TEXT};"
+        f" border: none; border-radius: 12px; padding: 4px;"
         f" outline: none; selection-background-color: {_popup_sel};"
         f" selection-color: {TEXT}; }}"
         f"QComboBox QAbstractItemView::item {{ padding: {SPACING_SM}px {SPACING_MD}px;"
         f" border-radius: {RADIUS_SM}px; }}"
         f"QComboBox QAbstractItemView::item:hover {{ background: {_popup_hover}; }}"
         f"QMenu {{ background: {_menu_bg}; color: {TEXT};"
-        f" border: 1px solid {_popup_bd};"
+        f" border: none;"
         f" border-radius: 12px; padding: 4px; }}"
         f"QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}"
-        f"QMenu::item:selected {{ background: {_menu_sel}; color: {TEXT};"
-        f" border: 1px solid {_popup_bd}; }}"
+        f"QMenu::item:selected {{ background: {_menu_sel}; color: {TEXT}; }}"
         f"QMenu::item:hover {{ background: {_menu_hover}; }}"
-        f"QMenu::separator {{ height: 1px; background: {_popup_hover};"
+        f"QMenu::separator {{ height: 1px; background: {_menu_hover};"
         f" margin: 6px 10px; }}"
-        f"QToolTip {{ background: {_tip_bg}; color: {TEXT}; border: 1px solid {_tip_bd};"
+        f"QToolTip {{ background: {_tip_bg}; color: {TEXT}; border: none;"
         f" border-radius: 8px; padding: 4px 8px; }}"
         # 滚动条：**必须用 _scrollbar_css 这一份完整实现**。此前这里手写过两份"半套"
         # 规则（只定义 :vertical 与 ::handle，漏掉 add-page/sub-page）→ 槽底退回原生
@@ -4102,6 +4170,98 @@ class _MarketAuthDialog(QDialog):
                 "developer": self.developer.text().strip()}
 
 
+class _MarketCaptchaDialog(QDialog):
+    """人机验证弹窗（Cloudflare Turnstile）。
+
+    页面由市场服务端提供（captcha.html），站点密钥也由服务端下发 —— 客户端不保存
+    任何密钥，只把内置浏览器里拿到的**一次性 token** 交给注册/登录接口，服务端再
+    向 Cloudflare 复核。用户不点组件、token 为空或已过期，注册/登录一律不放行。
+    """
+
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self.token = ""
+        self._url = str(url or "")
+        self.setWindowTitle(_ui("人机验证"))
+        self.setModal(True)
+        self.setMinimumSize(420, 300)
+        _bg = _base_color("PANEL")
+        self.setStyleSheet(f"QDialog {{ background: {_bg}; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        tip = QLabel(_ui("请点击下方验证组件，通过后自动继续登录 / 注册"))
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color: {TEXT}; font-size: 12px;")
+        lay.addWidget(tip)
+
+        self._view = ui_infra.new_web_view(self)
+        if self._view is None:
+            # 没有 QtWebEngine 就无法完成验证：明确告知，绝不静默降级为"跳过验证"
+            err = QLabel(_ui("当前环境缺少人机验证组件，无法完成验证。"))
+            err.setStyleSheet(f"color: {ERR}; font-size: 12px;")
+            err.setWordWrap(True)
+            lay.addWidget(err)
+        else:
+            self._view.setStyleSheet(f"QWebEngineView {{ background: {_bg}; border: none; }}")
+            lay.addWidget(self._view, 1)
+            self._view.loadFinished.connect(self._on_loaded)
+            try:
+                self._view.setUrl(QUrl(self._url))
+            except Exception:
+                pass
+            # 轮询页面暴露的一次性 token：Turnstile 回调后页面置 __cfVerified=true
+            self._timer = QTimer(self)
+            self._timer.setInterval(350)
+            self._timer.timeout.connect(self._poll)
+            self._timer.start()
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton(_ui("取消"))
+        cancel.setStyleSheet(
+            f"background: {_bg}; color: {TEXT};"
+            f"border: 1px solid {_base_color('BORDER')};"
+            f"border-radius: {_PAGE_BTN_RADIUS}px; padding: {_PAGE_BTN_PAD};")
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        lay.addLayout(btns)
+
+    def _on_loaded(self, ok: bool):
+        if not ok:
+            self.setWindowTitle(_ui("人机验证（页面加载失败）"))
+
+    def _poll(self):
+        view = getattr(self, "_view", None)
+        if view is None:
+            return
+        js = ("(function(){try{return (window.__cfVerified && window.__cfToken)"
+              " ? String(window.__cfToken) : '';}catch(e){return '';}})()")
+        try:
+            view.page().runJavaScript(js, self._on_token)
+        except Exception:
+            pass
+
+    def _on_token(self, res):
+        tok = str(res or "").strip()
+        if not tok:
+            return
+        self.token = tok
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
+        self.accept()
+
+    def done(self, result: int):   # noqa: D401 - Qt 重写
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
+        super().done(result)
+
+
 class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
@@ -6693,26 +6853,33 @@ class _AgentSettingsDialog(QDialog):
         return w
 
     def _market_sync_account(self):
-        """刷新账号状态行与登录相关按钮的可用性。"""
+        """刷新账号状态行与登录相关按钮的可用性。
+
+        已登录时「登录/注册」按钮直接隐藏（而不是置灰），页面上只保留开发者/公司
+        与退出登录；文案里不出现服务地址 —— 源站信息不对终端用户暴露。
+        """
         if not hasattr(self, "market_acct_lbl") or self.market_acct_lbl is None:
             return
         try:
             from zhuzhu_Copilot.core import plugin_market
             acc = plugin_market.account()
         except Exception as e:
-            self.market_acct_lbl.setText(f"插件市场不可用：{e}")
+            self.market_acct_lbl.setText(_uif("插件市场不可用：{e}", e=e))
             return
-        if acc["logged_in"]:
+        logged = bool(acc["logged_in"])
+        if logged:
             self.market_acct_lbl.setText(_uif(
-                "已登录：{u} ｜ 开发者/公司：{d} ｜ 服务：{a}",
-                u=acc["username"], d=acc["developer"], a=acc["api_base"]))
+                "已登录：{u} ｜ 开发者/公司：{d}",
+                u=acc["username"], d=acc["developer"]))
         else:
-            self.market_acct_lbl.setText(_uif(
-                "未登录（上传插件需先登录）｜ 服务：{a}", a=acc["api_base"]))
-        for name, enabled in (("market_login_b", not acc["logged_in"]),
-                              ("market_logout_b", acc["logged_in"]),
-                              ("market_dev_b", acc["logged_in"]),
-                              ("market_upload_b", acc["logged_in"])):
+            self.market_acct_lbl.setText(_ui("未登录（上传插件需先登录）"))
+        login_b = getattr(self, "market_login_b", None)
+        if login_b is not None:
+            login_b.setVisible(not logged)
+        for name, enabled in (("market_login_b", not logged),
+                              ("market_logout_b", logged),
+                              ("market_dev_b", logged),
+                              ("market_upload_b", logged)):
             b = getattr(self, name, None)
             if b is not None:
                 b.setEnabled(enabled)
@@ -6727,8 +6894,36 @@ class _AgentSettingsDialog(QDialog):
             self.market_done.emit("1" if ok else "0", msg)
         threading.Thread(target=_work, daemon=True).start()
 
+    def _market_captcha_token(self) -> str:
+        """走一遍 Cloudflare Turnstile 人机验证，返回一次性 token。
+
+        **当前未接入登录流程**：产品口径是「人机验证只用于应用账户登录」，市场登录
+        不做验证。若以后要在市场启用，把 ``_on_market_login`` 里两处
+        ``self._market_do(...)`` 前插回 ``tok = self._market_captcha_token()``
+        即可（服务端同时打开 ``market.turnstile.enabled``）。
+        """
+        from zhuzhu_Copilot.core import plugin_market
+        if not ui_infra.web_engine_available():
+            QMessageBox.warning(self, _ui("插件市场"),
+                                _ui("当前环境缺少人机验证组件，无法完成验证。请安装完整版本后重试。"))
+            return ""
+        try:
+            url = plugin_market.captcha_url()
+        except Exception as e:
+            QMessageBox.warning(self, _ui("插件市场"), str(e))
+            return ""
+        dlg = _MarketCaptchaDialog(url, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            if hasattr(self, "market_status"):
+                self.market_status.setText(_ui("已取消人机验证，未执行登录/注册"))
+            return ""
+        return str(dlg.token or "")
+
     def _on_market_login(self, *_):
-        """登录/注册统一走弹窗：页面只展示登录态，不内联账号输入框。"""
+        """登录/注册统一走弹窗：页面只展示登录态，不内联账号输入框。
+
+        市场登录不做人机验证（人机验证只用于应用账户登录，见 auth-server 登录页）。
+        """
         from zhuzhu_Copilot.core import plugin_market
         try:
             acc = plugin_market.account()
@@ -7086,9 +7281,29 @@ class _AgentSettingsDialog(QDialog):
             QMessageBox.warning(self, _ui("操作失败"), msg)
             return
         result = hot_reload.reload_overlay()
-        _mw.restart_copilot_services()
-        self._reload_coplugin_list()
         detail = hot_reload.summary(result)
+        if target and result.get("failed"):
+            # 绝不重启策略：热加载失败 = 该变更无法在运行中生效 → 立即自动回滚，
+            # 让应用保持一致，而不是留一套"重启后才生效"的半吊子变更。
+            try:
+                copilot_plugins.set_enabled(name, False)
+                hot_reload.reload_overlay(force=True)
+                _mw.restart_copilot_services()
+                detail = ("该插件的变更无法热加载（%s），已自动回滚，未要求重启。"
+                          % (result["failed"][0] if result["failed"] else "未知原因"))
+                result = {"reloaded": [], "imported": [], "patched": [],
+                          "rebound": 0, "dropped": [], "refreshed": [],
+                          "skipped": [], "failed": ["自动回滚"]}
+            except Exception as e:
+                detail = f"热加载失败且回滚异常：{e}"
+        _mw.restart_copilot_services()
+        if target and not result.get("failed"):
+            # 热插拔：启用后当场把页面/玻璃窗口/托盘/快捷键挂上，不必重启应用
+            try:
+                _mw.start_copilot_plugin(name)
+            except Exception:
+                pass
+        self._reload_coplugin_list()
         text = f"{msg}\n{detail}" if detail else msg
         if result.get("failed"):
             QMessageBox.warning(self, _ui("插件"), text)
@@ -18466,7 +18681,8 @@ class AgentPanel(QDialog):
         top = QHBoxLayout()
         top.setSpacing(8)
         self.title = QLabel("AI AGENT")
-        self.title.setStyleSheet(f"color: {ACCENT}; font-size: 16px; font-weight: 800;")
+        # 招 2：字重随主题降档（暗色底 800 太糊，降到 title 档 600；浅色 700）
+        self.title.setStyleSheet(f"color: {ACCENT}; font-size: 16px; font-weight: {_W_TITLE};")
         top.addWidget(self.title)
 
         # 会话选择：切换对话（上下文隔离）+ 新对话按钮
@@ -18485,6 +18701,10 @@ class AgentPanel(QDialog):
         self.session_combo.view().installEventFilter(self._session_ctx_guard)
         self._session_ctx_guard.eventFilter = self._session_right_click_filter
         self.session_combo.setStyleSheet(_HOME_COMBO)
+        # 只接受「鼠标点击」聚焦：默认 WheelFocus 会让 Qt 在别的浮层（如个人信息面板）
+        # 关闭、焦点链重新分配时把焦点塞给它 —— 表现就是「没碰过它，却出现一圈蓝色
+        # focus 描边」。改成 ClickFocus 后 Tab/焦点转移都跳过它，点开列表仍照常高亮。
+        self.session_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.session_combo.currentIndexChanged.connect(self._on_session_selected)
         # 下拉列表右键菜单：删除对话
         self.session_combo.view().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -18537,7 +18757,9 @@ class AgentPanel(QDialog):
         # 减少常显按钮）。token_label / wf_label 仍保留为属性：承载既有 20+ 处更新逻辑，
         # 同时作为浮层展示工作流/模型的数据源（见 _token_stats）。
         self.token_label = QLabel("0 tk")
-        self.token_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
+        # 招 4：token 计数流式实时跳动，数字锁死等宽（tabular figures）防止整串抖动
+        self.token_label.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px; {_numeric_css()}")
         self.token_label.setToolTip(_ui("已用 tokens"))
         self.wf_label = QLabel("")
         self.wf_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
@@ -25898,6 +26120,7 @@ class AgentPanel(QDialog):
         self._profile_panel_open = False
         self._profile_panel_attach(False)
         if panel is None:
+            self._restore_focus_after_popover(None)
             return
         try:
             from PyQt6 import sip
@@ -25907,6 +26130,33 @@ class AgentPanel(QDialog):
                 panel.force_hide()
             else:
                 panel.slide_out()
+        except Exception:
+            pass
+        self._restore_focus_after_popover(panel)
+
+    def _restore_focus_after_popover(self, panel=None):
+        """浮层收起后的焦点收尾：只在焦点「悬空或还留在浮层里」时接管。
+
+        面板一藏起来，Qt 就按焦点链把焦点丢给下一个可聚焦控件（实测落到顶栏的
+        会话切换下拉上），用户看到的就是「什么都没点，会话栏却亮起一圈蓝色 focus
+        描边」。这里把这种悬空焦点交回聊天输入框 —— 用户继续打字正是下一步动作；
+        若焦点已经停在用户刚点的别的控件上，则一律不动，不抢焦点。
+        """
+        try:
+            fw = QApplication.focusWidget()
+        except Exception:
+            return
+        try:
+            if fw is not None and panel is not None:
+                from PyQt6 import sip
+                if sip.isdeleted(panel):
+                    panel = None
+                elif fw is panel or panel.isAncestorOf(fw):
+                    fw = None      # 焦点还挂在正在消失的面板里 → 视为悬空
+            if fw is None:
+                inp = getattr(self, "input", None)
+                if inp is not None:
+                    inp.setFocus()
         except Exception:
             pass
 

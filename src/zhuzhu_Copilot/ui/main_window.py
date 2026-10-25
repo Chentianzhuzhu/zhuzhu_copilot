@@ -28,6 +28,7 @@ from zhuzhu_Copilot import app_identity
 from zhuzhu_Copilot.utils.helpers import setup_logging, is_admin, ensure_admin, format_size, get_directory_size, safe_remove
 from zhuzhu_Copilot.ui import styles   # 主题切换时按最新 PALETTE/GLOBAL_QSS 重建样式
 from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
+from zhuzhu_Copilot.ui.tokens import FONT_WEIGHT
 from zhuzhu_Copilot.ui.widgets import (
     Card, AppItemDelegate, DataDirDialog,
     UninstallConfirmDialog, ToastNotification, SwitchButton, ArrowComboBox
@@ -357,44 +358,65 @@ _ICON_FEEDBACK = ('<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http:/
                   '<path d="M8.5 11h7M8.5 14h4" stroke="{C}" stroke-width="2" stroke-linecap="round"/></svg>')
 
 # ---------- 统一控件样式（颜色取自 PALETTE，无硬编码；随主题就地重建） ----------
+def _qss_weights() -> dict:
+    """招 2：字重档位随主题降档（暗色底粗体发糊，标题/按钮统一减细一档）。"""
+    from PyQt6.QtGui import QColor
+    return FONT_WEIGHT["dark" if QColor(PALETTE["bg_top"]).lightness() < 128 else "light"]
+
+
+def _soft_fill(ratio: float = 0.14) -> str:
+    """招 1：把描边色以低比例压在卡片底上，得到「无边框的柔和填充」
+    （ghost 按钮 / 工具按钮的轮廓来源，替代原来的 1px 描边）。"""
+    from PyQt6.QtGui import QColor
+    b, c = QColor(PALETTE["border"]), QColor(PALETTE["card"])
+    return QColor(int(b.red() * ratio + c.red() * (1 - ratio)),
+                  int(b.green() * ratio + c.green() * (1 - ratio)),
+                  int(b.blue() * ratio + c.blue() * (1 - ratio))).name()
+
+
 def _regen_qss():
     """按当前 PALETTE 重建模块级派生样式常量（主题切换时调用，避免残留旧主题色）"""
     global _BTN_PRIMARY_QSS, _BTN_DANGER_QSS, _BTN_GHOST_QSS, _BTN_TOOL_QSS
     global _SEARCH_QSS, _SECTION_TITLE, _BADGE_QSS, _FIELD_LABEL
+    _w = _qss_weights()
+    _ghost_fill = _soft_fill()
+    _ghost_fill_hover = _soft_fill(0.24)
     _BTN_PRIMARY_QSS = (f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
                         f" stop:0 {PALETTE['primary_hover']}, stop:1 {PALETTE['primary']});"
                         " color: #FFFFFF; border: none;"
-                        " border-radius: 10px; padding: 0 18px; font-size: 13px; font-weight: 700; }"
+                        f" border-radius: 10px; padding: 0 18px; font-size: 13px; font-weight: {_w['title']}; }}"
                         f"QPushButton:hover {{ background: {PALETTE['primary_hover']}; }}"
                         f"QPushButton:pressed {{ background: {PALETTE['primary_pressed']}; }}"
                         f"QPushButton:disabled {{ background: {PALETTE['border']}; color: {PALETTE['text_secondary']}; }}")
     _BTN_DANGER_QSS = (f"QPushButton {{ background: {PALETTE['danger']}; color: #FFFFFF; border: none;"
-                       " border-radius: 10px; padding: 0 18px; font-size: 13px; font-weight: 700; }"
+                       f" border-radius: 10px; padding: 0 18px; font-size: 13px; font-weight: {_w['title']}; }}"
                        f"QPushButton:hover {{ background: {_lighten(PALETTE['danger'])}; }}"
                        f"QPushButton:pressed {{ background: {PALETTE['danger']}; }}"
                        f"QPushButton:disabled {{ background: {PALETTE['border']}; color: {PALETTE['text_secondary']}; }}")
-    _BTN_GHOST_QSS = (f"QPushButton {{ background: {PALETTE['card']}; color: {PALETTE['text']};"
-                      f" border: 1px solid {PALETTE['border']}; border-radius: 10px; padding: 0 14px;"
-                      " font-size: 13px; font-weight: 600; }"
-                      f"QPushButton:hover {{ border-color: {PALETTE['primary_hover']}; color: {PALETTE['text']};"
-                      f" background: {PALETTE['hover']}; }}"
+    # 招 1：ghost / 工具按钮不描边，用低透明填充划轮廓；hover 填充加深、文字提亮
+    _BTN_GHOST_QSS = (f"QPushButton {{ background: {_ghost_fill}; color: {PALETTE['text']};"
+                      f" border: none; border-radius: 10px; padding: 0 14px;"
+                      f" font-size: 13px; font-weight: {_w['button']}; }}"
+                      f"QPushButton:hover {{ color: {PALETTE['text']};"
+                      f" background: {_ghost_fill_hover}; }}"
                       f"QPushButton:pressed {{ background: {PALETTE['primary_light']}; }}"
                       f"QPushButton:disabled {{ color: {PALETTE['text_secondary']}; }}")
-    _BTN_TOOL_QSS = (f"QPushButton {{ background: transparent; color: {PALETTE['text_secondary']};"
-                     f" border: 1px solid {PALETTE['border']}; border-radius: 8px; padding: 0 12px;"
-                     " font-size: 12px; font-weight: 600; }"
-                     f"QPushButton:hover {{ color: {PALETTE['text']}; border-color: {PALETTE['primary_hover']};"
-                     f" background: {PALETTE['hover']}; }}"
+    _BTN_TOOL_QSS = (f"QPushButton {{ background: {_ghost_fill}; color: {PALETTE['text_secondary']};"
+                     f" border: none; border-radius: 8px; padding: 0 12px;"
+                     f" font-size: 12px; font-weight: {_w['button']}; }}"
+                     f"QPushButton:hover {{ color: {PALETTE['text']};"
+                     f" background: {_ghost_fill_hover}; }}"
                      f"QPushButton:pressed {{ background: {PALETTE['primary_light']}; color: {PALETTE['text']}; }}")
-    _SEARCH_QSS = (f"QLineEdit {{ background: {PALETTE['bg_bottom']}; color: {PALETTE['text']};"
-                   f" border: 1px solid {PALETTE['border']}; border-radius: 10px; padding: 8px 12px;"
+    # 招 1：搜索框改「凹陷字段」（比窗口底暗一档），聚焦整体加深，不描边
+    _SEARCH_QSS = (f"QLineEdit {{ background: {PALETTE['field']}; color: {PALETTE['text']};"
+                   f" border: none; border-radius: 10px; padding: 8px 12px;"
                    " font-size: 13px; }"
-                   f"QLineEdit:hover {{ border: 1px solid {PALETTE['text_secondary']}; }}"
-                   f"QLineEdit:focus {{ border: 1px solid {PALETTE['primary_hover']}; }}")
-    _SECTION_TITLE = f"font-size: 11px; font-weight: 700; color: {PALETTE['text_secondary']};"
-    _BADGE_QSS = (f"font-size: 11px; font-weight: 700; color: {PALETTE['text']};"
+                   f"QLineEdit:hover {{ background: {PALETTE['hover']}; }}"
+                   f"QLineEdit:focus {{ background: {PALETTE['hover']}; }}")
+    _SECTION_TITLE = f"font-size: 11px; font-weight: {_w['strong']}; color: {PALETTE['text_secondary']};"
+    _BADGE_QSS = (f"font-size: 11px; font-weight: {_w['strong']}; color: {PALETTE['text']};"
                   f" background: {PALETTE['primary_light']}; border-radius: 9px; padding: 2px 9px;")
-    _FIELD_LABEL = f"font-size: 12px; font-weight: 600; color: {PALETTE['text_secondary']};"
+    _FIELD_LABEL = f"font-size: 12px; font-weight: {_w['button']}; color: {PALETTE['text_secondary']};"
 
 
 _regen_qss()   # 模块加载即按当前 PALETTE 生成（启动后 _apply_theme 会按主题重建）
@@ -416,7 +438,7 @@ def _tab_qss() -> str:
     选中项为深蓝圆角块白字，未选中透明。每次调用按当前 PALETTE 现算，主题切换后重建生效。"""
     return (f"QPushButton {{ background: transparent; color: {PALETTE['text_secondary']};"
             " border: none; border-radius: 13px; padding: 0 18px;"
-            " font-size: 12px; font-weight: 600; }"
+            f" font-size: 12px; font-weight: {_qss_weights()['button']}; }}"
             f"QPushButton:hover {{ color: {PALETTE['text']}; background: {PALETTE['hover']}; }}"
             f"QPushButton:checked {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
             f" stop:0 {PALETTE['primary_hover']}, stop:1 {PALETTE['primary']}); color: #FFFFFF; }}")
@@ -765,7 +787,7 @@ class CopilotPanel(QFrame):
         """品牌标识：深蓝渐变圆角方块 + 白色首字符（随主题重建）"""
         return (f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
                 f" stop:0 {PALETTE['primary_hover']}, stop:1 {PALETTE['primary_pressed']});"
-                " color: #FFFFFF; font-size: 13px; font-weight: 800; border-radius: 7px;")
+                f" color: #FFFFFF; font-size: 13px; font-weight: {_qss_weights()['title']}; border-radius: 7px;")
 
     def _msg_box_qss(self) -> str:
         """QMessageBox 等原生弹窗样式（随主题色板重建）"""
@@ -774,7 +796,7 @@ class CopilotPanel(QFrame):
             f"QMessageBox QLabel {{ color: {PALETTE['text']}; font-size: 13px; }}"
             f"QMessageBox QPushButton {{ background-color: {PALETTE['primary']};"
             "color: #FFFFFF; border: none; border-radius: 8px;"
-            "padding: 7px 20px; min-width: 72px; font-weight: 600; }"
+            f"padding: 7px 20px; min-width: 72px; font-weight: {_qss_weights()['button']}; }}"
             f"QMessageBox QPushButton:hover {{ background-color: {PALETTE['primary_hover']}; }}"
             f"QMessageBox QPushButton:pressed {{ background-color: {PALETTE['primary_pressed']}; }}")
 
@@ -878,7 +900,7 @@ class CopilotPanel(QFrame):
                     _tb.setStyleSheet(_tab_qss())
             if getattr(self, "_title_lbl", None) is not None:
                 self._title_lbl.setStyleSheet(
-                    f"font-size: 15px; font-weight: 700; color: {PALETTE['text']};")
+                    f"font-size: 15px; font-weight: {_qss_weights()['title']}; color: {PALETTE['text']};")
             if getattr(self, "_brand_lbl", None) is not None:
                 self._brand_lbl.setStyleSheet(self._brand_qss())
             if getattr(self, "_ver_lbl", None) is not None:
@@ -986,7 +1008,7 @@ class CopilotPanel(QFrame):
         layout.addWidget(brand)
 
         title = QLabel("zhuzhu Copilot")
-        title.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {PALETTE['text']};")
+        title.setStyleSheet(f"font-size: 15px; font-weight: {_qss_weights()['title']}; color: {PALETTE['text']};")
         self._title_lbl = title
         layout.addWidget(title)
 
@@ -1498,7 +1520,7 @@ class CopilotPanel(QFrame):
         name_row = QHBoxLayout()
         name_row.setSpacing(8)
         name = QLabel(app.name or _ui("未知"))
-        name.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {PALETTE['text']};")
+        name.setStyleSheet(f"font-size: 16px; font-weight: {_qss_weights()['title']}; color: {PALETTE['text']};")
         name_row.addWidget(name)
         tag = QLabel(app.app_type)
         tag.setStyleSheet(self._type_badge(app.app_type))
@@ -1528,7 +1550,7 @@ class CopilotPanel(QFrame):
             color = PALETTE["warning"]
         else:
             color = PALETTE["text_secondary"]
-        return (f"font-size: 11px; font-weight: 700; color: #FFFFFF; background: {color};"
+        return (f"font-size: 11px; font-weight: {_qss_weights()['strong']}; color: #FFFFFF; background: {color};"
                 " border-radius: 4px; padding: 2px 8px;")
 
     def _app_icon_pixmap(self, app: AppInfo, size: int) -> QPixmap:
@@ -2464,7 +2486,8 @@ class CopilotPanel(QFrame):
 
 #: 进程内已启动的应用级扩展（服务/托盘/快捷键）：保证只启动一次
 #: （主界面启动时加载一次；之后创建 Copilot 浮层不会重复 start）。
-_COPILOT_EXT_STATE = {"started": set(), "services": [], "tray": [], "shortcuts": []}
+_COPILOT_EXT_STATE = {"started": set(), "services": [], "tray": [], "shortcuts": [],
+                      "host": None}   # host：页面宿主（MainWindow），停用时据此摘页签
 
 
 def import_copilot_module(d: Path, rel: str):
@@ -2486,20 +2509,40 @@ def import_copilot_module(d: Path, rel: str):
 def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict):
     """登记单条 Copilot 插件扩展。
 
-    · pages      —— 需要 Copilot 面板（panel 非 None 才登记，追加页签到面板）
+    · pages      —— 需要面板（panel 非 None 才登记）：默认追加为浮层页签；
+                    条目带 `"window": "glass"` 时改为**独立无框液体玻璃窗口**
+                    （应用启动即常驻浮现，`auto_show` 控制是否自动显示）
     · services   —— 进程级启动一次（主界面启动时即加载，不依赖浮层）
     · tray       —— 追加到托盘菜单（需要面板有 tray）
     · shortcuts  —— 全局快捷键（挂在 panel 上）
+
+    热插拔：每条登记都在 `_COPILOT_EXT_STATE` 里留下可撤销的句柄，
+    由 `unregister_copilot_plugin()` 在停用/删除时逐一移除（页签、窗口、托盘、快捷键）。
     """
+    if panel is not None:
+        _COPILOT_EXT_STATE["host"] = panel
+
     if section == "pages":
         if panel is None:
             return None          # 没有面板可挂页面：跳过（面板创建后再登记）
+        key = f"{name}:{section}:{entry.get('id')}"
+        if key in _COPILOT_EXT_STATE["started"]:
+            return None          # 已登记过：不重复加页签
         mod = import_copilot_module(d, entry.get("module"))
         widget_cls = getattr(mod, str(entry.get("widget") or ""), None)
         if widget_cls is None:
             raise AttributeError(f"页面类不存在: {entry.get('widget')}")
+        title = _ui(str(entry.get("title") or name))
+        ext = getattr(panel, "_copilot_ext", None)
+        mode = str(entry.get("window") or "").strip().lower()
+        if mode == "glass":
+            rec = _register_glass_page(panel, name, entry, widget_cls, title)
+            if ext is not None and rec is not None:
+                ext["pages"].append(rec)
+            _COPILOT_EXT_STATE["started"].add(key)
+            return None
         idx = panel._pages.count()
-        b = QPushButton(_ui(str(entry.get("title") or name)))
+        b = QPushButton(title)
         b.setCheckable(True)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setMinimumHeight(26)
@@ -2509,10 +2552,10 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
         lay.insertWidget(max(lay.count() - 1, 0), b)
         page = widget_cls(panel._pages)
         panel._pages.addWidget(page)
-        ext = getattr(panel, "_copilot_ext", None)
         if ext is not None:
             ext["pages"].append({"plugin": name, "id": entry.get("id"),
-                                 "index": idx})
+                                 "index": idx, "button": b, "widget": page})
+        _COPILOT_EXT_STATE["started"].add(key)
         return None
 
     key = f"{name}:{section}:{entry.get('id')}"
@@ -2533,13 +2576,14 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
         if not callable(action):
             raise AttributeError(f"托盘动作函数不存在: {entry.get('action')}")
         act = None
+        menu = None
         if panel is not None and getattr(panel, "tray", None) is not None:
             menu = panel.tray.contextMenu()
             act = menu.addAction(_ui(str(entry.get("title") or name)))
             act.triggered.connect(lambda *a, _f=action: _f())
         _COPILOT_EXT_STATE["tray"].append(
             {"plugin": name, "id": entry.get("id"), "action": act,
-             "callable": action})
+             "menu": menu, "callable": action})
     elif section == "shortcuts":
         from PyQt6.QtGui import QKeySequence, QShortcut
         mod = import_copilot_module(d, entry.get("module"))
@@ -2557,12 +2601,116 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
     return None
 
 
-def start_copilot_plugin(name: str, panel=None) -> tuple:
-    """运行期启用插件：立即加载其扩展，不必重启应用。
+def _register_glass_page(panel, name: str, entry: dict, widget_cls, title: str):
+    """把一个插件页面放进独立的液体玻璃窗口（无框、置顶、常驻浮现）。"""
+    from zhuzhu_Copilot.ui.glass_window import GlassWindow
 
-    只补启动尚未登记过的条目（`_COPILOT_EXT_STATE["started"]` 去重），
-    因此重复启用/多次调用都安全。返回 (ok, message)。
+    page = widget_cls()                 # 顶层窗口里的页面没有父容器
+    win = GlassWindow(title=title,
+                      width=int(entry.get("width") or 760),
+                      height=int(entry.get("height") or 520),
+                      content=page)
+    pos = entry.get("position")
+    auto = entry.get("auto_show", True)
+    if isinstance(pos, (list, tuple)) and len(pos) == 2:
+        try:
+            win.move(int(pos[0]), int(pos[1]))
+            auto and win.show()
+        except (TypeError, ValueError):
+            win.showCentered()
+    elif auto:
+        win.showCentered()
+        # 已有玻璃窗口时依次错开，避免多个窗口完全重叠
+        n = sum(1 for r in (_COPILOT_EXT_STATE.get("_glass") or [])
+                if r is not None and r.isVisible())
+        if n:
+            win.move(win.x() + 34 * n, win.y() + 30 * n)
+    lst = _COPILOT_EXT_STATE.setdefault("_glass", [])
+    lst.append(win)
+    _COPILOT_EXT_STATE["_glass"] = [w for w in lst if w is not None]
+    return {"plugin": name, "id": entry.get("id"), "index": -1,
+            "button": None, "widget": page, "window": win}
+
+
+def unregister_copilot_plugin(name: str) -> None:
+    """撤销某插件的全部应用级扩展（页签 / 玻璃窗口 / 托盘 / 快捷键）。
+
+    这是**热插拔**的关键：停用或删除插件时立即把它从界面上摘掉，不必重启应用。
+    服务由 `stop_copilot_plugin` 负责停（先停服务再摘 UI，避免回调打到已销毁控件）。
     """
+    host = _COPILOT_EXT_STATE.get("host")
+    ext = getattr(host, "_copilot_ext", None) if host is not None else None
+    if ext is not None:
+        kept = []
+        for rec in ext.get("pages") or []:
+            if str(rec.get("plugin") or "") != name:
+                kept.append(rec)
+                continue
+            win = rec.get("window")
+            if win is not None:
+                try:
+                    win.hide()
+                    win.deleteLater()
+                except Exception:
+                    pass
+                continue
+            b, w = rec.get("button"), rec.get("widget")
+            try:
+                if host is not None and w is not None:
+                    host._pages.removeWidget(w)
+                    w.setParent(None)      # 立刻脱离父级（deleteLater 要等事件循环）
+                    w.deleteLater()
+                if b is not None:
+                    host._tab_group.removeButton(b)
+                    lay = host._tab_wrap.layout()
+                    if lay is not None:
+                        lay.removeWidget(b)
+                    b.setParent(None)
+                    b.deleteLater()
+            except Exception:
+                pass
+        ext["pages"] = kept
+
+    kept_tray = []
+    for rec in _COPILOT_EXT_STATE.get("tray") or []:
+        if str(rec.get("plugin") or "") == name:
+            act, menu = rec.get("action"), rec.get("menu")
+            try:
+                if act is not None and menu is not None:
+                    menu.removeAction(act)
+            except Exception:
+                pass
+            continue
+        kept_tray.append(rec)
+    _COPILOT_EXT_STATE["tray"] = kept_tray
+
+    kept_sc = []
+    for rec in _COPILOT_EXT_STATE.get("shortcuts") or []:
+        if str(rec.get("plugin") or "") == name:
+            sc = rec.get("shortcut")
+            try:
+                if sc is not None:
+                    sc.setEnabled(False)
+                    sc.deleteLater()
+            except Exception:
+                pass
+            continue
+        kept_sc.append(rec)
+    _COPILOT_EXT_STATE["shortcuts"] = kept_sc
+
+    _COPILOT_EXT_STATE["started"].difference_update(
+        {k for k in _COPILOT_EXT_STATE["started"] if k.startswith(f"{name}:")})
+
+
+def start_copilot_plugin(name: str, panel=None) -> tuple:
+    """运行期启用插件：立即加载其扩展，不必重启应用（热插拔）。
+
+    panel 缺省时用启动时登记的宿主（MainWindow），因此从设置页点「启用」也能
+    当场挂上页签 / 弹出玻璃窗口。只补未登记过的条目（`started` 去重），
+    重复启用/多次调用都安全。返回 (ok, message)。
+    """
+    if panel is None:
+        panel = _COPILOT_EXT_STATE.get("host")
     try:
         from zhuzhu_Copilot.core import copilot_plugins
         d = copilot_plugins.plugin_dir(name)
@@ -2578,7 +2726,15 @@ def start_copilot_plugin(name: str, panel=None) -> tuple:
 
 
 def stop_copilot_plugin(name: str) -> None:
-    """运行期停用插件：停掉它的后台服务；页面/托盘/快捷键随进程退出或重建 UI 卸载。"""
+    """运行期停用插件：**先摘掉页签/玻璃窗口/托盘/快捷键，再停后台服务**。
+
+    热插拔的关键顺序：先摘 UI 再停服务——反过来的话，服务回调可能打到已经
+    deleteLater 的控件上（Qt 会抛 RuntimeError 或静默崩溃）。
+    """
+    try:
+        unregister_copilot_plugin(name)
+    except Exception:
+        pass
     kept = []
     for svc in _COPILOT_EXT_STATE.get("services") or []:
         if str(svc.get("plugin") or "") != name:
@@ -2658,13 +2814,16 @@ def load_copilot_extensions(panel=None) -> dict:
         state["errors"] = {"": f"读取插件列表失败：{e}"}
         return state
     errors = {}
+    # 页面宿主：显式传入优先，否则用启动时登记的 MainWindow——这样
+    # restart_copilot_services() 这类"只重启服务"的调用也不会漏掉页面
+    host = panel if panel is not None else _COPILOT_EXT_STATE.get("host")
     for p in plugins:
         name = str(p.get("name") or "")
         try:
             d = copilot_plugins.plugin_dir(name)
             man = copilot_plugins.load_copilot_manifest(d)
             for section, entry in copilot_plugins._iter_manifest_entries(man):
-                register_copilot_entry(panel, name, d, section, entry)
+                register_copilot_entry(host, name, d, section, entry)
         except Exception as e:
             # 单插件容错：不阻塞其余插件；原因留给 UI 显示（旧实现静默吞掉，
             # 用户只能看到「启用了却没反应」）

@@ -8,7 +8,10 @@ import com.zhuzhu.market.util.Guard;
 import org.springframework.data.domain.PageRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -26,6 +29,15 @@ import java.util.zip.ZipInputStream;
 @RestController
 @RequestMapping("/api/plugins")
 public class PluginController {
+    /** 版本号：只允许安全字符，顺带堵住 storageDir/../ 路径穿越。 */
+    private static final Pattern VERSION = Pattern.compile("[0-9A-Za-z._-]{1,32}");
+    /** 单条目送审上限（.py/.md）。 */
+    private static final int MAX_TEXT_ENTRY = 512_000;
+    /** 送审文本总预算，防 zip bomb 把堆打爆。 */
+    private static final long MAX_TEXT_TOTAL = 32L * 1024 * 1024;
+    /** 单次下载文件上限（上传上限 20MB，留余量防库表被污染后读超大文件）。 */
+    private static final long MAX_DOWNLOAD_BYTES = 64L * 1024 * 1024;
+
     private final PluginRepo plugins;
     private final UserRepo users;
     private final StringRedisTemplate redis;
@@ -60,11 +72,10 @@ public class PluginController {
 
     @GetMapping("/{slug}")
     public ResponseEntity<?> detail(@PathVariable String slug) {
-        var list = plugins.findAll(PageRequest.of(0, 50,
-                        Sort.by(Sort.Direction.DESC, "createdAt"))).getContent().stream()
-                .filter(x -> x.slug.equals(slug)).toList();
-        if (list.isEmpty()) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok(publicView(list.get(0)));
+        // 原实现扫「最新 50 行」再内存 filter：老插件（>50 条更新之后）会误报 404，且随行数线性变慢。
+        return plugins.findFirstBySlugOrderByCreatedAtDesc(slug)
+                .<ResponseEntity<?>>map(p -> ResponseEntity.ok(publicView(p)))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /** 上传：需登录。file=zip，name/description/developer 可指定。 */
@@ -97,21 +108,57 @@ public class PluginController {
             return ResponseEntity.badRequest().body(Map.of(
                     "error", "名称只允许小写字母/数字/下划线/连字符（2-64 位）"));
         }
+        if (!VERSION.matcher(version).matches()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "version 只允许字母/数字/点/下划线/连字符（1-32 位）"));
+        }
+        if (name.length() > 128 || (description != null && description.length() > 1024)
+                || (developer != null && developer.length() > 128)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "name/description/developer 超长"));
+        }
+        // 同一 slug+version 并发上传串行化（existsBy 检查与 save 之间存在竞态窗口）
+        String lockKey = "pm:upllock:" + slug + ":" + version;
+        if (!Boolean.TRUE.equals(redis.opsForValue()
+                .setIfAbsent(lockKey, u.username, Duration.ofSeconds(60)))) {
+            return ResponseEntity.status(429).body(Map.of("error", "该版本正在上传中，请稍后重试"));
+        }
+        try {
+            return doUpload(file, data, slug, name, description, version, developer,
+                    guardVerdict, guardDetail, u);
+        } finally {
+            redis.delete(lockKey);
+        }
+    }
+
+    private ResponseEntity<?> doUpload(MultipartFile file, byte[] data, String slug, String name,
+                                       String description, String version, String developer,
+                                       String guardVerdict, String guardDetail, User u) throws Exception {
         // zip 结构检查：必须含 plugin.json；条目路径安全；提取 .py/.md 文本送服务器侧复核
         Map<String, String> texts = new LinkedHashMap<>();
         boolean hasMeta = false;
+        long[] budget = { MAX_TEXT_TOTAL };
         try (ZipInputStream z = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
             ZipEntry e;
             int count = 0;
-            while ((e = z.getNextEntry()) != null && count++ < 500) {
+            while ((e = z.getNextEntry()) != null) {
+                if (++count > 500) {
+                    return ResponseEntity.badRequest().body(Map.of("error", "zip 条目超过 500 上限"));
+                }
                 if (e.isDirectory()) continue;
                 String en = e.getName().replace("\\", "/");
                 if (en.startsWith("/") || en.contains("../") || en.contains("..\\")) {
                     return ResponseEntity.badRequest().body(Map.of("error", "zip 内含越界路径：" + en));
                 }
                 if (en.endsWith("plugin.json") || en.equals("plugin.json")) hasMeta = true;
-                if ((en.endsWith(".py") || en.endsWith(".md")) && e.getSize() < 512_000) {
-                    texts.put(en, new String(z.readAllBytes(), StandardCharsets.UTF_8));
+                if (en.endsWith(".py") || en.endsWith(".md")) {
+                    // 注意：e.getSize() 对压缩流常为 -1（未知），原来的 size<512_000 判断形同虚设，
+                    // readAllBytes 可被 zip bomb 撑爆堆。改为按实际字节有界读取。
+                    byte[] text = readBounded(z, MAX_TEXT_ENTRY, budget);
+                    if (text == null) {
+                        return ResponseEntity.badRequest().body(Map.of(
+                                "error", "送审文件过大（单文件 >500KB 或总量 >32MB）：" + en));
+                    }
+                    texts.put(en, new String(text, StandardCharsets.UTF_8));
                 }
             }
         }
@@ -144,9 +191,9 @@ public class PluginController {
         pl.uploader = u.username;
         pl.sizeBytes = data.length;
         pl.sha256 = sha;
-        pl.guardVerdict = guardVerdict;
-        pl.guardDetail = (guardDetail == null || guardDetail.isBlank())
-                ? "本地深度校验通过" : guardDetail;
+        pl.guardVerdict = trunc(guardVerdict, 64);
+        pl.guardDetail = trunc((guardDetail == null || guardDetail.isBlank())
+                ? "本地深度校验通过" : guardDetail, 512);
         pl.serverScan = serverScan;
         pl.filePath = zipPath.toString();
         plugins.save(pl);
@@ -155,28 +202,36 @@ public class PluginController {
                 "warnings", List.of()));
     }
 
-    /** 下载（计数） */
+    /** 下载（计数）：流式返回，不把 zip 全量读进堆 */
     @GetMapping("/{slug}/download")
-    public ResponseEntity<byte[]> download(@PathVariable String slug,
-                                           @RequestParam(defaultValue = "") String version) throws Exception {
-        Optional<Plugin> pl;
-        if (version.isBlank()) {
-            pl = plugins.findAll(PageRequest.of(0, 200,
-                            Sort.by(Sort.Direction.DESC, "createdAt"))).getContent().stream()
-                    .filter(x -> x.slug.equals(slug)).findFirst();
-        } else {
-            pl = plugins.findAll().stream()
-                    .filter(x -> x.slug.equals(slug) && x.version.equals(version)).findFirst();
+    public ResponseEntity<Resource> download(@PathVariable String slug,
+                                             @RequestParam(defaultValue = "") String version) throws Exception {
+        if (!version.isBlank() && !VERSION.matcher(version).matches()) {
+            return ResponseEntity.badRequest().build();
         }
+        // 原实现：无版本时扫最新 200 行、指定版本时 findAll() 全表 stream，数据量一大就是 O(N) 拖库。
+        Optional<Plugin> pl = version.isBlank()
+                ? plugins.findFirstBySlugOrderByCreatedAtDesc(slug)
+                : plugins.findFirstBySlugAndVersionOrderByCreatedAtDesc(slug, version);
         if (pl.isEmpty()) return ResponseEntity.notFound().build();
         Plugin p = pl.get();
-        byte[] data = Files.readAllBytes(Path.of(p.filePath));
-        p.downloads++;
-        plugins.save(p);
+        // filePath 来自库表，仍按 storageDir 做归一化包含校验（防库/写路径被污染后越界取文件）
+        Path root = Path.of(storageDir).toAbsolutePath().normalize();
+        Path file = Path.of(p.filePath).toAbsolutePath().normalize();
+        if (!file.startsWith(root)) return ResponseEntity.status(403).build();
+        if (!Files.isReadable(file) || Files.isDirectory(file)) return ResponseEntity.notFound().build();
+        long size = Files.size(file);
+        if (size > MAX_DOWNLOAD_BYTES) return ResponseEntity.status(413).build();
+        // 单条 UPDATE 自增，避免并发下载互相覆盖计数
+        plugins.bumpDownloads(p.id);
+        // filename 由 slug/version 拼接，二者均已被字符白名单校验，无 CRLF 注入面
         return ResponseEntity.ok()
-                .header("Content-Disposition",
+                .header(HttpHeaders.CONTENT_TYPE, "application/zip")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
                         "attachment; filename=\"" + p.slug + "-" + p.version + ".zip\"")
-                .body(data);
+                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=60")
+                .contentLength(size)
+                .body(new FileSystemResource(file));
     }
 
     /** 我上传的插件（登录态） */
@@ -187,6 +242,33 @@ public class PluginController {
                         PageRequest.of(0, 100, Sort.by(Sort.Direction.DESC, "createdAt")))
                 .getContent().stream().map(this::publicView).toList();
         return Map.of("items", list);
+    }
+
+    /** 超列宽即截断：数据库字段有长度上限，直接落库会抛 500（name/guardDetail 均由客户端可控）。 */
+    private static String trunc(String s, int max) {
+        if (s == null) return null;
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    /**
+     * 有界读取一个 zip 条目。
+     * 超过单条上限或总预算时返回 null（调用方拒收），绝不无限读——防 zip bomb / OOM。
+     */
+    private static byte[] readBounded(ZipInputStream z, int perEntry, long[] budget)
+            throws java.io.IOException {
+        long cap = Math.min(perEntry, budget[0]);
+        if (cap <= 0) return null;
+        var out = new java.io.ByteArrayOutputStream((int) Math.min(cap, 16 * 1024));
+        byte[] buf = new byte[8192];
+        long total = 0;
+        int n;
+        while ((n = z.read(buf, 0, buf.length)) > 0) {
+            total += n;
+            if (total > cap) return null;
+            out.write(buf, 0, n);
+        }
+        budget[0] -= total;
+        return out.toByteArray();
     }
 
     private Map<String, Object> publicView(Plugin p) {

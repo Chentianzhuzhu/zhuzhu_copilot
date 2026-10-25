@@ -1,0 +1,40 @@
+{
+  "services": [
+    {
+      "id": "code-map-service",
+      "title": "代码地图缓存预热",
+      "module": "service/cm_service.py",
+      "entry": "start",
+      "stop": "stop"
+    }
+  ],
+  "pages": [
+    {
+      "id": "code-map-page",
+      "title": "代码地图",
+      "module": "pages/code_map_page.py",
+      "widget": "CodeMapPage",
+      "window": "glass",
+      "auto_show": true,
+      "width": 720,
+      "height": 560
+    }
+  ],
+  "tray": [
+    {
+      "id": "code-map-report",
+      "title": "代码地图报告",
+      "module": "pages/code_map_page.py",
+      "action": "quick_report"
+    }
+  ],
+  "shortcuts": [
+    {
+      "id": "code-map-hotkey",
+      "title": "代码地图报告",
+      "hotkey": "ctrl+alt+w",
+      "module": "pages/code_map_page.py",
+      "action": "quick_report"
+    }
+  ]
+}

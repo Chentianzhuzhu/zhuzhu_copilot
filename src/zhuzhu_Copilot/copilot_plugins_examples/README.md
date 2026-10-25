@@ -330,6 +330,8 @@ my-plugin/
 | `settings-page-demo` | 自定义设置页：页面模块 + 导航 + 构建器 + 构建方法 | `create_file` + 2×`insert_after` + `append` |
 | `py-syntax-lint` | 代码高亮 + `check_python_syntax` 工具（只解析不执行） | `create_file` + 3×`insert_after` |
 | `prompt-optimizer` | 提示词优化工具 + 改写系统提示词 | `create_file` + `replace_module` + 2×`insert_after` |
+| `perf-turbo` | 性能优化：渲染缓存 + 流式节拍自适应 + 性能看板 + `perf_report` 工具 | `create_file` + `replace_module` + 3×`insert_after` + `copilot.json` |
+| `code-map` | 工作区代码地图：扫描内核 + `code_map` 工具 + 看板页 + 预热服务 + 技能 + **自定义图标** | `create_file` + 2×`insert_after` + `copilot.json`（四项齐全）+ `agent/` |
 | `tray-quick-note` | 托盘动作 + 后台服务（纯运行时） | 无源码变更，靠 `copilot.json` |
 | `agent-scorecard` | 任务评分窗：耗时 / 工具 / token + 评分回传（纯运行时） | 无源码变更，靠 `copilot.json` 服务 + 运行时挂钩 |
 
@@ -339,3 +341,70 @@ my-plugin/
 >
 > `py-syntax-lint`、`prompt-optimizer` 的 `source/` 目录是变更内容的**可读副本**，
 > 插件实际执行的是 `source_ops.json` 里的 `content`，两者内容应保持一致。
+
+---
+
+## 7. 图标（icon）
+
+三件事缺一就会「图标不显示」：
+
+1. 图标文件放在**包根**（与 `plugin.json` 同目录），**不能放子目录**；
+2. `plugin.json` 写 `"icon": "icon.png"`——**只写文件名**，不能带 `pages/` 之类前缀，
+   也不能以 `.` 开头（安全校验判非法后会清空该字段）；
+3. 扩展名在白名单：`.png` `.jpg` `.jpeg` `.svg` `.ico` `.gif` `.webp`。**推荐 PNG**
+   （exe 安装版对 PNG 最稳），方形 128~256px，卡片按 44px 等比缩放。
+
+示例：`code-map/icon.png` 是 256×256 纯标准库光栅化生成的图标（4× 超采样抗锯齿），
+`plugin.json` 里 `"icon": "icon.png"`。
+
+## 8. 热插拔与液体玻璃窗口
+
+**热插拔（2026-10-25 起支持）**：页面页签、玻璃窗口、托盘动作、快捷键都是可撤销登记。
+停用/删除插件时立即从界面摘掉（`main_window.unregister_copilot_plugin`），启用时当场挂上
+（`start_copilot_plugin`，面板缺省用启动时登记的宿主）；后台服务同样即时启停。
+所以**只有源码级变更落在 `agent_panel` / `main_window` / `styles` 时才需要重启**。
+回归用例：`tests/test_copilot_hotplug.py`。
+
+**液体玻璃窗口**：`pages` 条目加 `"window": "glass"` 即把页面托管到独立无框玻璃窗口
+（GPU 实时折射/反射/边缘高光，见根 README 第八章 8.8）：
+
+```json
+{"id": "my-page", "title": "我的面板", "module": "pages/x.py", "widget": "MyPage",
+ "window": "glass", "auto_show": true, "width": 720, "height": 560}
+```
+
+`auto_show=true` 时应用启动直接浮现（常驻）；`position: [x, y]` 可固定位置，不给则居中
+且多个窗口自动错位。`GLASS_MODE=painter` 可强制降级排障。观感参考 `perf-turbo` /
+`code-map` 两个示例。
+
+## 9. 在 exe（安装版）里验证转译层
+
+安装目录没有源码，源码级插件靠三样东西工作，缺一样就会「装上了却没反应」：
+
+1. 随包源码快照 `_copilot_src/zhuzhu_Copilot/**`（插入/替换类 op 的原版基准）；
+2. 用户数据目录的 `source_overlay/`（变更的实际生效副本）；
+3. `_copilot_overlay_hook.py` 导入钩子（让 `zhuzhu_Copilot.*` 优先命中覆盖层）。
+
+**先体检**（不依赖任何插件，随时可跑）：
+
+```powershell
+python scripts/verify_overlay.py                 # 打包态模拟 + 体检 dist/zhuzhu Copilot
+python scripts/verify_overlay.py --simulate      # 只模拟（临时目录，不碰你的数据）
+python scripts/verify_overlay.py --inspect "D:\Program Files\zhuzhu Copilot"
+```
+
+若体检报「缺少 `_copilot_src/zhuzhu_Copilot`」，说明该构建**不含**覆盖层机制
+（例如仓库里 2026-10-19 那版 `dist/`），必须 `.\build_release.ps1` 重新打包。
+
+**再验证**：装一个看得见的插件（`code-map` 最合适）→ 启用 → 重启 exe，然后看三个信号：
+
+| 信号 | 说明 |
+| --- | --- |
+| 浮层多出「代码地图」页签 | `copilot.json` 的应用扩展生效 |
+| AI 能调 `code_map` 工具 | 源码级 `insert_after` 生效（工具被登记进 TOOLS） |
+| 插件页顶部「生效位置」有模块数、卡片显示「已写入转译层」 | 转译层机制自报状态 |
+
+反证：停用插件 → 重启 → 页签消失、工具不可用、模块数归零。
+
+> 详细的手把手教程（含锚点取法、行号 vs 锚点、排错表、让 AI 帮你写插件）见仓库根目录
+> `README.md` 第八章「插件开发指南」。

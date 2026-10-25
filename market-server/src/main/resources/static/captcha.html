@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>人机验证 · 插件市场</title>
+<style>
+  :root {
+    --bg: #000000; --panel: #141414; --panel2: #1E1E1E;
+    --text: #F5F5F5; --dim: #8A8A8A; --accent: #1E40AF; --border: #2A2A2A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px; min-width: 320px;
+    text-align: center;
+  }
+  .title { font-size: 13px; color: var(--dim); margin-bottom: 12px; }
+  #cf { display: flex; justify-content: center; }
+  .state { font-size: 12px; color: var(--dim); margin-top: 10px; min-height: 16px; }
+  .state.ok { color: #22C55E; }
+  .state.err { color: #DC2626; }
+  .bar { margin-top: 12px; height: 3px; background: var(--panel2); border-radius: 2px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="title">插件市场 · 人机验证</div>
+  <div id="cf"></div>
+  <div class="state" id="state">正在加载验证组件…</div>
+  <div class="bar"><i id="bar"></i></div>
+</div>
+<script>
+  // 一次性 token 暴露给宿主（客户端内置浏览器通过 runJavaScript 读取）
+  window.__cfToken = "";
+  window.__cfVerified = false;
+
+  var widgetId = null;
+
+  function setState(text, cls, pct) {
+    var el = document.getElementById("state");
+    el.textContent = text;
+    el.className = "state" + (cls ? " " + cls : "");
+    document.getElementById("bar").style.width = (pct || 0) + "%";
+  }
+
+  function onPass(token) {
+    window.__cfToken = token;
+    window.__cfVerified = true;
+    setState("验证通过，可以返回应用继续登录/注册", "ok", 100);
+  }
+
+  function onExpire() {
+    window.__cfToken = "";
+    window.__cfVerified = false;
+    setState("验证已过期，请重新点击验证组件", "err", 0);
+  }
+
+  function onError(code) {
+    window.__cfToken = "";
+    window.__cfVerified = false;
+    // 用 IP 直连时 Turnstile 拒绝渲染（站点密钥只对已绑定域名生效）
+    var h = location.hostname || "";
+    var ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(":") >= 0;
+    setState(ip ? "当前通过 IP 访问，人机验证要求使用已绑定域名的地址"
+                : "验证组件加载失败（" + code + "），请检查网络后刷新", "err", 0);
+  }
+
+  async function initWidget() {
+    try {
+      var res = await fetch("/api/captcha/sitekey", {cache: "no-store"});
+      var cfg = await res.json();
+      var sitekey = (cfg && cfg.sitekey) || "";
+      if (!sitekey) {
+        setState("服务端未配置站点密钥", "err", 0);
+        return;
+      }
+      setState("请点击下方验证组件", "", 30);
+      widgetId = turnstile.render("#cf", {
+        sitekey: sitekey,
+        theme: "dark",
+        callback: onPass,
+        "expired-callback": onExpire,
+        "error-callback": onError
+      });
+    } catch (e) {
+      setState("无法获取验证配置，请刷新重试", "err", 0);
+    }
+  }
+
+  // 显式渲染：等 Cloudflare 脚本 onload 再初始化
+  function onloadTurnstile() { initWidget(); }
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onloadTurnstile" async defer></script>
+</body>
+</html>

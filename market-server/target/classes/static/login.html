@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>插件市场 · 登录 / 注册</title>
+<style>
+  :root {
+    --bg: #000000; --panel: #141414; --panel2: #1E1E1E;
+    --text: #F5F5F5; --dim: #8A8A8A; --accent: #1E40AF; --accent2: #2563EB;
+    --border: #2A2A2A; --err: #DC2626; --ok: #22C55E;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 24px;
+  }
+  .card {
+    width: 360px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); }
+  .brand h1 { font-size: 15px; font-weight: 700; margin: 0; letter-spacing: .5px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .tab {
+    flex: 1; padding: 8px 0; text-align: center; font-size: 13px;
+    color: var(--dim); background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 8px; cursor: pointer; user-select: none;
+  }
+  .tab.active { color: var(--text); border-color: var(--accent); }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 6px; }
+  input {
+    width: 100%; padding: 9px 10px; font-size: 13px; color: var(--text);
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    outline: none;
+  }
+  input:focus { border-color: var(--accent2); }
+  #cf { display: flex; justify-content: center; margin: 14px 0 6px; min-height: 65px; }
+  .hint { font-size: 12px; color: var(--dim); min-height: 16px; }
+  .hint.err { color: var(--err); }
+  .hint.ok { color: var(--ok); }
+  button {
+    width: 100%; margin-top: 14px; padding: 10px; font-size: 13px; font-weight: 700;
+    color: #FFFFFF; background: var(--accent); border: none; border-radius: 8px;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent2); }
+  button:disabled { background: var(--panel2); color: var(--dim); cursor: not-allowed; }
+  .hidden { display: none; }
+  .account { font-size: 13px; line-height: 1.9; }
+  .account b { color: var(--text); }
+  .logout {
+    margin-top: 16px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand"><span class="dot"></span><h1>插件市场账号</h1></div>
+
+  <div id="form-area">
+    <div class="tabs">
+      <div class="tab active" id="tab-login">登录</div>
+      <div class="tab" id="tab-register">注册</div>
+    </div>
+    <label for="username">用户名</label>
+    <input id="username" autocomplete="username" placeholder="3-32 位小写字母/数字/下划线">
+    <label for="password">密码</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="至少 8 位">
+    <div id="dev-row" class="hidden">
+      <label for="developer">开发者 / 公司（留空 = 用户名）</label>
+      <input id="developer" placeholder="上传插件时展示的名称">
+    </div>
+
+    <div id="cf"></div>
+    <div class="hint" id="hint">请先完成人机验证</div>
+    <button id="submit" disabled>登录</button>
+  </div>
+
+  <div id="account-area" class="hidden">
+    <div class="account">
+      已登录：<b id="acc-user"></b><br>
+      开发者 / 公司：<b id="acc-dev"></b>
+    </div>
+    <button id="logout" class="logout">退出登录</button>
+  </div>
+</div>
+
+<script>
+  var mode = "login";
+  var token = "";
+  var widgetId = null;
+
+  var hint = document.getElementById("hint");
+  var submit = document.getElementById("submit");
+  var devRow = document.getElementById("dev-row");
+
+  function setHint(text, cls) {
+    hint.textContent = text;
+    hint.className = "hint" + (cls ? " " + cls : "");
+  }
+
+  /* 用 IP 直连时 Turnstile 会拒绝渲染（站点密钥只对已备案/已绑定的域名生效），
+     这里给出可读原因，避免用户只看到一串错误码。 */
+  function isIpHost() {
+    var h = location.hostname || "";
+    return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(":") >= 0;
+  }
+
+  function cfErrorText(code) {
+    if (isIpHost()) {
+      return "当前通过 IP 访问，人机验证要求使用已绑定域名的地址";
+    }
+    return "验证组件加载失败（" + code + "），请刷新重试";
+  }
+
+  function retokenize() {
+    token = "";
+    submit.disabled = true;
+    setHint("请先完成人机验证", "");
+    if (widgetId !== null && window.turnstile) window.turnstile.reset(widgetId);
+  }
+
+  function onPass(t) {
+    token = t;
+    submit.disabled = false;
+    setHint("人机验证已通过", "ok");
+  }
+
+  function onExpire() { retokenize(); }
+
+  function switchMode(next) {
+    mode = next;
+    document.getElementById("tab-login").className = "tab" + (mode === "login" ? " active" : "");
+    document.getElementById("tab-register").className = "tab" + (mode === "register" ? " active" : "");
+    devRow.className = mode === "register" ? "" : "hidden";
+    submit.textContent = mode === "register" ? "注册" : "登录";
+    document.getElementById("password").autocomplete =
+      mode === "register" ? "new-password" : "current-password";
+    retokenize();
+  }
+
+  function saveAccount(obj) {
+    try { localStorage.setItem("pm_token", obj.token || ""); } catch (e) {}
+    var user = obj.user || {};
+    document.getElementById("form-area").className = "hidden";
+    document.getElementById("account-area").className = "";
+    document.getElementById("acc-user").textContent = user.username || "";
+    document.getElementById("acc-dev").textContent = user.developer || user.username || "";
+  }
+
+  async function submitForm() {
+    if (!token) { setHint("请先完成人机验证", "err"); return; }
+    var username = (document.getElementById("username").value || "").trim();
+    var password = document.getElementById("password").value || "";
+    var developer = (document.getElementById("developer").value || "").trim();
+    if (mode === "register" && (password.length < 8)) {
+      setHint("密码至少 8 位", "err"); return;
+    }
+    if (!username || !password) { setHint("请填写用户名和密码", "err"); return; }
+    submit.disabled = true;
+    setHint(mode === "register" ? "正在注册…" : "正在登录…", "");
+    var path = mode === "register" ? "/api/auth/register" : "/api/auth/login";
+    var payload = {username: username, password: password, turnstileToken: token};
+    if (mode === "register") payload.developer = developer;
+    try {
+      var res = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      var obj = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        setHint(obj.error || ("请求失败（HTTP " + res.status + "）"), "err");
+        retokenize();   // token 一次性：失败后必须重新验证
+        return;
+      }
+      saveAccount(obj);
+    } catch (e) {
+      setHint("网络异常，请稍后重试", "err");
+      retokenize();
+    }
+  }
+
+  async function onLogout() {
+    var tk = "";
+    try { tk = localStorage.getItem("pm_token") || ""; } catch (e) {}
+    if (tk) {
+      try {
+        await fetch("/api/auth/logout", {method: "POST", headers: {"Authorization": "Bearer " + tk}});
+      } catch (e) {}
+    }
+    try { localStorage.removeItem("pm_token"); } catch (e) {}
+    document.getElementById("account-area").className = "hidden";
+    document.getElementById("form-area").className = "";
+    switchMode("login");
+  }
+
+  async function initWidget() {
+    try {
+      var res = await fetch("/api/captcha/sitekey", {cache: "no-store"});
+      var cfg = await res.json();
+      var sitekey = (cfg && cfg.sitekey) || "";
+      if (!sitekey) { setHint("服务端未配置站点密钥", "err"); return; }
+      widgetId = turnstile.render("#cf", {
+        sitekey: sitekey, theme: "dark",
+        callback: onPass,
+        "expired-callback": onExpire,
+        "error-callback": function (code) { setHint(cfErrorText(code), "err"); }
+      });
+    } catch (e) {
+      setHint("无法获取验证配置，请刷新重试", "err");
+    }
+  }
+
+  function onloadTurnstile() { initWidget(); }
+
+  document.getElementById("tab-login").onclick = function () { switchMode("login"); };
+  document.getElementById("tab-register").onclick = function () { switchMode("register"); };
+  submit.onclick = submitForm;
+  document.getElementById("logout").onclick = onLogout;
+  document.getElementById("password").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !submit.disabled) submitForm();
+  });
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onloadTurnstile" async defer></script>
+</body>
+</html>

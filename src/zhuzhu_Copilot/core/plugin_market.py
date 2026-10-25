@@ -77,6 +77,11 @@ def set_api_base(url: str) -> tuple:
     return True, f"插件市场地址已设为 {url}"
 
 
+def captcha_url() -> str:
+    """人机验证页地址（服务端静态页，由内置浏览器加载并渲染 Turnstile）。"""
+    return api_base() + "/captcha.html"
+
+
 def account() -> dict:
     """当前登录信息：{logged_in, username, developer, token}。"""
     cfg = _load()
@@ -118,7 +123,8 @@ def _http(path: str, method: str = "GET", payload=None, token: str = "",
     except urllib.error.HTTPError as e:
         raise MarketError(_error_text(e.code, e.read().decode("utf-8", "replace")))
     except urllib.error.URLError as e:
-        raise MarketError(f"无法连接插件市场服务器（{api_base()}）：{e.reason}")
+        # 不展示 api_base：避免把源站地址暴露给终端用户
+        raise MarketError(f"无法连接插件市场服务器：{e.reason}")
     except OSError as e:
         raise MarketError(f"连接插件市场服务器失败：{e}")
 
@@ -147,12 +153,20 @@ def _remember_user(obj: dict, token: str) -> None:
 
 
 # ------------------------------------------------------------- 账号
-def register(username: str, password: str, developer: str = "") -> tuple:
-    """注册并自动登录。开发者/公司名留空时服务器默认用用户名。"""
+def register(username: str, password: str, developer: str = "",
+             turnstile_token: str = "") -> tuple:
+    """注册并自动登录。
+
+    ``turnstile_token`` 为可选：产品口径是「人机验证只用于应用账户登录」，
+    市场侧默认不校验；服务端开启 ``market.turnstile.enabled`` 后，这里传入的
+    一次性 token 才会被复核（空 token 会被服务端拒绝）。
+    """
+    payload = {"username": username, "password": password, "developer": developer}
+    token_in = str(turnstile_token or "").strip()
+    if token_in:
+        payload["turnstileToken"] = token_in
     try:
-        obj = _json("/api/auth/register", "POST",
-                    {"username": username, "password": password,
-                     "developer": developer})
+        obj = _json("/api/auth/register", "POST", payload)
     except MarketError as e:
         return False, str(e)
     token = str(obj.get("token") or "")
@@ -162,10 +176,14 @@ def register(username: str, password: str, developer: str = "") -> tuple:
     return True, f"注册成功，已登录为 {account()['username']}"
 
 
-def login(username: str, password: str) -> tuple:
+def login(username: str, password: str, turnstile_token: str = "") -> tuple:
+    """登录（``turnstile_token`` 同上，默认不需要）。"""
+    payload = {"username": username, "password": password}
+    token_in = str(turnstile_token or "").strip()
+    if token_in:
+        payload["turnstileToken"] = token_in
     try:
-        obj = _json("/api/auth/login", "POST",
-                    {"username": username, "password": password})
+        obj = _json("/api/auth/login", "POST", payload)
     except MarketError as e:
         return False, str(e)
     token = str(obj.get("token") or "")

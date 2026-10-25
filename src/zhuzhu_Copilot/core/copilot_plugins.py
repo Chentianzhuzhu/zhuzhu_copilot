@@ -253,6 +253,19 @@ def validate_copilot_manifest(man) -> tuple:
                     return False, f"pages.{eid} 缺少 title"
                 if not str(it.get("widget") or "").strip():
                     return False, f"pages.{eid} 缺少 widget（页面类名）"
+                # 呈现方式：tab（浮层页签，默认）/ glass（独立无框液体玻璃窗口）
+                mode = str(it.get("window") or "").strip().lower()
+                if mode and mode not in ("tab", "glass"):
+                    return False, f"pages.{eid} 的 window 只支持 tab / glass"
+                for key in ("width", "height"):
+                    if it.get(key) is None:
+                        continue
+                    try:
+                        v = int(it.get(key))
+                    except (TypeError, ValueError):
+                        return False, f"pages.{eid} 的 {key} 必须是整数"
+                    if not 240 <= v <= 4000:
+                        return False, f"pages.{eid} 的 {key} 超出 240~4000"
             if section == "shortcuts":
                 hk = str(it.get("hotkey") or "").strip()
                 if not hk or len(hk) > 40 or not re.match(r"^[A-Za-z0-9+]+$", hk):
@@ -767,6 +780,15 @@ _COPILOT_MANIFEST_RULES = (
     " QWidget 子类类名；服务 entry/stop 为模块级函数名。\n"
 )
 
+#: AI 生成图标（SVG 源码）的规则：插件包里的图标文件由应用直接落盘
+_COPILOT_ICON_RULES = (
+    "可选插件图标 icon_svg（强烈建议提供，插件页卡片会显示）：一段**独立完整**的 SVG 源码，"
+    "根元素必须带 xmlns=\"http://www.w3.org/2000/svg\" 与 viewBox=\"0 0 128 128\"，"
+    "尺寸写 width=\"128\" height=\"128\"；风格要求：圆角方形底色（深色，如 #1E3A8A 系）+ "
+    "1~3 个简洁图形，纯色填充、不引用外部资源/字体/脚本/滤镜，≤4KB；"
+    "图形要能在 44px 下辨认（别用细线和小字）。\n"
+)
+
 
 def _ai_generate_copilot_spec(desc: str) -> dict:
     """调用当前配置的 LLM 生成 Copilot 插件设计 JSON
@@ -779,12 +801,13 @@ def _ai_generate_copilot_spec(desc: str) -> dict:
         "你是 Copilot 应用级插件设计专家。Copilot 插件与 Agent 插件分开，"
         "扩展范围覆盖整个应用：既可以把功能代码接入任何现有模块/新建功能模块文件"
         "（跨多文件综合修改），也可以注册应用级能力（主窗口页面/后台服务/托盘/快捷键）。\n"
-        + _COPILOT_OP_RULES + _COPILOT_MANIFEST_RULES +
+        + _COPILOT_OP_RULES + _COPILOT_MANIFEST_RULES + _COPILOT_ICON_RULES +
         '输出严格 JSON（不要 markdown 代码块包裹）：\n'
         '{\n'
         '  "name": "插件名（英文，字母数字下划线连字符，≤50字符，小写）",\n'
         '  "summary": "一句话用途简介（中文）",\n'
         '  "author": "开发者/公司名（未知可留空）",\n'
+        '  "icon_svg": "上述图标 SVG 源码（可选但建议提供）",\n'
         '  "source_ops": [上述 op 对象，1-N 条，可跨多个文件],\n'
         '  "copilot": {上述扩展清单，可选}\n'
         "}\n"
@@ -812,6 +835,30 @@ def _ai_generate_copilot_spec(desc: str) -> dict:
             return data if isinstance(data, dict) else {}
         except json.JSONDecodeError:
             return {}
+
+
+def _write_icon_svg(pkg_dir, svg) -> str:
+    """把 AI 生成的 SVG 图标写入插件包，返回文件名（不可用返回空串）。
+
+    图标只是静态图形，因此**拒绝**脚本 / 事件属性 / 外部引用 / 位图嵌套：
+    这类内容对图标毫无用处，却正是「插件夹带可执行内容」的常见入口。
+    """
+    s = str(svg or "").strip()
+    if not s or len(s) > 20480:
+        return ""
+    low = s.lower()
+    if not low.startswith("<svg") or "</svg>" not in low or "xmlns" not in low:
+        return ""
+    for bad in ("<script", "javascript:", "onload=", "onerror=", "onclick=",
+                "<foreignobject", "<image", 'href="http', "href='http",
+                "<iframe", "<use"):
+        if bad in low:
+            return ""
+    try:
+        (Path(pkg_dir) / "icon.svg").write_text(s, encoding="utf-8")
+        return "icon.svg"
+    except OSError:
+        return ""
 
 
 def create_from_nl(description: str, on_status=None) -> tuple:
@@ -870,6 +917,9 @@ def create_from_nl(description: str, on_status=None) -> tuple:
         if isinstance(copilot, dict) and copilot:
             (d / "copilot.json").write_text(
                 json.dumps(copilot, ensure_ascii=False, indent=2), encoding="utf-8")
+        icon_name = _write_icon_svg(d, spec.get("icon_svg"))
+        if icon_name:
+            meta["icon"] = icon_name
         _write_meta(name, meta)
     except OSError as e:
         return False, f"创建 Copilot 插件失败: {e}"

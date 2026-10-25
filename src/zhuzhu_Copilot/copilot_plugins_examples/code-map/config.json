@@ -1,0 +1,5 @@
+{
+  "refresh_minutes": 10,
+  "max_depth": 4,
+  "exclude": ""
+}

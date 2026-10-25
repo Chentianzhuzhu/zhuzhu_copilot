@@ -122,3 +122,30 @@ def test_round_buttons_keep_their_own_diameter_radius():
     src = Path(ap.__file__).read_text(encoding="utf-8")
     assert "border-radius: 17px" in src, "发送按钮（34px 圆钮）圆角应为 17"
     assert "border-radius: {diameter // 2}px" in src, "42px 圆钮圆角应由直径推出（21）"
+
+
+def test_profile_panel_close_keeps_focus_off_session_combo(panel):
+    """关闭个人信息面板后，焦点不得落到会话切换下拉。
+
+    QComboBox 默认 WheelFocus：浮层隐藏时 Qt 按焦点链把焦点丢给它，于是「什么都没
+    点，会话栏却亮起一圈蓝色 focus 描边」。两条约束一起保证：
+      1) 会话下拉只接受鼠标点击聚焦（焦点链/Tab 都跳过它）；
+      2) 面板收起时把悬空焦点交回聊天输入框。
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication
+
+    p = panel
+    assert p.session_combo.focusPolicy() == Qt.FocusPolicy.ClickFocus, \
+        "会话下拉必须只接受鼠标点击聚焦，否则浮层关闭时会被焦点链点亮"
+
+    p.open_profile_panel()
+    _pump(300)
+    prof = p.__dict__.get("_profile_panel")
+    assert prof is not None and prof.isVisible(), "个人信息面板未打开"
+
+    p.close_profile_panel()
+    _pump(350)
+    assert QApplication.focusWidget() is not p.session_combo, \
+        "关闭个人信息面板后焦点落到了会话下拉（会出现蓝色描边）"
+

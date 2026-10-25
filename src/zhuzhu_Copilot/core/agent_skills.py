@@ -508,34 +508,72 @@ Agent 插件只扩展 **Agent 自身**：MCP server 工具、SKILL.md 技能、w
 （可视化交互）。**不涉及应用源码**。需要改应用源码（主题/界面/工具/语言/任何模块）时，
 必须用下面的 Copilot 插件。
 
-插件包元数据规范：名称 name / 开发者或公司 author / 更新时间 updated_at / 插件图标 icon
-（包内图标文件），导入与创建时自动补齐，设置-插件页展示。
-插件可携带 `config.json` 配置项（键 → 文本/数字/布尔标量）：用户在设置-插件页
-「详情/配置」里编辑；MCP 型插件的配置会以环境变量（键名自动大写，如 api_key → API_KEY）
-注入 server 子进程，server.py 里用 `os.environ.get("API_KEY")` 读取。PATH/HOME 等
-保留环境变量名禁止作为配置键。\n"
-    "\n"
-    "## Copilot 插件（应用级独立体系，与 Agent 插件分开，应用范围更广）\n"
-    "\n"
-    "当需求是**定制整个应用本身**——改主题、自定义 Agent、自定义工具、自定义语言、\n"
-    "增删替换任何模块，或注册主窗口页面 / 后台服务 / 托盘动作 / 快捷键——用 Copilot 插件\n"
-    "（`create_copilot_plugin` / `apply_copilot_plugin` / `revert_copilot_plugin`，\n"
-    "设置页「Copilot 插件」）：\n"
-    "\n"
-    "1. 与 Agent 插件共用插件校验系统，安全边界一致；变更统一写入**转译层**\n"
-    "   `~/.zhuzhu_Copilot/source_overlay/`（导入钩子优先加载），不改动应用源码文件，\n"
-    "   源码运行与安装版行为一致；启用即自动写入并热加载，停用即自动回滚。\n"
-    "2. 除 source_ops 外可带 `copilot.json` 应用扩展清单（pages/services/tray/shortcuts，\n"
-    "   `module` 指向**插件包内**模块文件，随包分发），以及可选 `agent/` 子包\n"
-    "   （SKILL.md + server.py，导入时登记为技能与 MCP，成为 Agent 插件的超集）。\n"
-    "3. 学习示例：`src/zhuzhu_Copilot/copilot_plugins_examples/`（theme-deep-blue 改主题 /\n"
-    "   custom-hello-tool 自定义工具 / settings-page-demo 自定义设置页 /\n"
-    "   tray-quick-note 应用扩展 / py-syntax-lint Python 语法高亮与纠错（「插入」示例：\n"
-    "   追加包装函数重绑定既有函数，原有代码行一行未改）/ prompt-optimizer 提示词优化\n"
-    "   （「替换」示例：replace_module 改写既有函数末行）），都是标准插件包，可导入后\n"
-    "   体验应用/回滚闭环。\n"
-    "4. 受保护核心程序（任何源码插件不得改动）：`plugin_guard.py`、`plugin_source.py`、\n"
-    "   `copilot_plugins.py`、`security.py`、`security_engine/`、`_copilot_overlay_hook.py`、`main.py`。""",
+插件包元数据规范：name（唯一标识）/ author（开发者或公司）/ updated_at / icon
+（包内方形 PNG，建议 128~256px，如 icon.png；留空则列表显示占位图标）/ description，
+导入与创建时自动补齐，设置-插件页展示开发者、更新时间与图标。
+插件可携带 `config.json`（键 → 文本/数字/布尔标量）：用户在「详情/配置」里编辑；
+MCP 型插件的配置会以大写环境变量注入 server 子进程（api_key → API_KEY，用
+`os.environ.get("API_KEY")` 读取）。PATH/HOME 等保留环境变量名禁止作为配置键。
+
+## Copilot 插件（应用级独立体系：改应用源码 + 注册应用能力）
+
+当需求是**定制应用本身**——改主题/界面/语言、自定义工具、增删替换任何模块，或注册
+主窗口页面 / 后台服务 / 托盘动作 / 快捷键——用 Copilot 插件（`create_copilot_plugin` /
+`apply_copilot_plugin` / `revert_copilot_plugin`，设置页「Copilot 插件」）。
+
+### 一、插件包结构
+
+```
+<name>/
+├── plugin.json      必需：name / kind=copilot / author / updated_at / icon / description / enabled
+├── source_ops.json  源码变更清单（三种 op 混用；单插件 ≤50 条、单条内容 ≤512KB）
+├── copilot.json     可选：pages / services / tray / shortcuts（module 指向包内模块）
+├── pages/ service/  随包分发的扩展模块（不走源码树，不经转译层）
+├── agent/           可选：SKILL.md + server.py（登记为技能 / MCP，成为 Agent 插件超集）
+└── icon.png         可选：方形图标，128~256px
+```
+
+### 二、三种写法（先建模块，再最小接线）
+
+1. **新建**：`{"op":"create_file","path":"zhuzhu_Copilot/core/x.py","content":"完整文件"}`。
+   优先用这条：功能独立就新建模块，不要在既有文件里大段重写。
+2. **插入**（不改原有代码行，风险最低）：`insert_after`（anchor 或 line）、`insert_at`
+   （第 N 行之前）、`append`（文件尾，或 after 锚点之后）。用于登记工具 schema、接线
+   分发器、在模块末尾追加包装函数（模块级重绑定既有函数 = 包装而不改原实现）。
+3. **替换**（替换后必须完整可编译）：`replace_module`（start..end 或行号区间）、
+   `replace_lines`（按行号）、`replace_file`（整体覆盖，风险最高，尽量少用）。
+
+### 三、定位与避坑（失败最常见的原因）
+
+- 锚点必须**真实存在且唯一**：先 read_file 看清目标文件，取一行足够特征的字符串；
+  行号方式从 1 起、含边界，适合拿得到完整源码时精确落位；
+- 同一文件多条 op 时，行号会随前一条插入而偏移 → 全程用锚点，或从后往前写行号；
+- 插入内容要落在正确缩进层级（进函数体就带 4 / 8 个空格），否则编译检查会失败；
+- **别和已装插件抢同一锚点**：同一行被两个插件改会互相覆盖，动手前先看已装插件的
+  source_ops.json，选另一处特征行；
+- 受保护核心程序不得改动：`plugin_guard.py`、`plugin_source.py`、`copilot_plugins.py`、
+  `security.py`、`security_engine/`、`_copilot_overlay_hook.py`、`main.py`。
+
+### 四、生效与验证
+
+- 变更写入**转译层** `~/.zhuzhu_Copilot/source_overlay/`（镜像源码相对路径），**不改应用
+  源码文件**，源码运行与 exe 安装版行为一致；启用即写入，停用即回滚（新建的删、改过的还原）。
+- 热加载会跳过持有进程级状态的模块（`agent_panel` / `main_window` / `styles`），
+  这类改动**必须重启应用**才生效——「装上了却没反应」九成是没重启。
+- 验证三看：① 新页签 / 新托盘项 / 新快捷键是否出现；② 新工具能否被调用（让 AI 直接调一次）；
+  ③ 设置-Copilot 插件页顶部「生效位置」的已加载模块数是否增加、卡片是否显示「已写入转译层」。
+- exe 里排查：先确认安装目录有 `_copilot_src/`（没有 = 该构建不含覆盖层机制，需重新打包），
+  再跑 `python scripts/verify_overlay.py`（打包态模拟 + 安装目录体检）。
+
+### 五、学习示例（都在 src/zhuzhu_Copilot/copilot_plugins_examples/）
+
+theme-deep-blue（插入改主题）/ custom-hello-tool（新模块 + 登记 + 接线）/
+settings-page-demo（跨两文件加页面）/ tray-quick-note（纯运行时：托盘 + 服务）/
+py-syntax-lint（包装既有函数，原有代码行一行未改）/ prompt-optimizer（replace_module
+改系统提示词）/ agent-scorecard（纯运行时服务 + 评分回传）/ perf-turbo（渲染缓存 +
+流式节拍自适应 + 性能看板 + 工具）/ code-map（新模块 + 工具 + 页面 + 服务 + 技能 +
+自定义图标，综合性插件范本）。每个都是标准插件包，导入后即可体验应用/回滚闭环。
+""",
     },
     "browser-control": {
         "description": "浏览器元素级自动化（CDP 独立实例）：截图、按元素编号/文字点击输入、执行JS解析HTML/CSS、读取页面内容，完全不影响用户其他操作。给用户打开网页/网站/视频一律用用户默认浏览器（preview_open），不用本技能",
@@ -634,10 +672,16 @@ browser_click/browser_type/browser_scroll/browser_eval/browser_html/browser_clos
   SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url 拿地址 + preview_open
   在用户默认浏览器里打开给用户，操作者必须是用户本人，严禁 AI 与脚本自动对战）。
 - **界面 / 主题 / 语言 / 任意模块（Copilot 插件，源码级定制）**：`create_copilot_plugin`
-  （自然语言 → AI 生成 source_ops 变更清单，可 `create_file` 新建模块、`insert_at` 按行号插入、
-  `replace_lines` 按行号替换、`replace_module` / `replace_file` 整段替换，跨多文件综合修改）
-  → `apply_copilot_plugin` 应用（校验 → 备份 → 编译检查，失败整体回滚）→ 重启生效；
-  改错了用 `revert_copilot_plugin` 一键回滚。老旧的「UI/UX 包」引擎已移除，界面定制一律走这里。
+  （自然语言 → AI 生成 source_ops 变更清单，三种写法可混用：`create_file` 新建模块、
+  `insert_after` / `insert_at` / `append` 插入现有源码、`replace_module` / `replace_lines` /
+  `replace_file` 修改既有实现，可跨多文件综合修改）→ `apply_copilot_plugin` 应用
+  （校验系统 → 逐文件备份 → 编译检查，任一失败整体回滚）→ **重启应用生效**；
+  改错了用 `revert_copilot_plugin` 一键回滚。变更只写转译层、不改应用源码文件，
+  源码运行与 exe 安装版一致。插件包记得配 `icon.png`（方形 128~256px）与 author/updated_at，
+  设置页列表会展示。老旧的「UI/UX 包」引擎已移除，界面定制一律走这里。
+  现成范本：`perf-turbo`（性能优化：渲染缓存 + 节拍自适应 + 看板 + 工具）、
+  `code-map`（代码地图：新模块 + 工具 + 页面 + 服务 + 技能 + 自定义图标）。
+  exe 里排查「装上了没反应」先跑 `python scripts/verify_overlay.py`。
 - **子 agent（小功能的常用落地通道，绑定当前工作流）**：`list_sub_agents` 看现状 → `register_sub_agent`
   （name/description/goal/allowed）注册进当前工作流，立即作为 `sub_<name>` 工具可调用，不新建工作流。
   用户说「创建一个子 agent / 新增一个下属 agent」时必须走这条注册通道：注册式才同时支持

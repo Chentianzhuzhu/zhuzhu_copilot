@@ -1621,7 +1621,15 @@ TOOLS = [
                            "（本地回环/内网地址已放开，可直接抓取）。设计时优先把能力拆成 LLM 可以直接"
                            "调用的工具（动作/查询粒度，如把流程拆成创建/推进校验/读取状态/回退），而不是"
                            "生成 LLM 无法直接操控的独立 GUI 应用。当用户想做一个独立功能/工具/能力并希望"
-                           "沉淀为插件时使用。",
+                           "沉淀为插件时使用。"
+                           "插件包规范：plugin.json 含 name/kind/author/updated_at/icon/description；"
+                           "图标 icon 为**包内**方形 PNG（建议 128~256px，与插件名同目录，如 icon.png），"
+                           "留空则列表显示占位图标；config.json 放用户可编辑的键值（文本/数字/布尔标量），"
+                           "MCP 型会以大写环境变量注入 server 子进程（os.environ.get(\"API_KEY\") 读取）。"
+                           "随包示例：src/zhuzhu_Copilot/plugins/computer-control（combined 型，含 "
+                           "server.py + SKILL.md + plugin.json）。"
+                           "**分工**：只扩展 Agent 能力（工具/技能/网页）用本工具；要改应用源码"
+                           "（主题/界面/任意模块/新增页面与托盘）用 create_copilot_plugin。",
             "parameters": {"type": "object",
                            "properties": {
                                "description": {"type": "string",
@@ -1639,17 +1647,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_copilot_plugin",
-            "description": "用自然语言描述创建**Copilot 插件**（应用级独立插件体系，与 Agent 插件"
-                           "分开、应用范围更广）：AI 生成 source_ops 变更清单——可新建功能模块、"
-                           "把功能代码接入任何现有模块（按行号或锚点插入/替换），一次改多个模块综合"
-                           "集成（改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块），"
-                           "以及可选的 copilot.json 应用扩展清单（主窗口页面/后台服务/托盘动作/快捷键），"
-                           "还可带 agent/ 子包附带 MCP 工具与技能。落盘后强制过插件校验系统"
-                           "（静态规则 + LLM 源码评审，危险代码强制删除并提示）。"
-                           "创建后自动写入转译层并启用（可 revert_copilot_plugin 回滚；"
-                           "如需先审阅变更清单，可在创建前先与用户确认方案）。"
-                           "变更一律写入**转译层**（用户数据目录的源码覆盖层），"
-                           "不修改应用源码文件；源码运行与 exe 打包运行行为一致，重启生效。",
+            "description": "用自然语言描述创建 **Copilot 插件**（应用级独立插件体系，可改应用源码、"
+                           "注册页面/服务/托盘/快捷键，是 Agent 插件的超集）。AI 生成 source_ops "
+                           "变更清单，三种写法可混用：① create_file 新建功能模块（优先：先建模块，"
+                           "再在现有模块里做最小接线）；② insert_after / insert_at / append 插入到"
+                           "现有源码（不改原有代码行，锚点须真实存在且唯一，或按行号精确落位）；"
+                           "③ replace_module / replace_lines / replace_file 修改或整体替换既有实现"
+                           "（替换后代码必须完整可编译）。一次可跨多个模块综合集成。可选 copilot.json "
+                           "声明应用级扩展（pages 页面 / services 后台服务 / tray 托盘动作 / "
+                           "shortcuts 快捷键，module 指向插件包内模块），可选 agent/ 子包"
+                           "（SKILL.md + server.py，导入时登记为技能与 MCP）。"
+                           "落盘后强制过插件校验系统（静态危险规则 + LLM 源码评审，危险即删除并提示）；"
+                           "启用时自动写入**转译层**（用户数据目录的源码覆盖层，不改应用源码文件）、"
+                           "逐文件备份、全部 py_compile（失败整体回滚），源码运行与 exe 安装版行为一致，"
+                           "重启应用生效；改错了用 revert_copilot_plugin 一键回滚。"
+                           "受保护核心程序（校验系统/源码引擎/安全引擎/导入钩子/main.py）不得改动；"
+                           "插件图标 icon 为包内方形 PNG（128~256px），列表展示开发者与更新时间。"
+                           "完整开发指南与九个可导入示例见 src/zhuzhu_Copilot/copilot_plugins_examples/。",
             "parameters": {"type": "object",
                            "properties": {
                                "description": {"type": "string",
@@ -1662,10 +1676,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "apply_copilot_plugin",
-            "description": "把 Copilot 插件的变更写入本机转译层：先过插件校验系统（危险强制删除并提示），"
-                           "再逐文件备份、逐条写入、全部编译检查（任一失败整体回滚）。"
-                           "变更只写 ~/.zhuzhu_Copilot/source_overlay/（转译层），"
-                           "**绝不修改应用源码文件**；导入钩子优先加载，重启应用生效。",
+            "description": "把 Copilot 插件的源码变更写入本机转译层：先过插件校验系统（危险强制删除并提示），"
+                           "再逐文件备份（插件目录 backups/）、逐条写入、全部编译检查（任一失败整体回滚，"
+                           "源码一行不动），最后写 applied.json 清单。变更只写 "
+                           "~/.zhuzhu_Copilot/source_overlay/（转译层），**绝不修改应用源码文件**；"
+                           "导入钩子优先加载转译层，热加载跳过持有进程级状态的模块"
+                           "（agent_panel / main_window / styles 等），这类变更**重启应用后生效**。",
             "parameters": {"type": "object",
                            "properties": {
                                "name": {"type": "string",
@@ -1678,8 +1694,9 @@ TOOLS = [
         "function": {
             "name": "revert_copilot_plugin",
             "description": "卸载回滚 Copilot 插件已应用的源码变更：新建的文件删除、修改的文件还原备份"
-                           "（覆盖层模式下还原内容与原版一致时删掉覆盖层副本，模块回落原版）；"
-                           "应用后被用户手动改过的文件跳过并注明，不覆盖。",
+                           "（还原内容与原版一致时直接删掉转译层副本，让模块回落原版，转译层不留残骸）；"
+                           "应用后被用户手动改过的文件跳过并注明，不覆盖用户劳动成果。"
+                           "插件「停用」走的就是这条回滚链路；回滚后同样需要重启应用才彻底回落。",
             "parameters": {"type": "object",
                            "properties": {
                                "name": {"type": "string",

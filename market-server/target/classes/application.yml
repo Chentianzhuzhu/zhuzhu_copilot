@@ -1,0 +1,36 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: plugin-market
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/plugin_market?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: marketapp
+    password: ${DB_PASSWORD:CHANGE_ME}
+    hikari:
+      maximum-pool-size: 8
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password: ${REDIS_PASSWORD:CHANGE_ME}
+      database: 2
+      timeout: 3s
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 22MB
+
+market:
+  storage-dir: /var/lib/plugin-market/files
+  max-uploads-per-day: 30
+  # Cloudflare Turnstile 人机验证（注册/登录必须通过）
+  # site-key 为公开信息；secret-key 只在服务端使用。生产环境建议用环境变量覆盖。
+  turnstile:
+    site-key: ${TURNSTILE_SITE_KEY:0x4AAAAAAFkPdJ6msoFqH2a4}
+    secret-key: ${TURNSTILE_SECRET_KEY:0x4AAAAAAFkPdLOg8IrlZXj8ZlDbT0s6YNU}

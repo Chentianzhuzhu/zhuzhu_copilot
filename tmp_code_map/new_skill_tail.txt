@@ -1,0 +1,66 @@
+插件包元数据规范：name（唯一标识）/ author（开发者或公司）/ updated_at / icon
+（包内方形 PNG，建议 128~256px，如 icon.png；留空则列表显示占位图标）/ description，
+导入与创建时自动补齐，设置-插件页展示开发者、更新时间与图标。
+插件可携带 `config.json`（键 → 文本/数字/布尔标量）：用户在「详情/配置」里编辑；
+MCP 型插件的配置会以大写环境变量注入 server 子进程（api_key → API_KEY，用
+`os.environ.get("API_KEY")` 读取）。PATH/HOME 等保留环境变量名禁止作为配置键。
+
+## Copilot 插件（应用级独立体系：改应用源码 + 注册应用能力）
+
+当需求是**定制应用本身**——改主题/界面/语言、自定义工具、增删替换任何模块，或注册
+主窗口页面 / 后台服务 / 托盘动作 / 快捷键——用 Copilot 插件（`create_copilot_plugin` /
+`apply_copilot_plugin` / `revert_copilot_plugin`，设置页「Copilot 插件」）。
+
+### 一、插件包结构
+
+```
+<name>/
+├── plugin.json      必需：name / kind=copilot / author / updated_at / icon / description / enabled
+├── source_ops.json  源码变更清单（三种 op 混用；单插件 ≤50 条、单条内容 ≤512KB）
+├── copilot.json     可选：pages / services / tray / shortcuts（module 指向包内模块）
+├── pages/ service/  随包分发的扩展模块（不走源码树，不经转译层）
+├── agent/           可选：SKILL.md + server.py（登记为技能 / MCP，成为 Agent 插件超集）
+└── icon.png         可选：方形图标，128~256px
+```
+
+### 二、三种写法（先建模块，再最小接线）
+
+1. **新建**：`{"op":"create_file","path":"zhuzhu_Copilot/core/x.py","content":"完整文件"}`。
+   优先用这条：功能独立就新建模块，不要在既有文件里大段重写。
+2. **插入**（不改原有代码行，风险最低）：`insert_after`（anchor 或 line）、`insert_at`
+   （第 N 行之前）、`append`（文件尾，或 after 锚点之后）。用于登记工具 schema、接线
+   分发器、在模块末尾追加包装函数（模块级重绑定既有函数 = 包装而不改原实现）。
+3. **替换**（替换后必须完整可编译）：`replace_module`（start..end 或行号区间）、
+   `replace_lines`（按行号）、`replace_file`（整体覆盖，风险最高，尽量少用）。
+
+### 三、定位与避坑（失败最常见的原因）
+
+- 锚点必须**真实存在且唯一**：先 read_file 看清目标文件，取一行足够特征的字符串；
+  行号方式从 1 起、含边界，适合拿得到完整源码时精确落位；
+- 同一文件多条 op 时，行号会随前一条插入而偏移 → 全程用锚点，或从后往前写行号；
+- 插入内容要落在正确缩进层级（进函数体就带 4 / 8 个空格），否则编译检查会失败；
+- **别和已装插件抢同一锚点**：同一行被两个插件改会互相覆盖，动手前先看已装插件的
+  source_ops.json，选另一处特征行；
+- 受保护核心程序不得改动：`plugin_guard.py`、`plugin_source.py`、`copilot_plugins.py`、
+  `security.py`、`security_engine/`、`_copilot_overlay_hook.py`、`main.py`。
+
+### 四、生效与验证
+
+- 变更写入**转译层** `~/.zhuzhu_Copilot/source_overlay/`（镜像源码相对路径），**不改应用
+  源码文件**，源码运行与 exe 安装版行为一致；启用即写入，停用即回滚（新建的删、改过的还原）。
+- 热加载会跳过持有进程级状态的模块（`agent_panel` / `main_window` / `styles`），
+  这类改动**必须重启应用**才生效——「装上了却没反应」九成是没重启。
+- 验证三看：① 新页签 / 新托盘项 / 新快捷键是否出现；② 新工具能否被调用（让 AI 直接调一次）；
+  ③ 设置-Copilot 插件页顶部「生效位置」的已加载模块数是否增加、卡片是否显示「已写入转译层」。
+- exe 里排查：先确认安装目录有 `_copilot_src/`（没有 = 该构建不含覆盖层机制，需重新打包），
+  再跑 `python scripts/verify_overlay.py`（打包态模拟 + 安装目录体检）。
+
+### 五、学习示例（都在 src/zhuzhu_Copilot/copilot_plugins_examples/）
+
+theme-deep-blue（插入改主题）/ custom-hello-tool（新模块 + 登记 + 接线）/
+settings-page-demo（跨两文件加页面）/ tray-quick-note（纯运行时：托盘 + 服务）/
+py-syntax-lint（包装既有函数，原有代码行一行未改）/ prompt-optimizer（replace_module
+改系统提示词）/ agent-scorecard（纯运行时服务 + 评分回传）/ perf-turbo（渲染缓存 +
+流式节拍自适应 + 性能看板 + 工具）/ code-map（新模块 + 工具 + 页面 + 服务 + 技能 +
+自定义图标，综合性插件范本）。每个都是标准插件包，导入后即可体验应用/回滚闭环。
+"""

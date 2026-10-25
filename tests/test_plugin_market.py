@@ -33,6 +33,7 @@ EXAMPLES = (Path(__file__).resolve().parents[1] / "src" / "zhuzhu_Copilot"
 STATE = {"users": {}, "tokens": {}, "plugins": []}
 
 
+
 def _multipart(body: bytes, ctype: str) -> dict:
     """极简 multipart 解析：字段名 → 值（file 字段即 zip 字节）。"""
     boundary = ctype.split("boundary=", 1)[1].strip().strip('"')
@@ -294,6 +295,29 @@ def test_login_rejects_bad_password(market):
     plugin_market.logout()
     ok, msg = plugin_market.login("carol_3", "wrong-pass")
     assert not ok and "密码" in msg
+
+
+def test_market_page_hides_login_button_when_logged_in(market):
+    """已登录时「登录/注册」按钮隐藏，账号行不出现源站地址。"""
+    from PyQt6.QtWidgets import QApplication
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    app = QApplication.instance() or QApplication([])
+    dlg = ap._AgentSettingsDialog()
+    page = dlg._build_market_page()          # 保持引用，防止页面被 GC
+
+    dlg._market_sync_account()               # 未登录
+    assert not dlg.market_login_b.isHidden()
+    assert "127.0.0.1" not in dlg.market_acct_lbl.text()
+
+    plugin_market.register("peggy_9", "password123")
+    dlg._market_sync_account()               # 已登录
+    assert dlg.market_login_b.isHidden()
+    txt = dlg.market_acct_lbl.text()
+    assert "peggy_9" in txt and "127.0.0.1" not in txt
+    dlg.close()
+    dlg.deleteLater()
+    app.processEvents()
 
 
 # ------------------------------------------------- 上传 → 列表 → 下载 → 导入

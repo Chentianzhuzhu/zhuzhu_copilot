@@ -67,7 +67,9 @@
 
 两套体系**共用同一个插件校验系统（`core/plugin_guard.py`）**，安全边界完全一致；源码变更引擎（`core/plugin_source.py`）**只服务于 Copilot 插件**。
 
-**插件包规范**：每个插件包包含 `plugin.json` 元数据——插件名称（name）、开发者/公司（author）、更新时间（updated_at）、插件图标（icon，包内图标文件，如 `icon.png`），以及 description / kind / enabled 等；导入与创建时自动补齐，插件页列表展示开发者、更新时间与图标。
+**插件包规范**：每个插件包包含 `plugin.json` 元数据——插件名称（name）、开发者/公司（author）、更新时间（updated_at）、插件图标（icon，**包内方形 PNG，建议 128~256px，只写文件名如 `icon.png`，不能带目录**），以及 description / kind / enabled 等；导入与创建时自动补齐，插件页列表展示开发者、更新时间与图标（卡片 44px 等比缩放，缺失时显示占位图标）。Copilot 插件还可带 `config.json`（用户可编辑的键值配置）与可选 `agent/` 子包。
+
+> **想直接动手做插件？** 跳到 **第八章「插件开发指南（手把手）」**——从零到可导入的完整流程、三种源码级写法、图标配置、exe 环境验证与排错表都在那里。
 
 **源码级定制（仅 Copilot 插件，改应用全部源码、安全层除外）**：插件包内 `source_ops.json`（或 plugin.json 的 `source_ops` 字段）描述对应用源码的变更清单（`path` 相对源码根 `src/`，但变更**一律写入转译层**，不改动应用源码文件）——可把功能源码**插入到任何源代码文件**、**新建源码文件**、**一次修改多个源码文件并集成功能**。改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何模块，都是这条路：
 
@@ -102,11 +104,15 @@
 
 页面以新页签追加到 Copilot 浮层（应用/防护/通用/工具）之后；服务随进程常驻、退出时统一停；托盘动作追加到托盘菜单；快捷键为 `QShortcut`（形如 `ctrl+alt+m`）。`id` 全局唯一（重复拒绝）。Copilot 插件还可带可选 `agent/` 子包（`SKILL.md` + `server.py`），导入时登记为技能与 MCP 服务器，成为 Agent 插件的超集。
 
+**热插拔（停用即摘、启用即挂，不必重启）**：页面页签、玻璃窗口、托盘动作、快捷键都是可撤销登记——停用/删除插件时立刻从界面上摘掉（`main_window.unregister_copilot_plugin`），启用时当场挂上；后台服务也是即时启停。**只有源码级变更落到被热加载跳过的模块（`agent_panel` / `main_window` / `styles`）时才需要重启应用**，见 8.5 的对照表。
+
+页面条目还可以加 `"window": "glass"`，把页面从「浮层页签」改成**独立无框液体玻璃窗口**（GPU 实时折射/反射/边缘高光，详见 8.9）。
+
 **插件校验系统（`src/zhuzhu_Copilot/core/plugin_guard.py`，内置唯一、不可替换的程序）**：所有插件（两套体系）在导入 / AI 生成 / 源码应用之前都必须通过校验——① 静态危险规则扫描（动态执行 `eval/exec`、`os.system`/`shell=True`、注册表写、持久化、凭据窃取、大规模删除、关闭防护、混淆载荷、篡改校验程序等）；② LLM 源码评审（送当前配置的模型判定 safe/dangerous，LLM 不可用时降级为纯规则判定并在结论中注明）。判定危险的代码**直接强制删除**并明确提示用户（哪个插件、哪些文件、哪条规则、LLM 结论），源码级插件危险则整体移除插件包；删除记录写入 `plugins/.guard_log.jsonl`。受保护清单 `PROTECTED_CORE_FILES`（`plugin_guard.py` / `plugin_source.py` / `copilot_plugins.py` / `security.py` / `security_engine/` / `_copilot_overlay_hook.py` / `main.py`）内的程序任何源码插件不得改动，plugin.json 也没有任何字段可以跳过校验。
 
 **配置与管理（设置页，两套体系都有）**：双击插件或点「详情/配置」打开插件详情对话框——① **基本信息**：名称/类型/开发者/更新时间/描述/构成/校验结论；② **插件配置**：键值表编辑，保存到插件目录 `config.json`（仅文本/数字/布尔标量，禁配 `PATH`/`HOME` 等保留环境变量名）；对 MCP 型插件，配置以环境变量（键名自动大写，如 `api_key` → `API_KEY`）经 stdio 传输注入 server 子进程（继承当前进程环境后覆盖，`agent_mcp._StdioTransport`），保存即更新 `mcp_servers.json` 对应服务器 env 并自动重连生效；③ **源码变更**：`source_ops` 清单与应用状态预览（Copilot 插件另有**应用扩展**页签展示 copilot.json 注册的页面/服务/托盘/快捷键）；④ **校验记录**：该校验系统对该插件的拦截/通过日志。对话框内可**导出插件包**为 zip（含 plugin.json/配置/图标/源码，排除 `__pycache__`、`backups/`、`applied.json` 等本机数据），导出包可直接再导入，配置不丢。Copilot 插件页顶部显示当前**生效位置**（转译层路径与已加载模块数），卡片状态显示「服务运行中 / 服务未运行 / 服务加载失败 / 已写入转译层」，用于快速判断插件是否真的生效。
 
-**开发者上手（示例插件）**：`src/zhuzhu_Copilot/copilot_plugins_examples/` 随包提供七个可导入学习的示例——`theme-deep-blue`（改主题）、`custom-hello-tool`（自定义工具：新模块 + TOOLS 登记 + 分发器接线）、`settings-page-demo`（自定义设置页：四条 op 跨两文件集成）、`tray-quick-note`（应用扩展：托盘动作 + 后台服务，模块随包分发）、`py-syntax-lint`（**Python 语法高亮与纠错**：源码级「插入」——新模块给代码块着色 + 新增 `check_python_syntax` 工具定位语法错误，原有代码行一行未改）、`prompt-optimizer`（**提示词优化**：源码级「替换」——新增 `optimize_prompt` 工具把粗略提示词改写成六要素结构化提示词，并替换 `_base_prompt_parts` 末行把「提示词优化纪律」追加进系统提示词）、`agent-scorecard`（**Agent 能力评分**：纯运行时服务，任务结束弹评分窗展示耗时 / 工具调用 / token，评分回传 Agent 提示自我反省）。每个示例都是标准插件包（plugin.json + source_ops.json / copilot.json），在设置-Copilot 插件页「导入插件包」后**启用即自动写入并热加载**；`copilot_plugins_examples/README.md` 是完整的开发者指南，含三种源码级开发方法（新建文件 / 插入 / 替换）、综合插件写法、op 语法、生命周期与排错表。
+**开发者上手（示例插件）**：`src/zhuzhu_Copilot/copilot_plugins_examples/` 随包提供**九个**可导入学习的示例——`theme-deep-blue`（改主题）、`custom-hello-tool`（自定义工具：新模块 + TOOLS 登记 + 分发器接线）、`settings-page-demo`（自定义设置页：四条 op 跨两文件集成）、`tray-quick-note`（应用扩展：托盘动作 + 后台服务，模块随包分发）、`py-syntax-lint`（**Python 语法高亮与纠错**：源码级「插入」——新模块给代码块着色 + 新增 `check_python_syntax` 工具定位语法错误，原有代码行一行未改）、`prompt-optimizer`（**提示词优化**：源码级「替换」——新增 `optimize_prompt` 工具把粗略提示词改写成六要素结构化提示词，并替换 `_base_prompt_parts` 末行把「提示词优化纪律」追加进系统提示词）、`agent-scorecard`（**Agent 能力评分**：纯运行时服务，任务结束弹评分窗展示耗时 / 工具调用 / token，评分回传 Agent 提示自我反省）、`perf-turbo`（**性能优化**：新建性能内核 + 替换 `_md_to_html` 加跨会话渲染缓存 + 流式节拍随实测帧延迟自适应 + `perf_report` 工具 + 实时性能看板与三档调速）、`code-map`（**工作区代码地图**：新建扫描内核 + `code_map` 工具 + 看板页 + 预热服务 + Agent 技能 + **自定义图标**，综合性插件的标准范本）。每个示例都是标准插件包（plugin.json + source_ops.json / copilot.json），在设置-Copilot 插件页「导入插件包」后**启用即自动写入并热加载**；`copilot_plugins_examples/README.md` 是示例区的开发者指南，根目录 **第八章** 是手把手教程（含三种源码级开发方法、图标配置、op 语法、生命周期、exe 验证与排错表）。
 
 ### 1.6 子 Agent 与团队协作
 
@@ -223,7 +229,7 @@ zhuzhu Copilot/
 │   ├── main.py                          # 入口：迁移 → 崩溃钩子 → **覆盖层导入钩子安装** → QApplication → 启动动画 → AI 面板
 │   ├── _copilot_overlay_hook.py         # 源码覆盖层导入钩子（Copilot 插件源码级定制的地基，受保护）
 │   └── zhuzhu_Copilot/
-│       ├── copilot_plugins_examples/    # Copilot 插件开发指南 + 示例（改主题/自定义工具/自定义设置页/应用扩展/Agent 评分）
+│       ├── copilot_plugins_examples/    # Copilot 插件开发指南 + 九个示例（改主题/自定义工具/设置页/应用扩展/语法高亮/提示词/评分/性能优化/代码地图）
 │       ├── core/
 │       │   ├── agent_engine.py          # Agent 核心循环（观察→调用→验证）
 │       │   ├── agent_background.py      # 后台并发任务管理器（命令/子Agent/跨工作流）
@@ -266,7 +272,8 @@ zhuzhu Copilot/
 │       └── config/                      # 安全规则、YARA 规则
 ├── update-server/                       # Spring Boot 更新服务器
 ├── installer/                           # Inno Setup 安装脚本
-├── scripts/                             # 一次性脚本（以 _ 开头）
+├── scripts/                             # 一次性脚本（以 _ 开头）与运维工具
+│   └── verify_overlay.py                # 转译层自检：打包态模拟 + 安装目录体检（第八章 8.5）
 ├── tests/                               # pytest 单元测试
 ├── build/                               # 构建产物（.gitignore）
 ├── dist/                                # 发布包（.gitignore）
@@ -390,7 +397,434 @@ python update-server/tools/deploy.py --skip-restart     # 不重启服务
 
 ---
 
-## 八、开发约定
+## 八、插件开发指南（手把手）
+
+这一章假设你**从没写过插件**。跟着做，30 分钟内能做出一个能装、能跑、能回滚的插件；
+每个小节都给出可直接复制的文件内容与验证方法。
+
+### 8.0 三十秒决策：该做哪套插件
+
+| 你想做的事 | 用哪套 | 关键文件 |
+| --- | --- | --- |
+| 给 AI 加**工具/技能**（不碰界面） | Agent 插件 | `plugin.json` + `server.py` / `SKILL.md` |
+| 给 AI 加**可视化网页**（浏览器里操作） | Agent 插件（`kind=web`） | `server.py` + `plugin.json` |
+| 改**主题/界面/语言**、改任何模块的行为 | **Copilot 插件**（源码级） | `source_ops.json` |
+| 加一个**浮层面板页**、托盘项、快捷键、后台服务 | **Copilot 插件**（应用扩展） | `copilot.json` |
+| 既要新页面，又要新工具，还要改既有行为 | **Copilot 插件**（综合） | 三者都要 |
+
+判断口诀：**「AI 能不能用它」→ Agent 插件；「用户能不能看到界面变化」→ Copilot 插件。**
+Copilot 插件是超集：它可以带 `agent/` 子包同时提供技能与 MCP 工具。
+
+### 8.1 第一个插件：五分钟（纯运行时，不碰源码）
+
+最安全的插件不写一行源码变更，只注册一个页面。三步：
+
+**第 1 步**：建目录 `my-first-plugin/`，写 `plugin.json`：
+
+```json
+{
+  "name": "my-first-plugin",
+  "kind": "copilot",
+  "author": "你的名字",
+  "description": "我的第一个 Copilot 插件：加一个显示问候语的页面",
+  "enabled": true,
+  "created_at": "2026-10-25 10:00:00",
+  "updated_at": "2026-10-25 10:00:00",
+  "icon": ""
+}
+```
+
+**第 2 步**：写 `pages/hello_page.py`（页面就是普通 `QWidget`，父控件由应用传入）：
+
+```python
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+
+class HelloPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.addWidget(QLabel("你好，这是插件加的页面。"))
+        lay.addStretch(1)
+```
+
+**第 3 步**：写 `copilot.json` 把它挂到浮层页签上：
+
+```json
+{
+  "pages": [
+    {"id": "hello-page", "title": "问候", "module": "pages/hello_page.py",
+     "widget": "HelloPage"}
+  ]
+}
+```
+
+打包（zip 根目录必须直接是 `plugin.json`）：
+
+```powershell
+python -c "import zipfile,pathlib;z=zipfile.ZipFile('my-first-plugin.zip','w');[z.write(p,pathlib.Path(p).relative_to('my-first-plugin')) for p in pathlib.Path('my-first-plugin').rglob('*') if p.is_file()];z.close()"
+```
+
+导入：设置 → Copilot 插件 → 导入插件包（或把 zip 拖进对话输入框）。**启用 → 重启应用**，
+就能在浮层里看到「问候」页签。纯运行时插件不改任何源码，所以停用即彻底消失。
+
+> 为什么纯运行时也要重启：**页面 / 托盘 / 快捷键是在应用启动时登记的**
+> （`MainWindow._load_copilot_extensions`），运行期启用只重启 `services`。
+> 记住这条，能省掉一半「启用了却没反应」的困惑。
+
+### 8.2 第二个插件：十分钟（源码级，三种写法）
+
+源码级插件用 `source_ops.json` 描述「改哪个文件、怎么改」。三种写法，按风险从低到高：
+
+#### 写法一：新建模块（`create_file`）——优先用这个
+
+```json
+[
+  {"op": "create_file",
+   "path": "zhuzhu_Copilot/core/my_tool.py",
+   "content": "\"\"\"我的工具模块\"\"\"\n\n\ndef run(args: dict) -> dict:\n    return {\"text\": \"你好 \" + str((args or {}).get(\"name\") or \"世界\"), \"images\": []}\n"}
+]
+```
+
+要点：`path` 相对**源码根 `src/`**；目标文件已存在会被拒绝（要整体覆盖用 `replace_file`）；
+新模块建好后可以直接被 `import`。
+
+#### 写法二：插入到现有文件（`insert_after` / `insert_at` / `append`）
+
+**不改动任何已有代码行**，风险最低。典型用途：登记工具 schema、接线分发器、在模块末尾
+追加包装函数。
+
+```json
+[
+  {"op": "insert_after", "path": "zhuzhu_Copilot/core/agent_tools.py",
+   "anchor": "TOOLS = [",
+   "content": "    {\n        \"type\": \"function\",\n        \"function\": {\n            \"name\": \"my_tool\",\n            \"description\": \"向指定名字问好\",\n            \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}}, \"required\": []},\n        },\n    },"},
+  {"op": "insert_after", "path": "zhuzhu_Copilot/core/agent_tools.py",
+   "anchor": "            return _revert_copilot_plugin(str(args.get(\"name\", \"\")))",
+   "content": "        if name == \"my_tool\":\n            from zhuzhu_Copilot.core import my_tool\n            return my_tool.run(args)"}
+]
+```
+
+四个「加代码」类 op 的差别（前三个只加不改，`replace_lines` 是按行替换）：
+
+| op | 落点 | 必需字段 |
+| --- | --- | --- |
+| `insert_after` | 锚点行（或第 `line` 行）**之后**，自动补一个空行 | `path` `content` + `anchor` 或 `line` |
+| `insert_at` | 第 `line` 行**之前**（`line = 行数+1` 等于追加到末尾） | `path` `line` `content` |
+| `append` | 文件末尾；给 `after` 则插到该锚点行之后 | `path` `content`（+ 可选 `after`） |
+| `replace_lines` | 替换第 `start_line..end_line` 行（含边界） | `path` `start_line` `content` |
+
+**包装既有函数而不改原实现**（最推荐的「改造」姿势）：在模块末尾追加一段，用同名变量
+重绑定。例如给渲染函数加缓存（`perf-turbo` 用的就是这个思路的变体）：
+
+```python
+_orig_render = _render_text
+
+
+def _render_text(raw: str) -> str:      # noqa: F811  插件包装
+    try:
+        return _orig_render(raw).replace("foo", "bar")
+    except Exception:
+        return _orig_render(raw)
+```
+
+因为 Python 在**调用时**才查模块全局名，模块级重绑定对所有调用方立即生效。
+
+#### 写法三：替换既有实现（`replace_module` / `replace_file`）
+
+只有必须改既有行为时才用。**替换后的代码必须完整可编译**（写入后逐文件 `py_compile`，
+失败整体回滚）。
+
+```json
+[
+  {"op": "replace_module", "path": "zhuzhu_Copilot/core/agent_skills.py",
+   "start": "    return parts", "end": "    return parts",
+   "content": "    from zhuzhu_Copilot.core.my_rules import RULES\n    if RULES not in parts:\n        parts.append(RULES)\n    return parts"}
+]
+```
+
+`start` / `end` 是**行内文本锚点**（都要求唯一），`end` 省略则替换到文件末尾；
+也可以用 `start_line` / `end_line` 按行号替换。
+
+#### 定位方式二选一：文本锚点 vs 行号
+
+| | 文本锚点（`anchor` / `start`） | 行号（`line` / `start_line`） |
+| --- | --- | --- |
+| 稳定性 | 对版本差异鲁棒，改动上方代码不影响 | 上方插一行就整体错位 |
+| 要求 | 该串在文件里**真实存在且唯一** | 1 起、含边界，且必须准确 |
+| 适合 | 大多数情况（推荐） | 你拿得到完整源码且要精确改某几行 |
+
+**取锚点的正确姿势**：先 `read_file` 打开目标文件（或直接用编辑器看），复制**一整行**
+有辨识度的代码（带缩进），并确认它只出现一次。锚点太短（如 `return`）必然「不唯一」。
+
+同一文件有多条 op 时，**行号会随前一条插入而偏移** → 全程用锚点，或从后往前写行号。
+
+#### 组合起来：一个真实插件的完整清单
+
+`code-map` 插件的 `source_ops.json` 只有 3 条，却做了「新模块 + 登记工具 + 接线」三件事：
+
+```json
+[
+  {"op": "create_file", "path": "zhuzhu_Copilot/core/code_map.py", "content": "…扫描内核…"},
+  {"op": "insert_after", "path": "zhuzhu_Copilot/core/agent_tools.py",
+   "anchor": "TOOLS = [", "content": "    # 工具 schema\n    { … },"},
+  {"op": "insert_after", "path": "zhuzhu_Copilot/core/agent_tools.py",
+   "anchor": "            return _revert_copilot_plugin(str(args.get(\"name\", \"\")))",
+   "content": "        if name == \"code_map\":\n            from zhuzhu_Copilot.core import code_map\n            return code_map.tool_report(args)"}
+]
+```
+
+> **别和已装插件抢同一锚点**。两个插件都往 `TOOLS = [` 后面插没问题（锚点行本身没被改动），
+> 但如果两个插件都去 `replace_module` 同一行，后装的会基于前一个的结果再替换，容易互相覆盖。
+> 动手前先看已装插件的 `source_ops.json`。
+
+### 8.3 配图标（icon）
+
+三件事，缺一就会「图标不显示」：
+
+1. **文件放包里**：`my-plugin/icon.png`（与 `plugin.json` 同目录，**不能放子目录**）。
+2. **plugin.json 写文件名**：`"icon": "icon.png"`——只写文件名，**不能带 `pages/` 这类目录前缀**，
+   也不能以 `.` 开头（安全校验会直接判为非法并清空该字段）。
+3. **格式在白名单内**：`.png` / `.jpg` / `.jpeg` / `.svg` / `.ico` / `.gif` / `.webp`。
+   **推荐 PNG**：`exe` 安装版对 PNG 的支持最稳（SVG 依赖 Qt 的 svg 图像插件，虽然通常随包
+   分发，但没必要冒这个险）。建议方形 128~256px，卡片按 44px 等比缩放显示。
+
+自己生成一个（Pillow 最省事；`code-map` 的图标连 Pillow 都没用——脚本直接光栅化出
+256×256 PNG，见 `tmp_code_map/make_icon.py` 的做法）：
+
+```python
+# 用 Pillow（若已装）
+from PIL import Image, ImageDraw
+img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+d = ImageDraw.Draw(img)
+d.rounded_rectangle((6, 6, 250, 250), 52, fill=(30, 64, 175, 255))
+d.rounded_rectangle((38, 84, 218, 200), 18, fill=(147, 197, 253, 255))
+d.rounded_rectangle((62, 134, 94, 178), 8, fill=(15, 23, 42, 255))
+img.save("icon.png")
+```
+
+**AI 生成的插件也能带图标**：`create_copilot_plugin` 支持模型返回 `icon_svg`（一段独立
+SVG 源码），应用会校验后落盘为 `icon.svg` 并写进 `plugin.json`；带脚本/事件属性/外链
+资源的 SVG 会被拒绝（图标只是静态图形，不需要这些）。
+
+显示位置：设置 → Copilot 插件页的**卡片头像**（44px）、详情对话框、导出包。图标缺失时
+显示占位图标（Copilot 插件为 🧊，Agent 插件为 🧩），不影响功能。
+
+### 8.4 应用级扩展：`copilot.json` 全字段
+
+```json
+{
+  "pages":     [{"id": "唯一id", "title": "页签标题",
+                 "module": "pages/x.py", "widget": "XxxPage"}],
+  "services":  [{"id": "唯一id", "title": "服务说明",
+                 "module": "service/x.py", "entry": "start", "stop": "stop"}],
+  "tray":      [{"id": "唯一id", "title": "托盘菜单文字",
+                 "module": "pages/x.py", "action": "quick_do"}],
+  "shortcuts": [{"id": "唯一id", "title": "快捷键说明", "hotkey": "ctrl+alt+m",
+                 "module": "pages/x.py", "action": "on_hotkey"}]
+}
+```
+
+`pages` 条目额外支持四个可选项（要独立窗口时才用）：
+
+| 字段 | 取值 | 说明 |
+| --- | --- | --- |
+| `window` | `tab`（默认）/ `glass` | `glass` = 独立无框液体玻璃窗口，不占浮层页签 |
+| `auto_show` | `true`（默认）/ `false` | 是否随应用启动直接浮现（常驻） |
+| `width` / `height` | 240~4000 | 窗口尺寸（默认 760×520） |
+| `position` | `[x, y]` | 固定位置；不给则屏幕居中，多个窗口自动错位 |
+
+约定（违反会静默失效，务必逐条核对）：
+
+- `id` **全局唯一**（跨插件重复会被拒绝），只能用字母/数字/`_`/`-`，≤50 字符；
+- `module` 是**插件包内相对路径**（随包分发，不经转译层），文件必须真实存在；
+- `pages.widget` 是模块里的 `QWidget` 子类名，实例化时父控件传入浮层容器；
+- `services.entry` 在 **GUI 线程**调用，可返回句柄（含 `stop`/`close` 方法）；`stop` 字段
+  指向模块里的清理函数，停用插件或退出应用时调用。**服务里别做阻塞操作**，长任务自己开线程，
+  异常必须自己吞掉——一个插件不能把应用启动搞挂；
+- `shortcuts.hotkey` 形如 `ctrl+alt+m`（只允许字母/数字/`+`，≤40 字符）。
+
+`config.json`（可选）：用户可在「详情/配置」里编辑的键值（只支持文本/数字/布尔标量），
+键名限 `字母数字 _ - .`（≤64 字符），且不能占用 `PATH`/`HOME` 等系统变量名。
+MCP 型插件会把它以**大写环境变量**注入 server 子进程；页面/服务模块自己读的话，
+直接按 `Path(__file__).parent.parent / "config.json"` 定位最省事（`code-map` 就是这么做的）。
+
+### 8.5 生命周期、转译层与 **exe 环境验证**
+
+```
+导入 zip ──▶ 插件校验系统（静态危险规则 + LLM 源码评审，危险即删除并提示）
+        ──▶ 落盘 ~/.zhuzhu_Copilot/copilot_plugins/<name>/
+启用    ──▶ 逐文件备份 backups/ ──▶ 逐条写入转译层 ──▶ 全部 py_compile（失败整体回滚）
+        ──▶ 写 applied.json ──▶ 热加载受影响模块 ──▶ 启动 copilot.json 声明的服务
+停用    ──▶ 停服务 ──▶ 按 applied.json 回滚（新建的删、改过的还原）──▶ 热加载回落原版
+```
+
+**转译层**是这套机制的核心：变更**不写应用源码文件**，而是写进
+`~/.zhuzhu_Copilot/source_overlay/zhuzhu_Copilot/<相对路径>`，由 `src/_copilot_overlay_hook.py`
+（`main.py` 在导入包之前安装）让 `zhuzhu_Copilot.*` 的导入**优先命中转译层**；覆盖层里没有的
+模块自动回落原版。因此**源码运行与 exe 安装版行为一致**，回滚只需清理转译层。
+
+| | 源码运行 | exe 安装版 |
+| --- | --- | --- |
+| 「原版内容」从哪来 | `src/zhuzhu_Copilot/`（真实源码） | 随包快照 `_copilot_src/zhuzhu_Copilot/` |
+| 插件变更写到哪 | `~/.zhuzhu_Copilot/source_overlay/` | 同左（**不是**安装目录） |
+| 生效时机 | 重启应用（`agent_panel` / `main_window` / `styles` 等进程级模块必须重启；其余模块热加载） | 同左 |
+
+**「什么时候需要重启」这张表记牢，能省掉大量排错时间**：
+
+| 插件构成 | 启用后 | 停用后 |
+| --- | --- | --- |
+| `copilot.json` 的页面 / 托盘 / 快捷键 | **热插拔**：立即挂上（页签/玻璃窗/菜单/快捷键当场出现） | **热插拔**：立即摘掉 |
+| `copilot.json` 的 `services` | 立即启动 | 立即停止 |
+| `source_ops` 改了 `agent_panel` / `main_window` / `styles` | 需重启（热加载跳过进程级模块） | 需重启 |
+| `source_ops` 改了其它模块（`agent_tools` / 新建模块等） | 热加载即时生效 | 热加载即时回落 |
+
+#### 在 exe 里实验「转译层是否生效」
+
+**第 0 步（必做，否则一定失败）**：确认这个 exe 是**含覆盖层机制**的构建——
+安装目录里必须有 `_copilot_src/zhuzhu_Copilot/`。早期构建（例如仓库里 2026-10-19 那版
+`dist/`）**不含**该机制，源码级插件在它上面一定不生效，必须重新打包：
+
+```powershell
+.\build_release.ps1            # spec 的 datas 已包含源码快照，重建即带上
+```
+
+**第 1 步**：跑自检脚本（不依赖任何插件，随时可跑）：
+
+```powershell
+python scripts/verify_overlay.py                 # 打包态模拟 + 体检 dist/zhuzhu Copilot
+python scripts/verify_overlay.py --simulate      # 只做打包态模拟（隔离临时目录，不碰你的数据）
+python scripts/verify_overlay.py --inspect "D:\Program Files\zhuzhu Copilot"   # 只体检某个安装目录
+```
+
+`--simulate` 会在临时目录里造一个「假安装目录 + 假用户目录」，把 `sys.frozen` 置为真，
+然后验证三件事：① 覆盖层有同名模块时导入到覆盖层版本；② 覆盖层没有时回落 `_copilot_src`；
+③ 没有转译层时 `install()` 返回 `False`、行为与未装插件完全一致。这三条通过，说明
+exe 里的代码路径没问题。
+
+**第 2 步**：在 exe 里装一个**看得见**的插件（推荐 `code-map`：多一个页签 + 托盘项 + 工具）：
+
+1. 打开 exe → 设置 → Copilot 插件 → 导入 `code-map.zip` → **启用** → 重启 exe；
+2. 看三个信号：
+   - Copilot 浮层多出「代码地图」页签（**应用扩展生效**）；
+   - 让 AI 调一次 `code_map` 工具（**源码级插入生效**：工具被登记进 TOOLS）；
+   - 设置 → Copilot 插件页顶部「生效位置」显示转译层路径与已加载模块数，卡片显示
+     「已写入转译层」（**机制自报状态**）。
+3. 反证：**停用**插件 → 重启 → 页签消失、`code_map` 工具不可用、转译层模块数归零。
+
+任何一步不符，按下表排查。
+
+### 8.6 排错表（按症状查）
+
+| 症状 | 原因 | 处理 |
+| --- | --- | --- |
+| 启用失败：**找不到锚点** | 目标文件版本与你写清单时不一致 | `read_file` 重新取锚点，或改用行号 |
+| 启用失败：**锚点不唯一** | 锚点串在文件里出现多次 | 加长锚点，带缩进与更多上下文 |
+| 启用失败：**编译检查未通过** | 插入/替换后的代码不完整、缩进错、括号没闭合 | 看报错里的行号；`replace_module` 的 `end` 是否漏了 |
+| 启用失败：**文件已存在** | `create_file` 撞了已有文件 | 换路径，或改用 `replace_file` |
+| 插件在，**页面/工具没出现** | ① `source_ops` 落在热加载跳过的模块（`agent_panel` / `main_window` / `styles`）；② 页面条目带 `window: glass` 时窗口可能被别处挡住；③ 忘了点启用 | ① **重启应用**；② 看任务栏/托盘；③ 看卡片状态 |
+| 插件在，**什么都没变** | ① 忘了启用；② 转译层没写入；③ exe 构建不含覆盖层机制；④ 页面被旧页签/窗口遮住 | 看卡片状态与「生效位置」；跑 `scripts/verify_overlay.py`；重启一次再判 |
+| 卡片显示**服务加载失败** | `services.entry` 抛异常或函数名不对 | 看 `copilot.json` 的 `entry` 名字；服务里包 try/except |
+| 停用后**页签还在** | 该页签不是插件登记的（同名/手工加），或登记记录被改过 | 重启一次；仍在此就检查是否别的插件也注册了同一个 `id` |
+| **图标不显示** | `icon` 写了目录前缀 / 文件不在包里 / 扩展名不在白名单 | 改成 `"icon": "icon.png"`，文件放包根 |
+| 插件**被自动删除** | 校验系统判定危险代码 | 查 `copilot_plugins/.guard_log.jsonl`，改掉危险写法（`eval`/`exec`/`os.system`/`shutil.rmtree` 等） |
+| 改了源码**却没生效** | 转译层里有该文件的旧快照，遮住了源码改动 | 先**停用**插件（回滚转译层）再改源码，或删掉转译层对应文件 |
+| 两个插件**互相打架** | 都改了同一行/同一锚点 | 停用其一；改清单换一处特征行 |
+
+### 8.7 让 AI 帮你写插件
+
+应用内置了三条「AI 写插件」的链路，都是**生成 → 校验 → 写入**闭环，不用手写 JSON：
+
+| 你说 | 触发 | 产物 |
+| --- | --- | --- |
+| 「帮我做个插件，给 AI 加个 XX 工具」 | `create_plugin` + `plugin-create` 技能 | Agent 插件（MCP server + SKILL.md，web 型带浏览器界面） |
+| 「帮我做个插件，在浮层加一个 XX 页面 / 改一下界面」 | `create_copilot_plugin` | Copilot 插件（source_ops + copilot.json） |
+| 「我要深度自定义 XX」 | `deep-customize` 技能 | 先盘点可自定义维度，再选最小落地通道 |
+
+提示词模板（越具体越准）：
+
+```
+帮我做一个 Copilot 插件，名字叫 xxx：
+1) 新建模块 zhuzhu_Copilot/core/xxx.py，实现 <具体功能>；
+2) 在 agent_tools.py 登记工具 xxx（参数 a/b）并接线；
+3) copilot.json 加一个页面「xxx」，显示 <什么内容>，配 icon.png。
+```
+
+生成后**一定要审**：设置 → Copilot 插件 → 该插件「详情/配置」→「源码变更」页签逐条看
+`source_ops`（哪条 op、改哪个文件、内容是什么），「应用扩展」页签看注册了哪些页面/服务。
+不满意就停用（自动回滚）再重生成，不会在源码里留下痕迹。
+
+### 8.8 液体玻璃窗口（GPU 实时折射 / 反射 / 边缘高光）
+
+`src/zhuzhu_Copilot/ui/glass_window.py` 提供无框自制窗口 `GlassWindow`，插件页面加
+`"window": "glass"` 即用它托管（应用启动直接常驻浮现，可拖拽、可缩放、可关闭）。
+玻璃本体**不是贴图、不是预渲染滤镜**，是每帧在 GPU 上逐像素算出来的：
+
+| 效果 | 怎么算的 |
+| --- | --- |
+| 折射 | 窗口形状的 SDF（超椭圆 squircle）求法线，按「边缘厚、中心薄」的透镜模型偏移采样背景贴图——边缘处桌面被真实弯折 |
+| 色散 | R/G/B 三个通道用不同折射率（不同偏移量 + 不同模糊半径）分别采样，形成彩色边缘 |
+| 反射 / 镜面高光 | 法线抬成 3D 法线做 Blinn-Phong，高光条随光角移动 |
+| 边缘高光 | 菲涅尔（离边缘越近越亮）× N·L 的物理亮边 + 内侧一圈极薄暗线做厚度感 |
+| 液态感的角度 | 法线叠加随时间缓慢呼吸的正弦扰动，高光与折射随之游走 |
+
+关键实现（都是踩过的坑，改之前先看）：
+
+- **PyQt6 没有 `QOpenGLFunctions`**，Qt6 的 `ShaderEffect` 又要求预编译 `.qsb`（本仓库
+  不带 qsb 工具链），所以着色器用 **ctypes 直连 opengl32 / wglGetProcAddress**，
+  GLSL 1.20 + 固定管线提交四边形——兼容性最好，exe 里同样可用；
+- **背景贴图必须比窗口大一圈**（`pad`，默认 22px）。否则边缘折射采样到的是窗口内部
+  内容，边缘会发脏、出色斑；
+- **单四边形绘制时关闭混合**：开了 `SRC_ALPHA` 混合会让透明 FBO 变成预乘结果，读回时
+  二次乘算 → 亮部泛黄绿；输出前必须 `clamp(col)`；
+- **抓屏前排除自己**：`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` 把玻璃窗口
+  排除在截屏之外，否则背景贴图会拍到玻璃自己，反馈糊成一团；
+- **磨砂放 CPU**（抓图后缩小再放大），着色器只做 3×3 小半径精修——比在着色器里堆几十
+  个 taps 便宜得多；
+- 默认 60fps，窗口隐藏时停定时器（零开销）。
+
+排障开关（环境变量）：
+
+| 变量 | 作用 |
+| --- | --- |
+| `GLASS_MODE=painter` | 强制降级为 QPainter 半透明圆角面板（驱动异常/远程桌面时用） |
+| `GLASS_KEEP_CAPTURABLE=1` | 允许本窗口被截屏（自测/演示用；默认排除，否则背景会拍到自己） |
+
+窗口自带 `diagnostics()`：`gpu`（GPU 是否就绪）、`surface_error`（着色器失败原因）、
+`grab`（抓屏是否成功）、`excluded_from_capture`。**远程桌面 / 虚拟机 / 无 GL 环境会自动
+降级**（功能不受影响，只是没有 GPU 光学效果）。
+
+验收：`GLASS_TEST_GL=1 python -m pytest tests/test_glass_shader.py` 会真编译着色器并
+逐像素断言——形状外全透明、边缘比中心亮、改变折射强度后边缘带像素发生变化（证明折射
+真的偏移了采样）。无 GL 环境下该用例自动 skip。
+
+### 8.9 一个「综合插件」该长什么样
+
+以 `code-map` 为范本（`src/zhuzhu_Copilot/copilot_plugins_examples/code-map/`）；
+仓库里的 `perf-turbo`（性能看板）与 `code-map`（代码地图）现在都用 `"window": "glass"`
+以独立液体玻璃窗口常驻浮现，可作为观感参考：
+
+```
+code-map/
+├── plugin.json        name / author / updated_at / icon=icon.png / description
+├── source_ops.json    3 条 op：create_file 内核 + 2×insert_after 登记与接线工具
+├── copilot.json       页面 + 服务 + 托盘 + 快捷键（四项齐全）
+├── config.json        refresh_minutes / max_depth（用户可改）
+├── icon.png           256×256 方形图标
+├── source/code_map.py 内核的可读副本（与 source_ops 内容一致，便于 review）
+├── pages/             看板页（QWidget，含后台扫描线程）
+├── service/           启动预热 + 定时刷新缓存
+├── agent/SKILL.md     教 AI 什么时候用 code_map 工具
+└── README.md          这个插件改了什么、怎么验证、怎么回滚
+```
+
+**源码副本（`source/`）不是必需的**，但它让 review 变容易；注意 `source_ops.json` 里
+`content` 才是真正执行的内容，两者要保持一致（改完副本记得同步，或用脚本生成清单）。
+
+---
+
+## 九、开发约定
 
 - 提交信息格式：`type(scope): 描述`（feat / fix / style / perf / refactor / chore）。
 - 临时诊断脚本请加 `_` 前缀（`.gitignore` 已排除 `/_*` 与 `scripts/_*`），不要提交。
