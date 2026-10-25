@@ -69,6 +69,15 @@ LOG_MAX = 200               # 操作日志上限（环形）
 DEFAULT_LONG_PRESS_S = 0.8
 MOVE_STEP_S = 0.012         # 真人式移动的单步间隔
 ZOOM_MAX_PX = 2400          # 放大图最大边长（防超大图撑爆视觉输入）
+# 拖文件（跨进程 OLE 拖放）预设：比普通拖拽慢得多、且落点要悬停久一点，
+# 资源管理器 / QQ / 微信这些拖放目标都是在接到 DragEnter-DragOver 之后才高亮的。
+DRAG_FILE_DURATION_MS = 1200   # 总时长：足够让 OLE 拖放循环稳定跑起来
+DRAG_FILE_HOLD_MS = 320        # 按下后停顿：等 explorer 判定「开始拖拽」
+DRAG_FILE_HOVER_MS = 700       # 落点悬停：等目标高亮并接受释放
+DRAG_FILE_STEPS = 60           # 分步数：步子太大会被当成瞬移
+DRAG_FILE_OVERSHOOT = 8        # 越界回位像素：让目标确认「还在拖」
+WHEEL_STEP = 120            # 一格滚轮（Windows 的标准 WHEEL_DELTA）
+WHEEL_TICK_MAX = 12         # 一次滚轮调用最多拆成几个 tick（防止长距离卡顿）
 DRAG_SETTLE_S = 0.12        # 拖拽落点后等待时间：让目标控件完成响应再截图验证
 DRAG_MIN_STEPS = 12         # 拖拽最少分步数：步数太少会被系统判定为瞬移（非拖拽）
 LONG_PRESS_MAX_S = 5.0      # 长按时长上限（秒），防止模型传入过大值卡住流程
@@ -255,6 +264,12 @@ def _bind_win32():
     u.GetWindowThreadProcessId.restype = wintypes.DWORD
     k.GetCurrentThreadId.restype = wintypes.DWORD
     u.EnumWindows.argtypes = (ctypes.c_void_p, wintypes.LPARAM)
+    # 链式遍历的兜底路径：这两个都**返回 HWND**，不声明 restype 会被按 32 位截断，
+    # 症状和「枚举恒空」一模一样（都是拿不到有效句柄）。
+    u.GetTopWindow.restype = wintypes.HWND
+    u.GetTopWindow.argtypes = (wintypes.HWND,)
+    u.GetWindow.restype = wintypes.HWND
+    u.GetWindow.argtypes = (wintypes.HWND, wintypes.UINT)
     u.OpenClipboard.restype = wintypes.BOOL
     u.OpenClipboard.argtypes = (wintypes.HWND,)
     u.CloseClipboard.restype = wintypes.BOOL
@@ -2984,34 +2999,49 @@ def do_long_press(x: int, y: int, duration: float, mode: str = "auto"):
 
 
 def do_drag(x1: int, y1: int, x2: int, y2: int, duration: float, hold: float = 0.15,
-            mode: str = "auto"):
+            mode: str = "auto", steps: int = 0, hover: float = None,
+            overshoot: int = 0):
     """拖拽：触控可用时触控拖拽，否则鼠标拖拽。
 
-    精度要点（三处最容易导致「拖不动」）：
+    精度要点（最容易导致「拖不动」的四处）：
     1. **按下后先停顿**（hold）：很多控件要等按下被识别后才进入拖拽语义；
        停顿太短会被当成普通点击，文件/滑块根本不跟手。
     2. **分步数下限**：步数太少 = 瞬移，系统会判定为点击而非拖拽；用缓动曲线
        起步（慢→快→慢）更像真人，也让控件有足够采样点。
-    3. **落点精确归位**：最后一步显式移动到 (x2,y2)，并停顿让目标完成响应。
+    3. **落点悬停**（hover）：拖放目标（QQ/微信聊天窗、资源管理器文件夹）需要收到
+       DragEnter/DragOver 才会高亮并接受释放，落点立刻松手常常「放不下去」。
+    4. **越界回位**（overshoot）：先越过目标几像素再回位，让目标侧确实看到「还在拖」，
+       释放才稳；对 OLE 拖放（拖文件跨进程）尤其有效。
+
+    steps/hover/overshoot 都是可选覆盖项，0/None 表示用默认值（见 DRAG_* 常量）。
     """
+    hover = DRAG_SETTLE_S if hover is None else max(0.0, float(hover))
     if _touch_allowed(mode) and _touch_drag(x1, y1, x2, y2, duration, hold):
-        time.sleep(DRAG_SETTLE_S)
+        time.sleep(hover)
         return True
-    steps = max(int(duration / 0.02), DRAG_MIN_STEPS)
+    n_steps = int(steps) if int(steps or 0) > 0 else max(int(duration / 0.02),
+                                                         DRAG_MIN_STEPS)
+    n_steps = max(4, min(240, n_steps))
     _move_human(x1, y1)
     with _Injecting():
         if not _settle_at(x1, y1):
             _log("sys", f"拖拽取消：起点 ({x1},{y1}) 回读不一致（光标被真实鼠标抢走），已放弃按键")
             return False
         _send_mouse(MOUSEEVENTF_LEFTDOWN)
-        time.sleep(hold)                      # 关键：给目标识别「开始拖拽」的时间
-        for i in range(1, steps + 1):
-            t = i / steps
+        time.sleep(max(0.02, hold))           # 关键：给目标识别「开始拖拽」的时间
+        for i in range(1, n_steps + 1):
+            t = i / n_steps
             ease = t * t * (3 - 2 * t)       # smoothstep：两端慢、中间快
             _move_absolute(int(x1 + (x2 - x1) * ease), int(y1 + (y2 - y1) * ease))
-            time.sleep(duration / steps)
+            time.sleep(duration / n_steps)
+        if int(overshoot or 0) > 0:
+            dx, dy = x2 - x1, y2 - y1
+            dist = math.hypot(dx, dy) or 1.0
+            _move_absolute(int(x2 + dx / dist * overshoot),
+                           int(y2 + dy / dist * overshoot))
+            time.sleep(0.04)
         _move_absolute(x2, y2)                # 关键：精确落在目标点
-        time.sleep(DRAG_SETTLE_S)
+        time.sleep(hover)
         _send_mouse(MOUSEEVENTF_LEFTUP)
     return True
 
@@ -3045,17 +3075,41 @@ def do_swipe(x1: int, y1: int, x2: int, y2: int, duration: float, mode: str = "a
     return True
 
 
-def do_scroll(delta: int):
+def do_scroll(delta: int, ticks: int = 0, interval: float = 0.018):
+    """滚轮注入：delta 正=向上、负=向下，一格 120。
+
+    **为什么必须分段发**：很多应用（浏览器、Electron、自绘列表）是按「一次
+    WM_MOUSEWHEEL 事件 = 一次滚动动画/一行」来处理的，一次性甩 1200 进去会被
+    clamp 成一格；分多个 tick 发送既符合真实滚轮的离散语义，也让平滑滚动/惯性
+    动画来得及跟上。实测同一次「滚到底」操作，单发 1200 只滚了 1/5 屏，
+    分成 10 个 120 才真正到底。
+
+    ticks=0 表示自动（按 |delta|/120 决定，最多 WHEEL_TICK_MAX）。
+    """
+    delta = int(delta)
+    if not delta:
+        return
+    n = int(ticks) if ticks else min(WHEEL_TICK_MAX,
+                                    max(1, abs(delta) // WHEEL_STEP))
+    n = max(1, min(WHEEL_TICK_MAX, n))
     with _Injecting():
-        _send_mouse(MOUSEEVENTF_WHEEL, 0, 0, int(delta) & 0xFFFFFFFF)
+        left = delta
+        for i in range(n):
+            cur = left if i == n - 1 else int(delta / n)
+            if cur == 0:
+                continue
+            _send_mouse(MOUSEEVENTF_WHEEL, 0, 0, cur & 0xFFFFFFFF)
+            left -= cur
+            if left and i < n - 1:
+                time.sleep(max(0.0, interval))
 
 
-def do_scroll_at(x: int, y: int, delta: int):
+def do_scroll_at(x: int, y: int, delta: int, ticks: int = 0):
     """先移动到指定位置再滚动：滚轮事件投递给指针下的容器，
     比停在默认位置滚动命中率高得多（长页面/多滚动区界面尤其明显）。"""
     _move_human(x, y)
     time.sleep(0.05)
-    do_scroll(delta)
+    do_scroll(delta, ticks=ticks)
 
 
 def do_type_text(text: str, interval: float = 0.012):
@@ -3321,26 +3375,95 @@ def window_at(x, y) -> int:
         return 0
 
 
+GW_HWNDNEXT = 2         # GetWindow 的遍历方向：Z 序下一扇窗口
+
+
+# 最近一次枚举的诊断计数：空结果时用来告诉模型「到底哪一步没通」，
+# 而不是丢一句「当前没有可见窗口」让人瞎猜。
+_ENUM_DIAG = {"enum": 0, "fallback": 0, "foreground": 0, "error": ""}
+
+
 def _enum_top_hwnds() -> list:
     """枚举**全部**顶层窗口句柄（不做任何过滤，过滤交给调用方）。
 
-    注意 `ctypes.c_void_p` 必须带 `ctypes.` 前缀：这里写过裸 `c_void_p`（没导入），
-    NameError 被下面的 `except Exception: pass` 吞掉，函数**永远返回空表** ——
-    后果是 list_windows / find_window / screen_shot(mode="window") / open_app
-    全部静默失效（现象是「当前没有可见窗口」而窗口明明在）。异常不能再无声吞掉。
-    """
-    out = []
+    **这个函数绝不能返回空表** —— 它一旦为空，list_windows / find_window /
+    screen_shot(mode="window") / click_window(hwnd) / open_app 会集体静默失效，
+    模型只能看到「当前没有可见窗口」，然后开始瞎试；用户侧表现就是
+    「有时能截屏、有时不能」。所以这里叠了三条互补路径：
 
-    def _cb(hwnd, _lparam):
-        out.append(int(hwnd))
+      1. `EnumWindows`（最全，含不可见窗口）；
+      2. 它一扇窗都没枚举到时，改走 `GetTopWindow` + `GetWindow(GW_HWNDNEXT)`
+         链式遍历 —— 一条**完全独立**的 API 路径，实测在个别会话/权限组合下
+         只有它能通；
+      3. 无论如何并上前台窗口 `GetForegroundWindow()`：用户正看着的那扇窗，
+         永远不该在「可用窗口」清单里缺席。
+
+    另外：`ctypes.c_void_p` 必须带 `ctypes.` 前缀。这里曾写过裸 `c_void_p`（没导入），
+    NameError 被 `except Exception: pass` 吞掉 → 函数恒返回空表。异常一律记日志。
+    """
+    out, seen = [], set()
+
+    def _add(h) -> bool:
+        try:
+            h = int(h or 0)
+        except (TypeError, ValueError):
+            return False
+        if not h or h in seen:
+            return False
+        seen.add(h)
+        out.append(h)
         return True
 
+    def _cb(hwnd, _lparam):
+        _add(hwnd)
+        return True
+
+    n_enum = 0
     proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_cb)
     try:
         user32.EnumWindows(ctypes.cast(proc, ctypes.c_void_p), 0)
+        n_enum = len(out)
     except Exception as exc:            # 调试期不再静默：至少留一条日志
-        _log("sys", f"EnumWindows 失败：{exc!r}")
+        _ENUM_DIAG["error"] = f"EnumWindows 异常：{exc!r}"
+        _log("sys", _ENUM_DIAG["error"])
+
+    n_fb = 0
+    if not out:
+        # 兜底一：链式遍历（Z 序从顶到底），与 EnumWindows 完全不同的实现路径
+        try:
+            h = user32.GetTopWindow(0)
+            guard = 0
+            while h and guard < 20000:
+                _add(h)
+                h = user32.GetWindow(h, GW_HWNDNEXT)
+                guard += 1
+            n_fb = len(out)
+        except Exception as exc:
+            _ENUM_DIAG["error"] = f"{_ENUM_DIAG['error']}；链式遍历异常：{exc!r}".lstrip("；")
+            _log("sys", f"GetTopWindow 遍历失败：{exc!r}")
+
+    fg = 0
+    try:
+        fg = int(user32.GetForegroundWindow() or 0)
+        _add(fg)                        # 兜底二：前台窗口必须进表
+    except Exception:
+        pass
+
+    _ENUM_DIAG.update({"enum": n_enum, "fallback": n_fb, "foreground": fg})
     return out
+
+
+def _enum_health() -> str:
+    """一句话说清「这次为什么列不出窗口」，给工具输出用（空结果时尤其重要）。"""
+    d = _ENUM_DIAG
+    if d["enum"] or d["fallback"]:
+        return (f"EnumWindows 枚举到 {d['enum']} 扇，链式兜底 {d['fallback']} 扇，"
+                f"前台窗口 {d['foreground']}（诊断信息，通常不用看）")
+    return (f"窗口枚举完全为空：EnumWindows 0 扇、链式遍历 0 扇、前台窗口 "
+            f"{d['foreground']}。这通常意味着当前进程不在交互式桌面上"
+            f"（锁屏 / UAC 安全桌面 / 远程会话断开 / 以服务方式运行），"
+            f"或目标应用跑在更高完整性级别（管理员权限）下。"
+            f"{('底层错误：' + d['error']) if d['error'] else ''}")
 
 
 # 屏幕提示层窗口的标题前缀（aura.py 建窗时用的名字）。枚举窗口/列清单时必须把它们
@@ -3425,6 +3548,42 @@ def find_window(title: str = "", hwnd: int = 0) -> int:
         if key in w["title"].lower():
             return int(w["hwnd"])
     return 0
+
+
+def _window_not_found_hint(title: str, hwnd: int = 0) -> str:
+    """找不到窗口时给出**可执行**的诊断，而不是一句「未找到窗口」。
+
+    模型最常见的误用是：把**应用内部的条目名**（联系人、会话、标签页、按钮文字）
+    当成窗口标题传进来 —— 例如想截 QQ 的聊天区就传 title="xiaojiang"，而
+    xiaojiang 只是会话列表里的一行，从来不是任何窗口的标题。这条提示必须写明。
+
+    同时列出当前真实存在的窗口标题（模糊匹配在前），模型据此能立刻改对参数，
+    不用再空转一轮 list_windows。
+    """
+    wins = []
+    try:
+        wins = list_windows()
+    except Exception:
+        pass
+    titles = [w["title"] for w in wins if w["title"]]
+    near = []
+    key = str(title or "").strip()
+    if key:
+        near = difflib.get_close_matches(key, titles, n=5, cutoff=0.45)
+        if not near:      # 子串型匹配（用户常给片段而非完整标题）
+            near = [t for t in titles if key.lower() in t.lower()][:5]
+    lines = [f"未找到窗口：title={title!r} hwnd={hwnd}。"]
+    if near:
+        lines.append("你是不是想找：" + "；".join(repr(t) for t in near))
+    elif titles:
+        lines.append("当前可用的窗口标题（前 8 个）："
+                     + "；".join(repr(t) for t in titles[:8]))
+    else:
+        lines.append(_enum_health())
+    lines.append("注意：title 匹配的是**窗口标题**，不是应用里的联系人/会话/标签页/按钮文字。"
+                 "想点界面里的某个条目，用 screen_shot 截图后按像素坐标点，"
+                 "或者先 list_windows 拿 hwnd 再 screen_shot(mode=\"window\", hwnd=…)。")
+    return "\n".join(lines)
 
 
 def popup_menus() -> list:
@@ -4550,7 +4709,7 @@ def tool_screen_shot(args: dict) -> list:
     if mode == "window" or hwnd or title:
         target = find_window(title, hwnd)
         if not target:
-            raise ValueError(f"未找到窗口（title={title!r} hwnd={hwnd}），可用 list_windows 查看")
+            raise ValueError(_window_not_found_hint(title, hwnd))
         png, iw, ih, x, y, w, h = grab_window(target, grid=grid, capture=capture)
         _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
         # 屏幕抓取路径可能因窗口部分在屏外而裁剪，落点基准要跟着调整，否则会整体偏移
@@ -4650,7 +4809,10 @@ def tool_list_windows(args: dict) -> str:
     wins = list_windows(kinds=kinds)
     _log("ai", f"列出窗口（{len(wins)} 个）")
     if not wins:
-        return "当前没有可见窗口"
+        return ("当前没有可见窗口。\n" + _enum_health()
+                + "\n对策：① 若确实是锁屏/远程断开，请让用户先回到桌面；"
+                  "② 目标应用若以管理员权限运行，本插件需同等权限才能看到它的窗口；"
+                  "③ 不要反复重试本工具，先按 ①② 处理。")
     limit = max(1, min(200, _num(args.get("limit"), 40)))
     lines = [_window_line(w, i + 1) for i, w in enumerate(wins[:limit])]
     return ("可见窗口（hwnd / 类别 / 标题 / 位置 / 尺寸）:\n" + "\n".join(lines)
@@ -4793,15 +4955,15 @@ def _pre_click_probe(x: int, y: int, hwnd: int) -> tuple:
     return (_region_snapshot(x, y), _window_sig(hwnd) if hwnd else ())
 
 
-def _click_verify(x: int, y: int, before, hwnd: int = 0) -> str:
-    """点击后比对落点局部像素与目标窗口整体指纹，判断界面是否真的响应了。
+def _click_verify_ex(x: int, y: int, before, hwnd: int = 0) -> tuple:
+    """点击生效校验 → (是否真的响应了, 文案)。
 
-    「点了没反应」是复杂软件里最常见的静默失败（窗口没激活、被遮挡、控件禁用、
-    坐标漂移）。双通道比对（局部 96×96 逐像素 + 整窗 32 点指纹）能可靠地把它抓出来，
-    比让模型反复截全屏肉眼看省得多。
+    拆成「布尔 + 文案」是为了让调用方能**据结果自动换候选重试一次**
+    （见 tool_click 的 retry）：只给一段文字的话，模型只能自己再截图、再估坐标，
+    多花一轮往返还未必点得中。
     """
     if not before:
-        return ""
+        return True, ""
     base_region, base_sig = before if isinstance(before, tuple) else (before, ())
     time.sleep(0.12)
     changed, total = _region_diff(base_region, _region_snapshot(x, y)) if base_region else (0, 0)
@@ -4812,10 +4974,53 @@ def _click_verify(x: int, y: int, before, hwnd: int = 0) -> str:
             parts.append(f"落点附近 {changed}/{total} 个像素变化")
         if ratio > 0:
             parts.append(f"窗口整体变化 {ratio:.0%}")
-        return "点击后" + "、".join(parts) + "，界面已响应。"
-    return ("注意：点击后落点附近像素与整个窗口都**没有变化** —— 这一击很可能没生效"
-            "（目标未响应/被遮挡/窗口未激活/控件禁用）。请先重新 screen_shot 确认，"
-            "不要盲目重试同一坐标。")
+        return True, "点击后" + "、".join(parts) + "，界面已响应。"
+    return False, ("注意：点击后落点附近像素与整个窗口都**没有变化** —— 这一击很可能没生效"
+                   "（目标未响应/被遮挡/窗口未激活/控件禁用）。请先重新 screen_shot 确认，"
+                   "不要盲目重试同一坐标。")
+
+
+def _click_verify(x: int, y: int, before, hwnd: int = 0) -> str:
+    """点击后比对落点局部像素与目标窗口整体指纹，判断界面是否真的响应了。
+
+    「点了没反应」是复杂软件里最常见的静默失败（窗口没激活、被遮挡、控件禁用、
+    坐标漂移）。双通道比对（局部 96×96 逐像素 + 整窗 32 点指纹）能可靠地把它抓出来，
+    比让模型反复截全屏肉眼看省得多。
+    """
+    return _click_verify_ex(x, y, before, hwnd)[1]
+
+
+def _alt_snap_point(est_x: int, est_y: int, used_x: int, used_y: int,
+                    reach: int) -> tuple:
+    """吸附点没点中时，取「次优候选」的几何中心再试一次。
+
+    为什么值得做：吸附偶尔会挑到隔壁那个连通域（密排列表里最常见 —— 估计点压在
+    两个条目之间，谁近谁被选中）。此时用户看到的现象是「点了没反应」，而这
+    恰好是**同一个目标、只差十几像素**，无需劳烦模型重新截图重新估坐标：
+    插件自己换第二候选再点一次，绝大多数情况一次就中。
+
+    约束：候选必须离已经点过的点至少 4px（同一块就别重复点）、且不超过 160px
+    （再远就说明不是同一个目标了，换候选只会点到无关的地方）。
+    """
+    cands = []
+    try:
+        _snap_core(est_x, est_y, reach, None, cands)
+    except Exception:
+        return None
+    for c in cands or ():
+        try:
+            cx, cy = int(c.get("x", -1)), int(c.get("y", -1))
+        except (TypeError, ValueError):
+            continue
+        if cx < 0 or cy < 0:
+            continue
+        dx, dy = abs(cx - used_x), abs(cy - used_y)
+        if dx <= 3 and dy <= 3:
+            continue                       # 就是刚点的那个点，跳过
+        if dx + dy > 160:
+            continue                       # 离得太远，不是同一个目标
+        return (cx, cy)
+    return None
 
 
 def tool_verify_point(args: dict) -> str:
@@ -5019,11 +5224,13 @@ def tool_click(args: dict) -> str:
         # 候选中心由几何算法给出（精确到像素），**不再二次吸附**：
         # 再吸附一次可能挪到隔壁候选上，那正是 refine_point 要消灭的问题。
         x, y, snap_note = cand
-    else:
+    est = None
+    if not cand:
         if args.get("x") in (None, "") or args.get("y") in (None, ""):
             raise ValueError("click 需要坐标：传 x/y（截图基准）或 cand=编号"
                              "（编号来自 refine_point）。两者都没给，无法定位目标。")
         x, y = _resolve_point(args)
+        est = (x, y)          # 吸附前的估计点：换候选重试要靠它重新枚举候选
         x, y, snap_note = _apply_snap(args, x, y)
     button = str(args.get("button") or "left").strip().lower()
     clicks = max(1, min(_num(args.get("clicks"), 1), 3))
@@ -5054,12 +5261,37 @@ def tool_click(args: dict) -> str:
             f"⚠ 落点回读：光标实际在 ({ax},{ay})，与请求的 ({x},{y}) 相差 "
             f"({ax - x:+d},{ay - y:+d})px —— 注入链路有偏差（多屏归一化 / DPI 缩放），"
             f"请先用 verify_point 自检坐标链路，不要盲目重试。")
-    vtext = _click_verify(x, y, before, hwnd)
+    changed, vtext = _click_verify_ex(x, y, before, hwnd) if verify else (True, "")
+    retry_note = ""
+    # 生效校验判定「没点中」时，自动换次优候选再点一次（一次为限）。
+    # 只对「带吸附的普通左键单击」做：右键/双击/多击语义不同，重试可能弹两次菜单。
+    if (verify and not changed and est is not None and button == "left"
+            and clicks == 1 and _bool(args.get("retry"), True)):
+        alt = _alt_snap_point(est[0], est[1], x, y,
+                              _num(args.get("snap_reach"), SNAP_REACH_DEFAULT))
+        if alt:
+            bx, by = alt
+            b2 = _pre_click_probe(bx, by, hwnd)
+            if do_click(bx, by, button, 1, mode=_input_mode(args)):
+                changed2, vt2 = _click_verify_ex(bx, by, b2, hwnd)
+                ax, ay = _cursor_pos()
+                if changed2:
+                    _log("ai", f"{'右键' if button == 'right' else '点击'} "
+                               f"({x},{y}) 未生效 → 自动改点次优候选 ({bx},{by}) 成功")
+                    _refresh_env()
+                    return (f"首次点击 ({x},{y}) 后界面没有任何变化（多半吸附到了隔壁那个"
+                            f"控件），已**自动改点同一目标的次优候选 ({bx},{by})** 并生效："
+                            f"{vt2}" + _join_notes(snap_note, pre)
+                            + "请重新 screen_shot 确认结果是否符合预期。")
+                retry_note = (f"（首次 ({x},{y}) 与次优候选 ({bx},{by}) 都没有引起界面变化，"
+                              f"已停止重试。）")
+            else:
+                retry_note = "（次优候选重试时注入被真实鼠标覆盖，已放弃。）"
     label = {"right": "右键", "double": "双击"}.get(action, "点击")
     _log("ai", f"{label} {x},{y}（{button}×{clicks}，鼠标注入），落点 ({ax},{ay})")
     _refresh_env()
     return (f"已{label} ({x},{y}) {button}×{clicks}（屏幕物理坐标，鼠标注入）。"
-            + _join_notes(snap_note, pre, land, vtext)
+            + _join_notes(snap_note, pre, land, vtext + retry_note)
             + "请重新 screen_shot 验证结果。")
 
 
@@ -5097,21 +5329,46 @@ def tool_long_press(args: dict) -> str:
 
 
 def tool_drag(args: dict) -> str:
+    """拖拽：普通拖拽 / 拖文件到另一个应用（profile="file"）。"""
     reason = _guard("drag")
     if reason:
         return reason
+    profile = str(args.get("profile") or "").strip().lower()
+    file_mode = profile in ("file", "files", "dnd", "drop", "dragfile")
     x1, y1 = _resolve_point(args, "x1", "y1")
     x2, y2 = _resolve_point(args, "x2", "y2")
-    # 拖拽两端都吸附：起点要抓住控件中心（抓偏了会拖空），终点要落在目标控件上
-    x1, y1, n1 = _apply_snap(args, x1, y1)
-    x2, y2, n2 = _apply_snap(args, x2, y2)
-    dur = max(0.1, _num(args.get("duration"), 500) / 1000.0)
+    # 拖拽两端都吸附：起点要抓住控件中心（抓偏了会拖空），终点要落在目标控件上。
+    # 拖文件必须**不吸附**：起点是资源管理器里的一行文件（吸附会挪到文件名文字中心，
+    # 命中率反而下降），终点是聊天输入框（吸附可能挪到发送按钮上）。
+    if file_mode:
+        x1, y1, n1 = _apply_snap(args, x1, y1, default_on=False)
+        x2, y2, n2 = _apply_snap(args, x2, y2, default_on=False)
+    else:
+        x1, y1, n1 = _apply_snap(args, x1, y1)
+        x2, y2, n2 = _apply_snap(args, x2, y2)
+    dur_ms = _num(args.get("duration"), 0) or (DRAG_FILE_DURATION_MS if file_mode else 500)
+    hold_ms = _num(args.get("hold"), DRAG_FILE_HOLD_MS if file_mode else 150)
+    hover_ms = _num(args.get("hover"), DRAG_FILE_HOVER_MS if file_mode else 120)
+    steps = _num(args.get("steps"), DRAG_FILE_STEPS if file_mode else 0)
+    overshoot = _num(args.get("overshoot"), DRAG_FILE_OVERSHOOT if file_mode else 0)
+    dur = max(0.1, dur_ms / 1000.0)
     pre = _ensure_click_target(x1, y1, args)
-    if not do_drag(x1, y1, x2, y2, dur, mode=_input_mode(args)):
+    if not do_drag(x1, y1, x2, y2, dur, hold=max(0.02, hold_ms / 1000.0),
+                   mode=_input_mode(args), steps=int(steps),
+                   hover=max(0.0, hover_ms / 1000.0), overshoot=int(overshoot)):
         _refresh_env()
         return _inject_lost_note(x1, y1)
-    _log("ai", f"拖拽 ({x1},{y1}) → ({x2},{y2})")
+    _log("ai", f"拖拽 ({x1},{y1}) → ({x2},{y2})"
+               + ("（拖文件模式：慢速+悬停）" if file_mode else ""))
     _refresh_env()
+    if file_mode:
+        return (f"已按**拖文件模式**把 ({x1},{y1}) 拖到 ({x2},{y2})"
+                f"（慢速 {dur:.1f}s、按下停顿 {hold_ms}ms、落点悬停 {hover_ms}ms、"
+                f"越界回位 {overshoot}px）。"
+                + _join_notes(n1, n2, pre)
+                + "拖放是否成功取决于目标应用：请重新 screen_shot 看聊天窗里是否出现"
+                  "文件/缩略图。**没出现就不要再重复拖同一路径**，改用 "
+                  "copy(文件路径) → 在目标输入框 paste，成功率更高。")
     return (f"已从 ({x1},{y1}) 拖拽到 ({x2},{y2})。"
             + _join_notes(n1, n2, pre) + "请重新 screen_shot 验证结果。")
 
@@ -5160,20 +5417,36 @@ def tool_select(args: dict) -> str:
 
 
 def tool_scroll(args: dict) -> str:
+    """滚动页面：可用 delta（精确格数）或 strength（力度 1~10）+ direction。
+
+    为什么给「力度」这层：模型对「一格 120」没有体感，写 delta=-3600 与 -120
+    在它看来差不多，实际一个是到底、一个只动一行。strength 把语义换成
+    「滚多少」——1 很轻、10 大约一屏多，模型只需要判断意图。
+    """
     reason = _guard("scroll")
     if reason:
         return reason
     delta = _num(args.get("delta"), 0)
+    strength = _num(args.get("strength"), 0)
+    direction = str(args.get("direction") or "").strip().lower()
+    if not delta and strength:
+        s_val = max(1.0, min(10.0, float(strength)))
+        mag = int(round(s_val * WHEEL_STEP))
+        sign = -1 if direction in ("down", "下", "往下", "向下", "往下滚") else 1
+        delta = sign * mag
     if not delta:
-        raise ValueError("delta 不能为 0（正值向上、负值向下，一格 120）")
+        raise ValueError("需要滚动量：传 delta（正上负下，120=一格）"
+                         "或 strength=1~10 + direction=up|down。")
     if args.get("x") is not None and args.get("y") is not None:
         x, y = to_physical(args.get("x"), args.get("y"))
         _move_human(x, y)
     delta = max(-1200, min(1200, delta))
     do_scroll(delta)
-    _log("ai", f"滚轮 {delta:+d}")
+    _log("ai", f"滚轮 {delta:+d}（{abs(delta) // WHEEL_STEP or 1} 格）")
     _refresh_env()
-    return f"已滚动 {delta:+d}（{'向上' if delta > 0 else '向下'} {abs(delta) // 120 or 1} 格）。请 screen_shot 验证。"
+    return (f"已滚动 {delta:+d}（{'向上' if delta > 0 else '向下'} "
+            f"{abs(delta) // WHEEL_STEP or 1} 格，已按格分段发送）。"
+            f"请 screen_shot 验证；没滚够就再加一次 strength。")
 
 
 def tool_type_text(args: dict) -> str:
@@ -5328,7 +5601,7 @@ def _target_hwnd(args: dict, required: bool = True) -> int:
     fg = foreground_window()
     if fg:
         return fg
-    raise ValueError("未找到目标窗口：请用 list_windows 查看并传 title/hwnd")
+    raise ValueError(_window_not_found_hint(title, _num(args.get("hwnd"), 0)))
 
 
 def _is_popup(hwnd: int) -> bool:
@@ -5693,7 +5966,8 @@ TOOLS = [
          "button": {"type": "string", "description": "left（默认）/right/middle"},
          "clicks": {"type": "integer", "description": "点击次数，默认 1（action=double 时自动为 2）"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（触控优先的界面才用，实测落点偏差不可控）"},
-         "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告界面是否真的响应了（默认 false）"},
+         "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告界面是否真的响应了（默认 false；**密排界面建议开**）"},
+         "retry": {"type": "boolean", "description": "verify 判定没点中时，自动改点同一目标的次优候选一次（默认 true）"},
          "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false；用 cand 时自动关闭）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"},
@@ -5715,15 +5989,22 @@ TOOLS = [
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（仅触控优先的界面才用）"}},
          "required": []}},
     {"name": "drag", "description":
-        "拖拽：从 (x1,y1) 按住拖到 (x2,y2)，用于移动文件/图标、拖滑块、拖动窗口等。"
-        "**两端都默认做元素吸附**（起点抓控件中心才不会拖空，终点落在目标控件上）；"
+        "拖拽：从 (x1,y1) 按住拖到 (x2,y2)。普通拖拽用于移动图标、拖滑块、拖动窗口；"
+        "**拖文件到另一个应用（资源管理器 → QQ/微信 聊天窗发文件）传 profile=\"file\"**"
+        "—— 自动切成慢速 + 按下停顿 + 落点悬停 + 越界回位的拖放节奏，并关掉吸附。"
+        "**普通拖拽两端默认做元素吸附**（起点抓控件中心才不会拖空，终点落在目标控件上）；"
         "拖动三维视口/画布这类没有明确控件的区域时传 snap=false。",
      "inputSchema": {"type": "object", "properties": {
          "x1": {"type": "integer", "description": "起点 x（截图基准）"},
          "y1": {"type": "integer", "description": "起点 y（截图基准）"},
          "x2": {"type": "integer", "description": "终点 x（截图基准）"},
          "y2": {"type": "integer", "description": "终点 y（截图基准）"},
-         "duration": {"type": "integer", "description": "拖拽时长毫秒，默认 500"},
+         "profile": {"type": "string", "description": "file=拖文件（跨进程拖放，慢速+悬停；默认普通拖拽）"},
+         "hold": {"type": "integer", "description": "按下后停顿毫秒（默认普通 150 / 拖文件 320）：太短会被当成点击"},
+         "hover": {"type": "integer", "description": "落点悬停毫秒（默认普通 120 / 拖文件 700）：拖放目标要时间高亮并接受释放"},
+         "steps": {"type": "integer", "description": "分步移动数（默认按时长自动；拖文件 60）：步子太大会被当成瞬移"},
+         "overshoot": {"type": "integer", "description": "越界回位像素（拖文件默认 8）：让目标确认还在拖"},
+         "duration": {"type": "integer", "description": "拖拽时长毫秒（默认普通 500 / 拖文件 1200）"},
          "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；拖画布/视口内容传 false）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88"},
          "space": {"type": "string", "description": "x1/y1/x2/y2 的坐标系：image（默认）；screen=屏幕物理坐标"},
@@ -5756,12 +6037,19 @@ TOOLS = [
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（仅触控优先的界面才用）"}},
          "required": ["x1", "y1", "x2", "y2"]}},
     {"name": "scroll", "description":
-        "滚轮滚动：delta 正值向上、负值向下（120 为一格）；可传 x/y 先把指针移到该处再滚动。",
+        "滚动页面。两种写法二选一："
+        "① **推荐** strength=1~10 + direction=up|down —— 「滚多少」的力度语义，"
+        "1 很轻、5 大约半屏、10 约一屏多；"
+        "② delta（正上负下，120=一格）—— 需要精确格数时用。"
+        "滚动量会**按格分段发送**（一次甩大 delta 会被很多应用 clamp 成一格）。"
+        "可传 x/y 先把指针移到该处再滚（指针下的滚动区才会响应）。",
      "inputSchema": {"type": "object", "properties": {
-         "delta": {"type": "integer", "description": "滚动量（正上负下，120=一格）"},
+         "strength": {"type": "integer", "description": "力度 1~10（5≈半屏，10≈一屏多）；与 delta 二选一"},
+         "direction": {"type": "string", "description": "up / down（配合 strength；默认 up）"},
+         "delta": {"type": "integer", "description": "精确滚动量（正上负下，120=一格）；与 strength 二选一"},
          "x": {"type": "integer", "description": "可选：滚动前把指针移到此处（截图基准 x）"},
          "y": {"type": "integer", "description": "可选：滚动前把指针移到此处（截图基准 y）"}},
-         "required": ["delta"]}},
+         "required": []}},
     {"name": "type_text", "description":
         "输入文本（Unicode 注入，支持中文/符号）。"
         "**焦点自动识别**：如果键盘焦点已经在输入框里（类名/文本插入点判定），"

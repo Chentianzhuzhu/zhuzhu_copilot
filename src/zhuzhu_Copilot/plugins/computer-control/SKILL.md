@@ -348,16 +348,28 @@ taskbar_open(where="panel", chevron=7) # 自动认错「↑」时，用编号指
 
 ### 把某个文件发给某个会话
 
-**不要从桌面上拖图标** —— 拖拽要经过「悬停触发、拖动、落点命中」多个易错环节。
-稳妥的做法是**用文件工具把路径查准，再用文件对话框输入路径**：
+两条路，按成功率排序：
+
+**① 首选：文件对话框 + 完整路径**（链路里全是可验证的精确动作，最稳）
 
 1. 用内置的文件/命令工具（不是界面操控）解析出文件的**绝对路径**——比如桌面上
-   某个文件就是 `C:\Users\<用户名>\Desktop\<文件名>`。这一步完全不需要 GUI，最可靠；
+   某个文件就是 `C://Users//<用户名>//Desktop//<文件名>`。这一步完全不需要 GUI；
 2. 在目标会话里点「+」→「文件」，打开系统文件选择对话框；
 3. 对话框弹出后 `screen_shot` 看清「文件名」输入框的位置 → 点它 →
-   `type_text("C:\Users\…\Desktop\某文件.docx")`（**完整路径**）→ `key_press("enter")`。
+   `type_text("C://Users//…//Desktop//某文件.docx")`（**完整路径**）→ `key_press("enter")`。
 
-这样整条链路里唯一的界面操作就是「点两个按钮 + 输一个路径」，全是可验证的精确动作。
+**② 备选：拖拽（`drag(profile="file")`）** —— 用户明确要求「拖过去」，或要拖的是
+资源管理器里已经选中的多个文件时用：
+
+1. `screen_shot` 同时看清**源文件**（资源管理器列表里那一行）和**目标**（聊天输入框）；
+2. `drag(x1, y1, x2, y2, profile="file")` —— 它会自动切成慢速拖放节奏：
+   按下停顿 320ms（等 explorer 判定「开始拖拽」）→ 60 步缓动移动 →
+   落点悬停 700ms（等 QQ/微信高亮并接受释放）→ 越界 8px 再回位 → 松手；
+3. `screen_shot` 确认聊天窗里出现了文件卡片/缩略图。没出现**不要重复拖同一条路径**
+   （explorer 的拖放状态可能已经脏了），改用路线 ①。
+
+拖放起点/终点都**不要吸附**（`profile="file"` 已自动关掉）：吸附会把起点挪到文件名
+文字中心、把终点挪到发送按钮上，反而拖不准。
 
 ## 面对复杂桌面的处理策略
 
@@ -671,13 +683,13 @@ AI 真正操控桌面（点击/输入/滚动/拖拽/拖窗口等）时，插件�
 **坐标级操作（唯一一类操作方式）**
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
-| `click` | 点击（默认鼠标注入；**默认吸附到控件落点**；自动把目标窗口置顶避免点到遮挡窗口） | `x`、`y`、`button`、`clicks`、`input`、`verify`、`snap`、`snap_reach`、`space`、`title`/`hwnd` |
+| `click` | 点击（默认鼠标注入；**默认吸附到控件落点**；自动把目标窗口置顶避免点到遮挡窗口；`verify=true` 时**点不中会自动换次优候选再点一次**） | `x`、`y`、`button`、`clicks`、`input`、`verify`、`retry`、`snap`、`snap_reach`、`space`、`title`/`hwnd` |
 | `click_window` | **窗口截图坐标点击**（窗口会移动时用；rel 坐标取自窗口截图；同样默认吸附） | `hwnd`、`rel_x`/`rel_y`、`button`、`verify`、`snap` |
 | `long_press` | 长按（鼠标按住不动；默认吸附） | `x`、`y`、`duration`、`snap`、`space`、`input` |
-| `drag` | 拖拽（**两端默认吸附**；拖视口/画布内容传 `snap=false`） | `x1`、`y1`、`x2`、`y2`、`duration`、`snap`、`space`、`input` |
+| `drag` | 拖拽（**两端默认吸附**；拖视口/画布内容传 `snap=false`）。**拖文件到别的应用传 `profile="file"`** —— 慢速+按下停顿+落点悬停+越界回位，自动关吸附 | `x1`、`y1`、`x2`、`y2`、`profile`、`duration`、`hold`、`hover`、`steps`、`overshoot`、`snap`、`space`、`input` |
 | `swipe` | 滑动（**默认不吸附**） | `x1`、`y1`、`x2`、`y2`、`snap`、`space`、`input` |
 | `select` | 拖选文本/区域（**默认不吸附**） | `x1`、`y1`、`x2`、`y2`、`snap`、`space`、`input` |
-| `scroll` | 滚轮滚动 | `delta`（正上负下）、`x`、`y` |
+| `scroll` | 滚动页面。**优先用力度语义** `strength=1~10`（5≈半屏、10≈一屏多）+ `direction`；需要精确格数才用 `delta`（120=一格）。滚动量按格分段发送 | `strength`、`direction`、`delta`、`x`、`y` |
 | `type_text` | 输入文本（支持中文；注入前确保目标窗口在前台） | `text`、`title`/`hwnd` |
 | `key_press` | 按键/组合键（注入前确保目标窗口在前台） | `key`、`title`/`hwnd` |
 | `copy` / `paste` | 复制 / 粘贴（注入前确保目标窗口在前台） | `text`、`title`/`hwnd` |

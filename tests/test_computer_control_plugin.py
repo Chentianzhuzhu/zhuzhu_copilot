@@ -1727,8 +1727,70 @@ def test_enum_top_hwnds_actually_enumerates(monkeypatch):
 
     monkeypatch.setattr(mod.user32, "EnumWindows", _fake_enum)
     monkeypatch.setattr(mod, "_log", lambda who, text: hits.append(text))
-    assert mod._enum_top_hwnds() == [111, 222, 333]
+    got = mod._enum_top_hwnds()
+    # 枚举结果必须在最前（前台窗口作为兜底会被并到末尾，见下一条测试）
+    assert got[:3] == [111, 222, 333], got
     assert hits == [], f"正常枚举不该产生错误日志，实得 {hits}"
+
+
+def test_enum_always_includes_foreground_window(monkeypatch):
+    """枚举无论如何都要并上前台窗口 —— 用户正看着的那扇窗不能缺席。"""
+    import ctypes
+    from ctypes import wintypes
+    mod = _load_module()
+    CB = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def _fake_enum(cb_ptr, _lparam):
+        cb = ctypes.cast(cb_ptr, CB)
+        for hwnd in (111, 222):
+            cb(hwnd, 0)
+        return 1
+
+    monkeypatch.setattr(mod.user32, "EnumWindows", _fake_enum)
+    monkeypatch.setattr(mod.user32, "GetForegroundWindow", lambda: 999)
+    assert mod._enum_top_hwnds() == [111, 222, 999]
+
+
+def test_enum_falls_back_to_window_chain_when_enum_windows_yields_nothing(monkeypatch):
+    """EnumWindows 一扇窗都没给时，必须走 GetTopWindow/GW_HWNDNEXT 链式兜底。
+
+    这正是用户看到的「有时能截屏、有时 list_windows 全是空」那条故障链：
+    枚举为空会让四条能力集体静默失效，所以必须有第二条完全独立的路径。
+    """
+    mod = _load_module()
+    monkeypatch.setattr(mod.user32, "EnumWindows", lambda *_a: 1)   # 一个回调都不调
+    chain = {0: 501, 501: 502, 502: 503, 503: 0}
+    monkeypatch.setattr(mod.user32, "GetTopWindow", lambda _h: chain.get(0, 0))
+    monkeypatch.setattr(mod.user32, "GetWindow",
+                        lambda h, _cmd: chain.get(int(h), 0))
+    monkeypatch.setattr(mod.user32, "GetForegroundWindow", lambda: 0)
+    assert mod._enum_top_hwnds() == [501, 502, 503]
+    assert mod._ENUM_DIAG["enum"] == 0 and mod._ENUM_DIAG["fallback"] == 3
+
+
+def test_enum_health_explains_an_empty_desktop():
+    """枚举全空时，工具输出必须说清原因，而不是丢一句「当前没有可见窗口」。"""
+    mod = _load_module()
+    mod._ENUM_DIAG.update({"enum": 0, "fallback": 0, "foreground": 0, "error": ""})
+    msg = mod._enum_health()
+    for key in ("EnumWindows", "链式", "交互式桌面"):
+        assert key in msg, msg
+    # 有结果时只报计数，不必吓人
+    mod._ENUM_DIAG.update({"enum": 12, "fallback": 0, "foreground": 42})
+    assert "12 扇" in mod._enum_health()
+
+
+def test_window_not_found_hint_suggests_close_titles(monkeypatch):
+    """找不到窗口时要给出**可执行**的诊断：像的标题 + 别把会话名当窗口标题。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "list_windows", lambda **kw: [
+        {"title": "QQ"}, {"title": "微信"}, {"title": "xiaojiang - 聊天"}])
+    msg = mod._window_not_found_hint("xiaojiang", 0)
+    assert "你是不是想找" in msg and "xiaojiang - 聊天" in msg
+    assert "窗口标题" in msg and "联系人" in msg
+    # 完全没有相近标题时退化成「列出当前可用标题」
+    msg2 = mod._window_not_found_hint("zzzz-not-exist", 0)
+    assert "当前可用的窗口标题" in msg2
 
 
 def test_keyboard_and_window_services_do_not_swallow_name_errors():
@@ -2412,6 +2474,155 @@ def test_click_reports_the_actual_cursor_landing(monkeypatch):
     bad = mod._HANDLERS["click"]({"x": 500, "y": 400})
     assert "落点回读" in bad and "512" in bad and "396" in bad
     assert "verify_point" in bad, "落点有偏差时必须提示用 verify_point 自检"
+
+
+def test_do_scroll_splits_a_big_delta_into_ticks(monkeypatch):
+    """滚轮必须按格分段发送：一次甩大 delta 会被很多应用 clamp 成一格。"""
+    mod = _load_module()
+    sent = []
+    monkeypatch.setattr(mod, "_send_mouse",
+                        lambda flag, dx=0, dy=0, data=0: sent.append((flag, data)))
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    mod.do_scroll(-600)
+    assert len(sent) == 5, sent
+    assert sum(d if d < 2 ** 31 else d - 2 ** 32 for _f, d in sent) == -600
+    # 显式 ticks 覆盖
+    sent.clear()
+    mod.do_scroll(240, ticks=2)
+    assert len(sent) == 2
+    assert sum(d for _f, d in sent) == 240
+
+
+def test_scroll_strength_maps_to_wheel_delta(monkeypatch):
+    """strength 是「力度」：1~10 映射到 1~10 格，方向由 direction 决定。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    got = []
+    monkeypatch.setattr(mod, "do_scroll", lambda d: got.append(d))
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    mod._HANDLERS["scroll"]({"strength": 5, "direction": "down"})
+    assert got == [-600], got
+    mod._HANDLERS["scroll"]({"strength": 10})
+    assert got[-1] == 1200
+    mod._HANDLERS["scroll"]({"strength": 1})
+    assert got[-1] == 120
+    # 超范围要夹紧
+    mod._HANDLERS["scroll"]({"strength": 99})
+    assert got[-1] == 1200
+    # delta 优先级更高（精确格数场景）
+    mod._HANDLERS["scroll"]({"delta": -240, "strength": 9})
+    assert got[-1] == -240
+    with pytest.raises(ValueError):
+        mod._HANDLERS["scroll"]({})
+
+
+def test_drag_file_profile_uses_slow_presets_and_disables_snap(monkeypatch):
+    """拖文件 = 慢速 + 按下停顿 + 落点悬停 + 越界回位，且不做元素吸附。
+
+    资源管理器的 OLE 拖放要靠拖放目标的 DragEnter/DragOver 才能释放成功，
+    默认那套「500ms 拖过去就松手」在 QQ/微信上经常放不下去。
+    """
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    snaps = []
+
+    def _fake_snap(args, x, y, default_on=True):
+        snaps.append(default_on)
+        return x, y, ""
+
+    rec = {}
+
+    def _fake_drag(x1, y1, x2, y2, duration, hold=0.15, mode="auto",
+                   steps=0, hover=None, overshoot=0):
+        rec.update({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "dur": duration,
+                    "hold": hold, "steps": steps, "hover": hover,
+                    "overshoot": overshoot})
+        return True
+
+    monkeypatch.setattr(mod, "_resolve_point",
+                        lambda a, kx="x", ky="y": (100, 200) if kx == "x1" else (900, 600))
+    monkeypatch.setattr(mod, "_apply_snap", _fake_snap)
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    monkeypatch.setattr(mod, "do_drag", _fake_drag)
+
+    out = mod._HANDLERS["drag"]({"x1": 100, "y1": 200, "x2": 900, "y2": 600,
+                                 "profile": "file"})
+    assert snaps == [False, False], "拖文件必须关掉吸附"
+    assert rec["hold"] == pytest.approx(mod.DRAG_FILE_HOLD_MS / 1000.0)
+    assert rec["hover"] == pytest.approx(mod.DRAG_FILE_HOVER_MS / 1000.0)
+    assert rec["steps"] == mod.DRAG_FILE_STEPS
+    assert rec["overshoot"] == mod.DRAG_FILE_OVERSHOOT
+    assert rec["dur"] == pytest.approx(mod.DRAG_FILE_DURATION_MS / 1000.0)
+    assert "拖文件模式" in out and "paste" in out
+
+    # 普通拖拽仍走「吸附 + 500ms」，别把拖文件的重节奏带到普通拖拽上
+    snaps.clear()
+    mod._HANDLERS["drag"]({"x1": 100, "y1": 200, "x2": 900, "y2": 600})
+    assert snaps == [True, True]
+    assert rec["hold"] == pytest.approx(0.15)
+    assert rec["steps"] == 0 and rec["overshoot"] == 0
+    assert rec["dur"] == pytest.approx(0.5)
+
+
+def test_click_retries_the_next_candidate_when_nothing_changed(monkeypatch):
+    """verify 判定没点中时，自动换同一目标的次优候选再点一次。
+
+    吸附偶尔会挑到隔壁那个连通域（密排列表里最常见），现象就是「点了没反应」。
+    这类情况只差十几像素，让插件自己换候选重试一次，比让模型重新截图重新估坐标
+    既准得多又快得多（还省一轮 token）。
+    """
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    clicks = []
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (500, 400))
+    monkeypatch.setattr(mod, "_apply_snap", lambda a, x, y, default_on=True: (510, 402, "已吸附"))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_pre_click_probe", lambda x, y, h: ())
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (510, 402))
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "do_click",
+                        lambda x, y, b, c, mode="auto": clicks.append((x, y)) or True)
+    monkeypatch.setattr(mod, "_alt_snap_point", lambda ex, ey, ux, uy, r: (530, 404))
+    seq = [(False, "落点没有变化"), (True, "界面已响应")]
+
+    def _fake_verify(x, y, before, hwnd=0):
+        return seq.pop(0) if seq else (True, "")
+
+    monkeypatch.setattr(mod, "_click_verify_ex", _fake_verify)
+
+    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True})
+    assert clicks == [(510, 402), (530, 404)], clicks
+    assert "自动改点同一目标的次优候选" in out
+    assert "530" in out and "404" in out
+
+
+def test_click_retry_can_be_disabled_and_is_bounded(monkeypatch):
+    """retry=false 时不重试；两个候选都没效果时也只重试一次（不无限点）。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    clicks = []
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (500, 400))
+    monkeypatch.setattr(mod, "_apply_snap", lambda a, x, y, default_on=True: (510, 402, ""))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_pre_click_probe", lambda x, y, h: ())
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (510, 402))
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "do_click",
+                        lambda x, y, b, c, mode="auto": clicks.append((x, y)) or True)
+    monkeypatch.setattr(mod, "_alt_snap_point", lambda *a: (530, 404))
+    monkeypatch.setattr(mod, "_click_verify_ex", lambda *a: (False, "落点没有变化"))
+
+    mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True, "retry": False})
+    assert clicks == [(510, 402)]
+    clicks.clear()
+    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True})
+    assert clicks == [(510, 402), (530, 404)], "最多只重试一次"
+    assert "已停止重试" in out
 
 
 def test_grab_screen_reports_virtual_desktop_origin(monkeypatch):

@@ -21023,15 +21023,19 @@ class AgentPanel(QDialog):
         self._bind_sess(s["id"])
         self._engine = None   # 新会话暂无引擎：复位引用，避免旧引擎上下文写入画到新会话
         self.token_label.setText("0 tk")   # 新对话无任何 token 消耗：立即复位计数
-        self._ai_bubble = None
         self._seg_cache.clear()
         self._hide_spinner()
-        while self.msg_lay.count() > 1:
-            item = self.msg_lay.takeAt(0)
-            self._free_layout_item(item)
-        self._bubble_widgets = []
+        # 【P0】新会话必须**换挂一块自己的空视图**，绝不能去清上一个会话的 msg_lay。
+        # 清上一个会话的布局会把已经渲染好的气泡控件全销毁，而那个会话的视图缓存里
+        # rows_n / rows_ref 仍记着「已渲染到底」→ 切回去时被判定为可复用 → 挂上一个
+        # 空容器 → 用户看到的就是「返回刚才的历史对话，所有聊天气泡都消失了」。
+        # 换挂（msg_area.takeWidget + setWidget）只转移所有权、不销毁控件树，
+        # 上一个会话的历史气泡原封不动留在它自己的容器里。
+        view = self._new_stream_view()
+        self._remember_view(s["id"], view)
+        self._attach_view(view)
+        self._show_stream_container()
         self._inflight_hidden = []
-        self._bubble_segs = {}
         self._msg_nav_clear()   # 新会话清空定位圆点
         self._refresh_session_combo()
         self._update_welcome()
@@ -24854,6 +24858,15 @@ class AgentPanel(QDialog):
             return False
         if n and (len(rows) < n or rows[n - 1] is not view.get("last_row")):
             return False
+        # 控件树完整性：视图记账说「已渲染 n 行」，容器里就必须至少有 n 个气泡
+        # （外加末尾那个 stretch）。数量对不上说明有别的路径偷偷清过这个容器 ——
+        # 绝不能把空容器当成可复用视图挂回去（那样历史气泡会凭空消失）。
+        if n:
+            try:
+                if view["lay"].count() < n + 1:
+                    return False
+            except (RuntimeError, AttributeError, TypeError):
+                return False
         return True
 
     def _sync_view_incremental(self, view: dict, st: dict) -> None:
