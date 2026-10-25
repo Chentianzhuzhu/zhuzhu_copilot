@@ -1604,6 +1604,24 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "use_skill",
+            "description": "调用技能：按名读取该技能的规范正文（SKILL.md）并纳入本任务执行。"
+                           "用户说「用 XX 技能」「按 XX 规范来」「调用 XX 技能」，或任务需要"
+                           "某技能指导（如 plugin-create 生成插件、create-cordis 深度定制、"
+                           "code-review 代码审查、computer-control 桌面操控）时调用。"
+                           "name 留空或传 list = 返回当前可用技能清单（含用途简介），先查再调。"
+                           "返回的规范正文必须严格遵守；调用后该技能后续轮次持续生效。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "name": {"type": "string",
+                                        "description": "技能名（可用清单内的 name）；"
+                                                       "留空或传 list 返回可用技能清单"}},
+                           "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_plugin",
             "description": "用自然语言描述创建可运行的插件（统一存入插件目录）：根据用户描述用 AI 生成 "
                            "可运行的 MCP server 脚本 + 标准 SKILL.md 技能，"
@@ -3433,6 +3451,8 @@ def _execute_tool_impl(name: str, args: dict, allow_dangerous: bool = False,
                 return _res
             except Exception as _e:
                 return _blocked(f"[{name}] 编辑失败: {_e}")
+        if name == "use_skill":
+            return _use_skill(str(args.get("name", "") or ""))
         if name == "create_skill":
             return _create_skill(str(args.get("name", "")),
                                  str(args.get("description", "")),
@@ -5243,6 +5263,61 @@ def _create_skill(name: str, description: str, instruction: str) -> dict:
     # 热加载：技能缓存已失效，但引擎还要按本任务输入重新匹配技能才能在本轮注入 —— 见
     # agent_engine.reload_extensions（否则「创建成功却要等下一个任务才生效」）。
     return ({"text": msg, "images": [], "reload_extensions": True} if ok else _blocked(msg))
+
+
+def _use_skill(name: str) -> dict:
+    """按名调用技能：把「说明 + 规范正文」直接返回给模型，并通知引擎把该技能
+    纳入本任务（`__activate_skill__` 标志，由引擎消费后并入 _task_skills /
+    _auto_skills，后续轮次经 _sync_skill_msg 持续注入，技能路由硬拦截也随之覆盖）。
+
+    与关键词自动匹配的关系：自动匹配靠人工维护的 _SKILL_KEYWORDS，用户措辞不在表里
+    就命中不了；本工具是**显式通道**——用户点名「用 XX 技能」或模型判断需要某规范时
+    随时可调，补上「对话内调用 skill」这一环。
+
+    name 留空/list = 清单模式：返回可用技能（名 + 简介），供模型挑选后再次调用。
+    找不到名字时同样返回清单 + 近似名建议，不让模型空转。
+    """
+    from zhuzhu_Copilot.core import agent_skills
+    name = str(name or "").strip()
+    # 能力开关/工作流隔离：被禁用的技能不返回规范（与手动 /技能名 调用同口径）
+    if name and not agent_skills.filter_enabled_skills([name]):
+        skills = agent_skills.load_skills() or []
+        avail = "\n".join(f"- {s.get('name')}：{s.get('description') or ''}"
+                          for s in skills) or "（当前没有可用技能）"
+        return _blocked(f"技能「{name}」不可用（未安装、已被当前工作流禁用或技能能力已关闭）。"
+                        f"当前可用技能：\n{avail}")
+    skills = agent_skills.load_skills() or []
+    if not name or name.lower() == "list":
+        if not skills:
+            return {"text": "当前没有可用技能。可用 create_skill 按自然语言描述生成，"
+                            "或在设置页技能管理导入市场标准 SKILL.md。",
+                    "images": []}
+        lines = [f"- {s.get('name')}：{s.get('description') or '（无简介）'}"
+                 for s in skills if s.get("name")]
+        return {"text": "当前可用技能（用 use_skill(name=技能名) 调用其规范）：\n"
+                        + "\n".join(lines), "images": []}
+    by_name = {str(s.get("name") or ""): s for s in skills}
+    hit = by_name.get(name)
+    if hit is None:
+        # 近似名建议：子串包含或名称片段重合，减少「差一个字就调不动」的挫败
+        near = [n for n in by_name
+                if name in n or n in name
+                or any(w and w in n for w in _slugify_skill_name(name, "").split("-"))]
+        tip = (f"\n近似技能：{'、'.join(near[:5])}" if near else "")
+        avail = "\n".join(f"- {n}：{(by_name[n].get('description') or '')[:40]}"
+                          for n in list(by_name)[:20])
+        return _blocked(f"技能「{name}」不存在。{tip}\n当前可用技能：\n{avail}")
+    body = agent_skills.skill_instructions([name])
+    if not body.strip():
+        return _blocked(f"技能「{name}」没有规范正文（SKILL.md 为空），无法按规范执行。")
+    return {
+        "text": body + "\n\n（以上技能规范已纳入本任务：后续轮次持续生效，"
+                         "涉及的工具调用将按该规范硬拦截校正；必须严格按流程执行，"
+                         "不得只复述规范而不行动。）",
+        "images": [],
+        # 引擎消费后并入 _task_skills / _auto_skills（见 agent_engine._execute）
+        "__activate_skill__": name,
+    }
 
 
 def _generation_status_adapter(status_cb):

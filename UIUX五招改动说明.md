@@ -93,6 +93,37 @@
 
 ---
 
+## 第三轮排查：「重启源码后没有任何改动」
+
+用户反馈改完源码、重启后界面无变化。排查锁定**两层根因**，均已修复。
+
+### 根因 1 · source_overlay 覆盖层拦截（主因）
+
+- `main.py` 启动时安装了 `_copilot_overlay_hook`：`zhuzhu_Copilot.*` 的导入会**优先命中** `~/.zhuzhu_Copilot/source_overlay/zhuzhu_Copilot/<相对路径>`，overlay 里有同名 `.py` 就加载它，而不是 Desktop 源码。
+- 该 overlay 里残留着 **10:25 旧版** `ui/agent_panel.py`（grep 确认仍是 `_line_icon("undo")`、无 `_apply_input_style` / `_LoadingOverlay` / `_UNDO_SVG`）。所以无论怎么改 Desktop 源码、怎么重启，运行时都加载 overlay 旧版 → 无改动。
+- **修复**：把 Desktop 最新 `agent_panel.py` 同步覆盖到 overlay（旧版备份为 `agent_panel.py.bak_<时间戳>`），并清理 overlay 的 `__pycache__`。
+- **注意**：overlay 的 `core/agent_tools.py`（含 perf-turbo / code-map 插件注入的工具定义）、`core/perf_turbo.py`、`core/code_map.py` 是插件文件，**保留未动**。
+
+### 根因 2 · 5 处 QSS 花括号误用 `}}`
+
+- 相邻字符串拼接中，f-string 之后紧跟**普通字符串**（无 f 前缀），普通串里写了 `}}`。`}}` 在 f-string 中转义为单个 `}`，但在普通字符串里是**两个字面 `}`**，导致规则多出一个 `}`，QSS 解析失败（设置对话框 QListWidget / QLineEdit / QPlainTextEdit / 对话框自身样式失效）。
+- **修复**：5 处 `}}` → `}`；静态扫描确认仅剩 2 处合法双花括号（JS 代码、JSON 注释）。
+
+### 根因 3 · 保存遮罩时序缺陷（看不到遮罩）
+
+- 旧顺序把「页面补齐 `_ensure_all_pages()` + 全量数据收集」放在遮罩**之前**，这是主线程同步操作（本机实测约 2.5～3.7s）。遮罩要等收集结束才绘制，而 `_finish_save` 时累计时长已远超 900ms，`wait=0` 又立刻关闭 → 用户看不到遮罩。
+- **重构后的时序**（`_save` 拆为多步）：
+  1. `_save`：**先**创建并 `start()` 遮罩 → `repaint()` 当帧上屏（高斯模糊 + 转圈第 0 帧 + 文字）；
+  2. `_build_pages_step`：**每帧只构建 1 个页面**，页间留 10ms 间隙让 16ms 动画 QTimer 触发（转圈不被卡成定格）；
+  3. `_collect_and_save`：全部页面就绪后收集数据；
+  4. `_finish_save`：持久化 + 应用，按真实经过时间补足最短展示；
+  5. `_close_after_save`：停遮罩、`accept`。
+- **实测**：真实环境遮罩即时可见（高斯模糊 + 8 圆点 + 中文「请等待，正在应用更改中」），角度持续推进，约 6.4s 后对话框关闭（result=Accepted）。
+
+> 旁证：开始菜单快捷方式指向 **10/7 打包的安装版**（`C:\Program Files (x86)\zhuzhu Copilot\...`，代码在 mypyc 编译的 `.pyd` 里，不读源码）。要跑最新源码请用项目根目录的「运行源码版.bat」。
+
+---
+
 ## 涉及文件
 
 - `src/zhuzhu_Copilot/ui/agent_panel.py` — 招 1/2/4/5 + 追加精修（输入框圆角融合、弯曲箭头、`_LoadingOverlay` 保存遮罩）
@@ -105,7 +136,8 @@
 - 冒烟：`tmp_uiux/smoke_uiux.py`（offscreen，22 项断言全 PASS / 0 FAIL）
 - 真实窗口：`tmp_uiux/verify_real.py`（双主题整窗截图）
 - 输入框圆角：`tmp_uiux/shot_real_vp.py`（grab 真实输入框，viewport 占满）
-- 保存遮罩：`tmp_uiux/verify_overlay.py`（多帧转圈）、`e2e_save.py`（端到端保存→关闭）
+- 保存遮罩：`tmp_uiux/verify_overlay.py`（多帧转圈）、`e2e_save2.py`（offscreen 验证角度推进）、`e2e_real_save.py`（真实环境遮罩可见 + 中文文字）、`e2e_complete.py`（完整保存→关闭，result=Accepted）、`measure_pages.py`（逐页构建耗时）
+- 第三轮排查：`diag_qss.py`（QSS 解析）、`scan_braces.py`（花括号扫描）、`debug_save_timing.py`（保存时序）、`verify_source_icons.py`（overlay 图标核对）
 - 弯曲箭头：`tmp_uiux/verify_icons.py`
 - 模拟流式：`tmp_uiux/sim_stream.py`（不发 API，自动截图后退出）
 - 评分框：`tmp_uiux/preview_score.py`
@@ -115,3 +147,59 @@
 - 设置对话框 / 页面配置（表格 th/td、QTabWidget::pane、QDialogButtonBox 等）仍有约 143 处 `border:1px`，属次要界面，不影响主观感。
 - 消息导航 12×12 小圆点仍用 `border:1px solid`，影响极小。
 - 真实流式水墨晕染需模型账户可用后目验。
+
+---
+
+## 第四轮（2026-10-25 下午）：计时器组件重构 + 保存遮罩弹出时机深化
+
+用户反馈两条：①「计时器边框丑陋、显示累赘」；②「点保存过 500ms 之后才弹出遮罩」。
+
+### A. 计时器：骑线 pill 徽章 → 左上角纯文本行
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 外壳 | 圆角 pill + 1px 描边 + 卡片底，骑在顶部虚线上 | **无外壳**：一行纯文本坐在气泡左上角 |
+| 图标 | 时钟图标 + 文本 | 仅文本（简化） |
+| 文案 | `12.4s` / `2m03s` | `已处理 X小时X分钟X秒`（零档省略：`已处理 45秒`/`已处理 23分钟45秒`/`已处理 1小时2分钟5秒`） |
+| 字体 | UI 字体（数字比例宽度） | `ChatStyle.font_numeric` 等宽数字栈（tabular figures），逐秒刷新不抖动 |
+| 结构 | 徽章压线 | **计时行 → 虚线 → 输出内容** 三段式（`TIMER_ROW_H=17` + `TIMER_DASH_GAP=1`） |
+
+- 新格式化函数 `fmt_elapsed()`（`agent_chat_bubbles.py`）：整数秒、零档省略、不补零。
+- 无耗时数据（老会话）占位文案：`已处理 --`（`RIBBON_UNKNOWN_TEXT`）。
+- `ChatStyle` 新增 `w_emphasis` 字重档位字段（计时行用，随主题降档）。
+
+### B. 连带修复：顶部虚线被内容盒「吃掉」（Qt 父子合成陷阱）
+
+- **现象**：重构后虚线只剩右缘约 9px 可见。真机抓图 + 离屏双平台复现。
+- **根因**：虚线原由 `ChatTurn.paintEvent` 画，位置落在子控件 `_box` 矩形内；Qt 对带 `WA_TranslucentBackground` 的父控件会**先清除每个子控件的区域再合成子控件**——父控件画在子控件矩形下的内容被整块清掉（hid _box 实验：虚线从 5px 变 269px 完整可见，实锤）。
+- **修法**：新增 `_TurnBox(QWidget)` 子类，虚线改由内容盒在自己的 `paintEvent` 里画（z 序稳定位于盒内区块之下）。`ChatTurn.paintEvent` 只保留 inset 小于盒 y 的兜底路径。
+- 回归断言：`tests/test_chat_bubble_demo_parity.py::test_timer_row_sits_above_dash_line` 锁定 `isinstance(turn._box, cb._TurnBox)`。
+
+### C. 保存遮罩：弹出时机从「几百 ms」压到「当帧」
+
+实测分 phase 定位（`tmp_uiux/dbg_trace.py`）：
+
+| 阶段 | 旧 | 新 |
+|---|---|---|
+| 遮罩创建时机 | 页面补齐（2.5~3.7s）+ 数据收集**之后** | `_save()` 第一行（重活全部让路） |
+| `show()` 与模糊的顺序 | 同步全尺寸高斯模糊（几百 ms）**之后**才 show | show → `repaint()` 当帧上屏 → 模糊异步 |
+| 高斯模糊 | 同步、全尺寸、半径 22 | `singleShot(0)` 异步 + 底图降采样 1/4（成本降一个数量级） |
+| 首帧实测 | >500ms | **37ms**（冷启动最差 204ms，均 <500ms） |
+
+- 关键细节：`show()` 只入队绘制，必须补 `repaint()` 同步画一帧，否则后续重活（分帧建页）占住主线程，绘制仍被推迟。
+- 底图采集选型：`grab()`（冷 20ms）vs painter 缩放 `render()`（冷 96ms，光栅引擎冷启动）——**选 grab**，模糊前降采样放在异步段做。
+- 遮罩新增 `resizeEvent` 跟随父对话框尺寸；`stop()` 释放两幅全尺寸位图。
+- 新测试 `tests/test_settings_save_overlay.py`：首绘 <500ms、首绘早于 `_build_pages_step`、遮罩铺满、模糊异步就位且原图释放。
+
+### D. 运行时同步（重要）
+
+`~/.zhuzhu_Copilot/source_overlay/` 会遮蔽 Desktop 源码（安装版不含 overlay hook，不受影响）。
+本次已将 `ui/agent_panel.py` 同步到 overlay（旧版备份 `agent_panel.py.bak_20261025_142949`，ui 目录 `__pycache__` 已清）。
+**以后改 `agent_panel.py` 必须同步 overlay，否则运行源码版不生效。**
+
+### 涉及文件（本轮）
+
+- `src/zhuzhu_Copilot/ui/agent_chat_bubbles.py` — `fmt_elapsed` / `CostRibbon` 重写 / `TIMER_ROW_H` / `_TurnBox` / ChatStyle 字段
+- `src/zhuzhu_Copilot/ui/agent_panel.py` — `_THEMES` 加 ELEVATED/FIELD、`_save` 遮罩先行、`_LoadingOverlay` 异步模糊、`_chat_style` 注入新字段
+- `src/zhuzhu_Copilot/ui/tokens.py` — `NUMERIC_FONT_STACK` / `FONT_WEIGHT` 档位表
+- `tests/test_chat_bubble_demo_parity.py`、`tests/test_settings_save_overlay.py` — 新回归用例

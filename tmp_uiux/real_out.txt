@@ -1,0 +1,21 @@
+﻿2026-10-25 13:54:45,042 [INFO] YARA 引擎已加载 1 个规则文件
+[dnd] showEvent is_admin=False _admin_dnd=False
+[dnd] 非管理员运行：走 Qt 原生拖放
+[WeChatBridge] credentials loaded, bound= True
+[WeChatBridge] auto-start polling on startup
+[WeChatBridge] poll loop started, gen= 1 token= 7f8dcfac5d49@im.bot:
+[WeChatBridge] msg[0] role=assistant content=
+
+## 分析结果
+
+**原因确认：**
+- QQ已成功启动，但当前处于**登录界面**
+- 截图显示：QQ登录窗口在前台，账号为"xiaozhu"，显示"自动
+[WeChatBridge] msg[1] role=tool content=已交还控制权：后续操控工具将被拒绝，直到用户明确要求继续。
+[WeChatBridge] msg[2] role=assistant content=
+
+已将控制权交还给您。请在QQ登录窗口中手动完成登录，登录成功后请告诉我「继续」，我会继续执行发送消息的任务。
+t1 (300ms): overlay visible=True angle=12.89980426463921
+t2 (600ms): overlay visible=True angle=12.89980426463921
+t3 (900ms): overlay visible=True angle=12.89980426463921
+after 1300ms dlg visible: True result: 0

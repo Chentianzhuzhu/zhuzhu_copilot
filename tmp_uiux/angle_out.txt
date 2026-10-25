@@ -1,0 +1,25 @@
+﻿2026-10-25 13:55:56,773 [INFO] YARA 引擎已加载 1 个规则文件
+[dnd] showEvent is_admin=False _admin_dnd=False
+[dnd] 非管理员运行：走 Qt 原生拖放
+[WeChatBridge] credentials loaded, bound= True
+[WeChatBridge] auto-start polling on startup
+[WeChatBridge] poll loop started, gen= 1 token= 7f8dcfac5d49@im.bot:
+[WeChatBridge] msg[0] role=assistant content=
+
+## 验证结果
+
+从最新截图中确认：
+- ✅ QQ 图标在任务栏第 **7** 个位置（红色企鹅图标，已启动状态）
+- ✅ 当前前台是 zhuzhu Cop
+[WeChatBridge] msg[1] role=tool content=[已被用户暂停] 用户在可视化界面上暂停了 AI 操控，本次操作未执行。请立即停止操控，等待用户在界面点「恢复」或明确对你说「继续」后再调用 control(a
+[WeChatBridge] msg[2] role=assistant content=
+
+## 执行进度汇报
+
+**已完成步骤：**
+1. ✅ 打开本地可视化界面（http://127.0.0.1:55333/）
+2. ✅ 截取全屏并查看任务栏状
+n samples: 3
+  765ms angle=0.0
+  1827ms angle=12.81
+  2042ms angle=14.37

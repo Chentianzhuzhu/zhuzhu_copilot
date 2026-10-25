@@ -1773,6 +1773,151 @@ def test_band_snapping_is_deterministic(monkeypatch):
     assert all(mod._snap_to_element(1000, 2000) == first for _ in range(5))
 
 
+# ---------------------------------------------------------------------------
+# 落点算法：质心 + 空洞纠正 + 细长块惩罚（2026-10-25 精度升级）
+#
+# 背景：纯坐标方案「点得不准」的剩余三类根因（都在真实 QQ/Blender 界面上复现过）：
+#   ① 外接框中心对不对称形状（气泡带尾巴、播放键、箭头）偏离视觉质量中心；
+#   ② 环形/凹形元素（圆环图标、文字行里的空格、U 形支架）的框中心落在**洞里**，
+#      点击直接打空 —— 最隐蔽的一类点偏；
+#   ③ 分隔线/滚动条等一维细条夹在按钮之间时，按「中心距离」会赢过按钮本体。
+# 修法：落点改取前景质量质心，且必须通过「该像素确实是前景」的检验；不合格按
+# 框心 → 螺旋外扩降级；排序里同距离时非细长块优先。
+# ---------------------------------------------------------------------------
+
+def test_snap_lands_on_centroid_for_asymmetric_shape(monkeypatch):
+    """不对称形状（方块 + 尾巴）：落点取质心，被尾巴拽偏的框中心不再用它。
+
+    几何：大方块 (20,10)-(60,60) + 小尾巴 (60,61)-(70,90)。整体外接框
+    (20,10)-(70,90) 的旧框心是 (45,50)，被尾巴拽到下方；质心靠近方块主体
+    (≈43,40)。带高 81 > 区域高的 62% ⇒ 行带模式被拒，走连通域模式。
+    """
+    mod = _load_module()
+    buf, w, h = _synth_region((48, 48, 48))
+    _paint_rect(buf, w, 20, 10, 60, 60, (200, 120, 90))     # 主体
+    _paint_rect(buf, w, 60, 61, 70, 90, (200, 120, 90))     # 尾巴（与主体相接）
+    _use_region(mod, monkeypatch, buf, w, h)                # 估计点落在局部 (48,48)
+    sx, sy, note = mod._snap_to_element(1000, 2000)
+    # 区域原点 = 估计点 - 48；期望落点局部 (43,41) → 屏幕 (995,1993)
+    assert (sx, sy) == (995, 1993), f"应吸附到主体质心 (995,1993)，实得 {(sx, sy)}"
+    assert "吸附" in note
+    # 旧框心是 (997,2002)：质心必须明显更靠近主体（y 至少少 8px）
+    assert sy <= 1994
+
+
+def test_snap_escapes_holes_for_ring_shapes(monkeypatch):
+    """环形/凹形元素：框中心落在洞里（背景像素）会点空 —— 落点必须落在元素上。
+
+    几何：圆角方环 (20,10)-(76,86)，洞 (38,28)-(58,68)。估计点恰好在洞心
+    (48,48)。旧算法取框心 = 洞心 = 背景，点下去打空；新算法螺旋外扩到环上
+    最近的前景像素（洞左缘 x=38）。
+    """
+    mod = _load_module()
+    buf, w, h = _synth_region((48, 48, 48))
+    _paint_rect(buf, w, 20, 10, 76, 86, (210, 210, 210))     # 外圈
+    _paint_rect(buf, w, 38, 28, 58, 68, (48, 48, 48))        # 挖洞（背景色）
+    _use_region(mod, monkeypatch, buf, w, h)
+    sx, sy, note = mod._snap_to_element(1000, 2000)
+    # 洞心局部 (48,48) → 屏幕 (1000,2000)；洞占 38..58×28..68，前 10 环都在洞里，
+    # 第 11 环（外框 [37,59]×[37,59] 的边界）首次出现前景 → 环序第一个命中 (37,37)
+    assert (sx, sy) == (989, 1989), f"落点应螺旋外扩到环上，实得 {(sx, sy)}"
+    assert "吸附" in note
+    # 「落点必须落在元素自身上」由 _landing_point 单元测试直接复核掩码；
+    # 这里只锁端到端行为：吸附确实发生了，且落点在环的外接框内。
+    assert 952 + 20 <= sx <= 952 + 76 and 1952 + 10 <= sy <= 1952 + 86
+
+
+def test_snap_prefers_button_over_slender_separator(monkeypatch):
+    """同距离时按钮块胜过细长条（分隔线/滚动条不会再把点击拽走）。
+
+    几何：按钮 (30,30)-(60,60) 与竖向滚动条 (70,10)-(78,90)。估计点 (65,48)
+    到两者外接框的距离都是 5。旧排序按「中心距离」：滚动条中心 (74,50) 比按钮
+    中心 (45,45) 更近 ⇒ 点击被拽到滚动条上；新排序同距离时非细长块优先 ⇒ 按钮。
+    """
+    mod = _load_module()
+    buf, w, h = _synth_region((48, 48, 48))
+    _paint_rect(buf, w, 30, 30, 60, 60, (200, 200, 200))     # 按钮
+    _paint_rect(buf, w, 70, 10, 78, 90, (120, 120, 120))     # 细长滚动条
+    _use_region_at(mod, monkeypatch, buf, w, h, 65, 48)      # 估计点局部 (65,48)
+    sx, sy, note = mod._snap_to_element(1000, 2000)
+    # 区域原点 = (1000-65, 2000-48) = (935,1952)；按钮中心局部 (45,45)
+    assert (sx, sy) == (980, 1997), f"应吸附到按钮中心 (980,1997)，实得 {(sx, sy)}"
+    assert "吸附" in note
+
+
+def test_landing_point_requires_pixel_on_the_element(monkeypatch):
+    """_landing_point 单元测试：质心在洞里 → 框心在洞里 → 螺旋外扩落到元素上；
+    实心形状下质心与旧框心完全一致（既有行为不变）。"""
+    mod = _load_module()
+    w = h = 96
+    bg = (48, 48, 48)
+    mask = bytearray(w * h)
+    # 环形：外圈 (20,10)-(76,86)，洞 (38,28)-(58,68)
+    for y in range(10, 87):
+        for x in range(20, 77):
+            if not (38 <= x <= 58 and 28 <= y <= 68):
+                mask[y * w + x] = 1
+    comp = {"area": sum(mask), "minx": 20, "miny": 10, "maxx": 76, "maxy": 86,
+            "sx": sum(x for y in range(10, 87) for x in range(20, 77)
+                      if mask[y * w + x]),
+            "sy": sum(y for y in range(10, 87) for x in range(20, 77)
+                      if mask[y * w + x])}
+    px, py = mod._landing_point(comp, mask, w, h)
+    assert mask[py * w + px] == 1, "落点必须是前景像素"
+    assert 20 <= px <= 76 and 10 <= py <= 86, "落点不许离开外接框"
+    assert px < 48, "洞在 38..58，落点应落在洞的左缘"
+    # 实心矩形：质心（四舍五入）必须与旧框心 (min+max+1)//2 一致
+    solid = bytearray(w * h)
+    for y in range(30, 61):
+        for x in range(20, 61):
+            solid[y * w + x] = 1
+    scomp = {"area": sum(solid), "minx": 20, "miny": 30, "maxx": 60, "maxy": 60,
+             "sx": sum(x for y in range(30, 61) for x in range(20, 61)),
+             "sy": sum(y for y in range(30, 61) for x in range(20, 61))}
+    assert mod._landing_point(scomp, solid, w, h) == (40, 45), \
+        "实心矩形下质心必须等于旧框心，保证既有行为不变"
+
+
+def test_merge_carries_centroid_mass(monkeypatch):
+    """碎片合并后 sx/sy 必须相加：落点要按合并后的整体质心算。
+
+    几何：一个不对称目标被高光切成左右两半（中缝 2px）。旧代码只合并外接框，
+    落点退化为框心；合并后质心偏向质量大的左半。
+    """
+    mod = _load_module()
+    comps = [{"area": 400, "sx": 400 * 25, "sy": 400 * 40,
+              "minx": 10, "miny": 30, "maxx": 34, "maxy": 69},
+             {"area": 100, "sx": 100 * 45, "sy": 100 * 40,
+              "minx": 37, "miny": 30, "maxx": 46, "maxy": 39}]
+    merged = mod._merge_components(comps)
+    assert len(merged) == 1
+    m = merged[0]
+    assert m["sx"] == 400 * 25 + 100 * 45 and m["sy"] == 400 * 40 + 100 * 40
+    # 合并后质心 x = (10000+4500)/500 = 29（偏向质量大的左半），框心则是 28
+    assert (m["sx"] + m["area"] // 2) // m["area"] == 29
+
+
+def test_snap_candidate_centers_use_landing_points(monkeypatch):
+    """refine_point 候选菜单的坐标必须用落点（质心），不是外接框中心。
+
+    候选坐标是模型唯一会照抄/按编号点的数字，必须是最准的那个。
+    """
+    mod = _load_module()
+    buf, w, h = _synth_region((48, 48, 48))
+    # 单个不对称目标：方块 + 右下小尾巴
+    _paint_rect(buf, w, 20, 20, 60, 55, (200, 200, 200))
+    _paint_rect(buf, w, 60, 55, 68, 68, (200, 200, 200))
+    _use_region(mod, monkeypatch, buf, w, h)
+    cands = []
+    mod._snap_core(1000, 2000, cands=cands)
+    blocks = [c for c in cands if c["kind"] == "块"]
+    assert blocks, "应至少有一个块候选"
+    c = blocks[0]
+    # 区域原点 (952,1952)；框心 (44,44) → (996,1996)；质心偏左上
+    assert (c["x"], c["y"]) != (996, 1996), "候选坐标不应还是旧框心"
+    assert c["x"] < 996 and c["y"] < 1996, f"候选应取质心，实得 {(c['x'], c['y'])}"
+
+
 def test_bands_carry_their_horizontal_extent(monkeypatch):
     """行带必须带水平范围（xmin/xmax）—— 候选菜单要把每一行**框出来**给模型看。
 
@@ -2197,9 +2342,39 @@ def test_taskbar_slot_lines_are_clickable_and_flag_running():
     assert "1. 中心(311,1052)" in lines[0] and "23×24" in lines[0]
     assert "已启动" in lines[0] and "已启动" not in lines[1]
     assert "本次点击" in lines[1]
-    boxes = mod._taskbar_boxes(slots, pick=2)
-    assert [b[4] for b in boxes] == [0x00FFFF00, 0x00FF00FF], "选中项要用洋红区分"
-    assert [b[5] for b in boxes] == ["1", "2"]
+
+
+def test_taskbar_images_carry_no_markers(monkeypatch):
+    """任务栏/面板返给模型的图必须是纯净原图：不画编号框、不画准星、无任何标记。
+
+    槽位信息全部走文字表（编号/中心坐标/尺寸），图上不叠加任何东西 —— 标记会盖住
+    图标本身，且框线在缩放的条带图上反而干扰认图。
+    """
+    mod = _load_module()
+    seen = []
+
+    def _capture(src_dc, sx, sy, sw, sh, tw, cells=0, cursor_pt=None,
+                 smooth=True, marks=None, level=6, boxes=None):
+        seen.append({"boxes": boxes, "marks": marks, "cells": cells,
+                     "cursor": cursor_pt})
+        return b"PNG", 900, 40
+
+    monkeypatch.setattr(mod, "_capture_scaled", _capture)
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_guard", lambda what: "")
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    monkeypatch.setattr(mod.user32, "GetDC", lambda h: 1)
+    monkeypatch.setattr(mod.user32, "ReleaseDC", lambda h, d: 1)
+    bits, w, sh, top = _synth_taskbar(
+        icons=[(300, 322, (240, 90, 60), 0), (330, 352, (70, 200, 120), 0)])
+    _use_taskbar(mod, monkeypatch, bits, w, sh)
+    out = mod.tool_taskbar_open({})
+    assert out[1]["type"] == "image"
+    assert seen and all(not s["boxes"] and not s["marks"] and not s["cells"]
+                        and s["cursor"] is None for s in seen), \
+        f"任务栏图必须纯净，实得叠加参数 {seen}"
+    assert "无任何标记" in out[0]["text"]
 
 
 def test_taskbar_open_reports_bad_index_and_switches_foreground(monkeypatch):

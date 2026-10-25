@@ -1,0 +1,4 @@
+﻿before start isHidden: True
+overlay visible: True isHidden: False geometry: PyQt6.QtCore.QRect(0, 0, 400, 300)
+parent visible: True
+done

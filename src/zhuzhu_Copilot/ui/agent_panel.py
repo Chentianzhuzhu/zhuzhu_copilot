@@ -4311,21 +4311,39 @@ _SAVE_OVERLAY_MIN_MS = 900   # 保存遮罩最短展示时长（避免一闪而�
 class _LoadingOverlay(QWidget):
     """保存设置时的磨砂遮罩：高斯模糊下层内容 + 8 个圆点转圈（60fps）+ 描述文字。
 
-    背景在 start 时一次性抓取父窗口并高斯模糊（保存期间界面静止，无需实时模糊）；
-    8 圆点按相位差形成「高亮圆点沿圆周追逐」的拖尾，QTimer 16ms 驱动 ≈ 60fps。
+    **上屏时机（2026-10-25 用户硬性要求：点保存当帧就要看到遮罩）**：
+    旧实现把「全尺寸高斯模糊」放在 `show()` 之前同步做 —— `QGraphicsBlurEffect`
+    半径 22 渲染整幅对话框实测几百毫秒，叠加保存前的页面补齐与数据收集，用户
+    点保存后要等半秒以上遮罩才出现（反馈「过 500ms 之后才弹出」）。
+
+    现在分两步，重活全部让路：
+    1. `start()` 只做**快**操作：`grab()` 抓一张父窗口图（复用对话框已有
+       backing store，冷启动约 20ms）→ 立刻 `show()` + 启动转圈定时器。第一帧
+       就是「压暗 + 8 圆点追逐 + 描述文字」，点击当帧可见，不再等模糊；
+    2. 高斯模糊放到 `QTimer.singleShot(0, ...)` 的下一回合异步算（底图降采样
+       1/4 再模糊、算完放大回全尺寸，视觉半径不变、成本降一个数量级），算完
+       `update()`，磨砂底纹随后补上，观感是「遮罩当帧落位、磨砂随即 refinements」。
+
+    背景图只需一张（保存期间界面静止，无需实时模糊）；8 圆点按相位差形成
+    「高亮圆点沿圆周追逐」的拖尾，QTimer 16ms 驱动 ≈ 60fps。
     """
 
     DOTS = 8
     TRACK_R = 15.0      # 圆点轨道半径
     DOT_R = 3.3         # 圆点基础半径（head 处）
     PERIOD_MS = 880.0   # 旋转一周周期
+    #: 模糊降采样比例：1/4 线性尺寸 → 像素量 1/16、半径同比缩小，总成本约降
+    #: 一个数量级；模糊图最后放大回全尺寸（SmoothTransformation），视觉半径不变
+    BLUR_SCALE = 0.25
+    BLUR_RADIUS = 22.0  # 全尺寸视觉模糊半径（降采样后按比例缩小）
 
     def __init__(self, parent, accent: str, text: str, text_color: str):
         super().__init__(parent)
         self._accent = QColor(accent)
         self._text = text
         self._text_color = QColor(text_color)
-        self._blur = None
+        self._blur = None           # 磨砂底纹（算好才非 None；None 时只有压暗+转圈）
+        self._raw = None            # start() 抓的父窗口原图（模糊算完即释放）
         self._frame = 0
         self._angle = 0.0
         self._t0 = 0.0
@@ -4338,37 +4356,88 @@ class _LoadingOverlay(QWidget):
         self._timer.timeout.connect(self._tick)
 
     def start(self):
+        """立即上屏：抓图 → show + 转圈；高斯模糊异步补算（见类文档）。
+
+        抓图必须在 `show()` 之前（否则 grab 会把遮罩自己拍进去）。用 `grab()`
+        而不是「painter 缩放 render」：实测本机 render 首次调用要 ~95ms（光栅
+        引擎冷启动），grab 复用了对话框已有 backing store，冷启动也只 ~20ms ——
+        「点击当帧可见」要的正是首次点击的延迟。模糊前的降采样在 `_blur_async`
+        里做（异步，不计入首帧延迟）。
+        """
         par = self.parent()
         self.setGeometry(par.rect())
-        self._blur = self._capture_blur()
+        try:
+            self._raw = par.grab() if par is not None else None
+        except Exception:
+            self._raw = None       # 抓图失败不阻碍遮罩：只有压暗 + 转圈
         self.raise_()
-        self.show()
+        self.show()                # ← 当帧上屏，不等模糊
         self._frame = 0
         self._t0 = time.monotonic()
         self._timer.start()
+        # 模糊放到下一事件回合：此时遮罩已在屏上，主线程先响应绘制与转圈
+        QTimer.singleShot(0, self._blur_async)
 
     def stop(self):
         self._timer.stop()
+        self._blur = None          # 及时释放两幅全尺寸位图（内存）
+        self._raw = None
         self.hide()
 
-    def _capture_blur(self):
-        """抓取父窗口当前画面并高斯模糊（此时遮罩尚未显示，grab 不含遮罩）。"""
-        from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem,
-                                     QGraphicsBlurEffect)
-        pm = self.parent().grab()
-        effect = QGraphicsBlurEffect()
-        effect.setBlurRadius(22)
-        scene = QGraphicsScene()
-        item = QGraphicsPixmapItem(pm)
-        item.setGraphicsEffect(effect)
-        scene.addItem(item)
-        scene.setSceneRect(0, 0, pm.width(), pm.height())
-        out = QPixmap(pm.size())
-        out.fill(Qt.GlobalColor.transparent)
-        p = QPainter(out)
-        scene.render(p)
-        p.end()
-        return out
+    def _blur_async(self):
+        """异步高斯模糊：降采样 1/4 → 模糊 → 放大回全尺寸 → update。
+
+        全尺寸模糊在低端机/高 DPI 下要几百毫秒（旧实现把它放在 show() 之前同步
+        做，正是「点保存后半秒没反应」的主因）；降采样后总成本降到几十毫秒级，
+        且它在遮罩已显示之后的下一回合执行，不再计入「点击 → 遮罩可见」的延迟。
+        """
+        raw = self._raw
+        if raw is None or raw.isNull():
+            return
+        try:
+            from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem,
+                                         QGraphicsBlurEffect)
+            sw = max(1, int(raw.width() * self.BLUR_SCALE))
+            sh = max(1, int(raw.height() * self.BLUR_SCALE))
+            small = raw.scaled(sw, sh,
+                               Qt.AspectRatioMode.IgnoreAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            small.setDevicePixelRatio(1.0)   # 按设备像素模糊，避开 DPR 缩放歧义
+            effect = QGraphicsBlurEffect()
+            effect.setBlurRadius(self.BLUR_RADIUS * self.BLUR_SCALE)
+            scene = QGraphicsScene()
+            item = QGraphicsPixmapItem(small)
+            item.setGraphicsEffect(effect)
+            scene.addItem(item)
+            scene.setSceneRect(0, 0, small.width(), small.height())
+            out = QPixmap(small.size())
+            out.fill(Qt.GlobalColor.transparent)
+            p = QPainter(out)
+            scene.render(p)
+            p.end()
+            # 放大回逻辑全尺寸（Smooth 双线性再糊一层，正好是磨砂观感）。
+            # DPR 固定 1、设备尺寸 = 父窗口逻辑尺寸：drawPixmap(0,0) 正好铺满，
+            # 且不受屏幕 DPI 缩放影响（磨砂底纹不追求设备像素级清晰）。
+            par = self.parent()
+            fw = max(1, int(par.width())) if par is not None else raw.width()
+            fh = max(1, int(par.height())) if par is not None else raw.height()
+            full = out.scaled(fw, fh,
+                              Qt.AspectRatioMode.IgnoreAspectRatio,
+                              Qt.TransformationMode.SmoothTransformation)
+            full.setDevicePixelRatio(1.0)
+            self._blur = full
+            self._raw = None           # 原图不再需要，释放
+            self.update()
+        except Exception:
+            self._blur = None          # 模糊失败：保留压暗 + 转圈，不阻碍保存流程
+            self._raw = None
+
+    def resizeEvent(self, e):
+        # 父对话框尺寸变化（保存前补建页面可能触发布局变化）时遮罩跟随铺满
+        par = self.parent()
+        if par is not None and self.geometry() != par.rect():
+            self.setGeometry(par.rect())
+        super().resizeEvent(e)
 
     def _tick(self):
         self._frame += 1
@@ -9317,8 +9386,37 @@ class _AgentSettingsDialog(QDialog):
             self.proxy_status_lbl.setText(_ui("状态读取失败：") + type(e).__name__)
 
     def _save(self, *_):
-        # 懒加载页面后保存：先补齐全部页面，确保读取到所有页控件的当前状态
-        self._ensure_all_pages()
+        # 遮罩必须先于一切重活上屏（用户硬性要求：点保存**当帧**就要看到高斯模糊
+        # 遮罩 + 圆点转圈，不得过 500ms 才弹出）。旧顺序把页面补齐（_ensure_all_pages）
+        # 与全量数据收集放在遮罩之前，点击后要等这几百毫秒遮罩才出现。
+        # 新顺序：抓图 → 显示遮罩 + 转圈（当帧）→ 再补页面 / 收集数据 / 持久化。
+        # 页面补建在 self.stack 内（栈是对话框子控件、遮罩的兄弟层级之下），
+        # z 序压在遮罩之下，不会盖住遮罩；遮罩自身 resizeEvent 跟随父尺寸。
+        self._overlay = _LoadingOverlay(
+            self, self._ACCENT, _ui("请等待，正在应用更改中"), self._TEXT)
+        self._overlay.start()
+        # show() 只是把绘制事件入队：后面的页面补齐/数据收集会占住主线程几百毫秒，
+        # 若不在这里同步重绘一帧，用户仍要等这些活干完才看到遮罩。repaint() 绕过
+        # 事件队列直接画（压暗 + 转圈第 0 帧 + 文字），磨砂底纹由 _blur_async 随后补上。
+        self._overlay.repaint()
+        self._save_t0 = time.monotonic()
+        # 分帧补齐全部页面（每帧构建 2 个），让转圈动画在构建间隙继续流畅播放，
+        # 避免一次性构建 17 个页面同步阻塞主线程把转圈卡成定格。
+        self._build_pages_step()
+
+    def _build_pages_step(self):
+        # 每帧只构建 1 个页面：构建是同步 CPU 操作，一次构建多个会长时间占住
+        # 主线程，把转圈动画卡成定格。每页构建后留 10ms 间隙，让 16ms 的
+        # 动画 QTimer 有机会触发（约 30fps 可见推进），快页面之间动画顺滑。
+        if self.stack.count() < len(self._page_builders):
+            _page = self._page_builders[self.stack.count()]()
+            _install_focus_glow_all(_page)
+            self.stack.addWidget(self._wrap_page(_page))
+            QTimer.singleShot(10, self._build_pages_step)
+        else:
+            QTimer.singleShot(40, self._collect_and_save)
+
+    def _collect_and_save(self):
         # 多服务商：基于卡片列表持久化，全部服务商统一参与路由
         providers = [dict(p) for p in getattr(self, "_providers", [])]
         if not providers:
@@ -9399,13 +9497,9 @@ class _AgentSettingsDialog(QDialog):
                     p._set_session_workdir(sid, wd_edit.text().strip())
         except Exception:
             pass
-        # 数据收集完成 → 显示磨砂遮罩（高斯模糊 + 8 圆点转圈），延迟执行持久化，
-        # 让遮罩先渲染、转圈流畅（60fps），避免保存一闪而过。
+        # 数据收集完成（遮罩已当帧在屏、转圈流畅）→ 延迟执行持久化，避免保存
+        # 逻辑阻塞主线程把转圈卡成定格；_SAVE_OVERLAY_MIN_MS 保证最短展示不闪烁。
         self._pending_data = data
-        self._overlay = _LoadingOverlay(
-            self, self._ACCENT, _ui("请等待，正在应用更改中"), self._TEXT)
-        self._overlay.start()
-        self._save_t0 = time.monotonic()
         QTimer.singleShot(220, self._finish_save)
 
     def _finish_save(self):

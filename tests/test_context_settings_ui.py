@@ -157,7 +157,14 @@ def test_effort_slider_auto_maps_upstream_declared_levels():
 
 def test_settings_and_engine_wiring_for_context():
     """1M 开关必须写入配置；引擎创建必须消费 context 决策（窗口/预留输出/模式）"""
-    save_src = inspect.getsource(ap._AgentSettingsDialog._save)
+    # 保存链已拆分为 _save（遮罩+调度）→ _build_pages_step（分帧补页）→
+    # _collect_and_save（数据收集）：守卫覆盖整条链，键名搬到哪个方法都拦得住。
+    save_src = "".join(
+        inspect.getsource(m)
+        for m in (ap._AgentSettingsDialog._save,
+                  ap._AgentSettingsDialog._build_pages_step,
+                  ap._AgentSettingsDialog._collect_and_save)
+    )
     assert '"context_1m"' in save_src
     assert "self.context_1m_check.isChecked()" in save_src
 

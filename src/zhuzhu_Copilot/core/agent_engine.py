@@ -69,7 +69,8 @@ _CONCURRENT_MAX_WORKERS = 4
 # 基础/交互工具白名单：这些工具的调用永不触发「技能规范硬拦截」。
 # 例如 ask_user 提问是用户交互，被无关技能 instruction 顺带提及而误拦截会让
 # 模型收到"该工具由某技能规范化"的提示、进而跳过提问/延迟提问（用户已多次遇到）。
-_NO_INTERCEPT_TOOLS = frozenset({"ask_user"})
+# use_skill 是「查阅技能规范」的元工具本身：拦截它等于挡住按规范办事的入口。
+_NO_INTERCEPT_TOOLS = frozenset({"ask_user", "use_skill"})
 
 # ---- 子 Agent / 跨工作流派发工具族（准入受任务复杂度分档控制）----
 # 简单与中等任务禁止派发：schema 层剔除 + 执行层硬拦截（双保险，提示词干预无法绕过）。
@@ -261,6 +262,7 @@ _CORE_TOOLS = frozenset({
     # agent 收到「[微信文件] 已保存到本地…」后必须能立刻读取，任务裁剪不得剔除
     "read_docx", "read_pptx", "read_xlsx", "read_pdf", "extract_text", "view_image",
     "system_info", "get_time", "env_var", "ask_user", "clipboard",
+    "use_skill",   # 对话内按名调用技能（读规范并入本任务）：任何任务都可能被要求「用 XX 技能」
     "save_memory", "load_memory", "update_todo", "list_todo", "git_info",
     "explore_project",
     "inspect_customization",   # 深度自定义总入口：任何自定义/新增功能场景都需先盘点现状
@@ -345,8 +347,11 @@ _TASK_GROUPS = [
      ("并行", "并发", "大规模搜索", "分布式", "同时处理", "多任务"),
      frozenset({"dispatch_sub_agents", "search_large"})),
     ("skill",
-     ("创建技能", "新技能", "自定义技能", "下载技能", "安装技能"),
-     frozenset({"create_skill"})),
+     ("创建技能", "新技能", "自定义技能", "下载技能", "安装技能",
+      # 对话内调用技能：「用 XX 技能 / 按 XX 规范来」等点名措辞
+      "调用技能", "使用技能", "用技能", "按技能", "技能规范", "用一下技能",
+      "技能调用", "调用一下"),
+     frozenset({"create_skill", "use_skill"})),
     ("tts",
      ("朗读", "语音回复", "读出来", "听一下", "配音"),
      frozenset({"tts_speak"})),
@@ -355,7 +360,12 @@ _TASK_GROUPS = [
       "创建工作流", "切换工作流", "编辑agent", "编辑 agent", "创建agent", "创建 agent",
       "agent 模板", "agent模板", "核心文件", "切换调用", "调用工作流", "agent 能力", "agent能力",
       "深度自定义", "深度定制", "全面自定义", "自定义功能", "新增功能", "添加功能",
-      "扩展功能", "改造", "深度定制 agent", "自定义"),
+      "扩展功能", "改造", "深度定制 agent", "自定义",
+      # 直接描述要生成的插件：自然语言下单即走 create_plugin / create_copilot_plugin
+      "生成插件", "创建一个插件", "生成一个插件", "做个插件", "做一个插件", "写个插件",
+      "开发插件", "插件开发", "制作插件", "定制插件", "新的插件", "新插件",
+      "自定义插件", "copilot插件", "copilot 插件", "agent插件",
+      "agent 插件", "热插拔", "插件生成"),
      frozenset({"list_workflows", "create_workflow", "switch_workflow",
                 "inspect_workflow", "edit_agent_file", "delete_workflow",
                 "list_workflow_agents", "use_workflow_agent",
@@ -363,7 +373,7 @@ _TASK_GROUPS = [
                 "list_builtin_workflows", "shared_context",
                 # 插件生成：自定义任务裁剪后仍需可用（自然语言生成/手动管理）
                 "create_plugin", "create_copilot_plugin", "apply_copilot_plugin",
-                "revert_copilot_plugin"})),
+                "revert_copilot_plugin", "use_skill"})),
 ]
 _TASK_GROUP_TOOLS = {g: tools for g, _kw, tools in _TASK_GROUPS}
 
@@ -1581,6 +1591,21 @@ class AgentEngine:
                         self.workflow = wf_name or None
                         if self.on_engine_rebuild:
                             self.on_engine_rebuild(self.workflow or "")
+                # use_skill：按名调用技能 → 并入本任务技能集（_task_skills 让路由硬拦截
+                # 覆盖它；_auto_skills 让 _sync_skill_msg 后续轮次持续注入规范正文）。
+                # 规范正文已由工具结果直接返回（当轮即可照做），这里只做「持续生效」。
+                if isinstance(res, dict) and res.get("__activate_skill__"):
+                    sk = str(res.pop("__activate_skill__") or "").strip()
+                    if sk:
+                        self._task_skills.add(sk)
+                        if sk not in (self._auto_skills or []):
+                            self._auto_skills = list(self._auto_skills or []) + [sk]
+                        # 已由工具结果完整给出规范：标记为已读，避免路由硬拦截
+                        # 再注入一遍同一技能（每技能最多注入一次的节流池）
+                        self._skills_read.add(sk)
+                        self._skill_consulted.add(sk)
+                        res["text"] = (res.get("text") or "") + \
+                            f"\n✅ 技能「{sk}」已纳入本任务（后续轮次持续生效）"
                 # 扩展热加载：create_skill / create_plugin / create_mcp 等只把文件与配置写盘，
                 # 运行中的引擎还持有技能缓存与 MCP 连接两处快照 —— 不刷新的话模型在同一次任务里
                 # 刚生成的工具调不动（要等下一个任务甚至重启）。刷新后摘要回填进工具结果，

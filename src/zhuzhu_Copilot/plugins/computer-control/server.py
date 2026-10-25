@@ -849,8 +849,9 @@ def _region_diff(a: bytes, b: bytes, tol: int = 32) -> tuple:
 # 图上 1px 的估计误差在 4K 屏上就是 3px；而 Blender / 剪辑软件里 20px 高的按钮、
 # 菜单项密集排布，差 3px 就点到隔壁了。可访问性树（UIA）能给出精确矩形，但这类
 # GPU 自绘界面根本没有控件树。于是改用**纯像素**的办法：元素与背景的色差天然把
-# 界面切成一块块连通域，找到离估计点最近的那一块，点它的几何中心 —— 不依赖任何
-# 控件信息，对自绘界面同样有效，而且结果是确定性的（同样输入必得同样输出）。
+# 界面切成一块块连通域，找到离估计点最近的那一块，点它的**落点**（前景质量质心，
+# 且必须落在元素自身上）—— 不依赖任何控件信息，对自绘界面同样有效，而且结果是
+# 确定性的（同样输入必得同样输出）。
 SNAP_REACH_DEFAULT = 88     # 默认搜索半径（像素）：越大越能救回偏得多的估计，也越慢。
                             # 取 88 而不是更小，是被**列表**逼出来的：联系人/消息列表的
                             # 一行有几百像素宽，但内容（头像、名字）只占左边一小块，
@@ -965,7 +966,13 @@ def _fg_components(bits: bytes, w: int, h: int, bg, tol: int) -> list:
 
 def _components_from_mask(is_fg: bytearray, w: int, h: int) -> list:
     """连通域标记本体。掩码单独传进来，是为了让「连通域」与「行带」共用同一份掩码 ——
-    区域放大到 176×176 后，重复构造掩码是纯浪费（实测能省掉近三成耗时）。"""
+    区域放大到 176×176 后，重复构造掩码是纯浪费（实测能省掉近三成耗时）。
+
+    每个连通域额外记录前景像素的坐标和（sx/sy）：落点要按**质心**算而不是外接框
+    中心算（见 _landing_point）—— 框中心对不对称形状（气泡带尾巴、播放键、箭头）
+    会偏，对环形/凹形元素甚至会落到元素外面的洞里。坐标和在漫水时顺路累加，零额外
+    遍历开销；_merge_components 合并碎片时也必须把它们加起来。
+    """
     n = w * h
     if len(is_fg) < n:
         return []
@@ -977,12 +984,15 @@ def _components_from_mask(is_fg: bytearray, w: int, h: int) -> list:
         seen[start] = 1
         stack = [start]
         area = 0
+        sumx = sumy = 0
         minx = maxx = start % w
         miny = maxy = start // w
         while stack:
             cur = stack.pop()
             area += 1
             cx, cy = cur % w, cur // w
+            sumx += cx
+            sumy += cy
             if cx < minx:
                 minx = cx
             elif cx > maxx:
@@ -1012,7 +1022,7 @@ def _components_from_mask(is_fg: bytearray, w: int, h: int) -> list:
                     seen[k] = 1
                     stack.append(k)
         out.append({"area": area, "minx": minx, "miny": miny,
-                    "maxx": maxx, "maxy": maxy})
+                    "maxx": maxx, "maxy": maxy, "sx": sumx, "sy": sumy})
     return out
 
 
@@ -1026,6 +1036,9 @@ def _merge_components(comps: list, gap: int = SNAP_MERGE_GAP,
 
     只合并「一轴间距 ≤ gap 且另一轴至少重叠 overlap 像素」的碎片：并排按钮之间的缝隙
     通常 ≥6px，不会被并到一起；斜对角的两点也不满足重叠条件，不会拼出假目标。
+
+    合并时 sx/sy（前景像素坐标和）必须一起加：落点按质心算（见 _landing_point），
+    少了它们，合并后的候选就只剩框中心可用。
     """
     if len(comps) < 2:
         return comps
@@ -1046,6 +1059,8 @@ def _merge_components(comps: list, gap: int = SNAP_MERGE_GAP,
                 if not (near_x or near_y):
                     continue
                 out[i] = {"area": a["area"] + b["area"],
+                          "sx": a.get("sx", 0) + b.get("sx", 0),
+                          "sy": a.get("sy", 0) + b.get("sy", 0),
                           "minx": min(a["minx"], b["minx"]),
                           "miny": min(a["miny"], b["miny"]),
                           "maxx": max(a["maxx"], b["maxx"]),
@@ -1056,6 +1071,52 @@ def _merge_components(comps: list, gap: int = SNAP_MERGE_GAP,
             if merged:
                 break
     return out
+
+
+def _landing_point(c: dict, mask: bytearray, w: int, h: int) -> tuple:
+    """候选元素的最终落点（区域局部坐标）：质心优先，但必须落在元素自身上。
+
+    为什么不能只用外接框中心（旧行为，实测三类点不准）：
+      ① 不对称形状 —— 对话气泡带尾巴、播放键、箭头、拨码开关：框中心被「伸出去
+         的那一块」拽离视觉中心，质心是元素可见质量的中心，更接近「按下去会生效」
+         的那个点；
+      ② 环形 / 凹形元素 —— 圆环图标的中心、文字行里的空格、U 形支架：框中心落在
+         洞里（背景像素），点下去**打空**，这是纯坐标方案里最隐蔽的一类点偏；
+      ③ 抗锯齿与高光把元素切成碎片再合并后，框里可能含一两像素的背景缝。
+
+    落点必须过「该像素确实是前景」的检验（mask 里查），否则按以下顺序降级：
+    质心 → 外接框中心 → 以框心为起点在外接框内**逐环螺旋外扩**找最近的前景像素。
+    螺旋只在外接框内进行 —— 绝不离开这个元素，保证落点始终属于它自己。
+
+    确定性：同一输入必得同一输出（环的扫描顺序固定：上边→下边→左边→右边，
+    环内从左到右/从上到下），吸附结果可复现、可测试。
+
+    取整约定（四舍五入、半数向上）：实心矩形下质心恰等于旧的外接框中心
+    (min+max+1)//2，既有行为完全不变；只有不对称/凹形元素才走质心路径。
+    """
+    area = max(1, int(c.get("area") or 0))
+    half = area // 2
+    cx = (int(c.get("sx") or 0) + half) // area
+    cy = (int(c.get("sy") or 0) + half) // area
+    bx = (int(c["minx"]) + int(c["maxx"]) + 1) // 2
+    by = (int(c["miny"]) + int(c["maxy"]) + 1) // 2
+    for px, py in ((cx, cy), (bx, by)):
+        if 0 <= px < w and 0 <= py < h and mask[py * w + px]:
+            return px, py
+    # 螺旋外扩：从框心出发，逐环找最近的前景像素（只在外接框内）
+    x0, y0, x1, y1 = int(c["minx"]), int(c["miny"]), int(c["maxx"]), int(c["maxy"])
+    span = max(x1 - bx, bx - x0, y1 - by, by - y0)
+    for r in range(1, span + 2):
+        ytop, ybot = max(y0, by - r), min(y1, by + r)
+        xl, xr = max(x0, bx - r), min(x1, bx + r)
+        ring = ([(x, ytop) for x in range(xl, xr + 1)]
+                + [(x, ybot) for x in range(xl, xr + 1)]
+                + [(xl, y) for y in range(ytop, ybot + 1)]
+                + [(xr, y) for y in range(ytop, ybot + 1)])
+        for px, py in ring:
+            if 0 <= px < w and 0 <= py < h and mask[py * w + px]:
+                return px, py
+    return cx, cy        # 理论上到不了这里（候选至少有一个前景像素）；兜底返回质心
 
 
 def _fg_bands(bits: bytes, w: int, h: int, bg, tol: int,
@@ -1160,14 +1221,16 @@ def _pick_band(bands: list, ly: int, h: int):
 
 
 def _fill_candidates(out: list, comps: list, bands: list, usable, x, y, lx, ly,
-                     x0: int, y0: int, w: int, h: int) -> None:
+                     x0: int, y0: int, w: int, h: int, mask=None) -> None:
     """把区域里的候选目标编号填进 out（按离估计点由近到远），供 refine_point 列菜单。
 
     两类候选：
       * 「行」= 横向内容带（列表行 / 菜单项 / 工具条的一排）。列表整行可点，所以候选点
         取 (估计点的 x, 带中心 y) —— **只对齐 y、不把 x 拽到带中心**，否则工具条上会
         点到隔壁按钮（这条回归专门有测试）。
-      * 「块」= 连通域（按钮、图标、单个文字块）。候选点取其外接矩形中心。
+      * 「块」= 连通域（按钮、图标、单个文字块）。候选点取其**落点**（质心，落在元素
+        自身上的最近前景像素，见 _landing_point）—— 外接框中心对不对称/凹形元素会偏，
+        候选坐标是模型唯一会照抄的数字，必须是最准的那个。
     两类都过同一套「像不像一个可点目标」的判据（_band_ok / usable），所以菜单里不会
     出现分隔线、视口背景这类假目标。
     """
@@ -1185,9 +1248,14 @@ def _fill_candidates(out: list, comps: list, bands: list, usable, x, y, lx, ly,
     for c in comps:
         if not usable(c):
             continue
+        if mask is not None:
+            px, py = _landing_point(c, mask, w, h)
+        else:
+            px = (c["minx"] + c["maxx"] + 1) // 2
+            py = (c["miny"] + c["maxy"] + 1) // 2
         pool.append({"kind": "块",
-                     "x": x0 + (c["minx"] + c["maxx"] + 1) // 2,
-                     "y": y0 + (c["miny"] + c["maxy"] + 1) // 2,
+                     "x": x0 + px,
+                     "y": y0 + py,
                      "w": c["maxx"] - c["minx"] + 1,
                      "h": c["maxy"] - c["miny"] + 1,
                      "box": (x0 + c["minx"], y0 + c["miny"],
@@ -1228,10 +1296,11 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
       3. 把色差超过阈值的像素做 4 邻域连通域标记（按钮填充 + 其上的文字会连成一块，
          元素之间的背景缝隙自然把它们分开）；
       4. 淘汰不像控件的连通域：面积过小（噪点/笔画）、面积过大（背景/整块面板）、
-         **外接矩形触到区域边界**（真实尺寸未知 ⇒ 中心不可信）、边长过小；
+         **外接矩形触到区域边界**（真实尺寸未知 ⇒ 落点不可信）、边长过小；
       5. 在幸存候选里按可信度挑一个：**估计点落在其中的候选优先**，其次按到候选
-         外接矩形的距离、再到中心距离、最后偏向更大的块（同距离时按钮块胜过零碎笔画），
-         吸附到它的外接矩形中心。
+         外接矩形的距离、再到中心距离、同距离时非细长块优先、再偏向更大的块
+         （按钮块胜过零碎笔画与分隔线），吸附到它的**落点**（质心，且必须落在
+         元素自身上 —— 外接框中心对不对称/凹形元素会偏甚至落进洞里，见 _landing_point）。
 
     保守原则：任何一步不成立就**放弃吸附、原样返回**。宁可不动，也不能把点击带到
     别的地方 —— 这正是它敢默认开启的原因。
@@ -1284,7 +1353,7 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
              for b in bands[:SNAP_BAND_MAX_REPORT]]
 
     if cands is not None:
-        _fill_candidates(cands, comps, bands, _usable, x, y, lx, ly, x0, y0, w, h)
+        _fill_candidates(cands, comps, bands, _usable, x, y, lx, ly, x0, y0, w, h, mask)
 
     if band is not None:
         # ---- 行/带模式：y 对齐到这一条带的中心 ----
@@ -1301,7 +1370,10 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
                 pick = (dx, c)
         if pick is not None:
             c = pick[1]
-            sx = x0 + (c["minx"] + c["maxx"] + 1) // 2
+            # 落点取质心（不对称形状/凹形元素的视觉质量中心，见 _landing_point），
+            # 而不是外接框中心 —— 框中心对带尾巴的气泡、圆环、文字行都会偏。
+            px, _py = _landing_point(c, mask, w, h)
+            sx = x0 + px
         else:
             sx = int(x)
         shift = ((sx - int(x)) ** 2 + (sy - int(y)) ** 2) ** 0.5
@@ -1314,7 +1386,7 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
                f"{band['ymax'] - band['ymin'] + 1}px")
         if pick is not None:
             how += (f"；x 取同行最近的 {c['maxx'] - c['minx'] + 1}×"
-                    f"{c['maxy'] - c['miny'] + 1}px 连通域中心")
+                    f"{c['maxy'] - c['miny'] + 1}px 连通域落点（质心，已校验落在元素上）")
         else:
             how += "；该行内容离估计点较远，x 保持你给的位置（整行都可点，这是安全的）"
         return sx, sy, f"{how}。由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。", ruler
@@ -1337,9 +1409,16 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         cy = (c["miny"] + c["maxy"]) / 2.0
         cdist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
         area = (c["maxx"] - c["minx"] + 1) * (c["maxy"] - c["miny"] + 1)
-        # 排序键：点在候选内优先；其次离外接矩形近；再其次中心近；同距离时大块优先
-        # （按钮整体胜过按钮上零碎的文字笔画）；最后用坐标兜底，保证确定性。
-        key = (0 if inside else 1, round(dist, 3), round(cdist, 3), -area,
+        # 细长块惩罚：分隔线/滚动条/边框是一维的，并排按钮之间夹着的常常就是它们。
+        # 旧行为只比「离框距离 + 中心距离 + 面积」，一根 5×60 的细线中心距离往往
+        # 比 nearby 的按钮更近，会把点击拽到线上。同距离时按钮块必须胜过细条。
+        bw = c["maxx"] - c["minx"] + 1
+        bh = c["maxy"] - c["miny"] + 1
+        slender = 1 if (bw > 5 * bh or bh > 5 * bw) else 0
+        # 排序键：点在候选内优先；其次离外接矩形近；同距离时非细长块优先；再其次
+        # 中心近；再大块优先（按钮整体胜过按钮上零碎的文字笔画）；最后用坐标兜底，
+        # 保证确定性。
+        key = (0 if inside else 1, round(dist, 3), slender, round(cdist, 3), -area,
                c["miny"], c["minx"])
         if best is None or key < best[0]:
             best = (key, c, inside)
@@ -1347,16 +1426,19 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         return x, y, "", ruler
 
     c = best[1]
-    sx = x0 + (c["minx"] + c["maxx"] + 1) // 2
-    sy = y0 + (c["miny"] + c["maxy"] + 1) // 2
+    # 落点 = 质心（落在元素自身上的最近前景像素，见 _landing_point 的三类修正）。
+    # 对外接框中心是同一形状的实心块时二者一致；对不对称/凹形元素质心更准。
+    px, py = _landing_point(c, mask, w, h)
+    sx = x0 + px
+    sy = y0 + py
     shift = ((sx - int(x)) ** 2 + (sy - int(y)) ** 2) ** 0.5
     if shift > shift_cap:
         return x, y, (f"附近找到疑似元素（{c['maxx'] - c['minx'] + 1}×"
-                      f"{c['maxy'] - c['miny'] + 1}px）但它的中心离估计点 {shift:.0f}px，"
+                      f"{c['maxy'] - c['miny'] + 1}px）但它的落点离估计点 {shift:.0f}px，"
                       f"超出可信范围，未吸附。"), ruler
     if (sx, sy) == (int(x), int(y)):
         return sx, sy, "", ruler
-    return sx, sy, (f"已吸附到元素中心：{c['maxx'] - c['minx'] + 1}×"
+    return sx, sy, (f"已吸附到元素落点（质心）：{c['maxx'] - c['minx'] + 1}×"
                     f"{c['maxy'] - c['miny'] + 1}px 的连通域，"
                     f"由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。"), ruler
 
@@ -1742,7 +1824,7 @@ def _sort_slots(slots: list, grid: bool = False) -> list:
     """槽位排序：任务栏是**一行**，按 x 从左到右即可；面板是**网格**，先按行再按列。
 
     面板（隐藏图标/后台应用面板）里图标是几行几列排的，只按 x 排会把不同行的图标
-    交错编号，模型看着编号图就找不到对应关系了。
+    交错编号，模型对照坐标表就找不到对应关系了。
     """
     if not grid:
         return sorted(slots, key=lambda s: s["x"])
@@ -1853,7 +1935,7 @@ def _taskbar_click(x: int, y: int, what: str, wait_ms: int = 250) -> str:
     return (f"已点击{what}（{x},{y}）。{land}。⚠ 前台窗口**没有变化**（仍是「{who}」）："
             f"可能 ① 这是个**未启动**的固定图标（点击会启动它，等一两秒再 screen_shot 看）；"
             f"② 它本来就是前台、或只是把同一应用的另一个窗口提到前台；"
-            f"③ 落点没落在图标上（对照编号图核对一下）。**不要盲目重复点击同一坐标**。")
+            f"③ 落点没落在图标上（对照上表的中心坐标核对一下）。**不要盲目重复点击同一坐标**。")
 
 
 def _taskbar_no_band_msg(scan: dict) -> str:
@@ -1885,19 +1967,13 @@ def _taskbar_slot_lines(slots: list, gx: int, gw: int, pick: int = 0,
     return lines
 
 
-def _taskbar_boxes(slots: list, pick: int = 0) -> list:
-    """槽位 → 编号方框（青色=候选、洋红=本次点击的那个）。"""
-    boxes = []
-    for s in slots:
-        bx0, by0, bx1, by1 = s["box"]
-        boxes.append((bx0, by0, bx1, by1,
-                      0x00FF00FF if s["i"] == pick else 0x00FFFF00, str(s["i"])))
-    return boxes
-
-
 def _taskbar_strip_png(gx: int, sy: int, gw: int, sh: int, tw: int, boxes: list,
                        marks=None) -> tuple:
-    """把条带区域出成一张（可缩放的）图，并把编号方框画上去。"""
+    """把条带区域出成一张（可缩放的）图。
+
+    boxes/marks 参数保留给人工调试用；**任务栏与面板流程一律传 None**——
+    返给模型的图必须是纯净原图（不画编号框/准星/任何标记），槽位信息全部走文字表。
+    """
     dc = user32.GetDC(0)
     try:
         return _capture_scaled(dc, gx, sy, gw, sh, tw, 0, None, smooth=True,
@@ -1953,7 +2029,8 @@ def _taskbar_band_flow(args: dict) -> list:
     head = (f"任务栏（屏幕物理坐标）：检测到通栏 y {band_y0}~{band_y0 + band_h - 1}"
             f"（高 {band_h}px），屏幕底部 {gw}px 宽。"
             + (f"你要找的是「{name}」——" if name else "")
-            + f"共识别出 {len(slots)} 个图标槽位（下图已用青色方框编号）：")
+            + f"共识别出 {len(slots)} 个图标槽位（**下图是任务栏原图，无任何标记**；"
+              f"编号、中心坐标与尺寸见上表，按编号或坐标点）：")
     lines = [head] + _taskbar_slot_lines(slots, gx, gw, pick=index)
     hint = _app_state_hint(name)
     if hint:
@@ -1961,7 +2038,7 @@ def _taskbar_band_flow(args: dict) -> list:
         lines.append("状态：" + hint)
     lines.append("")
     lines.append("怎么用：")
-    lines.append("  ① 在图上认出你要的那个图标 → "
+    lines.append("  ① 按上表编号/中心坐标认图标（图是任务栏原图，无任何标记）→ "
                  "click(x=它的中心x, y=它的中心y, space=\"screen\", snap=false)")
     lines.append("  ② 或一步到位：taskbar_open(index=N) —— 直接点第 N 个，"
                  "并回读落点、校验前台窗口是否真的切过去了")
@@ -1988,7 +2065,9 @@ def _taskbar_band_flow(args: dict) -> list:
     sy = gy + top - ctx_top
     sh = band_h + ctx_top
     tw = max(640, min(TASKBAR_IMG_MAX_W, gw))
-    png, iw, ih = _taskbar_strip_png(gx, sy, gw, sh, tw, _taskbar_boxes(slots, index))
+    # 任务栏图**一律纯净原图**：不画编号框、不画准星、不画任何标记（用户明确要求）。
+    # 槽位信息全部走文字表（编号/中心坐标/尺寸/区域/是否已启动），模型按坐标对图认图标。
+    png, iw, ih = _taskbar_strip_png(gx, sy, gw, sh, tw, None)
     _set_view(gx, sy, gw, sh, iw, ih, "full")
     text = "\n".join(lines)
     if click_note:
@@ -2122,8 +2201,9 @@ def _taskbar_panel_flow(args: dict) -> list:
 
     shown = pslots[:TASKBAR_PANEL_MAX_SLOTS]
     lines = [f"「↑」面板已展开（{how}）：面板区域在屏幕上 ({ox},{oy}) {cw}×{ch}，"
-             f"共识别出 {len(pslots)} 个图标（下图已编号；青色=候选、洋红=本次点击）"
-             + (f"。你要找的是「{name}」——在图上认出它的编号。" if name else "。")]
+             f"共识别出 {len(pslots)} 个图标（**下图是面板原图，无任何标记**；"
+             f"编号与中心坐标见上表）"
+             + (f"。你要找的是「{name}」——按上表坐标对图认图标。" if name else "。")]
     lines += _taskbar_slot_lines(shown, ox, cw, pick=index, show_zone=False,
                                  running_note=False)
     hint = _app_state_hint(name)
@@ -2150,7 +2230,8 @@ def _taskbar_panel_flow(args: dict) -> list:
         _log("ai", f"面板点击 #{target2['i']} ({target2['x']},{target2['y']})")
     _refresh_env()
     tw = max(320, min(720, cw))
-    png, iw, ih = _taskbar_strip_png(ox, oy, cw, ch, tw, _taskbar_boxes(shown, index))
+    # 与任务栏一致：面板图也是纯净原图，不带任何编号框/标记
+    png, iw, ih = _taskbar_strip_png(ox, oy, cw, ch, tw, None)
     _set_view(ox, oy, cw, ch, iw, ih, "full")
     text = "\n".join(lines)
     if click_note2:
@@ -2172,8 +2253,9 @@ def tool_taskbar_open(args: dict) -> list:
     面板展开，再把面板里的图标编号列出，然后同样可以按编号点击。
 
     where="taskbar"（默认）时的返回值：任务栏通栏位置 + 每个槽位的编号/中心/尺寸/区域
-    + 编号图；带 index 时额外给出落点回读与**前台窗口是否真的切换了**。
-    全程不读控件树、不返回任何控件名 —— 编号图让模型「认图标」，坐标由几何算法量出来。
+    + **任务栏原图（图上无任何标记）**；带 index 时额外给出落点回读与**前台窗口是否真的
+    切换了**。全程不读控件树、不返回任何控件名 —— 坐标表让模型按坐标对图「认图标」，
+    坐标由几何算法量出来。
     """
     where = str(args.get("where") or "taskbar").strip().lower()
     if where in ("panel", "overflow", "hidden", "background", "后台", "隐藏", "面板"):
@@ -3558,10 +3640,10 @@ def _process_running(keys: tuple) -> str:
 
 
 def _taskbar_pick_hint(name: str, lead: str, where: str = "taskbar") -> list:
-    """返回「任务栏/后台面板编号图 + 一步点开指引」（open_app 唤不回窗口时的兜底）。
+    """返回「任务栏/后台面板原图 + 坐标表 + 一步点开指引」（open_app 唤不回窗口时的兜底）。
 
     为什么不是自动点：任务栏图标是 explorer 自绘的，插件拿不到「这个图标是哪个应用」
-    —— 编号图交给模型认图标（认图是它擅长的），点哪个由它挑编号，
+    —— 原图配坐标表交给模型认图标（认图是它擅长的），点哪个由它挑编号，
     坐标仍由几何算法给出。这比盲目 SetForegroundWindow 成功率高得多。
     """
     out = tool_taskbar_open({"where": where, "name": name})
@@ -4143,10 +4225,21 @@ def tool_screen_shot(args: dict) -> list:
         _set_view(ox, oy, vw, vh, iw, ih, "full")
         scale = vw / iw
         desc = (f"已截取整个桌面 {vw}×{vh}（虚拟桌面并集，含全部显示器；原点 {ox},{oy}），"
-                f"图像 {iw}×{ih}（缩放比 {scale:.2f}）"
-                + ("。注意：图像被缩小了，图上 1px 误差在屏幕上会被放大 "
-                   f"{scale:.2f} 倍；点小目标（工具栏按钮/菜单项）请先 zoom_in 放大到"
-                   "接近 1:1 再读数。" if scale > 1.05 else ""))
+                f"图像 {iw}×{ih}（缩放比 {scale:.2f}）")
+        if scale > 1.05:
+            desc += ("。注意：图像被缩小了，图上 1px 误差在屏幕上会被放大 "
+                     f"{scale:.2f} 倍；点小目标（工具栏按钮/菜单项）请先 zoom_in 放大到"
+                     "接近 1:1 再读数。")
+            # 缩放是点击误差的最大来源。若前台窗口比整屏小，直接引导改截窗口
+            # （缩放比更小、图更小更省 token）——比让模型在缩略图上硬估小目标高效得多。
+            fg = foreground_window()
+            if fg and not user32.IsIconic(int(fg)):
+                r = window_rect(fg)
+                fw, fh = r.right - r.left, r.bottom - r.top
+                if 0 < fw < vw and 0 < fh <= vh:
+                    desc += (f"\n更准更快的做法：screen_shot(mode=\"window\", hwnd={fg}) "
+                             f"只截前台窗口「{window_title(fg) or fg}」（{fw}×{fh}，"
+                             f"缩放比更小、误差放大更少，图也更小更省）")
         _log("ai", "截屏：整个桌面")
     _refresh_env()
     return [{"type": "text", "text": _shot_meta(desc, grid=grid)},
@@ -5001,9 +5094,9 @@ def tool_open_app(args: dict):
 
     三级优先级（按用户要求：任务栏前台 → 后台托盘 → 启动新实例）：
       1. 已有可见窗口 → 直接切前台并**实测校验**（最小化的先恢复）；
-         置前被系统拒绝时，回一张任务栏编号图，让模型用 index=编号 一步点过去；
+         置前被系统拒绝时，回任务栏原图 + 坐标表，让模型用 index=编号 一步点过去；
       2. 没有可见窗口但**进程在跑**（典型：最小化到托盘）→ 不启动第二个实例，
-         回任务栏 + 「↑」后台面板的编号图，让模型认出图标后 open_app(index=N) 点开；
+         回任务栏 + 「↑」后台面板的原图与坐标表，让模型认出图标后 open_app(index=N) 点开；
       3. 确实没在运行 → 启动 + 等窗口 + 恢复 + 置前 + 校验。
 
     index=N 是「按编号点任务栏/面板里的图标」，是切到已运行应用最快也最稳的一步
@@ -5054,7 +5147,7 @@ def tool_open_app(args: dict):
                 name,
                 f"「{name}」**进程在运行（{proc}）但没有可见窗口** —— 典型情况是"
                 f"最小化到了**系统托盘/后台面板**。此时**不要启动第二个实例**"
-                f"（会开出重复窗口、甚至抢登录态）。先看下面的任务栏编号图；"
+                f"（会开出重复窗口、甚至抢登录态）。先看下面的任务栏原图与坐标表；"
                 f"图标不在任务栏可见区就再用 where=\"panel\" 看「↑」后台面板。",
                 where="taskbar")
         before = {w["hwnd"] for w in list_windows()}
@@ -5093,7 +5186,7 @@ def tool_open_app(args: dict):
             f"{'已在前台' if ok else '⚠ 不在前台'}")
     body = "\n".join(f"  · {s}" for s in steps)
     if not ok:
-        # 置前失败：不再让模型反复 open_app/manage_window 试置顶，直接给任务栏编号图。
+        # 置前失败：不再让模型反复 open_app/manage_window 试置顶，直接给任务栏原图+坐标表。
         return _taskbar_pick_hint(
             name,
             f"「{title or name}」窗口已找到（hwnd={hwnd}），但**系统拒绝了前台切换**"
@@ -5394,7 +5487,7 @@ TOOLS = [
         "**打开/切到应用（任务栏 → 后台托盘 → 启动，三级优先）**："
         "① 已有窗口 → 恢复最小化、切前台并实测校验；"
         "② 没有可见窗口但进程在跑（最小化到托盘）→ **不启动第二个实例**，回任务栏与「↑」"
-        "后台面板的编号图，让你用 index=编号 一步点开；"
+        "后台面板的原图与坐标表，让你用 index=编号 一步点开；"
         "③ 确实没在运行 → 启动 + 等窗口 + 置前 + 校验。"
         "**不要**用 list_windows 反复找窗口（那是任务绕不出来的主因）。"
         "name 传用户的原话即可（中文口语名也认，如「微信」「记事本」）；"
@@ -5404,7 +5497,7 @@ TOOLS = [
                   "description": "应用名，例如「微信」「企业微信」「记事本」「Visual Studio Code」"},
          "index": {"type": "integer",
                    "description": "按任务栏（或 where=panel 时「↑」后台面板）里第 N 个图标点开——"
-                                  "切换已运行应用最快的一步；编号来自返回值里的编号图"},
+                                  "切换已运行应用最快的一步；编号来自返回值里的坐标表"},
          "where": {"type": "string",
                    "description": "taskbar（默认，屏幕底部任务栏）/ panel（右侧「↑」隐藏图标/后台应用面板）"},
          "launch": {"type": "boolean",
@@ -5414,7 +5507,8 @@ TOOLS = [
          "required": ["name"]}},
     {"name": "taskbar_open", "description":
         "**从任务栏打开/切换应用（首选，比 open_app 更直接）**：自动认出屏幕底部任务栏那条"
-        "通栏、把里面的图标切成一个个槽位并**编号**，返回编号图；带 index=N 时直接点第 N 个，"
+        "通栏、把里面的图标切成一个个槽位并**编号**，返回任务栏原图（图上无任何标记）+ "
+        "编号坐标表；带 index=N 时直接点第 N 个，"
         "并回读落点、校验前台窗口是否真的切过去了。"
         "用户说「打开微信 / 切到 XX / XX 在后台」时：先 screen_shot 看一眼任务栏上有没有那个"
         "图标 —— 有就 taskbar_open(index=N) 一步切过去（应用已在运行时，点任务栏图标 = 切到"
