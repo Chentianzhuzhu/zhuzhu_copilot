@@ -4567,7 +4567,7 @@ class _AgentSettingsDialog(QDialog):
         self.resize(991, 687)
         self.setStyleSheet(self._dialog_qss())
         s = agent_skills.load_settings()
-        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -4803,6 +4803,105 @@ class _AgentSettingsDialog(QDialog):
             _ui("语速"), _ui("适配方式"), _ui("名称"), _ui("类型"), _ui("操作"),
         ))
 
+    # ---- 工具清单（勾选式启用/禁用） ----
+    def _all_tool_names(self) -> list:
+        """当前全部工具名（内置 + 已连接的插件/MCP），并按字母序去重。"""
+        names = []
+        try:
+            names = [t["function"]["name"] for t in agent_tools.tool_schemas()]
+        except Exception:
+            names = []
+        # 已禁用但当前未暴露的工具也要列出来，否则用户没法把它改回启用
+        try:
+            names += list(agent_sandbox.disabled_tools())
+        except Exception:
+            pass
+        return sorted({str(n) for n in names if n})
+
+    def _reload_tool_checklist(self):
+        """按搜索词重建工具清单；勾选状态取自 settings.disabled_tools。"""
+        if getattr(self, "_tool_sync_guard", False):
+            return
+        lst = getattr(self, "tools_check_list", None)
+        if lst is None:
+            return
+        key = (self.tool_filter_edit.text() if hasattr(self, "tool_filter_edit") else "").strip().lower()
+        disabled = set()
+        try:
+            disabled = set(agent_sandbox.disabled_tools())
+        except Exception:
+            pass
+        names = [n for n in self._all_tool_names() if not key or key in n.lower()]
+        self._tool_sync_guard = True
+        try:
+            lst.clear()
+            for n in names:
+                it = QListWidgetItem(n)
+                it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                            | Qt.ItemFlag.ItemIsUserCheckable)
+                it.setCheckState(Qt.CheckState.Unchecked if n.lower() in disabled
+                                 else Qt.CheckState.Checked)
+                it.setData(Qt.ItemDataRole.UserRole, n)
+                lst.addItem(it)
+        finally:
+            self._tool_sync_guard = False
+        if hasattr(self, "tool_count_label"):
+            self.tool_count_label.setText(
+                _uif("共 {a0} 个工具，已禁用 {a1} 个（禁用后不会发给模型，省 token）",
+                     a0=len(self._all_tool_names()), a1=len(disabled)))
+
+    def _on_tool_check_changed(self, _item=None):
+        if getattr(self, "_tool_sync_guard", False):
+            return
+        lst = getattr(self, "tools_check_list", None)
+        if lst is None:
+            return
+        off = []
+        for i in range(lst.count()):
+            it = lst.item(i)
+            if it.checkState() != Qt.CheckState.Checked:
+                off.append(str(it.data(Qt.ItemDataRole.UserRole) or it.text()))
+        # 只把这份清单写回文本框；不在清单里的（被搜索过滤掉的）保持原样
+        keep = set()
+        try:
+            keep = {n.lower() for n in agent_sandbox.disabled_tools()}
+        except Exception:
+            pass
+        shown = {str(lst.item(i).data(Qt.ItemDataRole.UserRole)).lower()
+                 for i in range(lst.count())}
+        keep -= shown
+        keep |= {n.lower() for n in off}
+        self._tool_sync_guard = True
+        try:
+            if hasattr(self, "disable_tools_edit"):
+                self.disable_tools_edit.setPlainText("\n".join(sorted(keep)))
+        finally:
+            self._tool_sync_guard = False
+        if hasattr(self, "tool_count_label"):
+            self.tool_count_label.setText(
+                _uif("共 {a0} 个工具，已禁用 {a1} 个（禁用后不会发给模型，省 token）",
+                     a0=len(self._all_tool_names()), a1=len(keep)))
+
+    def _on_tool_text_changed(self):
+        """手动编辑禁用清单后，勾选状态跟着变（双向同步，带守卫防递归）。"""
+        if getattr(self, "_tool_sync_guard", False):
+            return
+        self._tool_sync_guard = True
+        try:
+            off = {ln.strip().lower() for ln in
+                   (self.disable_tools_edit.toPlainText() or "").splitlines() if ln.strip()}
+            lst = getattr(self, "tools_check_list", None)
+            if lst is not None:
+                for i in range(lst.count()):
+                    it = lst.item(i)
+                    name = str(it.data(Qt.ItemDataRole.UserRole) or it.text()).lower()
+                    want = (Qt.CheckState.Unchecked if name in off
+                            else Qt.CheckState.Checked)
+                    if it.checkState() != want:
+                        it.setCheckState(want)
+        finally:
+            self._tool_sync_guard = False
+
     def _build_general_page(self, s) -> QWidget:
         w = self._page(_ui("通用与记忆"))
         lay = self._page_body(w)
@@ -4961,10 +5060,37 @@ class _AgentSettingsDialog(QDialog):
         self.disable_all_check.setToolTip(_ui("开启后 AI 无法调用任何工具（含 grep/read_file/web_search 等），只能以文本对话作答"))
         self.disable_all_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.disable_all_check)
-        dis_sub = QLabel(_ui("禁用指定工具：每行一个工具名（如 grep / read_file / web_search / run_command）。被禁用工具将无法被 AI 调用，即使提示词诱导也会被系统直接拒绝。"))
+        dis_sub = QLabel(_ui("在下面的清单里取消勾选即可禁用某个工具：禁用后它**不会出现在发给模型的服务商请求里**（schema 直接不发，省 token），执行层也会硬拒绝。"))
         dis_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         dis_sub.setWordWrap(True)
         lay.addWidget(dis_sub)
+        # 工具清单：逐项勾选（比手敲工具名可靠），与下方文本框双向同步
+        self.tool_filter_edit = QLineEdit()
+        self.tool_filter_edit.setPlaceholderText(_ui("搜索工具名…"))
+        self.tool_filter_edit.setStyleSheet(
+            f"QLineEdit {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER}; border-radius: 8px;"
+            "padding: 7px 10px; font-size: 13px; }")
+        self.tool_filter_edit.textChanged.connect(
+            lambda _t: self._reload_tool_checklist())
+        lay.addWidget(self.tool_filter_edit)
+        self.tools_check_list = QListWidget()
+        self.tools_check_list.setMinimumHeight(200)
+        self.tools_check_list.setStyleSheet(
+            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 4px; }}"
+            f"QListWidget::item {{ padding: 5px 8px; border-radius: 5px; }}"
+            f"QListWidget::item:selected {{ background: {self._PANEL2};"
+            f"color: {self._ACCENT_HOVER}; }}")
+        self._tool_sync_guard = False
+        self.tools_check_list.itemChanged.connect(self._on_tool_check_changed)
+        lay.addWidget(self.tools_check_list)
+        self.tool_count_label = QLabel("")
+        self.tool_count_label.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        lay.addWidget(self.tool_count_label)
+        adv = QLabel(_ui("高级：直接编辑禁用清单（每行一个工具名）"))
+        adv.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        lay.addWidget(adv)
         self.disable_tools_edit = QPlainTextEdit()
         self.disable_tools_edit.setPlaceholderText(_uim(
             "每行一个工具名，如：\ngrep\nread_file\nweb_search"))
@@ -4977,7 +5103,9 @@ class _AgentSettingsDialog(QDialog):
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
             "padding: 6px 10px; font-size: 13px; }"
             f"QPlainTextEdit:focus {{ border: 1px solid {self._BORDER}; }}")
+        self.disable_tools_edit.textChanged.connect(self._on_tool_text_changed)
         lay.addWidget(self.disable_tools_edit)
+        self._reload_tool_checklist()
         # 网络代理：全局（系统代理指向本机转发器）或回退（仅失败时经 SSH 隧道）
         # 配置项：settings proxy_*（见 core/agent_proxy.py 顶部说明）
         lay.addWidget(self._section_label(_ui("网络代理（SSH 隧道）")))
@@ -5465,7 +5593,7 @@ class _AgentSettingsDialog(QDialog):
     def _build_model_page(self, s) -> QWidget:
         w = self._page(_ui("模型接入"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("多服务商模型：每个服务商一张卡片，点击卡片编辑其地址/Key/模型；全部服务商模型统一参与路由与切换，模型名含纯文本关键字（如 deepseek）自动禁用图片/截图能力"))
+        sub = QLabel(_ui("每个服务商一张卡片：单击选中，双击编辑。"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
@@ -5478,10 +5606,12 @@ class _AgentSettingsDialog(QDialog):
         self.provider_list = QListWidget()
         self.provider_list.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # 禁止横向滚动条（含最大化时）
+        # 容器「隐形」：不要外框、不要底色，只留卡片本身 —— 一圈边框 + 灰色底
+        # 再套一圈卡片，视觉上多出两条同心框，是最显廉价的那种冗余线条。
         self.provider_list.setStyleSheet(
-            f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
-            f"border: 1px solid {self._BORDER}; border-radius: 8px; padding: 6px; }}"
-            f"QListWidget::item {{ border-radius: 8px; margin: 2px; }}"
+            "QListWidget { background: transparent; border: none; padding: 0px; }"
+            "QListWidget::item { border-radius: 8px; margin: 0px 0px 8px 0px;"
+            " background: transparent; }"
             f"QListWidget::item:selected {{ background: {self._PANEL2}; }}")
         self.provider_list.itemClicked.connect(self._on_provider_select)
         self.provider_list.itemDoubleClicked.connect(self._on_provider_edit)
@@ -5523,9 +5653,11 @@ class _AgentSettingsDialog(QDialog):
         prow.addStretch(1)
         lay.addLayout(prow)
         # 选中提示语（状态栏）
-        self.provider_hint = QLabel(_ui("点击选中服务商卡片（删除按钮随之变红可用）；双击卡片编辑"))
+        # 状态行：只有真正有话要说时才占位（默认隐藏），避免常驻操作说明占地方
+        self.provider_hint = QLabel("")
         self.provider_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         self.provider_hint.setWordWrap(True)
+        self.provider_hint.hide()
         lay.addWidget(self.provider_hint)
         self._update_provider_ui()
         # 思考强度（工作力度）：8 档滑块（关闭/低/中/高/超高/最高/极致/超级）+ 自动按难度开关；
@@ -5566,9 +5698,12 @@ class _AgentSettingsDialog(QDialog):
         eff_row.addStretch(1)
         lay.addLayout(eff_row)
         # 挡位刻度 + 上游声明提示（同一行文案，fetch 后由 _sync_effort_declared 刷新）
-        self.effort_hint = QLabel(" · ".join(_eff_lv))
+        # 刻度说明默认不占位（档位名已写进滑块 tooltip）；只有上游声明了力度档位时
+        # 才由 _sync_effort_declared 填一行必要说明，避免整页到处是小字说明
+        self.effort_hint = QLabel("")
         self.effort_hint.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
         self.effort_hint.setWordWrap(True)
+        self.effort_hint.hide()
         lay.addWidget(self.effort_hint)
         self.auto_effort_check = QCheckBox(_ui("自动按难度（按任务难度自动选择工作力度）"))
         self.auto_effort_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
@@ -6290,7 +6425,7 @@ class _AgentSettingsDialog(QDialog):
     def _build_mcp_page(self) -> QWidget:
         w = self._page(_ui("MCP 服务器"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("配置外部工具服务器（stdio 本地命令 / sse 远程 URL），保存后自动重连，AI 即可调用其工具"))
+        sub = QLabel(_ui("配置外部工具服务器（stdio 本地命令 / sse 远程 URL），保存后自动重连。取消勾选即停用：服务器不再启动，其工具也不会发给模型（省 token）"))
         sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         sub.setWordWrap(True)
         lay.addWidget(sub)
@@ -6301,6 +6436,8 @@ class _AgentSettingsDialog(QDialog):
             f"QListWidget::item {{ padding: 8px 10px; border-radius: 6px; }}"
             f"QListWidget::item:selected {{ background: {self._PANEL2};"
             f"color: {self._ACCENT_HOVER}; }}")
+        self._mcp_sync_guard = False
+        self.mcp_list.itemChanged.connect(self._on_mcp_item_changed)
         lay.addWidget(self.mcp_list, 1)
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -7334,7 +7471,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         try:
             from zhuzhu_Copilot.core import agent_skills
-            self._mcp_servers = agent_skills.load_mcp_servers()
+            self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
             self._reload_mcp_list()
         except Exception:
             pass
@@ -7555,7 +7692,7 @@ class _AgentSettingsDialog(QDialog):
     def _on_coplugin_config_saved(self, *_):
         """配置已保存：刷新列表与 MCP 服务器，并重连使 env 注入生效"""
         self._reload_coplugin_list()
-        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
         threading.Thread(target=self._init_mcp, daemon=True).start()
 
@@ -7603,7 +7740,7 @@ class _AgentSettingsDialog(QDialog):
     def _on_plugin_config_saved(self, *_):
         """插件配置已保存：刷新列表与 MCP 服务器，并重连使 env 注入生效"""
         self._reload_plugin_list()
-        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
         threading.Thread(target=self._init_mcp, daemon=True).start()
 
@@ -7618,7 +7755,7 @@ class _AgentSettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("创建插件失败"), msg)
         self._reload_plugin_list()
-        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
 
     def _on_plugin_import_zip(self, *_):
@@ -7633,7 +7770,7 @@ class _AgentSettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("导入失败"), msg)
         self._reload_plugin_list()
-        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
         if ok:
             threading.Thread(target=self._init_mcp, daemon=True).start()
@@ -7665,7 +7802,7 @@ class _AgentSettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("操作失败"), msg)
         self._reload_plugin_list()
-        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
 
     def _on_plugin_call(self, *_):
@@ -7709,7 +7846,7 @@ class _AgentSettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("删除失败"), msg)
         self._reload_plugin_list()
-        self._mcp_servers = agent_skills.load_mcp_servers()
+        self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
 
     def _on_plugin_workflows(self, *_):
@@ -9081,16 +9218,15 @@ class _AgentSettingsDialog(QDialog):
                     "padding: 7px 16px; font-weight: 600;")
                 self.del_provider_btn.setToolTip(_ui("内置默认服务商（agnes）不可删除"))
                 self.provider_hint.setText(
-                    _uif("「{a0}」为内置默认服务商，整行锁定：不可删除、不可编辑", a0=_provider_disp(sel)))
+                    _uif("「{a0}」是内置默认服务商，不可删除", a0=_provider_disp(sel)))
                 self.provider_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
             else:
                 self.del_provider_btn.setStyleSheet(
                     f"background: {self._DANGER}; color: #FFFFFF; border: none;"
                     "border-radius: 8px; padding: 7px 16px; font-weight: 700;")
                 self.del_provider_btn.setToolTip(_uif("删除服务商「{a0}」", a0=_provider_disp(sel)))
-                models = ", ".join(sel.get("models") or [])
                 self.provider_hint.setText(
-                    _uif("已选中「{a0}」｜接口 {a1}｜模型：{a2}", a0=_provider_disp(sel), a1=sel.get('base_url'), a2=models))
+                    _uif("已选中「{a0}」", a0=_provider_disp(sel)))
                 self.provider_hint.setStyleSheet(
                     f"color: {self._ACCENT_HOVER}; font-size: 12px;")
         else:
@@ -9100,8 +9236,13 @@ class _AgentSettingsDialog(QDialog):
                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
                 "padding: 7px 16px; font-weight: 600;")
             self.del_provider_btn.setToolTip(_ui("请先选中一个服务商"))
-            self.provider_hint.setText(_ui("点击选中服务商卡片（删除按钮随之变红可用）；双击卡片编辑"))
+            self.provider_hint.setText("")
             self.provider_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        # 状态行：有内容才显示
+        try:
+            self.provider_hint.setVisible(bool(self.provider_hint.text().strip()))
+        except Exception:
+            pass
         # 卡片高亮：选中卡片纯蓝底 + 白字（无边框）
         for i in range(self.provider_list.count()):
             it = self.provider_list.item(i)
@@ -9183,13 +9324,40 @@ class _AgentSettingsDialog(QDialog):
         if not hasattr(self, "mcp_list") or self.mcp_list is None:
             return   # MCP 页尚未懒加载构建时跳过（构建时/点击导航时再刷新）
         self.mcp_list.clear()
-        for srv in self._mcp_servers:
-            typ = "stdio" if srv.get("type", "stdio") == "stdio" else "sse"
-            detail = srv.get("command", "") or srv.get("url", "")
-            bound = agent_skills.get_workflow_binding("mcp", srv.get("name", ""))
-            wf = (_uif("   [工作流: {wfs}]", wfs=", ".join(bound))
-                  if bound else "")
-            self.mcp_list.addItem(f"{srv.get('name', '?')}   [{typ}]   {detail}{wf}")
+        self._mcp_sync_guard = True
+        try:
+            for i, srv in enumerate(self._mcp_servers):
+                typ = "stdio" if srv.get("type", "stdio") == "stdio" else "sse"
+                detail = srv.get("command", "") or srv.get("url", "")
+                bound = agent_skills.get_workflow_binding("mcp", srv.get("name", ""))
+                wf = (_uif("   [工作流: {wfs}]", wfs=", ".join(bound))
+                      if bound else "")
+                on = srv.get("enabled", True) is not False
+                item = QListWidgetItem(
+                    f"{srv.get('name', '?')}   [{typ}]   {detail}{wf}"
+                    + ("" if on else _ui("   （已停用）")))
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                              | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if on
+                                   else Qt.CheckState.Unchecked)
+                item.setData(Qt.ItemDataRole.UserRole, i)
+                item.setToolTip(_ui("取消勾选即停用该服务器：不再启动、工具不发给模型"))
+                self.mcp_list.addItem(item)
+        finally:
+            self._mcp_sync_guard = False
+
+    def _on_mcp_item_changed(self, item):
+        """勾选/取消勾选 MCP 服务器 → 写 enabled 并落盘（即时生效，下次连接不加载）。"""
+        if getattr(self, "_mcp_sync_guard", False):
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(idx, int) or not (0 <= idx < len(self._mcp_servers)):
+            return
+        srv = self._mcp_servers[idx]
+        srv["enabled"] = item.checkState() == Qt.CheckState.Checked
+        if not agent_skills.save_mcp_servers(self._mcp_servers):
+            QMessageBox.warning(self, _ui("操作失败"), _ui("写入 mcp_servers.json 失败"))
+        self._reload_mcp_list()
 
     def _current_mcp(self) -> dict:
         row = self.mcp_list.currentRow()
@@ -9386,9 +9554,11 @@ class _AgentSettingsDialog(QDialog):
                 self.effort_slider.setValue(agent_llm.effort_index(nearest))
                 self.effort_slider.blockSignals(False)
                 self.effort_label.setText(_ui(agent_llm.effort_label(nearest)))
+            hint.show()
         else:
-            hint.setText(" · ".join(_ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS)
-                         + _ui("（未声明时按模型类型自动映射思考强度）"))
+            # 上游没声明档位：不铺一行小字说明（档位名已在滑块 tooltip 里），保持页面简洁
+            hint.setText("")
+            hint.hide()
 
     def _refresh_proxy_status(self, *_):
         """刷新代理运行状态（本机转发端口 / 系统代理指向）。"""
@@ -26048,6 +26218,8 @@ class AgentPanel(QDialog):
     def _init_mcp(self):
         try:
             self._mcp.close_all()   # 重连前关闭旧连接
+            # 这里**必须**用默认过滤（不含已停用）：停用的服务器连进程都不该起，
+            # 更不该把工具暴露给上游。设置页读全量是为了能改回启用。
             servers = agent_skills.load_mcp_servers()
             if not servers:
                 self.mcp_signal.emit("MCP: 未配置服务器")
@@ -28700,7 +28872,7 @@ class AgentPanel(QDialog):
             else:
                 from zhuzhu_Copilot.core import agent_plugins, agent_skills
                 ok, msg = agent_plugins.import_plugin_zip(path)
-                self._mcp_servers = agent_skills.load_mcp_servers()
+                self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
                 if hasattr(self, "_reload_mcp_list"):
                     self._reload_mcp_list()
                 if ok:

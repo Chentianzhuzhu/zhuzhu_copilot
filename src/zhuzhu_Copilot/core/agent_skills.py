@@ -1547,15 +1547,27 @@ def load_agents() -> list:
     return agents
 
 
-def load_mcp_servers() -> list:
+def load_mcp_servers(include_disabled: bool = False) -> list:
     """加载 MCP 服务器配置（带缓存：打开设置/应用设置/引擎连接高频读取，避免重复磁盘 IO）。
-    返回深拷贝，避免调用方就地修改污染缓存；save_mcp_servers 写成功后失效。"""
+    返回深拷贝，避免调用方就地修改污染缓存；save_mcp_servers 写成功后失效。
+
+    `include_disabled=False`（默认）**过滤掉用户停用的服务器** —— 这是「停用即不向
+    上游暴露接口」的唯一开关点：连接器、工具聚合、工作流绑定全都读这个函数，
+    过滤在这里做一次，停用的服务器就连进程都不会起，更不会出现在工具表里。
+    设置页需要看到全部条目才能把它改回启用，所以那里传 include_disabled=True。
+    """
     cached = _MCP_CACHE.get("data")
     if cached is not None:
-        return copy.deepcopy(cached)
-    data = _load("mcp_servers.json", [])
-    _MCP_CACHE["data"] = data
-    return copy.deepcopy(data)
+        data = copy.deepcopy(cached)
+    else:
+        data = _load("mcp_servers.json", [])
+        _MCP_CACHE["data"] = data
+        data = copy.deepcopy(data)
+    if include_disabled:
+        return data
+    # 没写 enabled 字段的一律视为启用（向后兼容老配置文件）
+    return [x for x in data
+            if not isinstance(x, dict) or x.get("enabled", True) is not False]
 
 
 def save_mcp_servers(servers: list) -> bool:
@@ -1728,13 +1740,37 @@ def cap_enabled(key: str) -> bool:
     return v not in ("0", "false", "no", "off")
 
 
+def _old_model_salt() -> bytes:
+    """读取 settings.json 中 model 节旧密文的盐（加载解密用的同一把）。
+
+    保存时复用该盐可命中 _pbkdf2_derive 的 lru 缓存（load_settings 解密时已按
+    同一盐派生过），避免每次保存重复 200k 迭代把主线程冻结 ~0.7s（保存遮罩下
+    转圈卡顿的元凶之一）。读不到 / 格式不符返回 None（调用方回退新随机盐）。
+    """
+    try:
+        import base64
+        with open(CONFIG_DIR / "settings.json", "r", encoding="utf-8") as f:
+            cur = json.load(f)
+        sec = cur.get("model") if isinstance(cur, dict) else None
+        if isinstance(sec, dict) and sec.get("_encrypted") and sec.get("data"):
+            blob = base64.urlsafe_b64decode(str(sec["data"])[3:].encode("ascii"))
+            if len(blob) >= 16:
+                return blob[:16]
+    except Exception:
+        pass
+    return None
+
+
 def save_settings(s: dict) -> bool:
     """写入用户设置 settings.json，model 配置自动加密存储"""
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         data = dict(s)
         if "model" in data:
-            data["model"] = agent_llm.encrypt_model_config(data["model"])
+            # 复用旧密文的盐（nonce 仍每次随机）：命中 PBKDF2 派生缓存，
+            # 消掉每次保存 ~0.7s 的主线程冻结（见 _old_model_salt）
+            data["model"] = agent_llm.encrypt_model_config(
+                data["model"], salt=_old_model_salt())
         with open(CONFIG_DIR / "settings.json", "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         invalidate_settings_cache()
