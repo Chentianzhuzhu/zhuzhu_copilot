@@ -1,23 +1,43 @@
-"""屏幕边缘彩色光环（AI 操控提示），零第三方依赖。
+"""AI 操控期间的屏幕提示层：彩色呼吸光带 + 顶部胶囊提示窗，零第三方依赖。
 
-实现要点
+两件东西
 --------
-1. **分层窗口 + 鼠标穿透**：WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
-   WS_EX_NOACTIVATE。穿透保证光环绝不吞掉用户的点击，也不会抢焦点。
-2. **UpdateLayeredWindow**：逐像素 alpha 合成，真正做到边缘渐隐、中心透明，
-   不需要在屏幕上盖一层不透明底。
-3. **性能优先（开发原则：程序性能 > UI/UX）**：
-   - 帧率上限 AURA_FPS（默认 20），远低于动画常见 60 —— 光环只是提示，无需高帧；
-   - 变化节流：颜色/相位没到该更新的帧就跳过整帧重绘；
-   - 位图与 DC 全局复用，不在动画循环里分配内存；
-   - 状态变化（开始/停止）才重建位图，动画帧只改像素。
-4. **可降级**：非 Windows / 分层窗口不可用时静默关闭，操控功能不受影响。
+1. **屏幕四边光带**（`Aura`）：一条贴着屏幕边缘、包围整屏的彩色光带，
+   实时带呼吸感 + 轻微闪烁 + 向内扩散的泛光，永远置顶、鼠标穿透。
+2. **胶囊提示窗**（`HintCapsule`）：屏幕顶部中央略靠下的无框小窗，
+   文字「Agent正在操控您的电脑，移动鼠标/按任意键打断」，
+   文字后面跟 8 个同大小同样式的小圆点，绕成一个转圈圆环当等待动画。
 
-关于配色：本文件是**屏幕叠加提示层**，按需求使用彩色流光；与应用内 UI 的
-纯黑+淡灰+白+深蓝风格是两套东西，不互相约束。
+三条硬性约束
+------------
+* **绝不进截图**：两个窗口都调 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`，
+  让 `BitBlt` / `PrintWindow` / 图形捕获 API 一律看不到它们 —— AI 截到的画面
+  永远是"用户会看到的桌面"，不含任何提示层。系统不支持时退化为
+  `capture_guard()` 里临时 `ShowWindow(SW_HIDE)`（见 `_EXCLUDE_ALL`）。
+* **绝不吃用户的点击**：分层窗口 + `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`，
+  鼠标键盘全部穿透到下面的真实窗口。
+* **性能优先**：见下面的渲染策略。
+
+渲染策略（这是本文件最要紧的设计）
+----------------------------------
+屏幕 1920×1080 下整屏 DIB 是 8.3MB，逐像素 Python 循环是唯一的热点。实测
+（`scripts/_aura_bench.py`）单像素写入约 0.7µs，所以**每帧要写的像素数必须
+被设计住**：
+
+* 贴边 5px 的高饱和**核心带**每帧重写（负责色相流动 + 沿边亮度波纹）；
+* 向内 9px 的**泛光层**只在建窗时写一次，此后一动不动 —— 泛光本来是柔和的
+  静态扩散，不需要流动；
+* **呼吸 / 闪烁 / 淡入淡出**全部交给 `BLENDFUNCTION.SourceConstantAlpha`
+  做整层 alpha 缩放，**零像素开销**；
+* 像素直接写进 `CreateDIBSection` 的内存（`memoryview.from_address`），
+  省掉"bytearray 再 memmove 8MB"的整轮拷贝。
+
+代价：每帧约 3 万像素 ≈ 21ms + 一次 `UpdateLayeredWindow`，10~12fps 下
+约占单核 30%，且**自带限速**（单帧超时就自动拉长间隔，绝不把 CPU 打满）。
 """
 
 import ctypes
+import math
 import threading
 import time
 from ctypes import wintypes, POINTER, byref, c_void_p
@@ -26,15 +46,38 @@ user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-# ---- 可调参数（集中在此，便于扩展/调优） ----
-AURA_FPS = 12                 # 帧率上限：提示用途，12fps 足够且留足 CPU 余量
-                                # （实测 1920×1080 单帧约 50ms，20fps 会顶满预算；
-                                #  12fps → 83ms 预算，留 40% 余量）
-AURA_THICKNESS = 5            # 光环粗细（屏幕像素）
-AURA_MARGIN = 0               # 贴边偏移
-AURA_SATURATION = 0.85        # 色彩饱和度（HSL 的 S）
-AURA_MIN_LIGHT = 0.55         # 最低亮度：保证在浅色壁纸上也能看见
-AURA_FADE_S = 0.35            # 启动/停止淡入淡出时长（秒）
+# ---- 光带参数（集中在此，便于调优） ----
+AURA_FPS = 12                 # 帧率上限
+AURA_CORE = 5                 # 贴边核心亮带宽度（每帧重写）
+AURA_GLOW = 12                # 向内泛光宽度（只写一次，静态；加宽不增加每帧开销）
+AURA_THICKNESS = AURA_CORE + AURA_GLOW
+AURA_SATURATION = 0.92        # 核心带的饱和度
+AURA_GLOW_SATURATION = 0.88   # 泛光起始饱和度（向内外渐变到 0.36 → 偏白）
+AURA_MIN_LIGHT = 0.56         # 最低亮度：保证在浅色壁纸上也能看见
+AURA_HUE_CYCLES = 1           # 一圈彩虹绕几遍（整数，否则接缝会断色）
+AURA_FLOW_SPEED = 0.30        # 色相沿边流动速度（每秒转过的比例）
+AURA_RIPPLE = 6               # 沿边的亮度波纹个数（整数，接缝才连续）
+AURA_RIPPLE_AMP = 0.16        # 波纹的 alpha 起伏幅度（±16%）
+AURA_BREATH_PERIOD = 3.4      # 呼吸周期（秒）
+AURA_BREATH_DEPTH = 0.34      # 呼吸深度：整体亮度在 1.00 ↔ 0.66 之间起伏
+AURA_FLICKER_DEPTH = 0.055    # 轻微闪烁幅度（约 Hz 级的微弱抖动）
+AURA_FADE_S = 0.35            # 启动/停止淡入淡出时长
+
+# ---- 胶囊提示窗参数 ----
+HINT_TEXT = "Agent正在操控您的电脑，移动鼠标/按任意键打断"
+AURA_HINT_TOP = 60            # 距屏幕顶部的距离（"略靠下"）
+AURA_HINT_FPS = 24            # 转圈动画帧率
+AURA_HINT_FONT_PX = 13
+AURA_HINT_PAD_X = 18
+AURA_HINT_PAD_Y = 8
+AURA_HINT_GAP = 10            # 文字与转圈之间的间距
+AURA_HINT_DOTS = 8
+AURA_HINT_SPIN_S = 1.15       # 转一圈的时间
+AURA_HINT_DOT_R = 1.75        # 圆点半径
+AURA_HINT_ORBIT_R = 8.4       # 圆点绕行半径（留够间距，相邻两点不会糊成一团）
+HINT_BG = (30, 24, 20)        # 胶囊底色 BGRA（近黑，微冷）
+HINT_BG_ALPHA = 208
+HINT_RIM = 0.55               # 贴边亮边的强度（让胶囊在浅色壁纸上也有轮廓）
 
 # 分层窗口常量
 WS_EX_LAYERED = 0x00080000
@@ -49,8 +92,21 @@ SWP_SHOWWINDOW = 0x0040
 ULW_ALPHA = 0x00000002
 AC_SRC_OVER = 0x00
 BI_RGB = 0
-
 HWND_TOPMOST = -1
+SW_HIDE = 0
+SW_SHOWNOACTIVATE = 4
+# 截图排除（Windows 10 2004+）：窗口照常显示在屏幕上，但捕获 API 里完全不存在
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+# GDI 文本常量
+TRANSPARENT_BK = 1
+ANTIALIASED_QUALITY = 4
+FW_MEDIUM = 500
+DEFAULT_CHARSET = 1
+OUT_TT_PRECIS = 10
+CLIP_DEFAULT_PRECIS = 0
+DEFAULT_PITCH = 0
+FF_DONTCARE = 0
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -77,6 +133,11 @@ class MONITORINFO(ctypes.Structure):
 
 
 def _bind():
+    # GetModuleHandleW 的返回值是 64 位 HMODULE，**必须声明 restype**：
+    # 默认 restype 是 c_int，会把模块基址截断成 32 位，再当 hInstance 传给
+    # CreateWindowExW 就成了野指针 —— 实测在 pytest 里拉起时直接 access violation。
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
     user32.CreateWindowExW.restype = wintypes.HWND
     user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                        wintypes.DWORD, ctypes.c_int, ctypes.c_int,
@@ -95,6 +156,12 @@ def _bind():
     user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, POINTER(MONITORINFO)]
     user32.DestroyWindow.argtypes = (wintypes.HWND,)
     user32.IsWindow.argtypes = (wintypes.HWND,)
+    user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.SetWindowDisplayAffinity.argtypes = (wintypes.HWND, wintypes.DWORD)
+    user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    gdi32.TextOutW.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                               wintypes.LPCWSTR, ctypes.c_int]
+    gdi32.TextOutW.restype = wintypes.BOOL
     gdi32.CreateCompatibleDC.restype = wintypes.HDC
     gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
     gdi32.CreateDIBSection.restype = wintypes.HBITMAP
@@ -104,6 +171,12 @@ def _bind():
     gdi32.SelectObject.argtypes = (wintypes.HDC, ctypes.c_void_p)
     gdi32.DeleteObject.argtypes = (ctypes.c_void_p,)
     gdi32.DeleteDC.argtypes = (wintypes.HDC,)
+    gdi32.CreateFontW.restype = ctypes.c_void_p
+    gdi32.CreateFontW.argtypes = [ctypes.c_int] * 5 + [wintypes.DWORD] * 8 + [wintypes.LPCWSTR]
+    gdi32.SetBkMode.argtypes = (wintypes.HDC, ctypes.c_int)
+    gdi32.SetTextColor.argtypes = (wintypes.HDC, wintypes.DWORD)
+    gdi32.GetTextExtentPoint32W.argtypes = [wintypes.HDC, wintypes.LPCWSTR,
+                                            ctypes.c_int, POINTER(wintypes.SIZE)]
 
 
 _bind()
@@ -132,114 +205,71 @@ def _hsl_to_rgb(h, s, l):
             int(max(0.0, min(1.0, b + m)) * 255))
 
 
-class Aura:
-    """屏幕边缘彩色光环：AI 操控期间常亮流动，停止后淡出。
+def _screen_size() -> tuple:
+    """主屏物理分辨率（光带只铺主屏）。"""
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if user32.GetMonitorInfoW(0, ctypes.byref(mi)):
+        r = mi.rcMonitor
+        return (int(r.right - r.left), int(r.bottom - r.top))
+    return (int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1)))
 
-    用法：Aura().start() / .stop() / .set_active(bool)；
-    单例由 module 级 active()/deactivate() 暴露给 server.py。
+
+# ============================================================================
+# 分层窗口底座：建窗 / DIB / 直写内存 / 推帧 / 截图排除
+# ============================================================================
+
+# 当前所有活跃的分层窗口：截图排除与显隐兜底都靠这张表
+_LAYERS = []
+_CAPTURE_LOCK = threading.Lock()
+_EXCLUDE_ALL = True        # 全部窗口都成功设了 WDA_EXCLUDEFROMCAPTURE 才为 True
+
+
+class _LayeredWindow:
+    """逐像素 alpha 的无边框分层窗口。
+
+    像素内存通过 `memoryview.from_address` 直接映射到 `CreateDIBSection` 给出的
+    地址，写像素 = 直接写显存位图，不需要"先写 bytearray 再 memmove"的整轮拷贝。
     """
 
-    def __init__(self, thickness: int = AURA_THICKNESS, fps: int = AURA_FPS):
-        self.thickness = max(2, int(thickness))
-        self.interval = 1.0 / max(1, int(fps))
-        self._lock = threading.Lock()
-        self._thread = None
-        self._stop = threading.Event()
-        self._active = False
-        self._hwnd = None
-        self._screen_dc = None
-        self._mem_dc = None
-        self._bmp = None
-        self._bits = c_void_p()      # CreateDIBSection 的输出：指向像素缓冲的指针
-        self._width = 0
-        self._height = 0
-        self._pixels = 0          # 预先算好的 (x, y, depth_ratio) 列表
-        self._failed = False
-        self._last_frame = 0.0
-        self._error = ""
-        self._start_ts = 0.0          # 淡入起点
-        self._stop_ts = 0.0           # 淡出起点
-        self._lut = []                # 色相×深度 → BGRA
-        self._fade_lut = []           # 叠加淡入淡出档位后的表
-        self._fade_i = -1
-        self._frame_buf = bytearray() # 复用帧缓冲
-        self._blank_row = b""
-        self._blank_size = 0
+    def __init__(self, name: str = "zl-layer"):
+        self.name = name
+        self._hwnd = 0
+        self._screen_dc = 0
+        self._mem_dc = 0
+        self._bmp = 0
+        self._bits = c_void_p()
         self._addr = 0
-        self._buf = None
+        self._mv = None
+        self._owner = None
+        self._w = 0
+        self._h = 0
+        self._x = 0
+        self._y = 0
+        self._failed = False
+        self._error = ""
+        self._visible = False
+        self._excluded = False
+        self._blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255, 1)
+        self._size = None
+        self._dst = None
+        self._src = wintypes.POINT(0, 0)
 
-    # ---- 对外接口 ----
-    def start(self):
-        """启动光环线程（幂等）。"""
-        with self._lock:
-            if self._failed or (self._thread and self._thread.is_alive()):
-                return False
-            self._stop.clear()
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-            return True
-
-    def stop(self, timeout: float = 1.5):
-        """请求停止并等线程收尾（幂等）。"""
-        self._stop.set()
-        th = self._thread
-        if th and th.is_alive():
-            th.join(timeout)
-        with self._lock:
-            self._thread = None
-
-    def set_active(self, flag: bool):
-        """设置可见性：True=操控中显示彩色光环，False=淡出并隐藏。"""
-        flag = bool(flag)
-        with self._lock:
-            if self._active == flag and not (flag and not self._thread):
-                return
-            self._active = flag
-        if flag:
-            self.start()
-
-    @property
-    def active(self) -> bool:
-        return self._active
-
-    def capability(self) -> str:
-        if self._failed:
-            return f"屏幕光环不可用（{self._error}）"
-        return f"屏幕四边彩色光环（{self.thickness}px / {int(1 / self.interval)}fps / 鼠标穿透）"
-
-    # ---- 内部实现 ----
-    def _run(self):
-        try:
-            if not self._create_window():
-                return
-            self._last_frame = time.time()
-            while not self._stop.is_set():
-                now = time.time()
-                if now - self._last_frame >= self.interval:
-                    self._last_frame = now
-                    self._draw_frame(now)
-                time.sleep(0.008)     # 轮询间隔短于帧间隔，保证不掉帧又不空转
-            self._teardown()
-        except Exception as e:
-            self._failed = True
-            self._error = f"{type(e).__name__}: {e}"
-
-    def _create_window(self) -> bool:
-        width, height = self._screen_size()
-        if width <= 0 or height <= 0:
-            self._failed = True
-            self._error = "无法获取屏幕尺寸"
+    # ---- 建/拆 ----
+    def create(self, x: int, y: int, w: int, h: int) -> bool:
+        global _EXCLUDE_ALL
+        w, h = int(w), int(h)
+        if w <= 0 or h <= 0:
+            self._failed, self._error = True, "窗口尺寸无效"
             return False
-        self._width, self._height = width, height
+        self._w, self._h, self._x, self._y = w, h, int(x), int(y)
         self._screen_dc = user32.GetDC(0)
         if not self._screen_dc:
-            self._failed = True
-            self._error = "GetDC 失败"
+            self._failed, self._error = True, "GetDC 失败"
             return False
         self._hwnd = user32.CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            "STATIC", "ai-control-aura", WS_POPUP,
-            -AURA_MARGIN, -AURA_MARGIN, width + AURA_MARGIN * 2, height + AURA_MARGIN * 2,
+            "STATIC", self.name, WS_POPUP, self._x, self._y, w, h,
             0, 0, kernel32.GetModuleHandleW(None), None)
         if not self._hwnd:
             self._failed = True
@@ -247,149 +277,52 @@ class Aura:
             return False
         user32.SetWindowPos(self._hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
-        # 逐像素图层：每像素 alpha，边缘不生硬
         bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = width
-        bmi.bmiHeader.biHeight = -height          # 自顶向下
+        bmi.bmiHeader.biWidth = w
+        bmi.bmiHeader.biHeight = -h              # 自顶向下
         bmi.bmiHeader.biPlanes = 1
         bmi.bmiHeader.biBitCount = 32
         bmi.bmiHeader.biCompression = BI_RGB
         self._mem_dc = gdi32.CreateCompatibleDC(self._screen_dc)
         if not self._mem_dc:
-            self._failed = True
-            self._error = "CreateCompatibleDC 失败"
+            self._failed, self._error = True, "CreateCompatibleDC 失败"
             return False
+        self._bits = c_void_p()
         self._bmp = gdi32.CreateDIBSection(self._screen_dc, ctypes.byref(bmi), 0,
                                            ctypes.byref(self._bits), None, 0)
-        if not self._bmp:
-            self._failed = True
-            self._error = "CreateDIBSection 失败"
+        if not self._bmp or not self._bits:
+            self._failed, self._error = True, "CreateDIBSection 失败"
             return False
         gdi32.SelectObject(self._mem_dc, self._bmp)
-        self._blank_size = width * height * 4
-        self._blank_row = bytes(4096)         # 清屏用零块
-        self._frame_buf = bytearray(self._blank_size)   # 复用帧缓冲，避免每帧分配
-        # 像素缓冲的地址 → 可整体 memmove 的地址
         self._addr = ctypes.cast(self._bits, ctypes.c_void_p).value or 0
-        self._buf = ctypes.cast(ctypes.c_void_p(self._addr),
-                                ctypes.POINTER(ctypes.c_ubyte)) if self._addr else None
-        self._build_lut()
-        self._pixels = self._build_pixels()
-        # 建窗时清一次：屏幕内部区域此后恒为全透明，动画帧无需再清屏
-        ctypes.memmove(self._addr, bytes(self._blank_size), self._blank_size)
+        if not self._addr:
+            self._failed, self._error = True, "像素缓冲地址为空"
+            return False
+        # 直接映射位图内存：写像素不需要任何中间拷贝
+        self._owner = (ctypes.c_ubyte * (w * h * 4)).from_address(self._addr)
+        self._mv = memoryview(self._owner).cast("B")
+        ctypes.memset(self._addr, 0, w * h * 4)
+        self._size = wintypes.SIZE(w, h)
+        self._dst = wintypes.POINT(self._x, self._y)
+        # 截图排除：让所有捕获 API 都看不见这扇窗（做不到就记下来，改用临时隐藏）
+        try:
+            self._excluded = bool(user32.SetWindowDisplayAffinity(
+                self._hwnd, WDA_EXCLUDEFROMCAPTURE))
+        except Exception:
+            self._excluded = False
+        if not self._excluded:
+            with _CAPTURE_LOCK:
+                _EXCLUDE_ALL = False
+        with _CAPTURE_LOCK:
+            _LAYERS.append(self)
+        self._visible = True
         return True
 
-    def _build_pixels(self) -> list:
-        """预先算好属于光环的像素 (offset, hue_pos, depth)。
-
-        覆盖完整四边：上下横边 + 左右竖边，转角去重（早先只画横边、漏掉左右竖边，
-        会导致屏幕两侧没有光环）。只遍历贴边区域而非整屏，动画帧仅写这些点。
-        """
-        t = self.thickness
-        w, h = self._width, self._height
-        seen = set()
-        out = []
-
-        def _add(x, y, depth, along):
-            off = y * w + x
-            if off in seen:
-                return
-            seen.add(off)
-            out.append((off, along, depth))
-
-        # 上下横边（含转角）
-        for y in list(range(t)) + list(range(h - t, h)):
-            depth = 1.0 - min(y, h - 1 - y) / float(t)
-            for x in range(w):
-                _add(x, y, depth, x / float(w))
-        # 左右竖边（跳过已被横边覆盖的转角行）
-        for x in list(range(t)) + list(range(w - t, w)):
-            depth = 1.0 - min(x, w - 1 - x) / float(t)
-            for y in range(t, h - t):
-                _add(x, y, depth, y / float(h))
-        return out
-
-    def _build_lut(self):
-        """把色相/饱和度/亮度离散成查找表：动画帧不再逐像素做 HSL→RGB 三角函数。"""
-        steps = 256
-        self._lut = []
-        for i in range(steps):
-            hue = i / float(steps)
-            row = []
-            for j in range(steps):
-                depth = j / float(steps - 1)
-                light = min(0.92, AURA_MIN_LIGHT + depth * (1.0 - AURA_MIN_LIGHT))
-                r, g, b = _hsl_to_rgb(hue, AURA_SATURATION, light)
-                row.append((b, g, r, int(255 * (0.35 + 0.65 * depth))))
-            self._lut.append(row)
-        return self._lut
-
-    def _draw_frame(self, now: float):
-        if not self._active and not self._stop_ts:
-            self._stop_ts = now
-        # 淡入/淡出进度：active 时从 _start_ts 渐入，否则从 _stop_ts 渐出
-        if self._active:
-            if not self._start_ts:
-                self._start_ts = now
-            self._stop_ts = 0.0
-            alpha_scale = min(1.0, (now - self._start_ts) / AURA_FADE_S)
-        else:
-            if not self._stop_ts:
-                self._stop_ts = now
-            self._start_ts = 0.0
-            alpha_scale = max(0.0, 1.0 - (now - self._stop_ts) / AURA_FADE_S)
-
-        w, h = self._width, self._height
-        if not self._pixels or not self._bits:
-            return
-        if not self._active and alpha_scale <= 0.01:
-            self._push_frame(clear_only=True)
-            self._stop.set()      # 淡出完成 → 线程自然退出并清理
-            return
-
-        if self._buf is None or not self._frame_buf:
-            return
-        # 淡入淡出只量化成 16 档 → 相位/alpha 组合数固定，可用预建表
-        fade_i = int(max(0.0, min(1.0, alpha_scale)) * 15)
-        if fade_i != self._fade_i:
-            self._fade_i = fade_i
-            self._fade_lut = [[(b, g, r, min(255, a * (fade_i + 1) // 16))
-                               for (b, g, r, a) in row] for row in self._lut]
-        lut = self._fade_lut
-        n = len(self._lut)
-        shift = (now * 0.35) % 1.0        # 色彩沿边流动
-        # 热路径：复用一块 bytearray，用切片赋值写 4 字节像素（比 ctypes 逐索引快一个
-        # 数量级）。无需每帧清屏 —— 四边像素每帧都会被全量覆写，屏幕内部区域从创建后
-        # 就一直是全透明（alpha=0），因此只在建窗时清一次即可。
-        buf = self._frame_buf
-        idx_n = n - 1
-        for offset, pos, depth in self._pixels:
-            b, g, r, a = lut[int((pos + shift) * n) % n][int(depth * idx_n)]
-            o = offset * 4
-            buf[o] = b
-            buf[o + 1] = g
-            buf[o + 2] = r
-            buf[o + 3] = a
-        ctypes.memmove(self._addr, bytes(buf), self._blank_size)
-        self._push_frame()
-
-    def _push_frame(self, clear_only: bool = False):
-        """把内存位图推到屏幕（alpha 叠加，不盖底）。"""
-        if not self._hwnd or not self._mem_dc:
-            return
-        blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255, 1)   # AlphaFormat=1(AC_SRC_ALPHA)
-        sz = wintypes.SIZE(self._width, self._height)
-        dst = wintypes.POINT(0, 0)      # 窗口已在 (0,0)，不移动
-        src = wintypes.POINT(0, 0)
-        try:
-            user32.UpdateLayeredWindow(self._hwnd, self._screen_dc, ctypes.byref(dst),
-                                       ctypes.byref(sz), self._mem_dc, ctypes.byref(src),
-                                       0, ctypes.byref(blend), ULW_ALPHA)
-        except Exception:
-            pass
-
-    def _teardown(self):
+    def destroy(self):
+        with _CAPTURE_LOCK:
+            if self in _LAYERS:
+                _LAYERS.remove(self)
         try:
             if self._hwnd and user32.IsWindow(self._hwnd):
                 user32.DestroyWindow(self._hwnd)
@@ -410,21 +343,686 @@ class Aura:
                 user32.ReleaseDC(0, self._screen_dc)
         except Exception:
             pass
-        self._hwnd = self._bmp = self._mem_dc = self._screen_dc = self._bits = None
+        self._mv = None
+        self._owner = None
+        self._hwnd = 0
+        self._bmp = 0
+        self._mem_dc = 0
+        self._screen_dc = 0
+        self._bits = c_void_p()
+        self._visible = False
+
+    # ---- 显隐（截图兜底用） ----
+    def hide(self):
+        if self._hwnd and user32.IsWindow(self._hwnd):
+            user32.ShowWindow(self._hwnd, SW_HIDE)
+            self._visible = False
+
+    def show(self):
+        if self._hwnd and user32.IsWindow(self._hwnd):
+            user32.ShowWindow(self._hwnd, SW_SHOWNOACTIVATE)
+            user32.SetWindowPos(self._hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            self._visible = True
+
+    # ---- 推帧 ----
+    def push(self, sca: int = 255):
+        """把位图推到屏幕（alpha 叠加）。sca=整层 alpha 缩放，呼吸/闪烁全靠它。"""
+        if not self._hwnd or not self._mem_dc:
+            return
+        self._blend.SourceConstantAlpha = max(0, min(255, int(sca)))
+        try:
+            user32.UpdateLayeredWindow(self._hwnd, self._screen_dc, byref(self._dst),
+                                       byref(self._size), self._mem_dc, byref(self._src),
+                                       0, byref(self._blend), ULW_ALPHA)
+        except Exception:
+            pass
+
+
+def capture_guard():
+    """截图期间的上下文管理器：确保捕获画面里没有提示层。
+
+    正常情况（`WDA_EXCLUDEFROMCAPTURE` 生效）它什么都不做 —— 窗口照常显示，
+    只是不出现在 `BitBlt`/`PrintWindow` 的结果里，用户看不到任何闪烁。
+    系统不支持时才退化成"截前隐藏、截后恢复"，此时必须紧跟截图调用，别嵌套太久。
+    """
+    return _CaptureGuard()
+
+
+class _CaptureGuard:
+    def __enter__(self):
+        self._hidden = []
+        if not _EXCLUDE_ALL:
+            with _CAPTURE_LOCK:
+                targets = [lw for lw in _LAYERS if lw._visible]
+            for lw in targets:
+                try:
+                    lw.hide()
+                    self._hidden.append(lw)
+                except Exception:
+                    pass
+            if self._hidden:
+                time.sleep(0.012)      # 给 DWM 一帧把窗口真正撤下画面
+        return self
+
+    def __exit__(self, *exc):
+        for lw in self._hidden:
+            try:
+                lw.show()
+            except Exception:
+                pass
+        self._hidden = []
+        return False
+
+
+def capture_exclude_supported() -> bool:
+    """截图排除是否走的是原生路径（False 表示靠临时隐藏兜底）。"""
+    return bool(_EXCLUDE_ALL)
+
+
+# ============================================================================
+# 屏幕四边光带
+# ============================================================================
+
+class Aura:
+    """屏幕四边彩色光带：AI 操控期间呼吸流动，停止后淡出。"""
+
+    def __init__(self, thickness: int = 0, fps: int = AURA_FPS):
+        if thickness and int(thickness) != AURA_CORE + AURA_GLOW:
+            # 兼容旧签名：显式给了总粗细就按 36% / 64% 拆成核心带与泛光
+            self.thickness = max(3, int(thickness))
+            self.core = max(1, int(round(self.thickness * 0.36)))
+            self.glow = max(1, self.thickness - self.core)
+        else:
+            self.core, self.glow = AURA_CORE, AURA_GLOW
+            self.thickness = self.core + self.glow
+        self.interval = 1.0 / max(1, int(fps))
+        self._lock = threading.Lock()
+        self._thread = None
+        self._hint_thread = None
+        self._stop = threading.Event()
+        self._active = False
+        self._failed = False
+        self._error = ""
+        self._ring = None
+        self._hint = None
+        self._core_px = []          # (offset*4, pos_idx, depth_idx)
+        self._glow_px = []
+        self._core_lut = []
+        self._glow_lut = []
+        self._start_ts = 0.0
+        self._stop_ts = 0.0
+        self._frame_cost = 0.0      # 最近一帧的实际耗时（秒），用于自动限速
+        self._hint_error = ""       # 胶囊窗建窗/渲染异常（不静默吞掉，供排障）
+
+    # ---- 对外接口 ----
+    def start(self) -> bool:
+        """启动光带/胶囊两个渲染线程（幂等，且**分别**自愈）。
+
+        为什么必须分开判断：两个线程的生命周期并不一致 —— 光带线程负责驱动淡入
+        淡出的时间轴，胶囊线程在"淡出到底"时会先退出。早先 `start()` 只检查光带
+        线程，于是出现过这种故障：胶囊线程先退了，之后再怎么点亮都**只亮光带、
+        永远不出胶囊**（调用方看起来像功能坏了，其实是线程没被重启）。
+        所以这里对两个线程各自判活、各自拉起；任一线程死了就补一个。
+        """
+        with self._lock:
+            if self._failed:
+                return False
+            ring_dead = not (self._thread and self._thread.is_alive())
+            hint_dead = not (self._hint_thread and self._hint_thread.is_alive())
+            if not (ring_dead or hint_dead):
+                return False
+            # 任一线程要重启，就必须先撤掉停止信号（否则新线程一起跑就被叫停）
+            self._stop.clear()
+            if ring_dead:
+                self._thread = threading.Thread(target=self._run_ring, daemon=True,
+                                                name="zhuzhu-aura")
+                self._thread.start()
+            if hint_dead:
+                self._hint_thread = threading.Thread(target=self._run_hint, daemon=True,
+                                                     name="zhuzhu-aura-hint")
+                self._hint_thread.start()
+            return True
+
+    def stop(self, timeout: float = 1.5):
+        """请求停止并等线程收尾（幂等）。"""
+        self._stop.set()
+        for th in (self._thread, self._hint_thread):
+            if th and th.is_alive():
+                th.join(timeout)
+        with self._lock:
+            self._thread = None
+            self._hint_thread = None
+
+    def set_active(self, flag: bool):
+        """True=操控中显示提示层，False=淡出并隐藏。"""
+        flag = bool(flag)
+        with self._lock:
+            self._active = flag
+            need = flag and not (self._thread and self._thread.is_alive()
+                                 and self._hint_thread and self._hint_thread.is_alive())
+        if need:
+            self.start()
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def capability(self) -> str:
+        if self._failed:
+            return f"屏幕提示层不可用（{self._error}）"
+        cap = (f"屏幕四边彩色光带（{self.core}px 核心 + {self.glow}px 泛光 / "
+               f"{int(round(1 / self.interval))}fps / 呼吸+闪烁 / 鼠标穿透）")
+        hint = f"顶部胶囊提示窗（{AURA_HINT_DOTS} 点转圈）"
+        if self._hint_error:
+            hint = f"顶部胶囊提示窗异常（{self._hint_error}）"
+        tail = "" if _EXCLUDE_ALL else "；截图排除走隐藏兜底"
+        return f"{cap} + {hint}{tail}"
+
+    # ---- 时间轴（纯函数，两个线程都可安全调用） ----
+    def _sync_timers(self, now: float):
+        if self._active:
+            if not self._start_ts:
+                self._start_ts = now
+            self._stop_ts = 0.0
+        else:
+            if not self._stop_ts:
+                self._stop_ts = now
+            self._start_ts = 0.0
+
+    def _fade_at(self, now: float) -> float:
+        if self._active:
+            if not self._start_ts:
+                return 0.0
+            return max(0.0, min(1.0, (now - self._start_ts) / AURA_FADE_S))
+        if not self._stop_ts:
+            return 1.0
+        return max(0.0, min(1.0, 1.0 - (now - self._stop_ts) / AURA_FADE_S))
+
+    @staticmethod
+    def _pulse(now: float) -> int:
+        """呼吸 + 轻微闪烁 → 整层 alpha 缩放系数（0..255），零像素开销。"""
+        ph = (now % AURA_BREATH_PERIOD) / AURA_BREATH_PERIOD
+        breath = 1.0 - AURA_BREATH_DEPTH * (0.5 - 0.5 * math.cos(2.0 * math.pi * ph))
+        flick = 1.0 + AURA_FLICKER_DEPTH * (0.62 * math.sin(now * 57.0)
+                                            + 0.38 * math.sin(now * 93.1 + 1.7))
+        return int(max(0.0, min(1.0, breath * flick)) * 255)
+
+    # ---- 线程 ----
+    def _run_ring(self):
+        try:
+            if not self._create_ring():
+                return
+            last = 0.0
+            while not self._stop.is_set():
+                now = time.time()
+                if now - last >= self.interval:
+                    last = now
+                    t0 = time.perf_counter()
+                    self._draw_ring(now)
+                    cost = time.perf_counter() - t0
+                    self._frame_cost = cost
+                    # 自动限速：单帧已经吃掉间隔的大半就拉长节拍，绝不把 CPU 打满
+                    if cost > self.interval * 0.7:
+                        last = now + cost * 0.35
+                time.sleep(0.006)
+        except Exception as e:
+            self._failed = True
+            self._error = f"{type(e).__name__}: {e}"
+            self._stop.set()
+        finally:
+            if self._ring:
+                self._ring.destroy()
+                self._ring = None
+
+    def _run_hint(self):
+        interval = 1.0 / max(1, AURA_HINT_FPS)
+        try:
+            # 等光环线程把 _active 的时间轴推进起来再建窗，避免闪一下空胶囊
+            for _ in range(200):
+                if self._stop.is_set() or self._active:
+                    break
+                time.sleep(0.01)
+            if self._stop.is_set() or self._failed:
+                return          # 光带建窗失败时淡入时间轴永远不会推进，胶囊别空转
+            if not self._create_hint():
+                return
+            while not self._stop.is_set():
+                now = time.time()
+                fade = self._fade_at(now)
+                drawn = self._hint_draw(now)
+                if not drawn:
+                    break
+                # 胶囊只跟淡入淡出走，**不参与**呼吸/闪烁：上面有要读的文字，
+                # 跟着一起忽明忽暗会看不清（呼吸感只属于边缘光带）。
+                self._hint.push(int(255 * fade))
+                if fade <= 0.004 and not self._active:
+                    break
+                time.sleep(interval)
+            # 淡出到底：补一帧全透明再收窗
+            try:
+                self._hint.push(0)
+            except Exception:
+                pass
+        except Exception as e:
+            self._hint_error = f"{type(e).__name__}: {e}"
+        finally:
+            if self._hint:
+                self._hint.destroy()
+                self._hint = None
+
+    # ---- 光带：建窗 ----
+    def _create_ring(self) -> bool:
+        width, height = _screen_size()
+        if width <= 0 or height <= 0:
+            self._failed, self._error = True, "无法获取屏幕尺寸"
+            return False
+        ring = _LayeredWindow("zhuzhu-aura-ring")
+        if not ring.create(0, 0, width, height):
+            self._failed = True
+            self._error = ring._error
+            return False
+        self._ring = ring
+        self._build_luts()
+        self._build_pixels()
+        self._paint_static()
+        return True
+
+    # ---- 光带：查找表 ----
+    def _build_luts(self):
+        steps = 256
+        core_lut = []
+        glow_lut = []
+        for i in range(steps):
+            pos = i / float(steps)
+            hue = (pos * AURA_HUE_CYCLES) % 1.0
+            ripple = 1.0 + AURA_RIPPLE_AMP * math.sin(2.0 * math.pi * pos * AURA_RIPPLE)
+            crow = []
+            grow = []
+            for j in range(steps):
+                d = j / float(steps - 1)
+                # 核心带：贴边最亮最浓，向内侧略微收暗（L 0.56→0.72 才有"彩色"的浓度，
+                # 早先用 0.72→0.92 太浅，一过白底就糊成粉白）
+                light = AURA_MIN_LIGHT + 0.16 * (1.0 - d)
+                r, g, b = _hsl_to_rgb(hue, AURA_SATURATION, light)
+                a = int((238 - 32 * d) * ripple)
+                crow.append((b, g, r, max(0, min(255, a))))
+                # 泛光：从核心带内沿接上去，越往外越淡越白，最后归零
+                gl = 0.62 + 0.14 * d
+                gs = AURA_GLOW_SATURATION - 0.52 * d
+                r, g, b = _hsl_to_rgb(hue, max(0.05, gs), gl)
+                ga = int(211 * (1.0 - d) ** 1.9)
+                grow.append((b, g, r, max(0, ga)))
+            core_lut.append(crow)
+            glow_lut.append(grow)
+        self._core_lut = core_lut
+        self._glow_lut = glow_lut
+
+    # ---- 光带：像素清单 ----
+    def _build_pixels(self):
+        """算出属于光带的所有像素 → (字节偏移, 色相索引, 深度索引)。
+
+        `self._core_px` 每帧重写（色相流动 + 亮度波纹），`self._glow_px` 只在建窗
+        时写一次（泛光是静态扩散，不需要动）。返回值是两者之和，供测试/自检核对
+        "四边都被覆盖、屏幕中心不被点亮"。
+        """
+        core, glow = self.core, self.glow
+        total = core + glow
+        if self._ring is not None:
+            w, h = self._ring._w, self._ring._h
+        else:
+            w = int(getattr(self, "_width", 0) or getattr(self, "_w", 1920))
+            h = int(getattr(self, "_height", 0) or getattr(self, "_h", 1080))
+        steps = 256
+        core_px, glow_px = [], []
+        seen = set()
+        # 沿**整圈周长**参数化：色相顺着边界一路绕过去，四个转角才不会有色相断层。
+        # 早先横边用 x/w、竖边用 y/h 各自归一化，两条边在转角处色相对不上，
+        # 会看到一条生硬的颜色切缝（实测在左上角非常明显）。
+        perim = float(2 * (w + h) - 4)
+
+        def _pos(x, y, d):
+            if d == y:                              # 上边：从左到右
+                s = x
+            elif d == h - 1 - y:                    # 下边：从右到左（顺着绕过去）
+                s = 2 * w + h - 3 - x
+            elif d == x:                            # 左边：从下到上
+                s = 2 * (w + h) - 4 - y
+            else:                                   # 右边：从上到下
+                s = w - 1 + y
+            return s / perim
+
+        def _emit(x, y):
+            d = min(y, h - 1 - y, x, w - 1 - x)
+            if d >= total:
+                return
+            off = y * w + x
+            if off in seen:
+                return
+            seen.add(off)
+            pos_i = int(_pos(x, y, d) * steps) & (steps - 1)
+            if d < core:
+                dep = 0 if core <= 1 else d / float(core - 1)
+                core_px.append((off << 2, pos_i, int(dep * (steps - 1))))
+            else:
+                q = (d - core) / float(max(1, glow))
+                glow_px.append((off << 2, pos_i, int(min(1.0, q) * (steps - 1))))
+
+        # 上下横边（含四个角）
+        for y in list(range(total)) + list(range(h - total, h)):
+            for x in range(w):
+                _emit(x, y)
+        # 左右竖边（跳过已被横边覆盖的转角行）
+        for x in list(range(total)) + list(range(w - total, w)):
+            for y in range(total, h - total):
+                _emit(x, y)
+        self._core_px = core_px
+        self._glow_px = glow_px
+        return core_px + glow_px
+
+    # ---- 光带：静态层（泛光 + 核心带的初始帧） ----
+    def _paint_static(self):
+        mv = self._ring._mv
+        glow_lut = self._glow_lut
+        for off4, pi, di in self._glow_px:
+            b, g, r, a = glow_lut[pi][di]
+            mv[off4] = b
+            mv[off4 + 1] = g
+            mv[off4 + 2] = r
+            mv[off4 + 3] = a
+        core_lut = self._core_lut
+        for off4, pi, di in self._core_px:
+            b, g, r, a = core_lut[pi][di]
+            mv[off4] = b
+            mv[off4 + 1] = g
+            mv[off4 + 2] = r
+            mv[off4 + 3] = a
+        self._ring.push(0)
+
+    # ---- 光带：动画帧 ----
+    def _draw_ring(self, now: float):
+        self._sync_timers(now)
+        fade = self._fade_at(now)
+        if not self._active and fade <= 0.004:
+            self._ring.push(0)
+            self._stop.set()      # 淡出完成 → 线程收尾并清理
+            return
+        mv = self._ring._mv
+        if mv is None:
+            return
+        lut = self._core_lut
+        shift = int(now * AURA_FLOW_SPEED * 256) & 255
+        for off4, pi, di in self._core_px:
+            b, g, r, a = lut[(pi + shift) & 255][di]
+            mv[off4] = b
+            mv[off4 + 1] = g
+            mv[off4 + 2] = r
+            mv[off4 + 3] = a
+        self._ring.push(int(self._pulse(now) * fade))
+
+    # ---- 胶囊提示窗 ----
+    def _create_hint(self) -> bool:
+        hint = HintCapsule()
+        if not hint.build(HINT_TEXT):
+            return False
+        self._hint = hint
+        return True
+
+    def _hint_draw(self, now: float) -> bool:
+        hint = self._hint
+        if hint is None:
+            return False
+        return hint.draw_dots(now)
 
     @staticmethod
     def _screen_size() -> tuple:
-        mi = MONITORINFO()
-        mi.cbSize = ctypes.sizeof(MONITORINFO)
-        if user32.GetMonitorInfoW(0, ctypes.byref(mi)):
-            r = mi.rcMonitor
-            return (int(r.right - r.left), int(r.bottom - r.top))
-        return (int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1)))
+        return _screen_size()
 
 
-# 光环状态：操控开始/结束由 server.py 驱动
+# ============================================================================
+# 顶部胶囊提示窗
+# ============================================================================
+
+class HintCapsule:
+    """屏幕顶部中央略靠下的胶囊无框窗口：一行文字 + 8 点转圈等待动画。
+
+    文字与胶囊底是**一次性**画好写进位图的（GDI 画字 → 亮度当 alpha → 与底色
+    合成），此后每帧只重绘转圈那一小块区域（约 20×20 像素），开销可以忽略。
+    """
+
+    def __init__(self):
+        self._win = None
+        self._text = ""
+        self._ring_cx = 0.0
+        self._ring_cy = 0.0
+        self._box = (0, 0, 0, 0)      # 转圈区域的像素包围盒 (x0, y0, x1, y1)
+        self._bg_row = b""            # 清场用的整行底色
+        self._dot_lut = []            # 圆点 alpha → 合成后的 BGRA
+        self._angle0 = 0.0
+        self._w = 0
+        self._h = 0
+
+    # ---- 建窗 ----
+    def build(self, text: str) -> bool:
+        self._text = text
+        sw, sh = _screen_size()
+        if sw <= 0 or sh <= 0:
+            return False
+        # 先量文字：建一个临时 DC 量完就扔，正式位图按量出来的宽度开
+        sdc = user32.GetDC(0)
+        tmp_dc = gdi32.CreateCompatibleDC(sdc)
+        font = _create_font(AURA_HINT_FONT_PX)
+        old = gdi32.SelectObject(tmp_dc, font)
+        sz = wintypes.SIZE(0, 0)
+        try:
+            gdi32.GetTextExtentPoint32W(tmp_dc, text, len(text), ctypes.byref(sz))
+        finally:
+            gdi32.SelectObject(tmp_dc, old)
+            gdi32.DeleteObject(font)
+            gdi32.DeleteDC(tmp_dc)
+            user32.ReleaseDC(0, sdc)
+        text_w = int(sz.cx) if sz.cx > 0 else 260
+        text_h = int(sz.cy) if sz.cy > 0 else 17
+        box = int(AURA_HINT_ORBIT_R * 2 + AURA_HINT_DOT_R * 2 + 4)     # 转圈占位（留 2px 余量给抗锯齿）
+        w = AURA_HINT_PAD_X * 2 + text_w + AURA_HINT_GAP + box
+        h = max(text_h + AURA_HINT_PAD_Y * 2, box + AURA_HINT_PAD_Y * 2)
+        x = max(0, (sw - w) // 2)
+        y = int(AURA_HINT_TOP)
+        self._w, self._h = w, h
+
+        win = _LayeredWindow("zhuzhu-aura-hint")
+        if not win.create(x, y, w, h):
+            return False
+        self._win = win
+        mv = win._mv
+
+        # 1) 先把文字用 GDI 画进位图（黑底白字）—— 掩膜
+        gdi32.SetBkMode(win._mem_dc, TRANSPARENT_BK)
+        gdi32.SetTextColor(win._mem_dc, 0x00FFFFFF)      # COLORREF 是 BGR
+        font = _create_font(AURA_HINT_FONT_PX)
+        old = gdi32.SelectObject(win._mem_dc, font)
+        try:
+            gdi32.TextOutW(win._mem_dc, AURA_HINT_PAD_X, (h - text_h) // 2,
+                           text, len(text))
+        finally:
+            gdi32.SelectObject(win._mem_dc, old)
+            gdi32.DeleteObject(font)
+
+        # 2) 亮度当 alpha：GDI 只写 RGB，不写 alpha，直接推上去是"完全透明"的，
+        #    所以逐像素取最亮通道作为文字覆盖率，再把颜色统一成白色。
+        text_alpha = bytearray(w * h)
+        for p in range(w * h):
+            q = p * 4
+            lum = mv[q]
+            if mv[q + 1] > lum:
+                lum = mv[q + 1]
+            if mv[q + 2] > lum:
+                lum = mv[q + 2]
+            text_alpha[p] = lum
+
+        # 3) 合成：胶囊底（圆角 + 1px 亮边）在下，文字在上
+        #    全部按 0..1 归一化算「over」，最后再乘回 255 —— 早先这里把归一化分子
+        #    除以了字节尺度的分母，白字被压成黑色（t=1 时算出 1 而不是 255）。
+        br, bg_, bb = HINT_BG[0], HINT_BG[1], HINT_BG[2]
+        c0, c1, c2 = bb / 255.0, bg_ / 255.0, br / 255.0     # 归一化底色（BGR）
+        ba01 = HINT_BG_ALPHA / 255.0
+        radius = h / 2.0
+        cx, cy = w / 2.0, h / 2.0
+        half_w = cx - radius
+        half_h = cy - radius
+        rim_w = 1.2
+        for py in range(h):
+            dy = abs(py + 0.5 - cy) - half_h
+            row_base = py * w
+            for px in range(w):
+                dx = abs(px + 0.5 - cx) - half_w
+                mx, my = (dx if dx > 0 else 0.0), (dy if dy > 0 else 0.0)
+                dist = math.sqrt(mx * mx + my * my) + min(max(dx, dy), 0.0) - radius
+                cov = 0.5 - dist
+                if cov <= 0.0:
+                    continue                        # 胶囊外：保持全透明
+                if cov > 1.0:
+                    cov = 1.0
+                a_bg = ba01 * cov
+                # 贴边 1.2px 的亮边：把底色朝浅灰提亮，让胶囊在浅色壁纸上也有轮廓
+                rim = 0.0
+                if dist > -rim_w:
+                    rim = (1.0 + dist / rim_w) * HINT_RIM
+                cb, cg, cr = c0, c1, c2
+                if rim > 0.0:
+                    cb += (0.72 - cb) * rim
+                    cg += (0.74 - cg) * rim
+                    cr += (0.80 - cr) * rim
+                t = text_alpha[row_base + px] / 255.0
+                o = (row_base + px) * 4
+                if t <= 0.0:
+                    mv[o] = int(cb * 255.0)
+                    mv[o + 1] = int(cg * 255.0)
+                    mv[o + 2] = int(cr * 255.0)
+                    mv[o + 3] = int(a_bg * 255.0)
+                    continue
+                a_out = t + a_bg * (1.0 - t)
+                if a_out <= 0.0:
+                    mv[o] = mv[o + 1] = mv[o + 2] = mv[o + 3] = 0
+                    continue
+                k = a_bg * (1.0 - t) / a_out
+                s = t / a_out
+                mv[o] = int(min(255.0, (cb * k + s) * 255.0))
+                mv[o + 1] = int(min(255.0, (cg * k + s) * 255.0))
+                mv[o + 2] = int(min(255.0, (cr * k + s) * 255.0))
+                mv[o + 3] = int(a_out * 255.0)
+
+        # 4) 转圈区域：位置、清场行、圆点合成表
+        self._ring_cx = w - AURA_HINT_PAD_X - box / 2.0
+        self._ring_cy = h / 2.0
+        x0 = int(self._ring_cx - box / 2.0) - 1
+        y0 = int(self._ring_cy - box / 2.0) - 1
+        x1 = x0 + box + 2
+        y1 = y0 + box + 2
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(w, x1), min(h, y1)
+        self._box = (x0, y0, x1, y1)
+        self._bg_row = bytes((bb, bg_, br, HINT_BG_ALPHA)) * (x1 - x0)
+        self._dot_lut = _compose_lut(bb, bg_, br, HINT_BG_ALPHA)
+        self._angle0 = time.time()
+        win.push(0)
+        return True
+
+    # ---- 每帧：重绘转圈 ----
+    def draw_dots(self, now: float) -> bool:
+        win = self._win
+        if win is None or win._mv is None:
+            return False
+        mv = win._mv
+        w = self._w
+        x0, y0, x1, y1 = self._box
+        row_bytes = (x1 - x0) * 4
+        row = self._bg_row[:row_bytes]
+        for py in range(y0, y1):                  # 清场：整块抹回胶囊底色
+            start = (py * w + x0) * 4
+            mv[start:start + row_bytes] = row
+        ang = (now - self._angle0) / AURA_HINT_SPIN_S * 2.0 * math.pi
+        lut = self._dot_lut
+        R = AURA_HINT_ORBIT_R
+        r = AURA_HINT_DOT_R
+        span = int(r + 1.5)
+        n = AURA_HINT_DOTS
+        for k in range(n):
+            th = ang + 2.0 * math.pi * k / n
+            # 头部最亮，尾巴渐隐：8 个点大小样式完全一致，只差透明度（透明度下限
+            # 留到 0.6，保证任何时刻八个点都看得清，只是亮度层次不同）
+            ratio = 1.0 - 0.40 * (k / float(n - 1))
+            cx = self._ring_cx + R * math.cos(th)
+            cy = self._ring_cy + R * math.sin(th)
+            ix, iy = int(cx), int(cy)
+            for py in range(iy - span, iy + span + 1):
+                if py < y0 or py >= y1:
+                    continue
+                rowbase = py * w
+                ddy = py + 0.5 - cy
+                for px in range(ix - span, ix + span + 1):
+                    if px < x0 or px >= x1:
+                        continue
+                    ddx = px + 0.5 - cx
+                    cov = r + 0.5 - math.sqrt(ddx * ddx + ddy * ddy)
+                    if cov <= 0.0:
+                        continue
+                    if cov > 1.0:
+                        cov = 1.0
+                    o = (rowbase + px) * 4
+                    b, g, rr, a = lut[int(cov * ratio * 255.0)]
+                    mv[o] = b
+                    mv[o + 1] = g
+                    mv[o + 2] = rr
+                    mv[o + 3] = a
+        return True
+
+    def push(self, sca: int):
+        if self._win:
+            self._win.push(sca)
+
+    def destroy(self):
+        if self._win:
+            self._win.destroy()
+            self._win = None
+
+
+def _create_font(px: int) -> int:
+    return gdi32.CreateFontW(-int(px), 0, 0, 0, FW_MEDIUM, 0, 0, 0,
+                             DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                             "Microsoft YaHei UI")
+
+
+def _compose_lut(b, g, r, a_bg: int) -> list:
+    """白点以 alpha=i 盖在固定底色 (b,g,r,a_bg) 上 → 256 个预合成 BGRA。
+
+    转圈区域每帧要写几百个像素，把合成算术挪到建窗时算一次，动画帧只查表。
+    合成按 0..1 归一化算「over」（归一化分子除以归一化分母），最后乘回 255。
+    """
+    out = []
+    ab = a_bg / 255.0
+    c0, c1, c2 = b / 255.0, g / 255.0, r / 255.0
+    for i in range(256):
+        t = i / 255.0
+        a_out = t + ab * (1.0 - t)
+        if a_out <= 0.0:
+            out.append((0, 0, 0, 0))
+            continue
+        k = ab * (1.0 - t) / a_out
+        s = t / a_out
+        out.append((int(min(255.0, (c0 * k + s) * 255.0)),
+                    int(min(255.0, (c1 * k + s) * 255.0)),
+                    int(min(255.0, (c2 * k + s) * 255.0)),
+                    int(a_out * 255.0)))
+    return out
+
+
+# ============================================================================
+# 模块级单例：状态由 server.py 驱动（操控动作开始 → 点亮，接管/结束 → 淡出）
+# ============================================================================
+
 _aura = Aura()
-_aura._error = ""
 
 
 def start_aura():

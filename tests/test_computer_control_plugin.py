@@ -7,6 +7,8 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
+import time
 from pathlib import Path
 
 import pytest
@@ -21,10 +23,10 @@ SERVER = PLUGIN_DIR / "server.py"
 REQUIRED_TOOLS = {"click", "drag", "long_press", "type_text", "select",
                   "copy", "swipe", "paste", "open_virtual_desktop",
                   "screen_shot", "zoom_in", "screen_info", "list_windows",
-                  "scroll", "key_press", "control", "web_url"}
+                  "scroll", "key_press", "control"}
 
 # 窗口/应用管理工具（属必备能力）
-MANAGE_TOOLS = {"manage_window", "aura", "open_app", "verify_point", "click_window"}
+MANAGE_TOOLS = {"manage_window", "open_app", "verify_point", "click_window"}
 
 # 已彻底移除的元素罗列能力：插件改为纯坐标定位（screen_shot 取坐标 + click），
 # 这些工具名不得再出现在 TOOLS / _HANDLERS 中（回归护栏）。
@@ -103,7 +105,7 @@ def test_skill_md_frontmatter_and_protocol():
     assert "name: computer-control" in text
     assert "description:" in text
     # 硬性协议必须写进技能规范：可视化先行 / 接管后停手 / 恢复需用户同意 / 虚拟桌面返回
-    for key in ("web_url", "browser_open", "用户已接管", "resume",
+    for key in ("browser_open", "用户已接管", "resume",
                 "open_virtual_desktop", "安全红线"):
         assert key in text, f"SKILL.md 缺少关键约定: {key}"
 
@@ -475,11 +477,13 @@ def test_coordinate_tools_still_have_their_helpers():
 
 
 def test_aura_module_importable_and_reports_capability():
-    """光环模块可加载，并如实汇报能力（是否可用）"""
+    """提示层模块可加载，并如实汇报能力（光带 + 胶囊提示窗）"""
     aura = _load_sibling("cc_aura", "aura.py")
     st = aura.aura_state()
     assert set(st) == {"active", "failed", "capability"}
-    assert "光环" in st["capability"]
+    cap = st["capability"]
+    assert "光带" in cap and "泛光" in cap, cap
+    assert "胶囊" in cap, cap
     # 颜色工具函数：HSL→RGB 必须落在 0..255 且亮度符合预期
     for hue in (0.0, 0.25, 0.5, 0.75, 0.99):
         r, g, b = aura._hsl_to_rgb(hue, 0.85, 0.7)
@@ -491,47 +495,248 @@ def test_aura_module_importable_and_reports_capability():
 
 
 def test_aura_pixels_cover_all_four_edges():
-    """光环像素必须覆盖完整四边（早先实现漏掉左右竖边，导致屏幕两侧无光环）"""
+    """光带像素必须覆盖完整四边（早先实现漏掉左右竖边，导致屏幕两侧无光带）"""
     aura = _load_sibling("cc_aura", "aura.py")
     a = aura.Aura()
     a._width, a._height = 1920, 1080
     pixels = a._build_pixels()
-    offs = {off for off, _, _ in pixels}
+    offs = {off // 4 for off, _, _ in pixels}       # 清单里存的是字节偏移 = 像素*4
     w, h, t = 1920, 1080, a.thickness
     # 四条边的中点都必须有像素
     assert (0 * w + 0) in offs                      # 左上角
     assert (540 * w + 0) in offs                    # 左边中点
     assert (540 * w + (w - 1)) in offs              # 右边中点
-    assert ((h - 1) * w + 960) in offs               # 下边中点
-    assert (0 * w + 960) in offs                     # 上边中点
+    assert ((h - 1) * w + 960) in offs              # 下边中点
+    assert (0 * w + 960) in offs                    # 上边中点
     # 屏幕中心（内部）绝不能被点亮，否则会遮挡用户视线
     assert (540 * w + 960) not in offs
     # 粗细范围内全覆盖、无缺口
     for y in range(0, h, 137):
         for x in range(0, t):
             assert (y * w + x) in offs, f"左边 ({x},{y}) 缺像素"
+    # 每帧重写的"核心带"必须严格小于整条光带（泛光层只在建窗时写一次，
+    # 否则每帧多写 1 倍像素，12fps 下直接把 CPU 打满）
+    assert 0 < len(a._core_px) < len(pixels)
+    assert len(a._glow_px) > 0
+
+
+def test_aura_hue_is_continuous_around_the_corners():
+    """色相必须沿整圈周长连续 —— 转角不能出现颜色断层。
+
+    早先横边用 x/w、竖边用 y/h 各自归一化，两条边在四个角上色相对不上，
+    屏幕上能直接看到一条生硬的颜色切缝。
+    """
+    aura = _load_sibling("cc_aura", "aura.py")
+    a = aura.Aura()
+    a._width, a._height = 1920, 1080
+    pixels = a._build_pixels()
+    pos = {off // 4: pi for off, pi, _ in pixels}
+    w, h = 1920, 1080
+    for cx, cy, dx, dy in ((1, 1, 1, 1), (w - 2, 1, -1, 1),
+                           (w - 2, h - 2, -1, -1), (1, h - 2, 1, -1)):
+        # 转角处：沿上/下边一个像素 vs 沿左/右边一个像素，色相索引必须相邻
+        a_edge = pos[cy * w + cx + dx]
+        b_edge = pos[(cy + dy) * w + cx]
+        d = abs(a_edge - b_edge)
+        assert min(d, 256 - d) <= 2, (
+            f"转角 ({cx},{cy}) 色相断层：{a_edge} vs {b_edge}")
 
 
 def test_new_control_tools_registered():
-    """窗口/应用管理与光环工具必须同时出现在 TOOLS 与 _HANDLERS"""
+    """窗口/应用管理工具必须同时出现在 TOOLS 与 _HANDLERS"""
     mod = _load_module()
     declared = {t["name"] for t in mod.TOOLS}
     handled = set(mod._HANDLERS)
     assert declared == handled, f"未注册={declared - handled} 多余={handled - declared}"
-    for name in ("click_window", "verify_point", "open_app", "manage_window", "aura"):
+    for name in ("click_window", "verify_point", "open_app", "manage_window"):
         assert name in declared, f"缺少工具 {name}"
         assert callable(mod._HANDLERS[name])
 
 
-def test_control_tools_drive_aura_but_queries_do_not():
-    """只有真正改变桌面的工具才点亮光环，查询类不应打扰用户"""
+def test_control_tools_drive_hint_but_queries_do_not():
+    """只有真正改变桌面的工具才点亮提示层，查询类不应打扰用户"""
     mod = _load_module()
     assert "click" in mod._CONTROL_TOOLS
     assert "click_window" in mod._CONTROL_TOOLS
     assert "manage_window" in mod._CONTROL_TOOLS
-    for query in ("screen_shot", "screen_info", "list_windows", "zoom_in",
-                  "web_url", "aura"):
-        assert query not in mod._CONTROL_TOOLS, f"{query} 不该点亮光环"
+    for query in ("screen_shot", "screen_info", "list_windows", "zoom_in"):
+        assert query not in mod._CONTROL_TOOLS, f"{query} 不该点亮提示层"
+
+
+def test_redundant_aura_and_web_preview_tools_are_gone():
+    """回归护栏：光环开关与 web 预览工具都必须移除。
+
+    提示层现在是**自动**的（操控动作一发生就亮），不该再让模型手动调 `aura`；
+    也绝不能往用户浏览器里塞一个可视化页面 —— 用户明确要求「不要打开 web 预览」。
+    """
+    mod = _load_module()
+    declared = {t["name"] for t in mod.TOOLS}
+    handled = set(mod._HANDLERS)
+    for gone in ("aura", "web_url"):
+        assert gone not in declared, f"{gone} 工具应已移除"
+        assert gone not in handled, f"{gone} handler 应已移除"
+        assert not hasattr(mod, f"tool_{gone}"), f"tool_{gone} 实现应已删除"
+    # 明确写死「不要打开 web 预览」这条源头：进程不再自动起 HTTP 可视化服务
+    assert not hasattr(mod, "tool_aura")
+    assert not hasattr(mod, "tool_web_url")
+    # 进程启动不得自动起 HTTP 可视化服务（页面只有 --selftest 才起）
+    src = SERVER.read_text(encoding="utf-8")
+    main_src = src.split("def main():", 1)[1].split("def _selftest", 1)[0]
+    assert "ensure_http(" not in main_src, "main() 不该启动本地可视化服务"
+    # 技能规范里也不能再要求模型去开网页（只允许出现「不需要 web_url」这类反向说明）
+    skill = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "调用 `web_url`" not in skill
+    assert "preview_open(url=该地址)" not in skill
+
+
+def test_overlays_are_excluded_from_screen_capture():
+    """提示层必须被排除在截图之外，且三条抓屏路径都套了这道保护。"""
+    aura_src = AURA.read_text(encoding="utf-8")
+    assert "SetWindowDisplayAffinity" in aura_src
+    assert "WDA_EXCLUDEFROMCAPTURE" in aura_src
+    assert "def capture_guard" in aura_src
+    src = SERVER.read_text(encoding="utf-8")
+    assert "def _no_overlay" in src
+    # 整屏截图 / 矩形抓取 / 区域快照 / 窗口屏幕兜底 —— 四条路径都要有
+    assert src.count("with _no_overlay():") >= 4, "有抓屏路径没套截图排除"
+
+
+def test_start_revives_the_hint_thread_independently():
+    """回归：胶囊线程先退出后，再点亮必须能把胶囊补回来（不能只亮光带）。
+
+    两个渲染线程生命周期不一致 —— 淡出到底时胶囊线程先退出。早先 `start()` 只看
+    光带线程，于是出现过「之后每次点亮都只有光带、永远没有胶囊」的故障。
+    这里用桩函数替掉真实渲染，完全不建窗口，纯测线程自愈逻辑。
+    """
+    aura = _load_sibling("cc_aura_rt", "aura.py")
+    a = aura.Aura(fps=2)
+    started = []
+
+    def fake_ring():
+        started.append("ring")
+        a._stop.wait()
+
+    def fake_hint():
+        started.append("hint")          # 立刻返回，模拟"胶囊线程已退出"
+
+    a._run_ring = fake_ring
+    a._run_hint = fake_hint
+    try:
+        a.set_active(True)
+        for _ in range(100):
+            if started.count("hint") == 1 and "ring" in started:
+                break
+            time.sleep(0.01)
+        assert started == ["ring", "hint"], started
+        # 下一次操控动作（set_active(True)）必须把死掉的胶囊线程补回来
+        a.set_active(True)
+        for _ in range(100):
+            if started.count("hint") == 2:
+                break
+            time.sleep(0.01)
+        assert started == ["ring", "hint", "hint"], started
+        assert started.count("ring") == 1, "光带线程还活着，不该被重复拉起"
+    finally:
+        a.stop()
+
+
+def test_overlay_windows_report_native_capture_exclusion():
+    """分层窗口建出来就该带上 WDA_EXCLUDEFROMCAPTURE；做不到时 capture_guard 必须真藏窗口。
+
+    两条路径都要覆盖：原生可用 → 截图期间窗口照常显示（不闪），只是不进画面；
+    原生不可用 → 截前 ShowWindow(SW_HIDE)、截后恢复。
+    """
+    aura = _load_sibling("cc_aura_cap", "aura.py")
+    w = aura._LayeredWindow("zhuzhu-aura-selftest")
+    if not w.create(0, 0, 64, 32):
+        pytest.skip("当前会话无法创建分层窗口（无桌面），跳过截图排除校验")
+    try:
+        if w._excluded:
+            assert aura.capture_exclude_supported() is True
+            with aura.capture_guard():
+                assert w._visible is True, "原生排除可用时不该隐藏窗口（会闪一下）"
+            assert w._visible is True
+        else:
+            assert aura.capture_exclude_supported() is False
+            with aura.capture_guard():
+                assert w._visible is False, "退化路径必须真的把窗口藏起来"
+            assert w._visible is True, "截图结束后必须恢复显示"
+    finally:
+        w.destroy()
+
+
+def test_overlay_windows_are_hidden_from_window_list():
+    """自己的提示层绝不能出现在 list_windows 里（否则模型会看到一扇覆盖整屏的窗口）。"""
+    mod = _load_module()
+    assert mod.OVERLAY_WIN_PREFIX == "zhuzhu-aura"
+    # 过滤靠窗口标题前缀，所以建窗用的名字必须带这个前缀
+    aura_src = AURA.read_text(encoding="utf-8")
+    assert '"zhuzhu-aura-ring"' in aura_src
+    assert '"zhuzhu-aura-hint"' in aura_src
+    wins = mod.list_windows()
+    leaked = [w for w in wins
+              if str(w.get("title", "")).startswith(mod.OVERLAY_WIN_PREFIX)]
+    assert not leaked, f"提示层泄漏进窗口清单: {leaked}"
+
+
+def test_hint_capsule_renders_text_and_eight_same_size_dots():
+    """胶囊提示窗：胶囊底 + 白色文字 + 8 个等大圆点组成的转圈环。"""
+    aura = _load_sibling("cc_aura", "aura.py")
+    assert aura.HINT_TEXT == "Agent正在操控您的电脑，移动鼠标/按任意键打断"
+    assert aura.AURA_HINT_DOTS == 8
+    h = aura.HintCapsule()
+    if not h.build(aura.HINT_TEXT):
+        pytest.skip("当前会话无法创建分层窗口（无桌面），跳过渲染校验")
+    try:
+        mv = h._win._mv
+        w = h._w
+        # 文字区必须出现接近纯白的像素（GDI 画字 → 亮度当 alpha → 合成成白字）
+        x0, y0, x1, y1 = h._box
+        text_white = 0
+        for py in range(h._h):
+            for px in range(0, x0):
+                o = (py * w + px) * 4
+                if mv[o + 3] > 200 and mv[o] > 200 and mv[o + 1] > 200:
+                    text_white += 1
+        assert text_white > 200, f"文字没渲染成白色（白像素 {text_white}）"
+        # 转圈区域：圆点必须是 8 个互不相连的连通块，且尺寸一致。
+        # 角度用相对 _angle0 的固定偏移，避免"跑测试的时刻"让相位随机化。
+        bg = (aura.HINT_BG[2], aura.HINT_BG[1], aura.HINT_BG[0])
+
+        def _components(spin_phase):
+            h.draw_dots(h._angle0 + spin_phase)
+            marks = set()
+            for py in range(y0, y1):
+                for px in range(x0, x1):
+                    o = (py * w + px) * 4
+                    if (abs(mv[o] - bg[0]) + abs(mv[o + 1] - bg[1])
+                            + abs(mv[o + 2] - bg[2])) > 12:
+                        marks.add((px, py))
+            out = []
+            while marks:
+                stack = [marks.pop()]
+                comp = [stack[0]]
+                while stack:
+                    cx, cy = stack.pop()
+                    for nb in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+                        if nb in marks:
+                            marks.discard(nb)
+                            stack.append(nb)
+                            comp.append(nb)
+                out.append(comp)
+            return out
+
+        # 转 4 个不同相位都要数出 8 个点（任何角度下圆点都不能糊成一团）
+        for phase in (0.0, 0.28, 0.57, 0.86):
+            comps = _components(phase)
+            assert len(comps) == 8, (
+                f"相位 {phase} 应看到 8 个圆点，实际连出 {len(comps)} 块")
+            for comp in comps:
+                bw = max(p[0] for p in comp) - min(p[0] for p in comp) + 1
+                bh = max(p[1] for p in comp) - min(p[1] for p in comp) + 1
+                assert 3 <= bw <= 6 and 3 <= bh <= 6, f"圆点尺寸不一致: {bw}x{bh}"
+    finally:
+        h.destroy()
 
 
 def test_manage_window_state_and_errors():

@@ -1,11 +1,13 @@
-"""电脑操控插件（MCP stdio 工具 + 本地 HTTP 可视化）: computer-control
+"""电脑操控插件（MCP stdio 工具）: computer-control
 
-三件套（技能 + MCP 工具 + 本地 HTTP 浏览器界面）
-------------------------------------------------
+三件套（技能 + MCP 工具 + 屏幕提示层）
+-------------------------------------
 - MCP（stdio）：向 AI 暴露点击/长按/拖拽/滑动/选择/输入/按键/复制/粘贴/截屏/窗口/
   虚拟桌面等工具，全部真实 Win32 调用，零第三方依赖（ctypes + 标准库）。
-- HTTP（127.0.0.1 随机端口）：给用户看的可视化界面 —— 实时截图（默认原始画面，可勾选网格）、
-  操作日志、接管/暂停/恢复按钮；与 MCP 工具共用同一份模块级 _STATE。
+- 屏幕提示层（aura.py）：AI 真正操控桌面时，屏幕四边亮起呼吸流动的彩色光带、顶部
+  中央浮出胶囊提示窗（"Agent正在操控您的电脑，移动鼠标/按任意键打断" + 8 点转圈）。
+  两个窗口都用 WDA_EXCLUDEFROMCAPTURE 排除在截图之外，AI 截到的永远是纯净桌面。
+  **不再往用户浏览器里打开任何网页面板** —— 提示只出现在屏幕上。
 - 感知：GDI 截屏（StretchBlt 缩放 + 手写 PNG），**默认输出纯净原图**（不叠加坐标网格/
   刻度/准星），以 MCP image 内容项直接发给视觉模型看图；坐标基准与 AI 所见图完全一致
   （图像像素 → 屏幕物理像素由插件换算），杜绝缩放换算误差。网格/刻度/准星仅在
@@ -14,12 +16,15 @@
   无触控设备自动回退 SendInput 鼠标键盘；所有注入事件带签名，供打断检测区分
   「AI 注入」与「真人输入」。
 - 打断：全局低级钩子（WH_MOUSE_LL / WH_KEYBOARD_LL）监听真人鼠标/键盘输入，命中即置
-  interrupted，后续操控工具一律拒绝执行并把控制权交还用户（Web UI 可一键接管/暂停/恢复）。
+  interrupted，后续操控工具一律拒绝执行并把控制权交还用户。
 
 进程约束：本进程以 MCP stdio 方式被拉起，**stdout 只能输出 JSON-RPC** —— 日志一律不写 stdout。
+本文件后半段那套本地 HTTP 界面**只在 `python server.py --selftest` 时启动**（离线自检用），
+正常操控流程既不启动也不打开，用户不会被弹出网页。
 """
 
 import base64
+import contextlib
 import ctypes
 import difflib
 import json
@@ -39,13 +44,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import aura
-except Exception:      # 缺模块不应让整个插件不可用：光环只是提示，不影响操控
+except Exception:      # 缺模块不应让整个插件不可用：提示层只是提示，不影响操控
     aura = None
 
 APP_NAME = "computer-control"
 MCP_VERSION = "2024-11-05"
 
-# 会真正改变桌面状态、需要在屏幕上点亮彩色光环的工具（查询类不亮）
+# 会真正改变桌面状态、需要在屏幕上点亮彩色光带的工具（查询类不亮）
 _CONTROL_TOOLS = frozenset({
     "click", "long_press", "drag", "swipe", "select", "scroll", "type_text",
     "key_press", "copy", "paste", "open_virtual_desktop",
@@ -557,6 +562,22 @@ def _png_encode(bgra: bytes, w: int, h: int, level: int = 6) -> bytes:
             + _chunk(b"IEND", b""))
 
 
+def _no_overlay():
+    """截图期间把屏幕提示层（光带 / 胶囊窗）排除在画面之外。
+
+    提示层是**给用户看的**，绝不能被截进给模型的图里 —— 光带糊在屏幕边缘会污染
+    「任务栏 / 窗口边框」这类贴边目标的像素分析，胶囊窗更是直接压住顶部内容。
+    正常情况走 `WDA_EXCLUDEFROMCAPTURE`（窗口照常显示，捕获 API 里没有它），
+    这是零开销的空操作；系统不支持时才退化成"截前隐藏、截后恢复"。
+    """
+    if aura is None:
+        return contextlib.nullcontext()
+    try:
+        return aura.capture_guard()
+    except Exception:
+        return contextlib.nullcontext()
+
+
 def grab_screen(max_w: int = MODEL_MAX_W, grid: bool = False, cursor: bool = False,
                 level: int = 6) -> tuple:
     """整屏抓图（**整个虚拟桌面**，多显示器并集）。返回 (png, img_w, img_h, ox, oy, w, h)。
@@ -571,10 +592,11 @@ def grab_screen(max_w: int = MODEL_MAX_W, grid: bool = False, cursor: bool = Fal
     ox, oy, w, h = _virtual_screen()
     dc = user32.GetDC(0)
     try:
-        png, iw, ih = _capture_scaled(dc, ox, oy, w, h, min(max_w, w),
-                                      GRID_CELLS if grid else 0,
-                                      _cursor_pos() if cursor else None,
-                                      level=level)
+        with _no_overlay():
+            png, iw, ih = _capture_scaled(dc, ox, oy, w, h, min(max_w, w),
+                                          GRID_CELLS if grid else 0,
+                                          _cursor_pos() if cursor else None,
+                                          level=level)
         return png, iw, ih, ox, oy, w, h
     finally:
         user32.ReleaseDC(0, dc)
@@ -692,8 +714,9 @@ def _grab_window_screen(hwnd, rect, w, h, max_w, grid, cursor):
     bmp = gdi32.CreateCompatibleBitmap(scr, cw, ch)
     old = gdi32.SelectObject(mem, bmp)
     try:
-        if not gdi32.BitBlt(int(mem), 0, 0, cw, ch, int(scr), sx, sy, SRCCOPY):
-            return None, ""
+        with _no_overlay():
+            if not gdi32.BitBlt(int(mem), 0, 0, cw, ch, int(scr), sx, sy, SRCCOPY):
+                return None, ""
         cx, cy = _cursor_pos()
         png, iw, ih = _capture_scaled(mem, 0, 0, cw, ch, min(max_w, cw),
                                       GRID_CELLS if grid else 0,
@@ -775,8 +798,9 @@ def _region_snapshot_at(x: int, y: int, radius: int = 48) -> tuple:
     bmp = gdi32.CreateCompatibleBitmap(dc, w, h)
     old = gdi32.SelectObject(mem, bmp)
     try:
-        if not gdi32.BitBlt(int(mem), 0, 0, w, h, int(dc), x0, y0, SRCCOPY):
-            return b"", x0, y0, w, h
+        with _no_overlay():
+            if not gdi32.BitBlt(int(mem), 0, 0, w, h, int(dc), x0, y0, SRCCOPY):
+                return b"", x0, y0, w, h
         return _dib_bits(mem, bmp, w, h), x0, y0, w, h
     except Exception:
         return b"", x0, y0, w, h
@@ -813,8 +837,9 @@ def _grab_rect_bits(x0: int, y0: int, w: int, h: int) -> tuple:
     bmp = gdi32.CreateCompatibleBitmap(dc, w, h)
     old = gdi32.SelectObject(mem, bmp)
     try:
-        if not gdi32.BitBlt(int(mem), 0, 0, w, h, int(dc), x0, y0, SRCCOPY):
-            return b"", x0, y0, w, h
+        with _no_overlay():
+            if not gdi32.BitBlt(int(mem), 0, 0, w, h, int(dc), x0, y0, SRCCOPY):
+                return b"", x0, y0, w, h
         return _dib_bits(mem, bmp, w, h), x0, y0, w, h
     except Exception:
         return b"", x0, y0, w, h
@@ -3318,6 +3343,11 @@ def _enum_top_hwnds() -> list:
     return out
 
 
+# 屏幕提示层窗口的标题前缀（aura.py 建窗时用的名字）。枚举窗口/列清单时必须把它们
+# 过滤掉：光带是全屏 topmost 窗口，留在清单里会让模型看到"一扇覆盖整屏的窗口"。
+OVERLAY_WIN_PREFIX = "zhuzhu-aura"
+
+
 def list_top_windows(visible_only: bool = True, min_size: int = 1,
                      kinds: tuple = ()) -> list:
     """列出顶层窗口（**含无标题 / 工具窗口 / 分层窗口 / 弹出菜单**）。
@@ -3336,6 +3366,11 @@ def list_top_windows(visible_only: bool = True, min_size: int = 1,
                 continue
             if visible_only and not user32.IsWindowVisible(hwnd):
                 continue
+            title = window_title(hwnd)
+            if title.startswith(OVERLAY_WIN_PREFIX):
+                # 自己的屏幕提示层（光带是全屏的、胶囊窗在顶部中央）：它们既不能被
+                # 列进窗口清单去干扰判断，也绝不能被模型当成"要点开的应用"。
+                continue
             r = window_rect(hwnd)
             l, t, b_r, b_b = r.left, r.top, r.right, r.bottom
             w, h = max(0, b_r - l), max(0, b_b - t)
@@ -3345,7 +3380,7 @@ def list_top_windows(visible_only: bool = True, min_size: int = 1,
             if kinds and kind not in kinds:
                 continue
             ex = _ex_style(hwnd)
-            out.append({"hwnd": hwnd, "title": window_title(hwnd),
+            out.append({"hwnd": hwnd, "title": title,
                         "class": win32_class_name(hwnd),
                         "rect": (l, t, b_r, b_b), "w": w, "h": h, "kind": kind,
                         "ex_style": ex, "process": process_name(hwnd),
@@ -4079,7 +4114,7 @@ _STATE = {
     "cursor": [0, 0],
     "foreground": {"hwnd": 0, "title": ""},
     "web_port": 0,
-    "aura": False,             # 屏幕边缘彩色光环是否点亮
+    "aura": False,             # 屏幕光带提示层是否点亮
     # 最近一次 refine_point 的候选清单（点击可直接按编号取用，见 _resolve_cand）
     "cands": {"ts": 0.0, "items": []},
 }
@@ -4115,7 +4150,7 @@ def mark_interrupted(reason: str):
 
 
 def _aura_on():
-    """操控开始：点亮屏幕边缘彩色光环（用户可见的「AI 正在操作」提示）。"""
+    """操控开始：点亮屏幕光带 + 顶部胶囊提示窗（用户可见的「AI 正在操作」提示）。"""
     if aura is None:
         return
     try:
@@ -4126,7 +4161,7 @@ def _aura_on():
 
 
 def _aura_off(reason: str = ""):
-    """操控结束/被接管：淡出光环。"""
+    """操控结束/被接管：光带与胶囊窗一起淡出。"""
     if aura is None:
         return
     try:
@@ -4466,7 +4501,6 @@ def tool_screen_info(args: dict) -> str:
         f"键盘焦点: {_focus_line()}",
         f"接管状态: {'已被用户接管/暂停（操控被拒绝）' if _interrupted() else '正常'}"
         + f"；操控会话剩余 {remain}s（每次工具调用自动延长）",
-        f"可视化界面: http://127.0.0.1:{_STATE['web_port']}/",
         "下一步建议: screen_shot 先看图 → 小目标先 zoom_in 放大到接近 1:1 → "
         "拿不准坐标就 refine_point 精修并看图确认 → click(verify=true) 点击 → 重新截图确认结果。",
     ]
@@ -5275,12 +5309,6 @@ def tool_control(args: dict) -> str:
     raise ValueError(f"未知动作: {action}（可用 status/take_over/resume）")
 
 
-def tool_web_url(args: dict) -> str:
-    return (f"可视化界面: http://127.0.0.1:{_STATE['web_port']}/ —— "
-            "请用 preview_open 在用户默认浏览器里打开给用户，用户可在该界面实时观看操控画面、查看操作日志，"
-            "并可一键「接管 / 暂停 / 恢复」。")
-
-
 # ============================================================================
 # 窗口目标解析（供坐标类工具共用）
 # ============================================================================
@@ -5556,21 +5584,6 @@ def tool_manage_window(args: dict) -> str:
         return set_window_state(hwnd, action)
     raise ValueError(f"未知动作: {action}（可用 state/list/activate/focus/maximize/"
                      f"minimize/restore/move/close/wait）")
-
-
-def tool_aura(args: dict) -> str:
-    """屏幕边缘彩色光环控制（默认由操控自动点亮，此工具用于手动开关）。"""
-    if aura is None:
-        raise RuntimeError("光环模块未加载")
-    action = str(args.get("action") or "state").strip().lower()
-    if action == "on":
-        aura.set_aura_active(True)
-        _STATE["aura"] = True
-    elif action == "off":
-        aura.set_aura_active(False)
-        _STATE["aura"] = False
-    st = aura.aura_state()
-    return f"屏幕光环: {'显示中' if st['active'] else '已隐藏'}；{st['capability']}"
 
 
 TOOLS = [
@@ -5850,14 +5863,6 @@ TOOLS = [
          "w": {"type": "integer", "description": "move 时的目标宽度（0=不改）"},
          "h": {"type": "integer", "description": "move 时的目标高度（0=不改）"},
          "timeout": {"type": "integer", "description": "wait 时的超时毫秒，默认 10000"}}}},
-    {"name": "aura", "description":
-        "屏幕边缘彩色光环开关（AI 实际操控桌面时自动点亮，鼠标穿透不挡视线）。"
-        "一般无需手动调用；用户抱怨「屏幕边缘闪得慌」时用 action=off 关掉。",
-     "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "description": "on/off/state（默认 state）"}}}},
-    {"name": "web_url", "description":
-        "返回本地可视化界面的访问地址（用 preview_open 在用户默认浏览器里打开给用户，实时观看操控过程与日志）。",
-     "inputSchema": {"type": "object", "properties": {}}},
 ]
 
 _HANDLERS = {
@@ -5883,8 +5888,6 @@ _HANDLERS = {
     "manage_window": tool_manage_window,
     "open_app": tool_open_app,
     "taskbar_open": tool_taskbar_open,
-    "aura": tool_aura,
-    "web_url": tool_web_url,
 }
 
 
@@ -6230,7 +6233,7 @@ def _handle(msg: dict):
         # 点击都被拒绝，用户却完全没打算接管（典型的误伤，实测复现过）。
         if name in _CONTROL_TOOLS:
             _touch_session()
-        # 屏幕光环：只在**真正会改变桌面状态**的操控工具调用时点亮，
+        # 屏幕提示层：只在**真正会改变桌面状态**的操控工具调用时点亮，
         # 纯查询（截屏/列窗口/看环境）不点亮，避免用户被无意义闪烁打扰。
         if name in _CONTROL_TOOLS:
             _aura_on()
@@ -6248,7 +6251,8 @@ def _handle(msg: dict):
 
 def main():
     _init_dpi_awareness()
-    ensure_http()          # 本地可视化服务随进程启动，用户/页面随时可访问
+    # 不启动本地可视化服务：AI 操控期间由屏幕光带 + 顶部胶囊提示窗直接提示用户，
+    # 不再往用户浏览器里塞一个预览页（那是多余的一层，还容易被当成"AI 打开了网页"）。
     _watcher.start()       # 真人输入打断检测
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     for line in stdin:     # stdin 关闭（客户端断开）→ 循环退出，进程自然结束
@@ -6342,13 +6346,13 @@ def _selftest() -> int:
                               "named": [w["title"] for w in wins if w["title"]][:8]}
         except Exception as e:
             out["endpoints"]["windows"] = f"异常: {e}"
-        # 光环：只查状态与能力，不真的长时间显示（避免自检时闪屏）
+        # 屏幕提示层：只查状态与能力，不真的长时间显示（避免自检时闪屏）
         try:
             if aura is None:
                 out["endpoints"]["aura"] = "未加载"
             else:
                 st = aura.aura_state()
-                out["endpoints"]["aura"] = "ok" if "光环" in st["capability"] else st["capability"]
+                out["endpoints"]["aura"] = "ok" if "光带" in st["capability"] else st["capability"]
         except Exception as e:
             out["endpoints"]["aura"] = f"异常: {e}"
         # 工具注册完整性：TOOLS 与 _HANDLERS 必须一一对应（漏注册会静默不可用）
@@ -6365,7 +6369,7 @@ def _selftest() -> int:
     _STATE["interrupted"] = False
     _STATE["paused"] = False
     # 关键端点必须全部 ok 才算自检通过。
-    # aura / windows 属「能力探测」：光环模块缺失不影响操控，某些受限会话下
+    # aura / windows 属「能力探测」：提示层模块缺失不影响操控，某些受限会话下
     # 也可能枚举不到窗口，因此它们只记录状态，不参与总判据。
     _CORE = ("state", "control", "screen_info", "tools")
     out["ok"] = out["ok"] and all(out["endpoints"].get(k) == "ok" for k in _CORE)
