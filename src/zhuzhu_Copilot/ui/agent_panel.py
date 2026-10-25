@@ -4332,9 +4332,10 @@ class _LoadingOverlay(QWidget):
     TRACK_R = 15.0      # 圆点轨道半径
     DOT_R = 3.3         # 圆点基础半径（head 处）
     PERIOD_MS = 880.0   # 旋转一周周期
-    #: 模糊降采样比例：1/4 线性尺寸 → 像素量 1/16、半径同比缩小，总成本约降
-    #: 一个数量级；模糊图最后放大回全尺寸（SmoothTransformation），视觉半径不变
-    BLUR_SCALE = 0.25
+    #: 模糊降采样比例：1/8 线性尺寸 → 像素量 1/64、半径同比缩小；模糊图最后放大回
+    #: 全尺寸（SmoothTransformation），视觉半径不变。1/4 在 4K/高 DPI 下仍要几十毫秒，
+    #: 1/8 稳定在毫秒级（磨砂底纹本就不需要细节）。
+    BLUR_SCALE = 0.125
     BLUR_RADIUS = 22.0  # 全尺寸视觉模糊半径（降采样后按比例缩小）
 
     def __init__(self, parent, accent: str, text: str, text_color: str):
@@ -4354,6 +4355,12 @@ class _LoadingOverlay(QWidget):
         # 高精度计时，避免后台/负载下降频时动画被拉慢
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
+        
+        # 预计算圆点轨道位置（每帧只更新角度，避免重复计算三角函数）
+        self._dot_positions = []
+        for i in range(self.DOTS):
+            theta = i * (2.0 * math.pi / self.DOTS) - math.pi / 2.0
+            self._dot_positions.append((theta, i))
 
     def start(self):
         """立即上屏：抓图 → show + 转圈；高斯模糊异步补算（见类文档）。
@@ -4385,11 +4392,13 @@ class _LoadingOverlay(QWidget):
         self.hide()
 
     def _blur_async(self):
-        """异步高斯模糊：降采样 1/4 → 模糊 → 放大回全尺寸 → update。
+        """磨砂底纹：降采样 → 小图高斯模糊 → 放大回全尺寸 → update。
 
-        全尺寸模糊在低端机/高 DPI 下要几百毫秒（旧实现把它放在 show() 之前同步
-        做，正是「点保存后半秒没反应」的主因）；降采样后总成本降到几十毫秒级，
-        且它在遮罩已显示之后的下一回合执行，不再计入「点击 → 遮罩可见」的延迟。
+        **必须全程走 Qt 的 C++ 实现**。曾有一版改成「Python 逐像素均值模糊」：
+        262x216 的小图 × 半径 2 的窗口就要 6700 万次 QImage.pixel/QColor 构造，
+        实测单次几十秒 —— 主线程被钉死，转圈动画直接定格（用户反馈的「保存动画
+        极度卡顿」）。这里用 1/8 降采样把像素量压到 1/64，模糊在小图上做几乎免费，
+        总耗时稳定在毫秒级；观感与全尺寸半径 22 基本一致。
         """
         raw = self._raw
         if raw is None or raw.isNull():
@@ -4404,7 +4413,7 @@ class _LoadingOverlay(QWidget):
                                Qt.TransformationMode.SmoothTransformation)
             small.setDevicePixelRatio(1.0)   # 按设备像素模糊，避开 DPR 缩放歧义
             effect = QGraphicsBlurEffect()
-            effect.setBlurRadius(self.BLUR_RADIUS * self.BLUR_SCALE)
+            effect.setBlurRadius(max(1.0, self.BLUR_RADIUS * self.BLUR_SCALE))
             scene = QGraphicsScene()
             item = QGraphicsPixmapItem(small)
             item.setGraphicsEffect(effect)
@@ -4416,8 +4425,7 @@ class _LoadingOverlay(QWidget):
             scene.render(p)
             p.end()
             # 放大回逻辑全尺寸（Smooth 双线性再糊一层，正好是磨砂观感）。
-            # DPR 固定 1、设备尺寸 = 父窗口逻辑尺寸：drawPixmap(0,0) 正好铺满，
-            # 且不受屏幕 DPI 缩放影响（磨砂底纹不追求设备像素级清晰）。
+            # DPR 固定 1、设备尺寸 = 父窗口逻辑尺寸：drawPixmap(0,0) 正好铺满。
             par = self.parent()
             fw = max(1, int(par.width())) if par is not None else raw.width()
             fh = max(1, int(par.height())) if par is not None else raw.height()
@@ -4453,12 +4461,14 @@ class _LoadingOverlay(QWidget):
             p.drawPixmap(0, 0, self._blur)
         # 半透明压暗，增强磨砂玻璃层次（深色 / 浅色主题均压一层）
         p.fillRect(self.rect(), QColor(0, 0, 0, 64))
+        
         cx = self.width() / 2.0
         cy = self.height() / 2.0 - 12.0
         n = self.DOTS
+        
+        # 预计算当前帧所有圆点的位置和样式
         p.setPen(Qt.PenStyle.NoPen)
-        for i in range(n):
-            theta = i * (2.0 * math.pi / n) - math.pi / 2.0
+        for theta, i in self._dot_positions:
             # 相对 head 的拖尾位置：0 = head（最亮最大），沿运动方向增大到接近 1。
             # 8 个圆点都保持可见（最暗也有底量），避免末端淡出到看不见。
             t = ((theta - self._angle) % (2.0 * math.pi)) / (2.0 * math.pi)
@@ -4470,6 +4480,7 @@ class _LoadingOverlay(QWidget):
             c.setAlpha(alpha)
             p.setBrush(c)
             p.drawEllipse(QPointF(x, y), r, r)
+        
         # 描述文字
         p.setPen(self._text_color)
         f = self.font()
@@ -4514,6 +4525,16 @@ class _AgentSettingsDialog(QDialog):
     _DANGER = "#DC2626"
     _DANGER_HOVER = "#EF4444"
     _BORDER = "#000000"
+
+    #: 保存时需要读取控件值的页数（_page_builders 下标 0..5 的连续前缀：
+    #: 通用 / 对话流 / 规则 / 提示词 / bash / 模型）。其余页（技能 / MCP / 插件 /
+    #: Copilot 插件 / 市场 / 音乐 / Agent / 工作流 / 壁纸 / 微信 / 会员）的状态都在
+    #: 各自交互发生时即时持久化，或只在用户打开过该页后才可能变化——保存时无需构建。
+    #: 旧实现保存时构建全部 18 页：技能页冷扫（PBKDF2 解密 + 目录扫描）、Agent 页、
+    #: 工作流页等重 I/O 页要把主线程阻塞数秒，转圈动画被卡成定格（2026-10-25 用户
+    #: 反馈「点保存后转圈极其卡顿」的根因）。页 0 在 __init__ 已构建，这里实际补 1..5。
+    #: 约束：必须是连续前缀——_switch_page 按 nav 行号直接映射 stack 下标。
+    _COLLECT_PAGE_COUNT = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -8870,7 +8891,11 @@ class _AgentSettingsDialog(QDialog):
         app_wallpaper.set_fields(bg_fit=str(fit))
 
     def _ensure_all_pages(self):
-        """按需补齐全部设置页（保存/需要读取各页控件时调用）"""
+        """按序补齐全部设置页（当前无调用方；保存只补 _COLLECT_PAGE_COUNT 内的收集页）。
+
+        注意：不要在保存流程里调用本方法——构建技能/插件/市场/Agent/工作流等
+        重 I/O 页会把主线程阻塞数秒，转圈动画卡成定格（见 _COLLECT_PAGE_COUNT）。
+        """
         while self.stack.count() < len(self._page_builders):
             _page = self._page_builders[self.stack.count()]()
             _install_focus_glow_all(_page)   # 输入框聚焦泛光
@@ -9400,15 +9425,19 @@ class _AgentSettingsDialog(QDialog):
         # 事件队列直接画（压暗 + 转圈第 0 帧 + 文字），磨砂底纹由 _blur_async 随后补上。
         self._overlay.repaint()
         self._save_t0 = time.monotonic()
-        # 分帧补齐全部页面（每帧构建 2 个），让转圈动画在构建间隙继续流畅播放，
-        # 避免一次性构建 17 个页面同步阻塞主线程把转圈卡成定格。
+        # 分帧补齐数据收集所需的页（每帧 1 个，见 _COLLECT_PAGE_COUNT），让转圈
+        # 动画在构建间隙继续流畅播放，避免同步阻塞主线程把转圈卡成定格。
         self._build_pages_step()
 
     def _build_pages_step(self):
-        # 每帧只构建 1 个页面：构建是同步 CPU 操作，一次构建多个会长时间占住
+        # 只补齐「数据收集需要读取控件」的页（_COLLECT_PAGE_COUNT 内的连续前缀）：
+        # 每帧只构建 1 个页面，构建是同步 CPU/IO 操作，一次构建多个会长时间占住
         # 主线程，把转圈动画卡成定格。每页构建后留 10ms 间隙，让 16ms 的
         # 动画 QTimer 有机会触发（约 30fps 可见推进），快页面之间动画顺滑。
-        if self.stack.count() < len(self._page_builders):
+        # 技能/插件/市场/Agent/工作流等重 I/O 页不在此构建（见 _COLLECT_PAGE_COUNT
+        # 注释）：它们冷启动要数秒（目录扫描 + 同步 HTTP + PBKDF2 解密），保存时
+        # 构建会把转圈卡成定格；用户打开过它们时早已构建，状态也各自即时持久化。
+        if self.stack.count() < self._COLLECT_PAGE_COUNT:
             _page = self._page_builders[self.stack.count()]()
             _install_focus_glow_all(_page)
             self.stack.addWidget(self._wrap_page(_page))
@@ -9419,6 +9448,14 @@ class _AgentSettingsDialog(QDialog):
     def _collect_and_save(self):
         # 多服务商：基于卡片列表持久化，全部服务商统一参与路由
         providers = [dict(p) for p in getattr(self, "_providers", [])]
+        # 模型页控件不在（用户从未打开过模型页）时不能退回默认单服务商——那会覆盖
+        # 用户已配置的多服务商列表。改用已持久化的配置（本就要读，见下方 timeout 透传）。
+        try:
+            _old_m = agent_llm.load_settings().get("model") or {}
+        except Exception:
+            _old_m = {}
+        if not providers:
+            providers = [dict(p) for p in (_old_m.get("providers") or [])]
         if not providers:
             providers = [{"name": "默认服务商",
                           "base_url": agent_llm.DEFAULT_BASE_URL,
@@ -9431,7 +9468,7 @@ class _AgentSettingsDialog(QDialog):
             "model": first_models[0],   # 兼容旧字段
             "models": providers[0].get("models") or [],
             "protocol": providers[0]["protocol"] or "chat",
-            "effort": self._effort,
+            "effort": getattr(self, "_effort", None) or _old_m.get("effort", "medium"),
             "auto_effort": self.auto_effort_check.isChecked(),
             "think_mode": self.think_combo.currentData() or "auto",
             "force_think": self.force_think_check.isChecked(),
@@ -9440,10 +9477,6 @@ class _AgentSettingsDialog(QDialog):
         }
         # 请求超时配置（timeout/idle_timeout）本页暂未提供 UI，仅为后续扩展保留：
         # 透传旧配置防止保存时覆盖丢失（读取走 load_model_config 的 settings 键）
-        try:
-            _old_m = agent_llm.load_settings().get("model") or {}
-        except Exception:
-            _old_m = {}
         for _k in ("timeout", "idle_timeout"):
             _v = _old_m.get(_k)
             if isinstance(_v, (int, float)) and _v > 0:
@@ -9525,10 +9558,19 @@ class _AgentSettingsDialog(QDialog):
                 QTimer.singleShot(0, lambda: QMessageBox.warning(
                     self, _ui("提示"),
                     _ui("MCP 配置保存失败（无写入权限），其余设置已保存")))
-            # 音色与自动朗读：独立写入 tts.json，避免被 settings.json 覆写
-            agent_tts.save_config(auto_read=self.auto_read_check.isChecked(),
-                                  speech_rate=round(self.speed_slider.value() / 100.0, 2)
-                                  if hasattr(self, "speed_slider") else 1.0,
+            # 音色与自动朗读：独立写入 tts.json，避免被 settings.json 覆写。
+            # tts 页未构建（用户从未打开过语音合成页）时控件不存在：回退已持久化
+            # 配置（未打开 = 无改动，写回原值），避免 AttributeError 中断保存。
+            if hasattr(self, "auto_read_check"):
+                _auto_read = self.auto_read_check.isChecked()
+                _speech_rate = (round(self.speed_slider.value() / 100.0, 2)
+                                if hasattr(self, "speed_slider") else 1.0)
+            else:
+                _tts_cfg = agent_tts.load_config()
+                _auto_read = bool(_tts_cfg.get("auto_read", True))
+                _speech_rate = float(_tts_cfg.get("speech_rate") or 1.0)
+            agent_tts.save_config(auto_read=_auto_read,
+                                  speech_rate=_speech_rate,
                                   preferred_name=agent_tts.VOICE_DISPLAY_NAME)
             # 趣味互动设置即时生效：父面板按新开关/间隔重排或停止
             try:
@@ -14157,6 +14199,42 @@ def _default_panel_size(w: QWidget) -> tuple:
     return 280, 320
 
 
+#: dock 左栏「文件树 : Git」的高度份额（用户口径：文件树 40%、剩余 60% 给 Git）。
+#: 任务清单按内容自钉高度，不参与这 40/60 的划分。
+DOCK_SPLIT_WT = 40
+DOCK_SPLIT_GIT = 60
+
+
+def dock_split_heights(rest: int, wt_floor: int, git_floor: int) -> tuple:
+    """把「任务清单以外」的栏高按 40:60 切给 文件树 / Git，返回 (wt_h, git_h)。
+
+    两条下限是**软约束**：
+    - 份额够用时各取所需（余量仍按 40:60，Git 得多）；
+    - 份额不足时先保下限之和；下限之和都超过栏高，则按 40:60 等比压缩。
+
+    为什么必须软：Qt 布局遇到「子控件 minimumHeight 之和 > 栏高」时只能违背某一方，
+    旧实现里文件树写死 400px 下限，被牺牲的永远是 Git —— 提交列表被压成一条缝
+    （用户反馈的「Git 提交内容被挤压遮挡」）。这里保证任何栏高下两者之和恒等于栏高。
+    """
+    rest = max(0, int(rest or 0))
+    wt_floor = max(0, int(wt_floor or 0))
+    git_floor = max(0, int(git_floor or 0))
+    if rest <= 0:
+        return 0, 0
+    share = DOCK_SPLIT_WT + DOCK_SPLIT_GIT
+    if wt_floor + git_floor > rest:          # 栏太矮：等比压缩，不让任何一方溢出
+        wt_h = int(round(rest * DOCK_SPLIT_WT / share))
+        return wt_h, rest - wt_h
+    wt_h = int(round(rest * DOCK_SPLIT_WT / share))
+    # 40% 份额低于文件树下限 → 提到下限，缺的部分从 Git 扣（Git 仍保留下限）
+    if wt_h < wt_floor and rest - wt_floor >= git_floor:
+        wt_h = wt_floor
+    elif wt_h > rest - git_floor:            # 反向保护：Git 不得低于下限
+        wt_h = rest - git_floor
+    wt_h = max(0, min(wt_h, rest))
+    return wt_h, rest - wt_h
+
+
 def _panel_mode_setting() -> str:
     """面板偏好模式（QSettings panel_pref_mode）：attach=贴附主面板 / dock=融入主面板
     （默认设为融入；预览面板固定融入主面板右侧）"""
@@ -16025,14 +16103,27 @@ class TodosWindow(_RoundedFloatWindow):
         if self.height() != need:
             self.resize(self.width(), need)
 
-    def _fit_dock_height(self):
-        """融入主面板：窗口高度 = min(内容所需, 融入行数上限, 栏内可用高度)。
+    def dock_wanted_height(self) -> int:
+        """融入栏内「想要」的高度（尚未受栏高限制）：内容所需与融入行数上限取小。
 
-        融入行数上限 = 前 DOCK_MAX_ROWS 行的高度：融入栏里工作树/Git/任务清单共享栏高，
-        清单再长也不该把同栏 Git 面板挤小（用户反馈「git 面板变小了」），超出部分在
-        面板内滚动查看。窗口恰好吃满面板 → 不再有「窗口比面板高」的空白条带，
-        释放的空间全部归 Git 面板吸收。"""
-        need = min(self.panel.required_height(), self.panel.dock_max_height())
+        宿主的 40:60 分栏需要先把任务清单钉高，才知道余下多少栏高可分给
+        文件树 / Git（见 AgentPanel._apply_dock_height_caps）——这里给出那个钉值。
+        """
+        need = int(self.panel.required_height())
+        try:
+            need = min(need, int(self.panel.dock_max_height()))
+        except Exception:
+            pass
+        return need
+
+    def _fit_dock_height(self):
+        """融入主面板：窗口高度 = min(想要的高度, 栏内可用高度)。
+
+        想要的高度见 dock_wanted_height（内容所需与融入行数上限取小）：融入栏里
+        工作树/Git/任务清单共享栏高，清单再长也不该把同栏 Git 面板挤小（用户反馈
+        「git 面板变小了」），超出部分在面板内滚动查看。窗口恰好吃满面板 → 不再有
+        「窗口比面板高」的空白条带，释放的空间全部归 Git 面板吸收。"""
+        need = self.dock_wanted_height()
         room = int(getattr(self, "_dock_room", 0) or 0)
         if room:
             need = min(need, room)
@@ -16103,12 +16194,33 @@ class _HtmlListDelegate(QStyledItemDelegate):
 
     CHIP_ROLE = Qt.ItemDataRole.UserRole + 2
 
-    def __init__(self, max_w: int = 0, parent=None):
+    def __init__(self, view=None, fallback_w: int = 240, parent=None):
         super().__init__(parent)
-        self._max_w = max_w
+        # 测量宽度**不缓存**：每次都取列表当前视口宽（见 _text_width）。旧实现把
+        # 「面板宽 − 40」在构造时固定下来，面板被 dock 栏放宽/压窄后测量宽度与
+        # 真实绘制宽度不一致，换行的提交说明会被裁掉半行 —— 用户反馈的
+        # 「Git 提交内容被挤压遮挡」正是这个口径漂移。
+        self._view = view
+        self._fallback_w = int(fallback_w or 240)
         # (text, width) → QSize 缓存：app.setStyleSheet/主题重建会触发整表 relayout，
         # 每次都新建 QTextDocument 解析 HTML 极慢（切换主题后主面板无响应的诱因之一）
         self._size_cache = {}
+
+    def _text_width(self) -> int:
+        """测量/绘制共用的文本列宽 = 列表视口宽（无法取得视口时退回构造时的兜底宽）。
+
+        与 paint() 的绘制宽度严格一致：卡片占 rect 内缩 2px，正文再让 4px 左边距 +
+        4px 右侧余量 → 文本宽 = 视口宽 − 12（见 paint 的 r.width() − 8）。
+        """
+        v = self._view
+        try:
+            if v is not None:
+                w = int(v.viewport().width())
+                if w > 40:
+                    return w
+        except Exception:
+            pass
+        return self._fallback_w
 
     def paint(self, painter, option, index):
         painter.save()
@@ -16173,7 +16285,7 @@ class _HtmlListDelegate(QStyledItemDelegate):
         """
         text = (index.data(Qt.ItemDataRole.UserRole)
                 or index.data(Qt.ItemDataRole.DisplayRole) or "")
-        w = self._max_w or 240
+        w = self._text_width()
         key = (text, w)
         sz = self._size_cache.get(key)
         if sz is None:
@@ -16203,7 +16315,8 @@ class GitLogWindow(_RoundedFloatWindow):
 
     WIDTH = 280   # 与 todos / worktree 面板同宽
     DEFAULT_SIZE = (WIDTH, 320)
-    HEIGHT_MIN = 120   # 融入栏内最小高度（余量吸收者，避免被压成一条缝）
+    HEIGHT_MIN = 120   # 融入栏内最小高度（40:60 分栏时的绝对下限，见 dock_min_height）
+    LIST_MIN_H = 96    # 融入栏内提交列表的最小高度（≈2 条提交卡片，再小就看不到内容）
     STATS_LIMIT = 100  # 行数统计的提交条数上限（每条要算一次 diff，全量会很慢）
     _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
@@ -16254,7 +16367,7 @@ class GitLogWindow(_RoundedFloatWindow):
 
         self.list = QListWidget()
         self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self.list.setItemDelegate(_HtmlListDelegate(self.WIDTH - 40, self.list))
+        self.list.setItemDelegate(_HtmlListDelegate(self.list, self.WIDTH - 40, self.list))
         lay.addWidget(self.list, 1)
 
         # 单击分支 → 延迟查看该分支提交；双击 → 真正切换工作区分支
@@ -16348,23 +16461,35 @@ class GitLogWindow(_RoundedFloatWindow):
 
     def _set_dock_ui(self, docked: bool):
         """融入主面板：隐藏把手与 resize 热区，并给列表一个最小高度——
-        本面板是同栏里唯一不封顶的成员（负责吸收任务清单/工作树定高后释放的余量），
-        设底限避免主面板被压得很矮时列表被压成一条缝。
+        本面板是同栏里随文件树按 40:60 切分、并吸收零头余量的成员，设底限避免
+        栏高紧张时提交列表被压成一条缝（用户反馈的「提交内容被挤压遮挡」）。
         融入时上下边距归零（贴边）：卡片占满窗口上下，不再留有与上下相邻面板之间的底色缝隙。"""
         super()._set_dock_ui(docked)
         try:
-            self.setMinimumHeight(self.HEIGHT_MIN if docked else 0)
+            self.list.setMinimumHeight(self.LIST_MIN_H if docked else 0)
             lay = self.layout()
             if lay is not None:
                 lay.setContentsMargins(*(self.MARGINS_DOCK if docked else self.MARGINS))
+            self.setMinimumHeight(self.dock_min_height() if docked else 0)
         except Exception:
             pass
 
-    def _on_size_changed(self, w: int, h: int):
-        """尺寸变化后重建列表 delegate（按新宽度量行高），避免文案行被挤压/裁切"""
+    def dock_min_height(self) -> int:
+        """融入栏内的最小可用高度：由布局自身的最小需求推出（标题 + 列表下限 +
+        提交说明 + 操作按钮 + 状态行），不用魔数 —— 以后改任一子控件高度，下限
+        自动跟随，不会出现「下限写着 120，实际列表被挤成 0」的口径脱节。"""
+        need = self.HEIGHT_MIN
         try:
-            w = int(w)
-            self.list.setItemDelegate(_HtmlListDelegate(max(120, w - 40), self.list))
+            lay = self.layout()
+            if lay is not None:
+                need = max(need, int(lay.minimumSize().height()))
+        except Exception:
+            pass
+        return need
+
+    def _on_size_changed(self, w: int, h: int):
+        """宽度变化后重排列表：delegate 按视口宽现算行高，这里只需触发一次布局。"""
+        try:
             if self.list.count():
                 self.list.doItemsLayout()
         except Exception:
@@ -16976,6 +17101,7 @@ class WorktreeWindow(_RoundedFloatWindow):
 
     WIDTH = 280      # 与 todos / git 面板同宽
     DEFAULT_SIZE = (WIDTH, 360)
+    HEIGHT_MIN = 120   # 融入栏内最小高度（40:60 分栏时的绝对下限，见 dock_min_height）
     MARGINS_DOCK = (10, 2, 10, 0)   # 融入：顶部留 2px 防标题裁切，底边贴边（缝隙并入下方 Git）
     _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
@@ -17049,19 +17175,34 @@ class WorktreeWindow(_RoundedFloatWindow):
         self._fs_timer.timeout.connect(self._reload_preserving_expand)
 
     def _set_dock_ui(self, docked: bool):
-        """融入主面板：隐藏把手与 resize 热区；顶部留白收窄（内容上移）并抬高最小高度
-        （向下增高一点点），充分利用 dock 栏垂直空间；贴附模式恢复原布局。"""
+        """融入主面板：隐藏把手与 resize 热区；顶部留白收窄（内容上移）。
+        高度由 dock 栏按「文件树 40% / Git 60%」分配（见 _apply_dock_height_caps）——
+        这里**不设 400px 硬下限**：旧值会让文件树无视份额吃掉 2/3 栏高，把 Git 提交
+        列表压成一条缝（用户反馈的「Git 提交内容被挤压遮挡」根因）。"""
         super()._set_dock_ui(docked)
         try:
             lay = self.layout()
             if lay is not None:
                 lay.setContentsMargins(*(self.MARGINS_DOCK if docked else self.MARGINS))
             if docked:
-                self.setMinimumHeight(400)
+                self.setMinimumHeight(self.dock_min_height())
             else:
                 self.setMinimumHeight(0)
+                # 解除 dock 期的定高（setFixedHeight 留下的 min=max），否则浮出后无法拖拽调高
+                self.setMaximumHeight(16777215)
         except Exception:
             pass
+
+    def dock_min_height(self) -> int:
+        """融入栏内的最小可用高度（标题 + 至少几行文件的树区），不用 400 这类硬值。"""
+        need = self.HEIGHT_MIN
+        try:
+            lay = self.layout()
+            if lay is not None:
+                need = max(need, int(lay.minimumSize().height()))
+        except Exception:
+            pass
+        return need
 
     def _apply_surface_qss(self):
         """文件树底色（构建时调用一次）。
@@ -21282,7 +21423,11 @@ class AgentPanel(QDialog):
             if self.isMaximized():
                 if self._fx.start_restore_size():
                     return
-                self.showNormal()
+                # 动画不可用时，用 unmaximize 替代 showNormal：
+                # 无边框窗口首次 showNormal() 实测阻塞 ~1400ms（Qt 重建 backing store + DWM 切换），
+                # 而 setWindowState(WindowNoState) 语义等价且实测 ~1ms。
+                from .window_fx import unmaximize
+                unmaximize(self, self._fx._pre_max_rect if hasattr(self._fx, '_pre_max_rect') else None)
             else:
                 if self._fx.start_maximize():
                     return
@@ -21290,7 +21435,8 @@ class AgentPanel(QDialog):
         except Exception:
             try:
                 if self.isMaximized():
-                    self.showNormal()
+                    from .window_fx import unmaximize
+                    unmaximize(self)
                 else:
                     self.showMaximized()
             except Exception:
@@ -21457,11 +21603,24 @@ class AgentPanel(QDialog):
         super().mouseDoubleClickEvent(e)
 
     def _sync_window_chrome(self):
-        """最大化/还原后同步自绘窗口饰件：圆角半径、黄点提示、缩放热区。"""
-        try:
-            _set_qss_once(self, self._panel_root_qss())
-        except Exception:
-            pass
+        """最大化/还原后同步自绘窗口饰件：圆角半径、黄点提示、缩放热区。
+
+        圆角 QSS 的落地时机分两路（`setStyleSheet` 会重算整棵子树样式，
+        面板级实测 65~135ms，挂在还原的同步路径上就是「点一下先白等 67ms」）：
+        - **变为方角（最大化/全屏）**：立即落地 —— 否则满屏窗口还带着 12px 圆角，
+          四角会露出透明缺口（蒙版此时已被清掉，没人替它裁）。
+        - **变为圆角（还原）**：延后一拍再落地 —— 窗口圆角本来就由 SetWindowRgn
+          蒙版负责（resizeEvent 里已同步套上），QSS 这层只补渐变底的抗锯齿，
+          晚一帧应用肉眼无差别，却把 67ms 移出了点击响应路径。
+        """
+        r_new = 0 if self._is_fullscreen() else self._WINDOW_RADIUS
+        if r_new <= 0:
+            try:
+                _set_qss_once(self, self._panel_root_qss())
+            except Exception:
+                pass
+        else:
+            self._schedule_root_qss()
         tb = self.__dict__.get("_title_bar")
         if tb is not None:
             try:
@@ -21475,6 +21634,30 @@ class AgentPanel(QDialog):
             except RuntimeError:
                 pass
         self.update()
+
+    def _schedule_root_qss(self):
+        """延后应用根样式表（合并同一轮里的多次请求，见 _sync_window_chrome）。
+
+        延时取「尺寸过渡动画时长 + 余量」：动画期间每 16ms 要出一帧，若把 67ms 的
+        全量重算塞进去，动画本身就会卡一下 —— 那比圆角晚一帧更明显。动画期间窗口
+        圆角由 SetWindowRgn 蒙版负责，QSS 这层等动画结束再补上即可。
+        """
+        t = self.__dict__.get("_root_qss_timer")
+        if t is None:
+            from PyQt6.QtCore import QTimer as _QTimer
+            from . import window_fx as _fx
+            t = _QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(int(_fx.MORPH_MS) + 80)
+            t.timeout.connect(self._apply_root_qss)
+            self._root_qss_timer = t
+        t.start()
+
+    def _apply_root_qss(self):
+        try:
+            _set_qss_once(self, self._panel_root_qss())
+        except Exception:
+            pass
 
     def _bubble_min_width(self) -> int:
         """聊天气泡最小宽度：全屏时至少覆盖半页宽（不超过最大宽度）"""
@@ -21847,10 +22030,21 @@ class AgentPanel(QDialog):
     def _request_side_sync(self, delay=0):
         """合并多次独立触发的面板重新定位/抬升为一次：最大化/还原/焦点/二次同步常
         在极短时间内连续调用，若每次都 4×move+raise 会造成左面板消失与持续闪烁。
-        用单次定时器聚合，去重后一次性归位。"""
+        用单次定时器聚合，去重后一次性归位。
+
+        **禁止在归位过程中再排队**（`_side_sync_flushing`）：`_sync_dock_layout` 收尾
+        会请求一次归位，而归位本身又会调 `_sync_*_win` → `_sync_dock_layout` —— 于是
+        排一次、跑一次、再排一次，形成 0ms 自激循环。实测空闲态 292 次/秒、吃掉主线程
+        70%：表现就是「还原窗口卡一下」「设置页保存转圈极度卡顿」「面板偶尔闪」。
+        真正需要的只是「本轮改动后再补跑一遍」，故只记一个 dirty，最多补一层。
+        """
         if getattr(self, "_side_sync_armed", False):
             return
+        if getattr(self, "_side_sync_flushing", False):
+            self._side_sync_dirty = True
+            return
         self._side_sync_armed = True
+        self._side_sync_settled = False
         QTimer.singleShot(delay, self._flush_side_sync)
 
     def _panel_size_changed(self, panel, w, h=None, persist: bool = False):
@@ -21994,10 +22188,12 @@ class AgentPanel(QDialog):
             panel.dock_state = "float"
             panel.setParent(self, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
             panel._set_dock_ui(False)   # 贴附：恢复把手/resize 热区，todos 恢复固定默认尺寸
-            # 解除 dock 期间的固定宽度与高度封顶，恢复可拖拽调整大小
+            # 解除 dock 期间的固定宽度与固定高度（40:60 分栏会给文件树 setFixedHeight，
+            # 不解除则浮出后无法拖拽调整大小），恢复可拖拽调整大小
             try:
                 panel.setMinimumWidth(0)
                 panel.setMaximumWidth(65535)
+                panel.setMinimumHeight(0)
                 panel.setMaximumHeight(16777215)
             except Exception:
                 pass
@@ -22033,17 +22229,18 @@ class AgentPanel(QDialog):
     def _sync_dock_layout(self):
         """按 dock 状态排列侧栏：有面板的侧栏显示，空侧栏隐藏；
         dock 内面板宽度跟随各自持久化尺寸（贴附样式保留：圆角卡片，壁纸模式下透出壁纸）。
-        左侧三面板（工作树/Git/任务清单）垂直占比 5:3:2，其中：
-        - 工作树按「名义份额（5 份）」封顶 → 保持其原有高度，不被余量撑高；
-        - 任务清单按固定默认尺寸（上限）钉住，面板内滚动查看超出部分（见 TodosWindow
-          ._fit_dock_height / _pin_height），窗口恰好吃满内容 → 不再留空白条带；
-        - 二者释放的余量全部由 Git 面板吸收 → 栏内无空白，Git 列表显示更多条目。
+        左侧三面板（工作树/Git/任务清单）：**文件树 40% / Git 60%**（任务清单先按内容
+        钉高、不参与划分），其中：
+        - 工作树按其份额**定高**（不再靠 400px 硬下限自由生长 → 不会挤扁 Git）；
+        - 任务清单按内容钉住（上行数上限），面板内滚动查看超出部分（见 TodosWindow
+          .dock_wanted_height / _pin_height），窗口恰好吃满内容 → 不留空白条带；
+        - 剩余零头全部由 Git 面板吸收 → 栏内无空白，提交列表显示更多条目。
         侧栏宽度固定为该侧面板持久化最大宽，预览页面 sizeHint 波动不致列宽突变挤压。"""
         if getattr(self, "_dock_sync_running", False):
             return                      # 重入保护：设置封顶高度会触发子控件重排
         self._dock_sync_running = True
         try:
-            _factors = {"wtWin": 5, "gitLogWin": 3, "todosWin": 2}
+            _factors = {"wtWin": DOCK_SPLIT_WT, "gitLogWin": DOCK_SPLIT_GIT, "todosWin": 20}
             for side in ("left", "right"):
                 col = self._dock_column(side)
                 if col is None:
@@ -22052,7 +22249,7 @@ class AgentPanel(QDialog):
                 if lay is None:
                     continue
                 order = self._dock_panel_order(side)
-                # 垂直占比：左侧三面板 5:3:2；右侧均分
+                # 垂直份额：文件树 40 / Git 60（任务清单定高，权重只影响贴附态观感）
                 widths = []
                 for i, p in enumerate(order):
                     lay.setStretch(lay.indexOf(p), _factors.get(p.objectName(), 1))
@@ -22064,13 +22261,18 @@ class AgentPanel(QDialog):
                 for j in range(lay.count()):
                     if lay.itemAt(j).spacerItem() is not None:
                         lay.setStretch(j, 0)
-                # 高度封顶：左侧工作树按名义份额封顶（保持原高度）、任务清单按内容定高
-                # （TodosWindow 自管），余量全部落给 Git 面板 → 卡片填满栏高，无空白条
-                self._apply_dock_height_caps(side, order, lay, col, _factors)
+                # 高度分工：文件树 40% / Git 60%，任务清单先钉高（见 dock_split_heights）
+                self._apply_dock_height_caps(side, order, lay, col)
                 # 列宽固定为该侧面板持久化最大宽：预览/页面切换引起的 sizeHint 波动
                 # 不再把代码预览等面板挤成半宽（旧动态列宽随子控件 sizeHint 突变）
                 try:
-                    col.setFixedWidth(max(widths or [280]))
+                    _col_w = int(max(widths or [280]))
+                    col.setFixedWidth(_col_w)
+                    # 栏内面板统一到列宽：各面板持久化宽可能不同（历史上单独拖过），
+                    # 比列宽大的会被右缘裁掉（标题行按钮"贴着边缘像被切"），小的留缝。
+                    for p in order:
+                        if int(p.width()) != _col_w:
+                            p.setFixedWidth(_col_w)
                 except Exception:
                     pass
                 # 右栏只有「已融入且未隐藏」时才占宽：预览面板默认隐藏 → 右栏宽度归 0
@@ -22102,38 +22304,59 @@ class AgentPanel(QDialog):
         if getattr(self, "_applied_panel_mode", "") == "dock":
             self._sync_dock_layout()
 
-    def _apply_dock_height_caps(self, side, order, lay, col, factors):
-        """dock 栏高度分工（仅左侧）：任务清单按固定默认尺寸（内容超出在面板内滚动）、
-        工作树按其名义份额封顶、释放的余量全部由 Git 面板吸收——面板填满栏高，
-        卡片底部不再出现空白条（窗口尺寸变化时由 resizeEvent 重新调用，值随栏高重算）。
-        栏高不足时先收缩工作树，仍不足才压缩任务清单，保证 Git 面板不小于其最小高度，
-        避免整列溢出把清单底部裁掉。"""
+    def _apply_dock_height_caps(self, side, order, lay, col):
+        """dock 栏高度分工（仅左侧）：文件树 40% / Git 60%（任务清单先按内容钉高）。
+
+        做法与旧实现的差别（关键）：
+        - 旧实现只给文件树「封顶」而不接管其下限，而文件树自带 400px minimumHeight；
+          栏高不够时 Qt 只能牺牲 Git → 提交列表被压成一条缝。现在**两侧都显式定高**
+          （文件树 setFixedHeight 份额、Git 取剩余），任何栏高下都严格 40:60，不会溢出；
+        - 份额由 `dock_split_heights` 统一裁决（纯函数，可单测），下限只作软约束；
+        - 任务清单先钉高（内容超出在面板内滚动），它的可用高度由本函数反推下发。
+
+        由 `_sync_dock_layout` 调用；窗口尺寸变化时随 resizeEvent 重算（值随栏高走）。"""
         if side != "left" or not order:
             return
         try:
-            # 份额口径按「名义间距」计（栏内实际间距为 0）：工作树/任务清单的高度份额
-            # 与改造前一致，间距释放出的空间全部由余量吸收者（Git 面板）占满。
+            # 份额口径按「名义间距」计（栏内实际间距为 0）：间距口径让份额换算与旧版
+            # 一致，差额由 Git 吸收（它是余量吸收者）。
             gaps = self._DOCK_PANEL_GAP * max(0, len(order) - 1)
             avail = max(0, col.height() - gaps)
-            total = sum(factors.get(p.objectName(), 1) for p in order) or 1
             by_name = {p.objectName(): p for p in order}
             wt = by_name.get("wtWin")
             git = by_name.get("gitLogWin")
             todos = by_name.get("todosWin")
-            git_min = int(getattr(git, "HEIGHT_MIN", 120) or 120) if git is not None else 0
-            todos_need = todos.minimumHeight() if todos is not None else 0
-            cap = int(avail * factors.get("wtWin", 1) / total)      # 工作树名义份额
+
+            def _floor(p, fallback: int) -> int:
+                fn = getattr(p, "dock_min_height", None)
+                try:
+                    return int(fn()) if callable(fn) else fallback
+                except Exception:
+                    return fallback
+
+            wt_floor = _floor(wt, 120)
+            git_floor = _floor(git, 190)
+            # 任务清单先钉高：内容所需（含行数上限）与栏内可分配高度取小
             if todos is not None:
-                # 留给任务清单（固定尺寸）与 Git 最小高度后再封顶工作树
-                cap = min(cap, max(0, avail - todos_need - git_min))
+                want = None
+                try:
+                    want = int(todos.dock_wanted_height())
+                except Exception:
+                    want = None
+                if want is None:
+                    want = int(todos.minimumHeight())
+                todos.set_dock_room(max(0, avail - wt_floor - git_floor))
+                todos_h = max(0, min(want, avail - wt_floor - git_floor)) \
+                    if avail > wt_floor + git_floor else 0
+            else:
+                todos_h = 0
+            wt_h, git_h = dock_split_heights(avail - todos_h, wt_floor, git_floor)
+            # 文件树显式定高（min=max）：份额是硬边界，改由本函数分配而不是让它自由生长
             if wt is not None:
-                wt.setMaximumHeight(cap if cap >= wt.minimumHeight() else 16777215)
+                wt.setFixedHeight(wt_h)
             if git is not None:
-                git.setMaximumHeight(16777215)   # 余量吸收者：不封顶
-            if todos is not None:
-                # 任务清单的栏内可用高度 = 栏高 - 工作树实占 - Git 最小高度
-                wt_used = max(cap, wt.minimumHeight()) if wt is not None else 0
-                todos.set_dock_room(max(0, avail - wt_used - git_min))
+                git.setMinimumHeight(min(git_floor, git_h))
+                git.setMaximumHeight(16777215)   # 余量吸收者：吃掉四舍五入的零头
         except Exception:
             pass
 
@@ -22279,17 +22502,31 @@ class AgentPanel(QDialog):
 
     def _flush_side_sync(self):
         self._side_sync_armed = False
+        self._side_sync_flushing = True
+        self._side_sync_dirty = False
         try:
-            self._apply_reserve()
-        except Exception:
-            pass
-        for _fn in ("_sync_wt_win", "_sync_git_win", "_sync_todos_win", "_sync_code_win"):
-            _f = getattr(self, _fn, None)
-            if callable(_f):
-                try:
-                    _f()
-                except Exception:
-                    pass
+            try:
+                self._apply_reserve()
+            except Exception:
+                pass
+            for _fn in ("_sync_wt_win", "_sync_git_win", "_sync_todos_win", "_sync_code_win"):
+                _f = getattr(self, _fn, None)
+                if callable(_f):
+                    try:
+                        _f()
+                    except Exception:
+                        pass
+        finally:
+            self._side_sync_flushing = False
+        # 本轮内布局有改动（列宽/可见性/预留边距变化）→ 补跑一遍即可收敛；
+        # settled 保证只补一层，补跑里再次 dirty 就丢弃，避免自激成死循环。
+        if self._side_sync_dirty and not getattr(self, "_side_sync_settled", False):
+            self._side_sync_settled = True
+            self._side_sync_armed = True
+            QTimer.singleShot(0, self._flush_side_sync)
+        else:
+            self._side_sync_settled = False
+            self._side_sync_dirty = False
         # 延迟再抬升一次，确保最大化/焦点竞争结束后各面板都保持可见、不抖
         QTimer.singleShot(120, self._raise_side_panels)
 

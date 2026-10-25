@@ -1507,6 +1507,99 @@ def test_snap_is_skipped_gracefully_when_capture_fails(monkeypatch):
     assert mod._snap_to_element(123, 456) == (123, 456, "")
 
 
+def _synth_two_panels(radius=48, left=(40, 40, 40), right=(230, 230, 230), split=40):
+    """造一块「左右两个面板并排」的区域：模拟侧栏 | 内容区在交界处的真实版面。"""
+    w = h = radius * 2
+    buf = bytearray(w * h * 4)
+    for y in range(h):
+        for x in range(w):
+            c = left if x < split else right
+            o = (y * w + x) * 4
+            buf[o:o + 4] = bytes((c[2], c[1], c[0], 255))
+    return buf, w, h
+
+
+def test_snap_finds_element_flush_against_a_neighbour_panel(monkeypatch):
+    """区域横跨两个面板、目标就贴在交界上时，仍要吸附到目标本身。
+
+    这是「点击精度不足」的真实主因：单色背景模型会把**另一个面板整片**判成前景，
+    目标与它相邻 ⇒ 并进同一块连通域 ⇒ 触到区域边界被淘汰 ⇒ 吸附彻底失效。
+    逐列背景模型把两个面板各自认成背景，目标就独立出来了。
+    """
+    mod = _load_module()
+    buf, w, h = _synth_two_panels()
+    _paint_rect(buf, w, 40, 30, 72, 70, (170, 170, 170))   # 紧贴 x=40 交界右侧的按钮
+    _use_region_at(mod, monkeypatch, buf, w, h, 52, 48)
+    sx, sy, _note = mod._snap_to_element(1000, 2000)
+    # 原点 (948,1952)；按钮局部 40~72（中心 56）/30~70（中心 50）→ (1004,2002)
+    assert (sx, sy) == (1004, 2002), f"应吸附到按钮 (1004,2002)，实得 {(sx, sy)}"
+
+
+def test_snap_recovers_element_on_a_vertically_graded_panel(monkeypatch):
+    """深色主题的竖向渐变面板（同一列自上而下变亮）上也要能吸附到按钮。"""
+    mod = _load_module()
+    w = h = 96
+    buf = bytearray(w * h * 4)
+    for y in range(h):
+        v = 40 + (y * 60) // h
+        for x in range(w):
+            o = (y * w + x) * 4
+            buf[o:o + 4] = bytes((v, v, v, 255))
+    _paint_rect(buf, w, 30, 30, 66, 70, (190, 190, 190))
+    _use_region_at(mod, monkeypatch, buf, w, h, 48, 48)
+    sx, sy, _note = mod._snap_to_element(1000, 2000)
+    # 原点 (952,1952)；按钮局部 30~66（中心 48）/30~70（中心 50）→ (1000,2002)
+    assert (sx, sy) == (1000, 2002), f"渐变面板上的按钮应能吸附，实得 {(sx, sy)}"
+
+
+def test_snap_finds_element_below_a_header_strip(monkeypatch):
+    """上下分层（标题栏 | 内容区）也要能吸附 —— 逐行背景模型负责这一种。"""
+    mod = _load_module()
+    w = h = 96
+    buf = bytearray(w * h * 4)
+    for y in range(h):
+        c = (60, 60, 60) if y < 30 else (215, 215, 215)
+        for x in range(w):
+            o = (y * w + x) * 4
+            buf[o:o + 4] = bytes((c[2], c[1], c[0], 255))
+    _paint_rect(buf, w, 30, 32, 66, 68, (140, 140, 140))    # 紧贴分界下方的按钮
+    _use_region_at(mod, monkeypatch, buf, w, h, 48, 48)
+    sx, sy, _note = mod._snap_to_element(1000, 2000)
+    assert (sx, sy) == (1000, 2002), f"标题栏下方的按钮应能吸附，实得 {(sx, sy)}"
+
+
+def test_adaptive_mask_keeps_single_colour_path_for_plain_regions(monkeypatch):
+    """普通区域（单色背景 + 一个按钮）不许走多候选模型 —— 既有行为必须原样，也不该白花 CPU。"""
+    mod = _load_module()
+    buf, w, h = _synth_region()
+    _paint_rect(buf, w, 20, 30, 70, 70, (72, 72, 72))
+    calls = []
+    orig = mod._region_bg_candidates
+
+    def _spy(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(mod, "_region_bg_candidates", _spy)
+    _use_region(mod, monkeypatch, buf, w, h)
+    assert mod._snap_to_element(1000, 2000)[:2] == (997, 2002)
+    assert calls == [], "单色背景解释得通时不该启用多候选模型"
+
+
+def test_adaptive_mask_falls_back_when_no_model_beats_the_single_colour_one(monkeypatch):
+    """新模型并不比单色模型更能解释背景时，必须原样保留单色掩码。"""
+    mod = _load_module()
+    buf, w, h = _synth_region()
+    mask = mod._fg_mask(bytes(buf), w, h, (48, 48, 48), mod.SNAP_BG_DIST)
+    # 造一个「前景占比很高但没有任何模型能吃掉」的掩码：直接全 1
+    full = bytearray(b"\x01" * (w * h))
+    monkeypatch.setattr(mod, "_region_bg_candidates", lambda *a, **k: [])
+    assert mod._adaptive_fg_mask(bytes(buf), w, h, full, (48, 48, 48)) is full
+    assert mod._adaptive_fg_mask(bytes(buf), w, h, mask, (48, 48, 48)) is mask, \
+        "前景占比没超阈值时压根不该尝试换模型"
+
+
+
 def test_apply_snap_defaults_on_and_can_be_disabled(monkeypatch):
     """click/drag 默认吸附；显式 snap=false 时一个像素都不许动。"""
     mod = _load_module()

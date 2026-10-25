@@ -893,6 +893,34 @@ SNAP_BAND_MIN_SPAN = 6      # 带的最小高度：低于它的不是「行」�
                             # 分隔线横贯整行、前景像素很多，不滤掉会被误当成一条带，
                             # 吸上去等于点在两行交界处，比不吸还糟（实测踩过）
 
+# ---- 可分离渐变背景模型（单色背景的兜底）-----------------------------------
+# 为什么需要它：`_bg_color` 只给**一个**背景色（边框众数）。UI 里这个假设经常不成立：
+# 区域一旦横跨两个面板（左侧栏一种底色、右侧聊天区另一种底色 —— 模型估的落点恰好
+# 压在交界处的概率极高，因为那正是「列表行 / 输入框边缘」所在），另一个面板会被整片
+# 判成前景；它触到区域边界 ⇒ 被淘汰，而**邻近的真目标元素被它吞进同一块连通域**，
+# 一起淘汰 ⇒ 吸附彻底失效，只能按模型原坐标点 ⇒ 就是用户说的「点击精度不足」。
+# 渐变背景更是如此：深色主题的面板底色几乎都带一层竖向渐变，单色模型会把半片区域
+# 判成前景。
+# 解法与任务栏那套一致（那条路径已实测有效）：把背景拆成**可分离的两项**
+#     bg(x,y) = base[x] + vdelta(y)
+# base[x] 管横向台阶（左右两个面板），vdelta 管竖向台阶/渐变（上下两层）。
+# UI 的面板边界一定是**轴对齐**的，所以这两项刚好覆盖这一整类情形。
+# 实际会算三个特化候选（逐列常数 / 逐行常数 / 可分离），按「谁能把背景解释得最干净」
+# 挑一个 —— 见 _region_bg_candidates。
+SNAP_GRAD_STEP = 2              # 估计背景色时的采样步长：众数/中位数对均匀采样是稳的，
+                                # 采一半像素换一倍速度，最终掩码仍是逐像素算的
+SNAP_GRAD_MIN_ROW_COVER = 0.45  # 一行里背景占比达到它，才认为这行能代表背景色
+SNAP_GRAD_TRIGGER = 0.34        # 单色模型判出的前景占比超过它就怀疑「背景不是单色」
+SNAP_GRAD_GAIN = 0.60           # 新模型必须把前景占比压到原来的这个比例以下才算「更能
+                                # 解释背景」；否则视为模型无效，保留单色掩码（保守）
+SNAP_GRAD_MIN_FG = 0.001        # 新掩码前景占比不能低于它：再低就是「整片判成空背景」，
+                                # 等于把所有元素都丢了
+SNAP_GRAD_KEEP = 0.70           # 新掩码的前景里，至少这么多必须原本也是前景 ——
+                                # 新模型只准「把面板色改判回背景」，不准把元素改判成
+                                # 背景（那会把圆角方环、大按钮整个反过来）
+SNAP_GRAD_GOOD = 0.35           # 前景降到原来的这个比例以下就算「解释干净」，不再
+                                # 去试剩下的候选模型（省一半耗时）
+
 # ---- 候选菜单 --------------------------------------------------------------
 # 为什么要有它：吸附只会挑「离估计点最近的那一块」。这在按钮**成排密排**的界面上
 # 是错的 —— 估计点只要稍微偏一点，最近的那一块就是**隔壁按钮**，于是「点偏」变成了
@@ -1268,6 +1296,252 @@ def _fill_candidates(out: list, comps: list, bands: list, usable, x, y, lx, ly,
         out.append(c)
 
 
+def _mode_mean(bits: bytes, offs) -> tuple:
+    """采样像素里众数桶的**真实均值**：(众数像素数, (r,g,b))。
+
+    为什么要均值而不是桶中心：`_row_modal` / `_area_modal` 给的是 8 级量化后的
+    **桶中心**，它每通道最多偏 7 级、三通道加起来能到 21 —— 已经超过 SNAP_BG_DIST(18)。
+    拿它当背景色，整块面板都会被判成前景（实测：面板底色 215，桶中心 208，三通道差 21）。
+    有了均值，误差回到 1 级以内。
+
+    一趟遍历同时累计「每桶计数 + 每桶三通道和」：分两趟走（先定众数再回扫求均值）
+    在这一步要翻倍耗时，而它每次点击都会跑（区域 176×176 时是最大的一笔开销）。
+    """
+    stat = {}
+    for o in offs:
+        key = (bits[o] >> 3, bits[o + 1] >> 3, bits[o + 2] >> 3)
+        s = stat.get(key)
+        if s is None:
+            stat[key] = [1, bits[o], bits[o + 1], bits[o + 2]]
+        else:
+            s[0] += 1
+            s[1] += bits[o]
+            s[2] += bits[o + 1]
+            s[3] += bits[o + 2]
+    if not stat:
+        return 0, None
+    n, sr, sg, sb = max(stat.values(), key=lambda v: v[0])
+    return n, (sr // n, sg // n, sb // n)
+
+
+def _row_bg_colors(bits: bytes, w: int, h: int):
+    """逐行的背景色 rowc[y]（覆盖率不足的行记 None）。返回 (rowc, good_rows)。
+
+    按 SNAP_GRAD_STEP 采样：众数/中位数这类统计量对均匀采样是稳的，采一半像素换一倍
+    速度，且在最终掩码上不留任何痕迹（掩码仍是逐像素算的）。
+    """
+    step = SNAP_GRAD_STEP
+    nb = len(range(0, w, step))
+    rowc = [None] * h
+    good = []
+    for y in range(h):
+        row = y * w
+        n, col = _mode_mean(bits, [(row + x) * 4 for x in range(0, w, step)])
+        if col is None or n < nb * SNAP_GRAD_MIN_ROW_COVER:
+            continue
+        rowc[y] = col
+        good.append(y)
+    return rowc, good
+
+
+def _col_bg_colors(bits: bytes, w: int, h: int, rowc: list) -> list:
+    """逐列的背景色 base[x]。
+
+    每列只统计「**与自己那一行的众数色一致**」的像素（见 SNAP_BG_DIST）。两个好处：
+      * 竖向渐变面板上，同一行的背景处处同色，而被元素盖住的像素与它那一行的背景色
+        差得远，自然被排除 —— 即便某一列被一个大按钮整根占满，剩下的背景像素仍足以
+        给出正确的列底色（只取整列中位数做不到：大元素会把中位数整个拽走）；
+      * 左右并排的两个面板，交界两侧的列各自只收下「与行众数色一致」的那一半像素，
+        于是台阶被如实保留下来。
+    一致像素太少时（例如某一列整体属于「非主流」的那个面板），退回**本列自己的
+    众数色** —— 那正是该列的底色。
+
+    实现上**一趟扫完全部像素**（按列聚合），而不是逐列再扫一遍：逐列的写法是
+    176 次「建 offs 列表 + 过滤 + 取中位数」，实测比单趟聚合慢 4 倍以上。
+    """
+    step = SNAP_GRAD_STEP
+    agreed = [[] for _ in range(w)]        # 与行众数色一致的像素（做中位数）
+    stat = [{} for _ in range(w)]          # 整列的桶统计（做兜底众数均值）
+    for y in range(0, h, step):
+        row = y * w
+        rc = rowc[y]
+        for x in range(w):
+            o = (row + x) * 4
+            r, g, b = bits[o], bits[o + 1], bits[o + 2]
+            st = stat[x]
+            key = (r >> 3, g >> 3, b >> 3)
+            s = st.get(key)
+            if s is None:
+                st[key] = [1, r, g, b]
+            else:
+                s[0] += 1
+                s[1] += r
+                s[2] += g
+                s[3] += b
+            if rc is not None and (abs(r - rc[0]) + abs(g - rc[1])
+                                   + abs(b - rc[2])) <= SNAP_BG_DIST:
+                agreed[x].append((r, g, b))
+    base = []
+    for x in range(w):
+        vals = agreed[x]
+        if len(vals) >= 3:
+            base.append(tuple(sorted(v[k] for v in vals)[len(vals) // 2] for k in range(3)))
+            continue
+        st = stat[x]
+        if not st:
+            return []
+        n, sr, sg, sb = max(st.values(), key=lambda v: v[0])
+        base.append((sr // n, sg // n, sb // n))
+    return base
+
+
+def _interp_delta(delta: list, known: list, h: int) -> list:
+    """把只有部分行有值的偏移表补全：未知行在最近的两个已知行之间线性插值。"""
+    out = [None] * h
+    for y in known:
+        if delta[y] is not None:
+            out[y] = delta[y]
+    for y in range(h):
+        if out[y] is not None:
+            continue
+        prev = next((k for k in reversed(known) if k < y), None)
+        nxt = next((k for k in known if k > y), None)
+        if prev is None and nxt is None:
+            return []
+        if prev is None:
+            out[y] = out[nxt]
+        elif nxt is None:
+            out[y] = out[prev]
+        else:
+            t = (y - prev) / float(nxt - prev)
+            a, b = out[prev], out[nxt]
+            out[y] = tuple(int(round(a[k] + (b[k] - a[k]) * t)) for k in range(3))
+    return out
+
+
+def _region_bg_candidates(bits: bytes, w: int, h: int) -> list:
+    """区域背景的候选模型列表，每项 (名字, base, vdelta)。
+
+    bg(x,y) = base[x] + vdelta[y]。三个候选是同一个公式的三种特化，分别对应
+    UI 里三种「单色背景解释不了」的版面：
+
+      * "H" 逐列常数  base=列底色, vdelta=0   —— 左右并排（侧栏 | 内容区）；
+      * "V" 逐行常数  base=常数,   vdelta=行偏移 —— 上下分层（标题栏/工具条）与竖向渐变；
+      * "S" 可分离    base=列底色, vdelta=行偏移 —— 竖向渐变同时还带横向偏色的情形
+        （Windows 任务栏就是这样：竖着变亮、左右还整体偏色，两个方向必须同时建模）。
+
+    调用方按「谁能把背景解释得更干净」挑一个。没有足够多「以背景为主」的行时返回空表
+    —— 那说明区域里根本没有可分辨的背景（满屏内容 / 照片 / 视口），任何背景模型
+    都不可信，宁可退回单色模型。
+    """
+    if w <= 0 or h <= 0 or len(bits) < w * h * 4:
+        return []
+    rowc, good = _row_bg_colors(bits, w, h)
+    if len(good) < max(4, h // 6):
+        return []
+    base = _col_bg_colors(bits, w, h, rowc)
+    if not base:
+        return []
+    # ref 取「各行众数色」的中位数：并排面板时它等于覆盖率占多数的那个面板色，
+    # 于是 V/S 的 vdelta 在该情形下近似归零，退化为逐列常数（正是并排的正确答案）。
+    ref = tuple(sorted(rowc[y][k] for y in good)[len(good) // 2] for k in range(3))
+    vdelta = _interp_delta([None if rowc[y] is None else
+                            (rowc[y][0] - ref[0], rowc[y][1] - ref[1],
+                             rowc[y][2] - ref[2]) for y in range(h)], good, h)
+    # 两个方向各自「有多大的结构」：base 的极差说明横向有没有面板台阶/渐变，
+    # vdelta 的极差说明竖向有没有。先试主方向那个模型，能解释干净就不再算另一个
+    # （调用方是逐个试、够好就停的，见 _adaptive_fg_mask）—— 少算一个掩码省一半时间。
+    hvar = max((max(b[k] for b in base) - min(b[k] for b in base) for k in range(3)),
+               default=0)
+    vvar = max((max(d[k] for d in vdelta) - min(d[k] for d in vdelta) for k in range(3)),
+               default=0) if vdelta else 0
+    H = ("H", base, [(0, 0, 0)] * h)
+    V = ("V", [ref] * w, vdelta) if vdelta else None
+    out = []
+    if vvar > hvar:
+        if V is not None:
+            out.append(V)
+        out.append(H)
+    else:
+        out.append(H)
+        if V is not None:
+            out.append(V)
+    if vdelta and hvar > SNAP_BG_DIST and vvar > SNAP_BG_DIST:
+        out.append(("S", base, vdelta))      # 两个方向都有结构 → 可分离模型
+    return out
+
+
+def _model_fg_mask(bits: bytes, w: int, h: int, base: list, vdelta: list) -> bytearray:
+    """按 bg(x,y)=base[x]+vdelta[y] 取前景掩码（**不**统计列活动度）。
+
+    与 `_band_fg` 的差别只有一个：不算 act[]。任务栏分段需要列活动度，吸附不需要，
+    而那一项在这个尺寸上要 13ms —— 每次点击都跑，白花。
+    """
+    n = w * h
+    mask = bytearray(n)
+    if len(bits) < n * 4:
+        return mask
+    tol = SNAP_BG_DIST
+    for y in range(h):
+        row = y * w
+        dy0, dy1, dy2 = vdelta[y] if y < len(vdelta) else (0, 0, 0)
+        o = row * 4
+        for x in range(w):
+            b = base[x]
+            if (abs(bits[o] - (b[0] + dy0)) + abs(bits[o + 1] - (b[1] + dy1))
+                    + abs(bits[o + 2] - (b[2] + dy2))) > tol:
+                mask[row + x] = 1
+            o += 4
+    return mask
+
+
+def _adaptive_fg_mask(bits: bytes, w: int, h: int, mask: bytearray, bg) -> bytearray:
+    """单色背景掩码 → **必要时**换成多候选背景模型的掩码（见 SNAP_GRAD_* 的说明）。
+
+    只在单色模型明显失效时才换：判出的前景占比 > SNAP_GRAD_TRIGGER。这个门槛保证
+    「普通按钮/图标区域」完全走原路径（既有行为、既有测试一字不动），只有
+    「区域横跨两个面板」「深色渐变面板」这类单色模型解释不了的情形才升级。
+
+    候选模型里挑**前景占比最低**的那一个，但必须过三道校验，否则保留原掩码
+    （保守原则不破）：
+      * 前景占比必须 ≤ 原来的 SNAP_GRAD_GAIN 倍 —— 否则新模型并没有更能解释背景；
+      * 前景占比不能低于 SNAP_GRAD_MIN_FG —— 那等于把所有元素都判没了；
+      * 新前景必须基本落在旧前景里（交集 ≥ SNAP_GRAD_KEEP）—— 只准把「假前景」
+        改判回背景，不准反过来把元素判成背景。
+
+    性能：候选按「与版面主方向一致」的顺序**逐个试、够好就停**（前景降到原来的
+    SNAP_GRAD_GOOD 倍以下就收工），而不是把三个模型都算完再比 —— 这样左右并排
+    只会算 1 个模型，实测触发路径 ≈55ms，未触发时 0 成本。
+    """
+    if bg is None or len(mask) < w * h:
+        return mask
+    n = w * h
+    fg = sum(mask)
+    if fg <= n * SNAP_GRAD_TRIGGER:
+        return mask
+    models = _region_bg_candidates(bits, w, h)
+    if not models:
+        return mask
+    best = None
+    for _name, base, vdelta in models:
+        m2 = _model_fg_mask(bits, w, h, base, vdelta)
+        fg2 = sum(m2)
+        if fg2 > fg * SNAP_GRAD_GAIN or fg2 < n * SNAP_GRAD_MIN_FG:
+            continue
+        # 只允许「把原来当成前景的面板色改判回背景」，**不允许反转**：新前景必须
+        # 基本落在旧前景里（交集 ≥ SNAP_GRAD_KEEP）。没有这一条，「元素占满多数行」
+        # 的布局（圆角方环、大按钮）会被整个反过来 —— 行众数色变成元素色，于是
+        # 元素被认成背景、它的洞和外围反被认成前景。
+        inter = sum(1 for x, y in zip(mask, m2) if x and y)
+        if inter < fg2 * SNAP_GRAD_KEEP:
+            continue
+        if best is None or fg2 < best[0]:
+            best = (fg2, m2)
+        if fg2 <= fg * SNAP_GRAD_GOOD:
+            break                     # 已经解释得够干净了，不必再试下一个候选
+    return best[1] if best is not None else mask
+
+
 def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
                  max_shift=None, cands=None) -> tuple:
     """单次吸附（固定搜索半径）：把 (x,y) 吸附到附近最可信的元素中心。
@@ -1292,7 +1566,9 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
 
     ── 连通域模式（按钮、图标、视口内元素）──
       1. 以 1:1 抓取 (x,y) 周围 ±reach 的**全分辨率**像素（绝不缩放，1 图 px = 1 屏 px）；
-      2. 用区域四条边的众数色估计背景色；
+      2. 用区域四条边的众数色估计背景色；若这个单色模型解释不了整片（前景占比过高，
+         典型是区域**横跨两个面板**或面板底色带渐变），自动升级到可分离渐变模型
+         bg(x,y)=base[x]+vdelta(y) 重判一次（见 _adaptive_fg_mask）；
       3. 把色差超过阈值的像素做 4 邻域连通域标记（按钮填充 + 其上的文字会连成一块，
          元素之间的背景缝隙自然把它们分开）；
       4. 淘汰不像控件的连通域：面积过小（噪点/笔画）、面积过大（背景/整块面板）、
@@ -1344,6 +1620,8 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
 
     # 掩码只构造一次，连通域与行带共用（区域 176×176 时这是最大的一笔可省开销）
     mask = _fg_mask(bits, w, h, bg, SNAP_BG_DIST)
+    # 单色背景解释不了这一片时（跨面板 / 渐变底色）升级到可分离渐变模型再判一次
+    mask = _adaptive_fg_mask(bits, w, h, mask, bg)
     # 先并回被高光/抗锯齿切开的同一目标碎片，再判断可用性：按碎片中心吸附会偏
     comps = _merge_components(_components_from_mask(mask, w, h))
     bands = _bands_from_mask(mask, w, h)

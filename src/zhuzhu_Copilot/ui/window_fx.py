@@ -1,4 +1,4 @@
-"""窗口级「任务栏折叠」动画（观感对标 macOS 坞站收起 / Windows 11 最小化）。
+﻿"""窗口级「任务栏折叠」动画（观感对标 macOS 坞站收起 / Windows 11 最小化）。
 
 ## 为什么不用「直接改窗口几何」
 
@@ -789,12 +789,30 @@ class WindowFoldAnimator(QObject):
         self._set_end_state(end, mode)
 
         if before is not None:
-            t1 = time.monotonic()
+            # 顺序讲究：`show()` 只是把绘制排进队列，此刻屏幕上一帧都还没有。
+            # 若紧接着做真实窗口的状态切换（还原/最大化，含整棵控件树重排，实测
+            # 200~300ms），用户看到的是「点一下、整个窗口僵住」——卡顿感全来自这里。
+            # 先 repaint() 把浮层真正刷上屏，再把 before 推到下一轮事件循环执行：
+            # 那时的重排完全被浮层遮住，屏幕上是静态快照而不是半张没画完的窗口。
             try:
-                before()
+                sprite.repaint()
             except Exception:
                 pass
-            _dbg("before(%s)=%.0fms" % (mode, (time.monotonic() - t1) * 1000.0))
+
+            def _kick():
+                # 期间可能被取消 / 被新动画接管：那时不能再动真实窗口
+                if not self._busy or self._sprite is not sprite:
+                    return
+                t1 = time.monotonic()
+                try:
+                    before()
+                except Exception:
+                    pass
+                _dbg("before(%s)=%.0fms" % (mode, (time.monotonic() - t1) * 1000.0))
+                self._run(sprite, start, end, mode, on_done, 0.0)
+
+            QTimer.singleShot(0, _kick)
+            return
 
         self._run(sprite, start, end, mode, on_done, 0.0)
 
