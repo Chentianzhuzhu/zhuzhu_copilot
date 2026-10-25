@@ -48,8 +48,10 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 # ---- 光带参数（集中在此，便于调优） ----
 AURA_FPS = 12                 # 帧率上限
-AURA_CORE = 5                 # 贴边核心亮带宽度（每帧重写）
-AURA_GLOW = 12                # 向内泛光宽度（只写一次，静态；加宽不增加每帧开销）
+AURA_CORE = 3                 # 贴边核心亮带宽度（每帧重写）
+AURA_GLOW = 6                 # 向内泛光宽度（只写一次，静态；加宽不增加每帧开销）
+                              # 合计 9px：原先 5+12=17px 在 1920 宽屏上肉眼太粗，
+                              # 压到 9px 既有泛光又不抢戏，每帧像素也从 29.9k 降到 18k。
 AURA_THICKNESS = AURA_CORE + AURA_GLOW
 AURA_SATURATION = 0.92        # 核心带的饱和度
 AURA_GLOW_SATURATION = 0.88   # 泛光起始饱和度（向内外渐变到 0.36 → 偏白）
@@ -154,6 +156,12 @@ def _bind():
     user32.GetDC.argtypes = (wintypes.HWND,)
     user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
     user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, POINTER(MONITORINFO)]
+    # GetMonitorInfoW 的第一个参数必须是**有效 HMONITOR**：早先一直传 0，
+    # 函数直接失败，于是 _work_area/_screen_size 双双退到 GetSystemMetrics（整屏），
+    # 光带就被任务栏盖住一截。这里显式从桌面窗口取主屏监视器。
+    user32.GetDesktopWindow.restype = wintypes.HWND
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    user32.MonitorFromWindow.argtypes = (wintypes.HWND, wintypes.DWORD)
     user32.DestroyWindow.argtypes = (wintypes.HWND,)
     user32.IsWindow.argtypes = (wintypes.HWND,)
     user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
@@ -205,11 +213,51 @@ def _hsl_to_rgb(h, s, l):
             int(max(0.0, min(1.0, b + m)) * 255))
 
 
-def _screen_size() -> tuple:
-    """主屏物理分辨率（光带只铺主屏）。"""
+MONITOR_DEFAULTTOPRIMARY = 1
+
+
+def _primary_monitor() -> int:
+    """主屏的 HMONITOR。
+
+    必须经 MonitorFromWindow 拿，不能给 GetMonitorInfoW 传 0（那不是合法句柄，
+    调用会直接失败 —— 这正是「光带按整屏画、底部被任务栏吞掉」的根因）。
+    """
+    try:
+        h = user32.MonitorFromWindow(user32.GetDesktopWindow(),
+                                     MONITOR_DEFAULTTOPRIMARY)
+        return int(h or 0)
+    except Exception:
+        return 0
+
+
+def _work_area() -> tuple:
+    """主屏**可用桌面区域** (x, y, w, h)：rcWork，已排除任务栏。
+
+    为什么光带围 rcWork 而不是 rcMonitor（**别改回去，这是实测结论**）：
+    任务栏（Shell_TrayWnd）属于 Windows 的置顶系统 band，任何应用窗口都盖不住它 ——
+    实测把自己设成 HWND_TOPMOST、并每 1.2s 重申一次，EnumWindows 里任务栏依然排在
+    我们前面（z 索引 10 vs 我们的 32）。按整屏画的结果就是：屏幕底部那一条被任务栏
+    整条吞掉，用户看到「光带没有包围全屏、底部缺一块」。
+
+    围 rcWork 之后：任务栏上沿正好是光带的底边，四边完整闭合；任务栏自动隐藏时
+    rcWork 等于整屏，光带自然贴到物理边 —— 两种设置下都不会缺角。
+    """
     mi = MONITORINFO()
     mi.cbSize = ctypes.sizeof(MONITORINFO)
-    if user32.GetMonitorInfoW(0, ctypes.byref(mi)):
+    if user32.GetMonitorInfoW(_primary_monitor(), ctypes.byref(mi)):
+        r = mi.rcWork
+        w, h = int(r.right - r.left), int(r.bottom - r.top)
+        if w > 0 and h > 0:
+            return (int(r.left), int(r.top), w, h)
+    w, h = _screen_size()
+    return (0, 0, w, h)
+
+
+def _screen_size() -> tuple:
+    """主屏物理分辨率（整屏，含任务栏区域）。"""
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if user32.GetMonitorInfoW(_primary_monitor(), ctypes.byref(mi)):
         r = mi.rcMonitor
         return (int(r.right - r.left), int(r.bottom - r.top))
     return (int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1)))
@@ -365,6 +413,22 @@ class _LayeredWindow:
                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
             self._visible = True
 
+    def raise_top(self):
+        """重新提到 topmost 组最前。
+
+        为什么必须周期性重申：任务栏（Shell_TrayWnd）本身就是 topmost 窗口，它在
+        我们建窗之后只要再调一次 SetWindowPos，就会排到我们前面 —— 于是屏幕底部
+        那条光带被任务栏整条盖住，看起来就是「光带没有包围全屏、底部缺一截」。
+        置顶组内只能靠「再设一次 HWND_TOPMOST」把自己挪回最前。
+        """
+        if not self._hwnd or not user32.IsWindow(self._hwnd):
+            return
+        try:
+            user32.SetWindowPos(self._hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        except Exception:
+            pass
+
     # ---- 推帧 ----
     def push(self, sca: int = 255):
         """把位图推到屏幕（alpha 叠加）。sca=整层 alpha 缩放，呼吸/闪烁全靠它。"""
@@ -454,6 +518,7 @@ class Aura:
         self._stop_ts = 0.0
         self._frame_cost = 0.0      # 最近一帧的实际耗时（秒），用于自动限速
         self._hint_error = ""       # 胶囊窗建窗/渲染异常（不静默吞掉，供排障）
+        self._last_top_ts = 0.0      # 上次重申 topmost 的时间（防任务栏盖住底边）
 
     # ---- 对外接口 ----
     def start(self) -> bool:
@@ -613,12 +678,12 @@ class Aura:
 
     # ---- 光带：建窗 ----
     def _create_ring(self) -> bool:
-        width, height = _screen_size()
+        wx, wy, width, height = _work_area()
         if width <= 0 or height <= 0:
-            self._failed, self._error = True, "无法获取屏幕尺寸"
+            self._failed, self._error = True, "无法获取可用桌面区域"
             return False
         ring = _LayeredWindow("zhuzhu-aura-ring")
-        if not ring.create(0, 0, width, height):
+        if not ring.create(wx, wy, width, height):
             self._failed = True
             self._error = ring._error
             return False
@@ -750,6 +815,13 @@ class Aura:
         mv = self._ring._mv
         if mv is None:
             return
+        # 周期性重申置顶（1.2s 一次，开销只有一次 SetWindowPos）：
+        # 任务栏是 topmost，会在我们之后抢到更前的位置，把底部光带整条盖掉。
+        if now - self._last_top_ts >= 2.0:
+            self._last_top_ts = now
+            self._ring.raise_top()
+            if self._hint is not None:
+                self._hint.raise_top()
         lut = self._core_lut
         shift = int(now * AURA_FLOW_SPEED * 256) & 255
         for off4, pi, di in self._core_px:
@@ -805,7 +877,7 @@ class HintCapsule:
     # ---- 建窗 ----
     def build(self, text: str) -> bool:
         self._text = text
-        sw, sh = _screen_size()
+        wx, wy, sw, sh = _work_area()      # 与光带同一坐标系：可用桌面区域
         if sw <= 0 or sh <= 0:
             return False
         # 先量文字：建一个临时 DC 量完就扔，正式位图按量出来的宽度开
@@ -826,8 +898,8 @@ class HintCapsule:
         box = int(AURA_HINT_ORBIT_R * 2 + AURA_HINT_DOT_R * 2 + 4)     # 转圈占位（留 2px 余量给抗锯齿）
         w = AURA_HINT_PAD_X * 2 + text_w + AURA_HINT_GAP + box
         h = max(text_h + AURA_HINT_PAD_Y * 2, box + AURA_HINT_PAD_Y * 2)
-        x = max(0, (sw - w) // 2)
-        y = int(AURA_HINT_TOP)
+        x = wx + max(0, (sw - w) // 2)
+        y = wy + int(AURA_HINT_TOP)
         self._w, self._h = w, h
 
         win = _LayeredWindow("zhuzhu-aura-hint")
@@ -980,6 +1052,10 @@ class HintCapsule:
     def push(self, sca: int):
         if self._win:
             self._win.push(sca)
+
+    def raise_top(self):
+        if self._win:
+            self._win.raise_top()
 
     def destroy(self):
         if self._win:

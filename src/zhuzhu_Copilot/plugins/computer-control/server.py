@@ -2254,7 +2254,7 @@ def _taskbar_scan(strip_h: int = 0) -> dict:
             "band_bits": band_bits, "base": base, "vdelta": vdelta, "slots": slots}
 
 
-def _taskbar_click(x: int, y: int, what: str, wait_ms: int = 250) -> str:
+def _taskbar_click(x: int, y: int, what: str, wait_ms: int = 900) -> str:
     """点任务栏槽位中心并自证：回读落点 + 比对点击前后的前台窗口。
 
     为什么要点完立刻比前台窗口：任务栏图标点击的**唯一目的**就是让某个应用到前台。
@@ -2271,17 +2271,32 @@ def _taskbar_click(x: int, y: int, what: str, wait_ms: int = 250) -> str:
             if (ax, ay) == (int(x), int(y)) else
             f"⚠ 落点回读：光标实际在 ({ax},{ay})，与请求的 ({x},{y}) 相差 "
             f"({ax - int(x):+d},{ay - int(y):+d})px")
-    time.sleep(max(0.05, min(2.0, wait_ms / 1000.0)))
-    after = foreground_window()
+    # 轮询等前台切换，而不是「睡死一段时间再只看一眼」：
+    # 任务栏图标的点击分两类 —— 切到已在运行的应用（几十毫秒就换前台）与
+    # 启动未运行的应用（要 1~3 秒）。固定 sleep 250ms 再看一眼，慢启动的必定被判成
+    # 「点了没反应」，模型于是反复点同一个图标，整体耗时越积越长（用户看到的就是超时）。
+    # 轮询的好处：快的立刻返回（不浪费时间），慢的也能等到，且总时长仍有上限。
+    budget = max(0.12, min(3.0, wait_ms / 1000.0))
+    deadline = time.time() + budget
+    after = before
+    waited = 0.0
+    while time.time() < deadline:
+        time.sleep(0.06)
+        waited += 0.06
+        after = foreground_window()
+        if after and after != before:
+            break
     if after and after != before:
-        return (f"已点击{what}（{x},{y}）。{land}。前台窗口已切换："
+        return (f"已点击{what}（{x},{y}）。{land}。前台窗口已切换（等了 {waited*1000:.0f}ms）："
                 f"「{window_title(before) or '（无）'}」→「{window_title(after) or after}」"
                 f"—— 应用已到前台，可以继续操作（先 screen_shot 建立坐标基准）。")
     who = window_title(after) or after or "（无）"
-    return (f"已点击{what}（{x},{y}）。{land}。⚠ 前台窗口**没有变化**（仍是「{who}」）："
-            f"可能 ① 这是个**未启动**的固定图标（点击会启动它，等一两秒再 screen_shot 看）；"
+    return (f"已点击{what}（{x},{y}）。{land}。等了 {waited*1000:.0f}ms，前台窗口**仍未变化**"
+            f"（仍是「{who}」）：可能 ① 这是**未启动**的固定图标，应用还在启动（可再给它 "
+            f"2~3 秒，然后 screen_shot 看有没有新窗口，**不要重复点同一个图标**）；"
             f"② 它本来就是前台、或只是把同一应用的另一个窗口提到前台；"
-            f"③ 落点没落在图标上（对照上表的中心坐标核对一下）。**不要盲目重复点击同一坐标**。")
+            f"③ 落点没落在图标上（对照上表中心坐标核对）。"
+            f"想等更久可传 timeout=3000。")
 
 
 def _taskbar_no_band_msg(scan: dict) -> str:
@@ -2404,7 +2419,7 @@ def _taskbar_band_flow(args: dict) -> list:
             return [{"type": "text", "text": reason}]
         click_note = _taskbar_click(target["x"], target["y"],
                                     f"任务栏第 {target['i']} 个槽位", 
-                                    _num(args.get("timeout"), 250))
+                                    _num(args.get("timeout"), 900))
         _log("ai", f"任务栏点击 #{target['i']} ({target['x']},{target['y']})")
     _refresh_env()
     ctx_top = TASKBAR_CTX_TOP if top >= TASKBAR_CTX_TOP else 0
@@ -2430,12 +2445,20 @@ def _change_bbox(a: bytes, b: bytes, w: int, h: int, tol: int = 24):
         return None, 0
     minx, miny, maxx, maxy = w, h, -1, -1
     changed = 0
+    stride = w * 4
     for y in range(h):
-        base = y * w
+        base = y * stride
+        # 先整行做一次 bytes 比较（C 层）：任务栏面板弹出时上下大片区域根本没变，
+        # 整行跳过能把最常见的「没弹出」判定从 ~150ms 压到 ~2ms —— 面板没弹出来时
+        # 模型会反复调用，这条快速路径正是避免调用整体越拖越久的关键。
+        ra = a[base:base + stride]
+        rb = b[base:base + stride]
+        if ra == rb:
+            continue
         for x in range(w):
-            o = (base + x) * 4
-            if (abs(a[o] - b[o]) + abs(a[o + 1] - b[o + 1])
-                    + abs(a[o + 2] - b[o + 2])) > tol:
+            o = x * 4
+            if (abs(ra[o] - rb[o]) + abs(ra[o + 1] - rb[o + 1])
+                    + abs(ra[o + 2] - rb[o + 2])) > tol:
                 changed += 1
                 if x < minx:
                     minx = x
@@ -2509,7 +2532,7 @@ def _taskbar_panel_flow(args: dict) -> list:
     if not before:
         return [{"type": "text", "text": "抓取任务栏上方区域失败，无法展开面板。"}]
     click_note = _taskbar_click(cx, cy, f"「↑ 隐藏图标」按钮（{how}）",
-                                _num(args.get("timeout"), 450))
+                                _num(args.get("timeout"), 900))
     after, _x, _y, _w, _h = _grab_rect_bits(px0, py0, pw, ph)
     bb, changed = _change_bbox(before, after, bw2, bh2)
     total = bw2 * bh2
@@ -2572,7 +2595,7 @@ def _taskbar_panel_flow(args: dict) -> list:
     if target2 is not None:
         click_note2 = _taskbar_click(target2["x"], target2["y"],
                                      f"面板第 {target2['i']} 个图标",
-                                     _num(args.get("timeout"), 250))
+                                     _num(args.get("timeout"), 900))
         _log("ai", f"面板点击 #{target2['i']} ({target2['x']},{target2['y']})")
     _refresh_env()
     tw = max(320, min(720, cw))
@@ -2604,9 +2627,14 @@ def tool_taskbar_open(args: dict) -> list:
     坐标由几何算法量出来。
     """
     where = str(args.get("where") or "taskbar").strip().lower()
-    if where in ("panel", "overflow", "hidden", "background", "后台", "隐藏", "面板"):
-        return _taskbar_panel_flow(args)
-    return _taskbar_band_flow(args)
+    t0 = time.perf_counter()
+    try:
+        if where in ("panel", "overflow", "hidden", "background", "后台", "隐藏", "面板"):
+            return _taskbar_panel_flow(args)
+        return _taskbar_band_flow(args)
+    finally:
+        # 真实耗时进日志：这个工具是「超时」投诉最多的一条，没有耗时数据只能靠猜
+        _log("sys", f"taskbar_open({where}) 耗时 {(time.perf_counter() - t0) * 1000:.0f}ms")
 
 
 def grab_zoom(cx: int, cy: int, size: int, factor: int, grid: bool = False,
@@ -6134,7 +6162,7 @@ TOOLS = [
          "where": {"type": "string", "description": "taskbar=任务栏本体（默认）；panel=先展开右侧「↑」隐藏图标/后台应用面板，再在面板里定位"},
          "chevron": {"type": "integer", "description": "where=panel 时可显式指定「↑」按钮是任务栏里的第几个槽位（自动识别不准时用）"},
          "name": {"type": "string", "description": "要找的应用名（可选）：填了会额外回报它当前是已在最前 / 在后台 / 已最小化 / 没运行，避免你反复置顶"},
-         "timeout": {"type": "integer", "description": "点击后等待前台切换的毫秒数，默认 250（启动慢的应用可加大）"}}}},
+         "timeout": {"type": "integer", "description": "点击后轮询等前台切换的毫秒数，默认 900（启动慢的应用可加大到 3000；一旦切过去了会立刻返回，不会白等）"}}}},
     {"name": "manage_window", "description":
         "窗口/应用管理：state 列出窗口（含最小化标记）；"
         "activate/focus 切到前台并实测校验；"

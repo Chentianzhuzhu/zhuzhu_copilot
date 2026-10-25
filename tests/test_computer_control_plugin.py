@@ -2993,7 +2993,59 @@ def test_taskbar_click_warns_when_foreground_does_not_change(monkeypatch):
     monkeypatch.setattr(mod, "foreground_window", lambda: 7)
     monkeypatch.setattr(mod, "window_title", lambda h: "微信")
     note = mod._taskbar_click(500, 500, "任务栏第 3 个槽位", wait_ms=60)
-    assert "没有变化" in note and "不要盲目重复点击" in note
+    assert "仍未变化" in note
+    assert "不要重复点同一个图标" in note, "必须明确劝阻重复点击"
+    assert "timeout=3000" in note, "要告诉模型怎么等更久"
+
+
+def test_taskbar_click_polls_until_the_foreground_changes(monkeypatch):
+    """点击后必须**轮询**等前台切换，而不是睡死一段再只看一眼。
+
+    任务栏点击有两类：切到已在运行的应用（几十毫秒）与启动未运行的应用（1~3 秒）。
+    固定 sleep 250ms 再看一眼，慢启动的必定被判「没反应」，模型于是反复点同一个图标，
+    整体耗时越积越长 —— 用户看到的就是「taskbar_open 超时」。
+    """
+    import time as _t
+    mod = _load_module()
+    calls = {"n": 0}
+
+    def _fg():
+        calls["n"] += 1
+        return 7 if calls["n"] <= 2 else 99      # 第 3 次查询才切过去
+
+    monkeypatch.setattr(mod, "do_click", lambda x, y, b, c, mode="mouse": True)
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (500, 500))
+    monkeypatch.setattr(mod, "foreground_window", _fg)
+    monkeypatch.setattr(mod, "window_title", lambda h: f"win{h}")
+    t0 = _t.perf_counter()
+    note = mod._taskbar_click(500, 500, "槽位", wait_ms=3000)
+    dt = _t.perf_counter() - t0
+    assert "前台窗口已切换" in note
+    assert 99 in [calls["n"]] or calls["n"] >= 3
+    assert dt < 1.0, f"一旦切换就该立刻返回，不该睡满 3s（实际 {dt:.2f}s）"
+
+
+def test_change_bbox_skips_identical_rows_quickly(monkeypatch):
+    """未变化的整行必须被跳过（C 层 bytes 比较），否则面板没弹出时要白扫几十万像素。"""
+    import time as _t
+    mod = _load_module()
+    w, h = 380, 480
+    a = bytes(w * h * 4)                       # 全 0
+    b = bytearray(a)
+    # 只改中间一小块（模拟面板）
+    for y in range(200, 260):
+        off = (y * w + 100) * 4
+        b[off:off + 40 * 4] = b"\xff" * (40 * 4)
+    t0 = _t.perf_counter()
+    bb, changed = mod._change_bbox(a, bytes(b), w, h)
+    dt = _t.perf_counter() - t0
+    assert bb is not None and changed > 0
+    assert bb[0] <= 100 and bb[1] <= 200
+    assert dt < 0.25, f"逐行跳过没生效（{dt:.3f}s）"
+    # 两份完全相同 → 不花时间
+    t0 = _t.perf_counter()
+    assert mod._change_bbox(a, a, w, h) == (None, 0)
+    assert _t.perf_counter() - t0 < 0.1
 
 
 def test_merge_parts_still_merges_inside_a_panel():
