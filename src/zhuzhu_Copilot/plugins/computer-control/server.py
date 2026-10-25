@@ -871,6 +871,12 @@ SNAP_MERGE_GAP = 2          # 相邻碎片间距 ≤ 它就并成同一个目标
                             # 又远小于并排按钮之间的间距（一般 ≥6px），不会误并隔壁按钮
 SNAP_MERGE_OVERLAP = 2      # 合并时另一轴至少要重叠这么多像素：只合并“同一块”的碎片，
                             # 避免斜对角的两个噪点被并成一个假大块
+SNAP_NEAR_MIN = 10          # 「估计点到候选元素外接框」的距离上限（估计点在元素外时）：
+SNAP_NEAR_MAX = 20          # 取 clamp(reach/5, MIN, MAX)。以前按 reach/2 放行（默认 44px、
+                            # 扩大半径后 70px），真机出事：在**空输入框**里点，最近的控件
+                            # 在 60px 之外（上方那排工具图标），点击被硬拽过去落在表情
+                            # 按钮上。元素外 60px 已经不属于「估计误差」，而是「那儿
+                            # 本来就没有控件」—— 那种情况宁可不吸附（按原坐标点）。
 
 # ---- 横向内容带（列表行）检测 ----------------------------------------------
 # 为什么需要它：连通域算法只懂「离估计点最近的那一块」，**没有「行」的概念**。
@@ -889,6 +895,9 @@ SNAP_BAND_MAX_RATIO = 0.62  # 带高超过区域高的这个比例 ⇒ 是**连�
                             # 画布、大片面板），不是「行」。此时退回连通域逻辑，绝不按
                             # 带中心吸附 —— 否则会把点击拖到区域正中间去
 SNAP_BAND_MAX_REPORT = 8    # 最多报告几条带（给模型当「行标尺」用）
+SNAP_BAND_STICK = 6         # 估计点离内容带超过「半行高（至少 6px）」就不按这条带对齐：
+                            # 空输入框/空白区里最近的那条带往往是上方一排工具图标，
+                            # 按它对齐会把点击硬拽到别的控件上（真机实测 60px 偏移）
 SNAP_BAND_MIN_SPAN = 6      # 带的最小高度：低于它的不是「行」，多半是行分隔线（1px）——
                             # 分隔线横贯整行、前景像素很多，不滤掉会被误当成一条带，
                             # 吸上去等于点在两行交界处，比不吸还糟（实测踩过）
@@ -920,6 +929,9 @@ SNAP_GRAD_KEEP = 0.70           # 新掩码的前景里，至少这么多必须�
                                 # 背景（那会把圆角方环、大按钮整个反过来）
 SNAP_GRAD_GOOD = 0.35           # 前景降到原来的这个比例以下就算「解释干净」，不再
                                 # 去试剩下的候选模型（省一半耗时）
+SNAP_NO_BG_MAX_FG = 0.75        # 前景占比超过它、又找不到任何背景结构 ⇒ 这一带没有
+                                # 界面背景（照片/壁纸/图像视口），放弃吸附（见
+                                # _adaptive_fg_mask 末尾的说明）
 
 # ---- 候选菜单 --------------------------------------------------------------
 # 为什么要有它：吸附只会挑「离估计点最近的那一块」。这在按钮**成排密排**的界面上
@@ -1245,6 +1257,13 @@ def _pick_band(bands: list, ly: int, h: int):
         band = inside[0]
     else:
         band = min(bands, key=lambda b: min(abs(ly - b["ymin"]), abs(ly - b["ymax"])))
+        # 估计点必须**贴着**这条带才按它对齐（容差 = 半行高，但不小于 SNAP_BAND_STICK）。
+        # 否则就会出这种事（真机实测过）：在一个**空的输入框/空白区**里点，附近最近的
+        # 「内容带」是上方那一排工具图标，于是点击被硬拽上去 60px，落在表情按钮上 ——
+        # 用户看到的正是「点输入框却点到了别的控件」。
+        gap = min(abs(ly - band["ymin"]), abs(ly - band["ymax"]))
+        if gap > max(SNAP_BAND_STICK, (band["ymax"] - band["ymin"] + 1) // 2):
+            return None
     return band if _band_ok(band, h) else None
 
 
@@ -1521,7 +1540,11 @@ def _adaptive_fg_mask(bits: bytes, w: int, h: int, mask: bytearray, bg) -> bytea
         return mask
     models = _region_bg_candidates(bits, w, h)
     if not models:
-        return mask
+        # 连「以背景为主的行」都找不到，而且几乎是整片前景 —— 这一带根本没有界面背景
+        # （照片、壁纸、视频画面、视口里的图像）。此时任何「像控件」的块都是照片内容，
+        # 按它吸附等于把点击随机挪到画面里别的东处，比不吸附糟得多 ⇒ 返回 None，
+        # 由调用方放弃吸附（保守原则：宁可不动）。
+        return None if fg > n * SNAP_NO_BG_MAX_FG else mask
     best = None
     for _name, base, vdelta in models:
         m2 = _model_fg_mask(bits, w, h, base, vdelta)
@@ -1595,7 +1618,8 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         reach = max(16, min(int(reach), SNAP_REACH_MAX))
     except (TypeError, ValueError):
         reach = SNAP_REACH_DEFAULT
-    near_cap = int(max_shift) if max_shift else max(10, reach // 2)
+    near_cap = int(max_shift) if max_shift else max(SNAP_NEAR_MIN,
+                                                    min(reach // 5, SNAP_NEAR_MAX))
     shift_cap = reach
     bits, x0, y0, w, h = _region_snapshot_at(x, y, reach)
     if not bits:
@@ -1620,8 +1644,12 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
 
     # 掩码只构造一次，连通域与行带共用（区域 176×176 时这是最大的一笔可省开销）
     mask = _fg_mask(bits, w, h, bg, SNAP_BG_DIST)
-    # 单色背景解释不了这一片时（跨面板 / 渐变底色）升级到可分离渐变模型再判一次
+    # 单色背景解释不了这一片时（跨面板 / 渐变底色）升级到可分离渐变模型再判一次；
+    # 若连背景都找不到（照片/壁纸/图像视口），直接放弃吸附 —— 那种画面里「像控件」
+    # 的块全是照片内容，按它吸附只会把点击挪到别处。
     mask = _adaptive_fg_mask(bits, w, h, mask, bg)
+    if mask is None:
+        return x, y, "", []
     # 先并回被高光/抗锯齿切开的同一目标碎片，再判断可用性：按碎片中心吸附会偏
     comps = _merge_components(_components_from_mask(mask, w, h))
     bands = _bands_from_mask(mask, w, h)
@@ -3269,7 +3297,13 @@ def window_at(x, y) -> int:
 
 
 def _enum_top_hwnds() -> list:
-    """枚举**全部**顶层窗口句柄（不做任何过滤，过滤交给调用方）。"""
+    """枚举**全部**顶层窗口句柄（不做任何过滤，过滤交给调用方）。
+
+    注意 `ctypes.c_void_p` 必须带 `ctypes.` 前缀：这里写过裸 `c_void_p`（没导入），
+    NameError 被下面的 `except Exception: pass` 吞掉，函数**永远返回空表** ——
+    后果是 list_windows / find_window / screen_shot(mode="window") / open_app
+    全部静默失效（现象是「当前没有可见窗口」而窗口明明在）。异常不能再无声吞掉。
+    """
     out = []
 
     def _cb(hwnd, _lparam):
@@ -3278,9 +3312,9 @@ def _enum_top_hwnds() -> list:
 
     proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_cb)
     try:
-        user32.EnumWindows(ctypes.cast(proc, c_void_p), 0)
-    except Exception:
-        pass
+        user32.EnumWindows(ctypes.cast(proc, ctypes.c_void_p), 0)
+    except Exception as exc:            # 调试期不再静默：至少留一条日志
+        _log("sys", f"EnumWindows 失败：{exc!r}")
     return out
 
 

@@ -1499,6 +1499,42 @@ def test_snap_handles_low_contrast_professional_ui(monkeypatch):
     assert "吸附" in note
 
 
+def test_enum_top_hwnds_actually_enumerates(monkeypatch):
+    """窗口枚举不能因为一个「没导入的名字」就被 `except` 吞成空表。
+
+    回归（真实踩过）：`_enum_top_hwnds` 里写成裸 `c_void_p`（模块只 import 了
+    `ctypes` 和 `wintypes`），NameError 被 `except Exception: pass` 静默吞掉 ⇒ 该
+    函数**永远返回空表** ⇒ list_windows / find_window / screen_shot(mode="window") /
+    open_app / 点击前的前台校验全部失效，现象是「当前没有可见窗口」，而窗口明明就在。
+    这类失败没有异常、没有日志，只有「工具不好用」，最难查。
+    """
+    import ctypes
+    from ctypes import wintypes
+    mod = _load_module()
+    CB = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    hits = []
+
+    def _fake_enum(cb_ptr, _lparam):
+        cb = ctypes.cast(cb_ptr, CB)          # 还原成可调用指针再调
+        for hwnd in (111, 222, 333):
+            assert cb(hwnd, 0)
+        return 1
+
+    monkeypatch.setattr(mod.user32, "EnumWindows", _fake_enum)
+    monkeypatch.setattr(mod, "_log", lambda who, text: hits.append(text))
+    assert mod._enum_top_hwnds() == [111, 222, 333]
+    assert hits == [], f"正常枚举不该产生错误日志，实得 {hits}"
+
+
+def test_keyboard_and_window_services_do_not_swallow_name_errors():
+    """兜底：源码里不得再出现裸 `c_void_p` 之类「未限定前缀」的名字。"""
+    src = SERVER.read_text(encoding="utf-8")
+    import re
+    bad = [ln for ln in src.splitlines()
+           if re.search(r"(?<![\w.])c_void_p\b", ln) and "ctypes.c_void_p" not in ln]
+    assert bad == [], f"发现未限定的 c_void_p：{bad}"
+
+
 def test_snap_is_skipped_gracefully_when_capture_fails(monkeypatch):
     """抓不到像素时必须原样返回（不能因为吸附失败而让点击整体报错）。"""
     mod = _load_module()
@@ -1586,17 +1622,39 @@ def test_adaptive_mask_keeps_single_colour_path_for_plain_regions(monkeypatch):
     assert calls == [], "单色背景解释得通时不该启用多候选模型"
 
 
-def test_adaptive_mask_falls_back_when_no_model_beats_the_single_colour_one(monkeypatch):
-    """新模型并不比单色模型更能解释背景时，必须原样保留单色掩码。"""
+def test_adaptive_mask_refuses_to_snap_on_photographic_areas(monkeypatch):
+    """整片前景又找不到任何背景结构 ⇒ 这是照片/壁纸/图像视口，放弃吸附（返回 None）。
+
+    照片里「像控件」的块全是画面内容（人脸、屋顶、云），按它吸附等于把点击随机挪走。
+    """
+    mod = _load_module()
+    buf, w, h = _synth_region()
+    full = bytearray(b"\x01" * (w * h))
+    monkeypatch.setattr(mod, "_region_bg_candidates", lambda *a, **k: [])
+    assert mod._adaptive_fg_mask(bytes(buf), w, h, full, (48, 48, 48)) is None
+
+
+def test_adaptive_mask_keeps_the_single_colour_mask_when_models_do_not_help(monkeypatch):
+    """新模型并不比单色模型更能解释背景时，必须原样保留单色掩码；前景没超阈值时不动。"""
     mod = _load_module()
     buf, w, h = _synth_region()
     mask = mod._fg_mask(bytes(buf), w, h, (48, 48, 48), mod.SNAP_BG_DIST)
-    # 造一个「前景占比很高但没有任何模型能吃掉」的掩码：直接全 1
-    full = bytearray(b"\x01" * (w * h))
-    monkeypatch.setattr(mod, "_region_bg_candidates", lambda *a, **k: [])
-    assert mod._adaptive_fg_mask(bytes(buf), w, h, full, (48, 48, 48)) is full
-    assert mod._adaptive_fg_mask(bytes(buf), w, h, mask, (48, 48, 48)) is mask, \
-        "前景占比没超阈值时压根不该尝试换模型"
+    # 每 3 个像素置 1（≈33% 前景，刚好不过触发线）—— 必须原样返回，且不调用候选模型
+    calls = []
+    monkeypatch.setattr(mod, "_region_bg_candidates",
+                        lambda *a, **k: calls.append(1) or [])
+    part = bytearray(w * h)
+    for i in range(0, w * h, 3):
+        part[i] = 1
+    assert mod._adaptive_fg_mask(bytes(buf), w, h, part, (48, 48, 48)) is part
+    assert calls == [], "前景占比没超阈值时压根不该尝试换模型"
+    # 超了阈值但没有候选模型能胜过单色模型 ⇒ 保留原掩码
+    half = bytearray(w * h)
+    for i in range(0, w * h // 2):
+        half[i] = 1
+    assert mod._adaptive_fg_mask(bytes(buf), w, h, half, (48, 48, 48)) is half
+    assert mod._adaptive_fg_mask(bytes(buf), w, h, mask, (48, 48, 48)) is mask
+
 
 
 
