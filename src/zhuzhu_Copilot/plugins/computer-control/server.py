@@ -24,6 +24,7 @@
 """
 
 import base64
+import concurrent.futures
 import contextlib
 import ctypes
 import difflib
@@ -62,7 +63,16 @@ MODEL_MAX_W = 1280          # 返回给视觉模型的截图最大宽度（与�
 PREVIEW_MAX_W = 960         # Web UI 预览截图最大宽度（性能优先：预览不需要全分辨率）
 PREVIEW_MIN_INTERVAL = 0.25  # Web 预览两次抓图的最小间隔（秒）：页面高频轮询时复用缓存
 GRID_CELLS = 16             # 按需叠加的网格数量（N×N），刻度数字即图像像素值；默认不叠加（AI 看图不需要坐标轴）
-SESSION_TTL_S = 300.0       # 操控会话滑动有效期：期内真人输入才算「接管」
+SESSION_TTL_S = 45.0         # 操控会话滑动有效期：期内真人输入才算「接管」
+                              # 原 300s 太长：AI 思考/慢启动的那几十秒里用户挪一下
+                              # 鼠标就会被判接管 → 任务直接卡死（用户看到的是「MCP
+                              # 超时、5 分钟没完成」）。45s 足够覆盖「下一次工具
+                              # 调用」的间隔，又不会误伤。
+MOVE_TAKEOVER_PX = 40         # 鼠标移动累计位移阈值：低于它不算「用户接管」
+TOOL_TIMEOUT_S = 10.0         # 单个工具执行的最长等待：超过就返回可读错误，而不是
+                              # 让客户端干等到自己的超时阈值再把整次调用判死。
+                              # 用户侧的现象就是「MCP 请求超时」，而插件明明活着。
+WM_MOUSEMOVE = 0x0200        # 低级鼠标钩子里的「移动」事件
 INJECT_SIGNATURE = 0x5A5A5A5A       # SendInput dwExtraInfo 签名：标记 AI 自身注入
 INJECT_GRACE_S = 0.35       # 注入后抑制窗口：钩子在此窗口内不把事件判为真人输入
 LOG_MAX = 200               # 操作日志上限（环形）
@@ -4236,14 +4246,31 @@ class InputWatcher:
         self._key_hook = None
         self._mouse_cb = self.HOOKPROC(self._on_mouse)
         self._key_cb = self.HOOKPROC(self._on_key)
+        self._move_acc = 0          # 鼠标移动累计位移
+        try:
+            self._last_xy = _cursor_pos()
+        except Exception:
+            self._last_xy = (0, 0)    # 读不到光标不能拖垮整个打断检测
 
     # ---- 回调（钩子线程执行，必须轻量、绝不抛异常） ----
-    def _hit(self, extra: int):
+    def _hit(self, extra: int, wparam: int = 0):
         try:
             if int(extra or 0) == INJECT_SIGNATURE or _injecting():
                 return                      # AI 自身注入 → 不算真人输入
             if time.time() > _STATE["active_until"]:
                 return                      # 非操控会话期 → 不打扰（用户正常用电脑）
+            if wparam == WM_MOUSEMOVE:
+                # 鼠标**移动**不立即算接管：手抖、鼠标被桌宠蹭到、用户只是挪开
+                # 一下 —— 这些都不该把 AI 踢下线（踢了任务就卡住不动）。
+                # 改成「累计位移超过阈值」才算接管；点击/按键/滚轮照旧立即算。
+                x, y = _cursor_pos()
+                self._move_acc += abs(x - self._last_xy[0]) + abs(y - self._last_xy[1])
+                self._last_xy = (x, y)
+                if self._move_acc < MOVE_TAKEOVER_PX:
+                    return
+                self._move_acc = 0
+                mark_interrupted("检测到真人鼠标移动")
+                return
             mark_interrupted("检测到真人鼠标/键盘输入")
         except Exception:
             pass
@@ -4251,7 +4278,8 @@ class InputWatcher:
     def _on_mouse(self, ncode, wparam, lparam):
         try:
             if ncode >= 0 and wparam in self._EVENTS:
-                self._hit(ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents.dwExtraInfo)
+                self._hit(ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents.dwExtraInfo,
+                          wparam)
         except Exception:
             pass
         try:
@@ -4309,6 +4337,8 @@ _STATE = {
     "foreground": {"hwnd": 0, "title": ""},
     "web_port": 0,
     "aura": False,             # 屏幕光带提示层是否点亮
+    "aura_error": "",          # 提示层点亮失败的原因（空=正常）
+    "interrupt_reason": "",    # 最近一次被接管的原因（空=未被接管）
     # 最近一次 refine_point 的候选清单（点击可直接按编号取用，见 _resolve_cand）
     "cands": {"ts": 0.0, "items": []},
 }
@@ -4335,6 +4365,7 @@ def _touch_session():
 
 def mark_interrupted(reason: str):
     """置「用户已接管」：后续操控工具一律拒绝，把控制权交还用户。"""
+    _STATE["interrupt_reason"] = reason
     if not _STATE["interrupted"]:
         _STATE["interrupted"] = True
         _log("user", f"接管操控（{reason}）")
@@ -4346,12 +4377,27 @@ def mark_interrupted(reason: str):
 def _aura_on():
     """操控开始：点亮屏幕光带 + 顶部胶囊提示窗（用户可见的「AI 正在操作」提示）。"""
     if aura is None:
+        _STATE["aura_error"] = "aura 模块未加载（提示层不可用）"
         return
     try:
         aura.set_aura_active(True)
         _STATE["aura"] = True
-    except Exception:
-        pass
+        _STATE["aura_error"] = ""
+    except Exception as e:
+        # 以前这里把异常整个吞掉：提示层不出现时**没有任何线索**，只能靠猜。
+        # 现在把原因记下来，会出现在 screen_info / control(status) 的输出里。
+        _STATE["aura_error"] = f"{type(e).__name__}: {e}"
+        _log("sys", f"提示层点亮失败：{_STATE['aura_error']}")
+
+
+def _aura_status_line() -> str:
+    """提示层状态一行（已点亮 / 未点亮 / 不可用+原因）。"""
+    if aura is None:
+        return "提示层不可用（aura 模块未加载）"
+    try:
+        return aura.aura_status_line()
+    except Exception as e:
+        return f"提示层状态读取失败：{type(e).__name__}: {e}"
 
 
 def _aura_off(reason: str = ""):
@@ -4714,7 +4760,7 @@ def tool_screen_info(args: dict) -> str:
         f"点击精度: click/drag 默认自动做元素吸附（把坐标修正到最近控件的几何中心，"
         f"依据是像素连通域，不依赖控件树）；想点精确像素传 snap=false",
         _transform_line(),
-        f"操控提示: {aura.aura_capability() if aura else '不可用'}",
+        f"操控提示: {aura.aura_capability() if aura else '不可用'}｜{_aura_status_line()}",
         f"操控容器: {'独立虚拟桌面' if _STATE['container'] == 'virtual_desktop' else '用户前台桌面'}",
         f"鼠标位置: {_STATE['cursor'][0]}, {_STATE['cursor'][1]}",
         f"前台窗口: {_STATE['foreground']['title'] or '(无)'}",
@@ -4874,7 +4920,7 @@ def tool_list_windows(args: dict) -> str:
                 + "\n对策：① 若确实是锁屏/远程断开，请让用户先回到桌面；"
                   "② 目标应用若以管理员权限运行，本插件需同等权限才能看到它的窗口；"
                   "③ 不要反复重试本工具，先按 ①② 处理。")
-    limit = max(1, min(200, _num(args.get("limit"), 40)))
+    limit = max(1, min(200, _num(args.get("limit"), 20)))
     lines = [_window_line(w, i + 1) for i, w in enumerate(wins[:limit])]
     return ("可见窗口（hwnd / 类别 / 标题 / 位置 / 尺寸）:\n" + "\n".join(lines)
             + "\n说明：<弹出菜单> 是右键/下拉出来的菜单（菜单项用 screenshot + 坐标点）；"
@@ -5653,11 +5699,14 @@ def tool_control(args: dict) -> str:
         _refresh_env()
         paused = _STATE["paused"]
         intr = _STATE["interrupted"]
+        why = _STATE.get("interrupt_reason") or ""
         return (f"操控状态: {'已暂停' if paused else ''}{'已接管' if intr else ''}"
                 f"{'正常' if not (paused or intr) else ''}；"
                 f"容器: {'虚拟桌面' if _STATE['container'] == 'virtual_desktop' else '前台桌面'}；"
                 f"输入: {'触控' if _STATE['input'] == 'touch' else '鼠标'}；"
-                f"会话剩余 {max(0, int(_STATE['active_until'] - time.time()))}s")
+                f"会话剩余 {max(0, int(_STATE['active_until'] - time.time()))}s；"
+                f"{_aura_status_line()}"
+                + (f"；接管原因：{why}" if intr and why else ""))
     if action == "take_over":
         mark_interrupted("AI 主动交还控制权")
         _log("ai", "主动交还控制权给用户")
@@ -5665,6 +5714,7 @@ def tool_control(args: dict) -> str:
     if action == "resume":
         _STATE["interrupted"] = False
         _STATE["paused"] = False
+        _STATE["interrupt_reason"] = ""
         _touch_session()
         _log("ai", "恢复操控（已确认用户要求继续）")
         return "已清除接管/暂停标记，可继续操控。"
@@ -5981,12 +6031,19 @@ TOOLS = [
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
          "required": ["x", "y"]}},
     {"name": "list_windows", "description":
-        "列出当前可见窗口（句柄/类别/标题/位置/尺寸/进程/类名），用于选择操控目标。"
-        "**包含无标题的桌宠、悬浮球等工具窗口（类别=无标题浮层）与弹出菜单（类别=弹出菜单）**"
-        "—— 这类窗口没有标题，过去列不出来，只能靠这里拿到的 hwnd 定位。"
-        "kind 可只看某一类：main（常规窗口）/menu（弹出菜单）/overlay（无标题浮层）。",
+        "列出当前可见窗口（句柄/类别/标题/位置/尺寸/进程/类名）。"
+        "**⚠ 成本高，默认不要调用**：桌面动辄上百个窗口，这一屏文字既占上下文又逼你"
+        "逐条读，是最容易把任务拖成多轮往返的工具。按下面的顺序来："
+        "① 想打开/切换到某个应用 → open_app(name=应用名)（自动判断在不在跑、"
+        "要不要恢复/置顶，并回给 hwnd）；"
+        "② 应用在任务栏/后台 → `taskbar_open()` 拿编号后 `taskbar_open(index=N)`；"
+        "③ **以上都不行、且必须知道桌面上到底有什么时**才用本工具，并且一定带 "
+        "`kind` 收窄（main / menu / overlay），别拉全量。"
+        "包含无标题的桌宠、悬浮球（类别=无标题浮层）与弹出菜单（类别=弹出菜单）——"
+        "这类窗口没有标题，只有这里能拿到 hwnd。",
      "inputSchema": {"type": "object", "properties": {
-         "kind": {"type": "string", "description": "可选：main/menu/overlay，只看某一类"}}}},
+         "kind": {"type": "string", "description": "强烈建议带上：main=常规窗口 / menu=弹出菜单 / overlay=无标题浮层；不带会返回全部类别（很长）"},
+         "limit": {"type": "integer", "description": "最多列几个，默认 20（带 kind 时用默认值通常就够）"}}}},
     {"name": "click_window", "description":
         "在目标窗口内按**窗口相对坐标**点击：rel_x/rel_y 相对窗口左上角（物理像素），"
         "窗口移动/换位置也不会点错。适合没有可访问性信息、只能用坐标点的窗口"
@@ -6580,6 +6637,12 @@ def ensure_http() -> int:
 # MCP（stdio）：JSON-RPC 分发
 # ============================================================================
 
+# 工具执行池：只有一个 worker —— 语义仍是串行（一次一个工具），但调用方可以
+# 用 result(timeout=…) 设上限，避免某个工具卡死时把整个 MCP 通道拖死。
+_TOOL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1,
+                                                   thread_name_prefix="cc-tool")
+
+
 def _handle(msg: dict):
     """处理单个请求/通知；通知（无 id）返回 None 不回复。"""
     method = msg.get("method", "")
@@ -6615,7 +6678,19 @@ def _handle(msg: dict):
         if name in _CONTROL_TOOLS:
             _aura_on()
         try:
-            out = fn(params.get("arguments", {}) or {})
+            fut = _TOOL_POOL.submit(fn, params.get("arguments", {}) or {})
+            try:
+                out = fut.result(timeout=TOOL_TIMEOUT_S)
+            except concurrent.futures.TimeoutError:
+                _log("sys", f"工具 {name} 超过 {TOOL_TIMEOUT_S:.0f}s 未返回"
+                            f"（动作可能已执行，不要重复调用同一动作）")
+                return {"jsonrpc": "2.0", "id": rid,
+                        "result": {"content": [{"type": "text", "text":
+                            f"工具 {name} 执行超过 {TOOL_TIMEOUT_S:.0f} 秒仍未返回。"
+                            f"**动作可能已经执行** —— 不要重复调用同一动作。"
+                            f"请改用 screen_shot 看一眼当前界面；若只是想打开/切换应用，"
+                            f"用 open_app(name=…) 或 taskbar_open(index=N)，别再列窗口。"}],
+                            "isError": True}}
             content = out if isinstance(out, list) else [{"type": "text", "text": str(out)}]
             result = {"content": content, "isError": False}
         except Exception as e:

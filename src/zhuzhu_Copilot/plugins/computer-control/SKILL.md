@@ -32,6 +32,7 @@ description: 电脑操控：AI 直接操控 Windows 桌面（**先截屏是硬�
 | 想做的事 | 一步到位的做法 |
 | --- | --- |
 | 动手之前 | `screen_shot(mode="full")` 看一眼任务栏和当前前台，别猜坐标（**没有截图基准时 click 会被拒绝**） |
+| 想知道桌面上有什么 | **不要 `list_windows`** —— 先看截图；确实要列就 `list_windows(kind="main")` 收窄，别拉全量 |
 | 切到已在运行的应用 | `taskbar_open(name="微信")` 看状态 → 图标在就 `taskbar_open(index=N)` 直接点 |
 | 图标不在任务栏可见区 | `taskbar_open(where="panel")` 展开右侧「↑」，再按编号点 |
 | 应用没窗口但进程在跑（托盘） | `open_app(name="微信")` 会回任务栏原图+坐标表 → `open_app(name="微信", index=N, where="panel")` 一步点出来 |
@@ -54,6 +55,13 @@ description: 电脑操控：AI 直接操控 Windows 桌面（**先截屏是硬�
 4. **要精准就点编号，不要抄坐标**：`refine_point` 之后用 `click(cand=编号)`。
    手抄 x/y 是「点偏」的主要来源之一（抄错一位没有任何反馈），编号的坐标是插件按候选
    落点（质心）算出来的。
+5. **不要用 `list_windows` 罗列窗口**（用户反复吐槽过：又麻烦又耗时）。桌面动辄上百个
+   窗口，这一屏文字既吃上下文又逼你逐条读，是「多轮往返、任务拖长」的最大来源。
+   按顺序替代：① `open_app(name=…)` 自动判断在不在跑、要不要恢复/置顶；② 应用在任务栏
+   或后台 → `taskbar_open()` 拿编号；③ 以上都不行**且必须知道桌面上到底有什么**时才
+   `list_windows`，并且**一定带 `kind=` 收窄**（main / menu / overlay）。
+   想点桌宠/悬浮球这类无标题窗口：直接 `screen_shot` 看 + 坐标点，或者
+   `list_windows(kind="overlay")` 只取浮层。
 
 ## 何时使用
 

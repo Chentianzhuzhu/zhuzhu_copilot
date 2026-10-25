@@ -480,7 +480,7 @@ def test_aura_module_importable_and_reports_capability():
     """提示层模块可加载，并如实汇报能力（光带 + 胶囊提示窗）"""
     aura = _load_sibling("cc_aura", "aura.py")
     st = aura.aura_state()
-    assert set(st) == {"active", "failed", "capability"}
+    assert set(st) == {"active", "failed", "error", "capability"}
     cap = st["capability"]
     assert "光带" in cap and "泛光" in cap, cap
     assert "胶囊" in cap, cap
@@ -492,6 +492,54 @@ def test_aura_module_importable_and_reports_capability():
     dark = sum(aura._hsl_to_rgb(0.3, 0.85, 0.25))
     light = sum(aura._hsl_to_rgb(0.3, 0.85, 0.9))
     assert dark < light
+
+
+def test_aura_status_line_explains_why_the_overlay_is_missing():
+    """提示层不出现时必须有**可读的线索**，不能再让用户和模型一起猜。"""
+    aura = _load_sibling("cc_aura_st", "aura.py")
+    # aura_status_line 读的是模块级单例，失败态要在单例上模拟
+    aura._aura._failed = True
+    aura._aura._error = "CreateWindowExW 失败 err=5"
+    assert "CreateWindowExW" in aura.aura_status_line()
+    assert "不可用" in aura.aura_status_line()
+    aura._aura._failed = False
+
+
+def test_aura_failure_does_not_lock_the_overlay_out_forever():
+    """一次建窗失败不能让提示层**永久失明**（早先 _failed 会锁死 start()）。"""
+    aura = _load_sibling("cc_aura_lock", "aura.py")
+    a = aura.Aura(fps=2)
+    a._failed = True
+    a._error = "建窗失败"
+    started = []
+    a._run_ring = lambda: started.append("ring")
+    a._run_hint = lambda: started.append("hint")
+    a.start()
+    time.sleep(0.1)
+    assert started, "失败后应允许重试"
+    assert a._failed is False, "重试前应清掉失败标记"
+
+
+def test_mouse_move_needs_a_real_displacement_to_take_over(monkeypatch):
+    """鼠标轻微移动不得把 AI 踢下线（那会让任务直接卡住）。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = False
+    mod._STATE["active_until"] = time.time() + 60
+    pos = {"x": 100, "y": 100}
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (pos["x"], pos["y"]))
+    # 别让上一次注入的余波把事件判成 AI 自己发的
+    monkeypatch.setattr(mod, "_injecting", lambda: False)
+    w = mod.InputWatcher()      # 构造时也要读到假坐标（否则 _last_xy 差几百像素）
+    # 每次移动 3px，累计不到阈值 → 不接管
+    for _ in range(5):
+        pos["x"] += 3
+        w._hit(0, mod.WM_MOUSEMOVE)
+    assert mod._STATE["interrupted"] is False, "轻微移动不应判定接管"
+    # 累计位移超过阈值 → 接管
+    pos["x"] += 200
+    w._hit(0, mod.WM_MOUSEMOVE)
+    assert mod._STATE["interrupted"] is True
+    assert "鼠标移动" in (mod._STATE.get("interrupt_reason") or "")
 
 
 def test_aura_pixels_cover_all_four_edges():
@@ -787,6 +835,25 @@ def test_resolve_point_autofixes_out_of_range_physical_coordinates(monkeypatch):
     x2, y2 = mod._resolve_point({"x": 640, "y": 360})
     assert (x2, y2) == (960, 540), (x2, y2)
     assert mod._take_coord_note() == ""
+
+
+def test_tool_execution_returns_a_readable_error_instead_of_hanging(monkeypatch):
+    """工具卡死时必须**在客户端超时之前**返回可读错误，而不是让整条 MCP 通道拖死。
+
+    用户侧的现象就是「MCP 请求超时」，而插件进程明明还活着 —— 因为调用方在等一个
+    永远不会回来的响应。有了这个看门狗，模型至少能拿到「动作可能已执行，别重复」
+    这句话，不会盲目再点一次。
+    """
+    import time as _t
+    mod = _load_module()
+    monkeypatch.setattr(mod, "TOOL_TIMEOUT_S", 0.2)
+    mod._HANDLERS["_slow_probe"] = lambda a: (_t.sleep(0.7) or "done")
+    r = mod._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                     "params": {"name": "_slow_probe", "arguments": {}}})
+    txt = r["result"]["content"][0]["text"]
+    assert "仍未返回" in txt
+    assert "不要重复调用" in txt
+    assert "screen_shot" in txt
 
 
 def test_window_sig_no_longer_uses_printwindow():

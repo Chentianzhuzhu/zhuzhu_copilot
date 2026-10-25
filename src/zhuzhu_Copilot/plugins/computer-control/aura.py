@@ -530,16 +530,25 @@ class Aura:
         线程，于是出现过这种故障：胶囊线程先退了，之后再怎么点亮都**只亮光带、
         永远不出胶囊**（调用方看起来像功能坏了，其实是线程没被重启）。
         所以这里对两个线程各自判活、各自拉起；任一线程死了就补一个。
+
+        **失败不永久锁死**：早期一次建窗失败（CreateWindowExW 偶发失败、DIB 分配
+        失败、桌面尺寸取不到）会把 `_failed` 置真，而 `start()` 见到 `_failed`
+        就直接返回 False —— 于是**光带从那以后再也不会出现**，而且没有任何提示
+        （调用方把异常吞了）。用户看到的现象就是「提示层莫名其妙就没了」。
+        现在失败只影响当次尝试，下一次点亮会重新尝试。
         """
         with self._lock:
-            if self._failed:
-                return False
             ring_dead = not (self._thread and self._thread.is_alive())
             hint_dead = not (self._hint_thread and self._hint_thread.is_alive())
             if not (ring_dead or hint_dead):
                 return False
             # 任一线程要重启，就必须先撤掉停止信号（否则新线程一起跑就被叫停）
             self._stop.clear()
+            if self._failed:
+                # 上次失败过：清掉标记重来一次（连续失败会一直重来，但每次都只有
+                # 一次窗口创建的开销，不会变成忙等）
+                self._failed = False
+                self._error = ""
             if ring_dead:
                 self._thread = threading.Thread(target=self._run_ring, daemon=True,
                                                 name="zhuzhu-aura")
@@ -1116,7 +1125,22 @@ def set_aura_active(flag: bool):
 
 def aura_state() -> dict:
     return {"active": _aura.active, "failed": _aura._failed,
+            "error": _aura._error,
             "capability": _aura.capability()}
+
+
+def aura_status_line() -> str:
+    """一行话说明提示层当前状态（已点亮 / 未点亮 / 不可用+原因）。
+
+    为什么要单独给一行：提示层不出现时，用户和模型都**看不到任何线索**
+    （异常都被吞了），只能靠猜。这行字会出现在 screen_info 与 control(status)
+    的输出里，一次调用就能定位。
+    """
+    if _aura._failed:
+        return f"提示层不可用（{_aura._error or '未知原因'}）"
+    if _aura.active:
+        return "提示层已点亮（屏幕光带 + 顶部胶囊窗）"
+    return "提示层当前未点亮（AI 未在操控桌面）"
 
 
 def aura_capability() -> str:
