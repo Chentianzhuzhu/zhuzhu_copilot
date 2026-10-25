@@ -739,6 +739,67 @@ def test_hint_capsule_renders_text_and_eight_same_size_dots():
         h.destroy()
 
 
+def test_click_does_not_retry_when_the_window_changed_at_all(monkeypatch):
+    """整窗只要有**任何**采样点变化，就不许再点一次。
+
+    这是「明明已经关掉了桌宠，AI 又点了一大片到桌面」的根因修复：副作用发生在
+    界面别处时，落点那一小块可能看不出变化（桌宠消失后那块变成壁纸，颜色接近 →
+    变化很小），而整窗指纹是有变化的。此时再换候选点一次，落点必然落到别处。
+    """
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    clicks = []
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (500, 400))
+    monkeypatch.setattr(mod, "_apply_snap", lambda a, x, y, default_on=True: (510, 402, ""))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_pre_click_probe", lambda x, y, h: ())
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (510, 402))
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "do_click",
+                        lambda x, y, b, c, mode="auto": clicks.append((x, y)) or True)
+    monkeypatch.setattr(mod, "_alt_snap_point", lambda *a: (530, 404))
+    # 局部没变化，但整窗变了 1 个采样点（0.17%，没到阈值）
+    monkeypatch.setattr(mod, "_click_verify_ex", lambda *a: (False, 0.002, "没到阈值"))
+    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True})
+    assert clicks == [(510, 402)], f"界面有变化时不得重复点击，实得 {clicks}"
+    assert "没到阈值" in out
+
+
+def test_resolve_point_autofixes_out_of_range_physical_coordinates(monkeypatch):
+    """坐标超出截图范围 → 判定为屏幕物理坐标，直接用（治「点偏一大片」）。
+
+    典型误用：refine_point / verify_point 返回的是**物理坐标**，模型直接抄进
+    click(x,y) 却没带 space="screen"，于是被按图像坐标再缩放一次
+    （1280 图在 1920 屏上放大 1.5 倍）—— 表现就是「偏了一大片」。
+    """
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    mod._VIEW.update({"x0": 0, "y0": 0, "w": 1920, "h": 1080,
+                      "img_w": 1280, "img_h": 720, "ts": time.time()})
+    mod._take_coord_note()
+    # 1600 超出 1280 的图像宽度 → 必须按物理坐标
+    x, y = mod._resolve_point({"x": 1600, "y": 500})
+    assert (x, y) == (1600, 500), (x, y)
+    note = mod._take_coord_note()
+    assert "自动纠正" in note and "物理坐标" in note
+    # 范围内的仍然是图像坐标（会被缩放换算）
+    x2, y2 = mod._resolve_point({"x": 640, "y": 360})
+    assert (x2, y2) == (960, 540), (x2, y2)
+    assert mod._take_coord_note() == ""
+
+
+def test_window_sig_no_longer_uses_printwindow():
+    """整窗指纹不得再用 PrintWindow —— 它跨进程渲染一帧要 600ms+，是超时的主因。"""
+    src = SERVER.read_text(encoding="utf-8")
+    i = src.index("def _window_sig(")
+    j = src.index("def _sig_change_ratio(", i)
+    body = src[i:j]
+    assert "user32.PrintWindow(" not in body, "整窗指纹还在用 PrintWindow（慢 600ms+）"
+    assert "StretchBlt" in body
+    assert "COLORON" in body, "指纹缩放应走最近邻"
+
+
 def test_manage_window_state_and_errors():
     """manage_window 的状态查询与参数校验（不真的改动窗口）"""
     mod = _load_module()
@@ -2587,10 +2648,10 @@ def test_click_retries_the_next_candidate_when_nothing_changed(monkeypatch):
     monkeypatch.setattr(mod, "do_click",
                         lambda x, y, b, c, mode="auto": clicks.append((x, y)) or True)
     monkeypatch.setattr(mod, "_alt_snap_point", lambda ex, ey, ux, uy, r: (530, 404))
-    seq = [(False, "落点没有变化"), (True, "界面已响应")]
+    seq = [(False, 0.0, "落点没有变化"), (True, 0.0, "界面已响应")]
 
     def _fake_verify(x, y, before, hwnd=0):
-        return seq.pop(0) if seq else (True, "")
+        return seq.pop(0) if seq else (True, 0.0, "")
 
     monkeypatch.setattr(mod, "_click_verify_ex", _fake_verify)
 
@@ -2615,7 +2676,7 @@ def test_click_retry_can_be_disabled_and_is_bounded(monkeypatch):
     monkeypatch.setattr(mod, "do_click",
                         lambda x, y, b, c, mode="auto": clicks.append((x, y)) or True)
     monkeypatch.setattr(mod, "_alt_snap_point", lambda *a: (530, 404))
-    monkeypatch.setattr(mod, "_click_verify_ex", lambda *a: (False, "落点没有变化"))
+    monkeypatch.setattr(mod, "_click_verify_ex", lambda *a: (False, 0.0, "落点没有变化"))
 
     mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True, "retry": False})
     assert clicks == [(510, 402)]

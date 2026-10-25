@@ -48,10 +48,10 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 # ---- 光带参数（集中在此，便于调优） ----
 AURA_FPS = 12                 # 帧率上限
-AURA_CORE = 3                 # 贴边核心亮带宽度（每帧重写）
-AURA_GLOW = 6                 # 向内泛光宽度（只写一次，静态；加宽不增加每帧开销）
-                              # 合计 9px：原先 5+12=17px 在 1920 宽屏上肉眼太粗，
-                              # 压到 9px 既有泛光又不抢戏，每帧像素也从 29.9k 降到 18k。
+AURA_CORE = 4                 # 贴边核心亮带宽度（每帧重写）
+AURA_GLOW = 8                 # 向内泛光宽度（只写一次，静态；加宽不增加每帧开销）
+                              # 合计 12px：17px 嫌粗、9px 又太细（用户反馈"光带消失"），
+                              # 12px 是这两者之间；每帧像素 24k，12fps 下约占单核 30%。
 AURA_THICKNESS = AURA_CORE + AURA_GLOW
 AURA_SATURATION = 0.92        # 核心带的饱和度
 AURA_GLOW_SATURATION = 0.88   # 泛光起始饱和度（向内外渐变到 0.36 → 偏白）
@@ -61,7 +61,8 @@ AURA_FLOW_SPEED = 0.30        # 色相沿边流动速度（每秒转过的比例
 AURA_RIPPLE = 6               # 沿边的亮度波纹个数（整数，接缝才连续）
 AURA_RIPPLE_AMP = 0.16        # 波纹的 alpha 起伏幅度（±16%）
 AURA_BREATH_PERIOD = 3.4      # 呼吸周期（秒）
-AURA_BREATH_DEPTH = 0.34      # 呼吸深度：整体亮度在 1.00 ↔ 0.66 之间起伏
+AURA_BREATH_DEPTH = 0.24      # 呼吸深度：整体亮度在 1.00 ↔ 0.76 之间起伏
+                              # （原 0.34 → 最暗 0.66，浅色壁纸上几乎看不见）
 AURA_FLICKER_DEPTH = 0.055    # 轻微闪烁幅度（约 Hz 级的微弱抖动）
 AURA_FADE_S = 0.35            # 启动/停止淡入淡出时长
 
@@ -710,13 +711,13 @@ class Aura:
                 # 早先用 0.72→0.92 太浅，一过白底就糊成粉白）
                 light = AURA_MIN_LIGHT + 0.16 * (1.0 - d)
                 r, g, b = _hsl_to_rgb(hue, AURA_SATURATION, light)
-                a = int((238 - 32 * d) * ripple)
+                a = int((250 - 26 * d) * ripple)
                 crow.append((b, g, r, max(0, min(255, a))))
                 # 泛光：从核心带内沿接上去，越往外越淡越白，最后归零
                 gl = 0.62 + 0.14 * d
                 gs = AURA_GLOW_SATURATION - 0.52 * d
                 r, g, b = _hsl_to_rgb(hue, max(0.05, gs), gl)
-                ga = int(211 * (1.0 - d) ** 1.9)
+                ga = int(228 * (1.0 - d) ** 1.9)
                 grow.append((b, g, r, max(0, ga)))
             core_lut.append(crow)
             glow_lut.append(grow)

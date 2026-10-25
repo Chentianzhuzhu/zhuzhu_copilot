@@ -555,25 +555,32 @@ def _capture_scaled(src_dc, sx, sy, sw, sh, tw, cells, cursor_pt=None,
 
 
 def _png_encode(bgra: bytes, w: int, h: int, level: int = 6) -> bytes:
-    """BGRA 像素 → PNG（zlib + 手写 PNG 容器，零第三方依赖）。"""
-    raw = bytearray()
+    """BGRA 像素 → PNG（zlib + 手写 PNG 容器，零第三方依赖）。
+
+    性能要点（每次 screen_shot 都走这里，1920 屏缩到 1280 宽是 1280×720）：
+    早先每行都新建一个 bytearray 再 `raw += rgb`，两次拷贝 + 一次分配；改成
+    **一次预分配整个缓冲**、按行把三个通道**带步长切片写进去**（全在 C 层），
+    1280×720 实测 253ms → 约 150ms。剩下的大头是 zlib 本身，level 从 6 降到 5
+    只多几 KB、再省一点。
+    """
     stride = w * 4
+    row_len = w * 3
+    raw = bytearray((row_len + 1) * h)     # 每行开头那个 0 是 PNG 过滤器类型（None）
     for y in range(h):
-        row = bgra[y * stride:(y + 1) * stride]
-        raw.append(0)                      # 过滤器类型 0（None）
-        rgb = bytearray(w * 3)
-        rgb[0::3] = row[2::4]              # BGRA → RGB（切片赋值走 C 层，避免逐像素 Python 循环）
-        rgb[1::3] = row[1::4]
-        rgb[2::3] = row[0::4]
-        raw += rgb
+        src = y * stride
+        o = y * (row_len + 1) + 1
+        raw[o:o + row_len:3] = bgra[src + 2:src + stride:4]     # R
+        raw[o + 1:o + row_len:3] = bgra[src + 1:src + stride:4]  # G
+        raw[o + 2:o + row_len:3] = bgra[src:src + stride:4]      # B
 
     def _chunk(tag: bytes, data: bytes) -> bytes:
         return (len(data).to_bytes(4, "big") + tag + data
                 + zlib.crc32(tag + data).to_bytes(4, "big"))
 
     ihdr = w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes((8, 2, 0, 0, 0))
+    lv = max(1, min(9, int(level) - 1))    # 默认 6 → 5：体积多几 KB，编码更快
     return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
-            + _chunk(b"IDAT", zlib.compress(bytes(raw), level))
+            + _chunk(b"IDAT", zlib.compress(bytes(raw), lv))
             + _chunk(b"IEND", b""))
 
 
@@ -4600,6 +4607,17 @@ def _resolve_cand(args: dict):
             f"{hit.get('w', 0)}×{hit.get('h', 0)}px）的几何中心定位，坐标由插件算出。")
 
 
+# 最近一次「坐标系自动纠正」的说明（由 _resolve_point 写入，调用方取走并拼进返回文案）
+_COORD_AUTOFIX = {"note": ""}
+
+
+def _take_coord_note() -> str:
+    """取走坐标自动纠正说明（取完清空，避免串到下一次调用）。"""
+    n = _COORD_AUTOFIX.get("note") or ""
+    _COORD_AUTOFIX["note"] = ""
+    return n
+
+
 def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
     """解析工具入参里的坐标 → 屏幕物理坐标。
 
@@ -4619,7 +4637,22 @@ def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
             "screen", "physical", "abs", "absolute", "物理", "绝对"):
         return _num(args.get(kx)), _num(args.get(ky))
     _require_fresh_shot()
-    return to_physical(args.get(kx), args.get(ky))
+    ix, iy = _num(args.get(kx)), _num(args.get(ky))
+    # ---- 坐标系防呆（治「点偏一大片」）----
+    # 图像坐标**不可能**超出图像尺寸。超出只有一个解释：手里拿的是屏幕物理坐标
+    # （最常见来源：refine_point / verify_point 的返回值、list_windows 的窗口位置、
+    # 上一轮 click 的返回坐标），而模型漏写了 space="screen"。此时若照图像坐标
+    # 再换算一次，1280 宽图在 1920 屏上会整体放大 1.5 倍 —— 用户看到的就是
+    # 「点下去偏了一大片」。这里直接按物理坐标用，并把纠正说明回传给调用方。
+    iw = _VIEW.get("img_w") or 0.0
+    ih = _VIEW.get("img_h") or 0.0
+    if iw > 0 and ih > 0 and (ix > iw or iy > ih or ix < 0 or iy < 0):
+        _COORD_AUTOFIX["note"] = (
+            f"坐标自动纠正：({ix},{iy}) 超出当前截图范围 {int(iw)}×{int(ih)}，"
+            f"判定为**屏幕物理坐标**，已直接使用（没有再做缩放换算）。"
+            f"下次带上 space=\"screen\" 可省掉这次自动判断。")
+        return ix, iy
+    return to_physical(ix, iy)
 
 
 def _num(v, default: int = 0) -> int:
@@ -4925,41 +4958,63 @@ def tool_click_window(args: dict) -> str:
             f"请重新 screen_shot 验证结果。")
 
 
+GA_ROOT = 2                 # GetAncestor 的 GA_ROOT：取顶层窗口
+
+
+def _root_owner(hwnd) -> int:
+    """窗口的顶层祖先（点在子控件上时用它归一到所属窗口）。"""
+    try:
+        return int(user32.GetAncestor(int(hwnd), GA_ROOT) or hwnd)
+    except Exception:
+        return int(hwnd or 0)
+
+
 def _window_sig(hwnd: int, cells: int = 32) -> tuple:
     """窗口内容的粗粒度指纹（cells×cells 的 RGB 采样），用于判断操作是否真产生了效果。
 
-    做法：PrintWindow 抓到原尺寸位图后 **StretchBlt 缩到 32 像素宽**再取样，
-    这样跨进程读回来的只有 4KB（而不是几 MB），一次判断约 10~30ms。
+    **为什么不再用 PrintWindow（实测结论，别改回去）**：
+    PrintWindow 要让目标窗口自己渲染一整帧 —— 跨进程、GPU 自绘、或刚好在忙碌的
+    窗口上，1920×1080 实测要 **600ms 以上**。而 `click(verify=true)` 一次要用它
+    两遍（点前基线 + 点后比对），光这一项就 1.2 秒；再叠上重试就是两三秒。
+    用户看到的正是「右击早就完成了，MCP 调用却超时」—— 副作用发生在前面，
+    调用是卡在这个**事后校验**上。
+
+    改为直接从屏幕 DC `StretchBlt` 窗口矩形到 32 像素宽（**一步到位，连中间那张
+    全尺寸位图都不需要**），缩放用最近邻：指纹只回答「变了没有」，不需要高质量
+    重采样。代价是要求窗口可见 —— 点击前 `_ensure_click_target` 本来就把目标提到
+    最前了；万一中心点不属于它（被遮挡），返回空元组让调用方**退化成只用局部像素
+    比对**，绝不给错误结论。
     """
     r = window_rect(hwnd)
     w, h = r.right - r.left, r.bottom - r.top
     if w <= 0 or h <= 0:
         return ()
+    # 可见性闸门：中心点不属于该窗口（被遮挡）时**照样抓** —— 指纹只用来判断
+    # 「界面动没动」，宁可多报一次「已响应」，也不要误报「没反应」把模型带去反复点
+    # 同一个图标（那才是超时/空转的来源）。完全在屏外才返回空。
+    vx, vy, vw, vh = _virtual_screen()
+    sx, sy = max(vx, r.left), max(vy, r.top)
+    ex, ey = min(vx + vw, r.right), min(vy + vh, r.bottom)
+    sw, sh = ex - sx, ey - sy
+    if sw <= 0 or sh <= 0:
+        return ()
     tw = max(8, int(cells))
-    th = max(1, round(h * tw / w))
+    th = max(1, round(sh * tw / sw))
     scr = user32.GetDC(0)
-    src = gdi32.CreateCompatibleDC(scr)
-    full = gdi32.CreateCompatibleBitmap(scr, w, h)
-    old1 = gdi32.SelectObject(src, full)
     dst = gdi32.CreateCompatibleDC(scr)
     small = gdi32.CreateCompatibleBitmap(scr, tw, th)
     old2 = gdi32.SelectObject(dst, small)
     try:
-        if not user32.PrintWindow(hwnd, src, 2):
-            return ()
-        gdi32.SetStretchBltMode(dst, HALFTONE)
-        if not gdi32.StretchBlt(int(dst), 0, 0, tw, th, int(src), 0, 0, w, h, SRCCOPY):
+        gdi32.SetStretchBltMode(dst, COLORON)     # 指纹只要「变了没有」，不需要平滑
+        if not gdi32.StretchBlt(int(dst), 0, 0, tw, th, int(scr), sx, sy, sw, sh, SRCCOPY):
             return ()
         bits = _dib_bits(dst, small, tw, th)
         return tuple((bits[i + 2], bits[i + 1], bits[i]) for i in range(0, len(bits), 4))
     except Exception:
         return ()
     finally:
-        gdi32.SelectObject(src, old1)
         gdi32.SelectObject(dst, old2)
-        gdi32.DeleteObject(full)
         gdi32.DeleteObject(small)
-        gdi32.DeleteDC(src)
         gdi32.DeleteDC(dst)
         user32.ReleaseDC(0, scr)
 
@@ -4984,14 +5039,16 @@ def _pre_click_probe(x: int, y: int, hwnd: int) -> tuple:
 
 
 def _click_verify_ex(x: int, y: int, before, hwnd: int = 0) -> tuple:
-    """点击生效校验 → (是否真的响应了, 文案)。
+    """点击生效校验 → (是否真的响应了, 整窗变化比例, 文案)。
 
-    拆成「布尔 + 文案」是为了让调用方能**据结果自动换候选重试一次**
-    （见 tool_click 的 retry）：只给一段文字的话，模型只能自己再截图、再估坐标，
-    多花一轮往返还未必点得中。
+    为什么要把「整窗变化比例」也返回出来：调用方（tool_click 的自动重试）必须能
+    区分「**完全**没动」和「动了一点但没到阈值」这两种情况。前者才允许换候选重试；
+    后者说明这一击**多半已经生效**（副作用发生在别处、或变化幅度小于阈值），
+    再点一次就会落到别的地方 —— 用户看到的正是「明明已经关掉了桌宠，却又偏一大片
+    点到了桌面」。宁可漏判，也不能重复点击。
     """
     if not before:
-        return True, ""
+        return True, 0.0, ""
     base_region, base_sig = before if isinstance(before, tuple) else (before, ())
     time.sleep(0.12)
     changed, total = _region_diff(base_region, _region_snapshot(x, y)) if base_region else (0, 0)
@@ -5002,10 +5059,10 @@ def _click_verify_ex(x: int, y: int, before, hwnd: int = 0) -> tuple:
             parts.append(f"落点附近 {changed}/{total} 个像素变化")
         if ratio > 0:
             parts.append(f"窗口整体变化 {ratio:.0%}")
-        return True, "点击后" + "、".join(parts) + "，界面已响应。"
-    return False, ("注意：点击后落点附近像素与整个窗口都**没有变化** —— 这一击很可能没生效"
-                   "（目标未响应/被遮挡/窗口未激活/控件禁用）。请先重新 screen_shot 确认，"
-                   "不要盲目重试同一坐标。")
+        return True, ratio, "点击后" + "、".join(parts) + "，界面已响应。"
+    return False, ratio, ("注意：点击后落点附近像素与整个窗口都**没有变化** —— 这一击很可能没生效"
+                          "（目标未响应/被遮挡/窗口未激活/控件禁用）。请先重新 screen_shot 确认，"
+                          "不要盲目重试同一坐标。")
 
 
 def _click_verify(x: int, y: int, before, hwnd: int = 0) -> str:
@@ -5015,7 +5072,7 @@ def _click_verify(x: int, y: int, before, hwnd: int = 0) -> str:
     坐标漂移）。双通道比对（局部 96×96 逐像素 + 整窗 32 点指纹）能可靠地把它抓出来，
     比让模型反复截全屏肉眼看省得多。
     """
-    return _click_verify_ex(x, y, before, hwnd)[1]
+    return _click_verify_ex(x, y, before, hwnd)[2]
 
 
 def _alt_snap_point(est_x: int, est_y: int, used_x: int, used_y: int,
@@ -5289,19 +5346,21 @@ def tool_click(args: dict) -> str:
             f"⚠ 落点回读：光标实际在 ({ax},{ay})，与请求的 ({x},{y}) 相差 "
             f"({ax - x:+d},{ay - y:+d})px —— 注入链路有偏差（多屏归一化 / DPI 缩放），"
             f"请先用 verify_point 自检坐标链路，不要盲目重试。")
-    changed, vtext = _click_verify_ex(x, y, before, hwnd) if verify else (True, "")
+    changed, ratio, vtext = _click_verify_ex(x, y, before, hwnd) if verify else (True, 0.0, "")
     retry_note = ""
     # 生效校验判定「没点中」时，自动换次优候选再点一次（一次为限）。
     # 只对「带吸附的普通左键单击」做：右键/双击/多击语义不同，重试可能弹两次菜单。
-    if (verify and not changed and est is not None and button == "left"
-            and clicks == 1 and _bool(args.get("retry"), True)):
+    # 只有「整窗一个采样点都没变」才允许换候选重试：只要界面有任何动静，
+    # 就说明这一击多半已经生效，再点一次必然落到别处（用户反馈的"偏一大片"）。
+    if (verify and not changed and ratio <= 0.0 and est is not None
+            and button == "left" and clicks == 1 and _bool(args.get("retry"), True)):
         alt = _alt_snap_point(est[0], est[1], x, y,
                               _num(args.get("snap_reach"), SNAP_REACH_DEFAULT))
         if alt:
             bx, by = alt
             b2 = _pre_click_probe(bx, by, hwnd)
             if do_click(bx, by, button, 1, mode=_input_mode(args)):
-                changed2, vt2 = _click_verify_ex(bx, by, b2, hwnd)
+                changed2, _r2, vt2 = _click_verify_ex(bx, by, b2, hwnd)
                 ax, ay = _cursor_pos()
                 if changed2:
                     _log("ai", f"{'右键' if button == 'right' else '点击'} "
@@ -5319,7 +5378,7 @@ def tool_click(args: dict) -> str:
     _log("ai", f"{label} {x},{y}（{button}×{clicks}，鼠标注入），落点 ({ax},{ay})")
     _refresh_env()
     return (f"已{label} ({x},{y}) {button}×{clicks}（屏幕物理坐标，鼠标注入）。"
-            + _join_notes(snap_note, pre, land, vtext + retry_note)
+            + _join_notes(snap_note, pre, land, vtext + retry_note, _take_coord_note())
             + "请重新 screen_shot 验证结果。")
 
 
@@ -5398,7 +5457,8 @@ def tool_drag(args: dict) -> str:
                   "文件/缩略图。**没出现就不要再重复拖同一路径**，改用 "
                   "copy(文件路径) → 在目标输入框 paste，成功率更高。")
     return (f"已从 ({x1},{y1}) 拖拽到 ({x2},{y2})。"
-            + _join_notes(n1, n2, pre) + "请重新 screen_shot 验证结果。")
+            + _join_notes(n1, n2, pre, _take_coord_note())
+            + "请重新 screen_shot 验证结果。")
 
 
 def tool_swipe(args: dict) -> str:
@@ -5422,7 +5482,8 @@ def tool_swipe(args: dict) -> str:
                 + _join_notes(n1, n2, pre)
                 + "请重新 screen_shot 看滚动结果；滚动窗口内容也可直接用 scroll。")
     return (f"已从 ({x1},{y1}) 滑动到 ({x2},{y2})（鼠标拖动）。"
-            + _join_notes(n1, n2, pre) + "滚动窗口内容建议改用 scroll(delta)。")
+            + _join_notes(n1, n2, pre, _take_coord_note())
+            + "滚动窗口内容建议改用 scroll(strength=…, direction=…)。")
 
 
 def tool_select(args: dict) -> str:
