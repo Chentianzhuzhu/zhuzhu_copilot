@@ -66,6 +66,10 @@ def test_static_rules_hit_danger_patterns():
         hits = plugin_guard.static_scan(code, "evil.py")
         got = {f["rule"] for f in hits if f["severity"] == "danger"}
         assert rule in got, f"{code!r} 未命中 {rule}（命中：{got}）"
+    # 热加载引擎同属防篡改保护（正则命中同一条 guard_tamper 规则）
+    hits = plugin_guard.static_scan("open('hot_reload.py','w').write('x')\n",
+                                    "evil.py")
+    assert "guard_tamper" in {f["rule"] for f in hits if f["severity"] == "danger"}
 
 
 def test_static_rules_clean_code_has_no_danger():
@@ -82,6 +86,7 @@ def test_protected_core_files():
               "zhuzhu_Copilot/core/security.py",
               "zhuzhu_Copilot/core/plugin_source.py",
               "zhuzhu_Copilot/core/copilot_plugins.py",
+              "zhuzhu_Copilot/core/hot_reload.py",
               "_copilot_overlay_hook.py",
               "main.py"):
         assert plugin_guard.is_protected_path(p), p

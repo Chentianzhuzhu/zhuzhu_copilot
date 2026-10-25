@@ -365,7 +365,7 @@ def test_process_area_collapses_after_done_and_can_reopen(host):
     assert all(not r.widget.isHidden() for r in turn._items if not r.is_proc), \
         "正文块应保持可见"
     assert not turn._toggle.isHidden() and turn._toggle.text() == "查看执行过程"
-    assert turn._ribbon._text.text() == "12.4s"
+    assert turn._ribbon._text.text() == "已处理 12秒"
     assert turn._sys.text() == "14:02:31 → 14:02:43"
 
     # 折叠后高度必须真实收缩（否则正文与开关之间会留大片空白）
@@ -561,7 +561,7 @@ def test_cost_ribbon_stays_visible_when_cost_missing():
                 live=False, sys_meta="14:02:31 → 14:02:43", done=True)
     host.w.update()
     assert not turn._ribbon.isHidden(), "无 cost 数据时徽章也必须常驻（不得隐藏）"
-    assert turn._ribbon._text.text() == "12.0s", "应由系统时间行的起止差推导耗时"
+    assert turn._ribbon._text.text() == "已处理 12秒", "应由系统时间行的起止差推导耗时"
 
 
 def test_cost_ribbon_falls_back_to_placeholder_without_any_time_data():
@@ -840,3 +840,64 @@ def test_toggle_does_not_overlap_reply_after_expand(host):
         app.processEvents()
 
 
+
+
+# ---------- 左上角计时行（2026-10-25 重构：无外壳纯文本 + 等宽数字） ----------
+
+def test_fmt_elapsed_drops_zero_units():
+    """计时行文案：已处理 X小时X分钟X秒，零档省略，不补零。"""
+    f = cb.fmt_elapsed
+    assert f(0) == "已处理 0秒"
+    assert f(9.7) == "已处理 9秒"          # 小数截断到秒
+    assert f(59) == "已处理 59秒"
+    assert f(60) == "已处理 1分钟0秒"       # 满分钟进分档，秒位不省略
+    assert f(23 * 60 + 45) == "已处理 23分钟45秒"
+    assert f(3599) == "已处理 59分钟59秒"
+    assert f(3600) == "已处理 1小时0分钟0秒"
+    assert f(3600 + 23 * 60 + 45) == "已处理 1小时23分钟45秒"
+    assert f(7325) == "已处理 2小时2分钟5秒"
+
+
+def test_timer_row_is_borderless_plain_text():
+    """计时行无外壳：QFrame 不设样式表背景，文本行用次要色 + 等宽数字字体。"""
+    style = cb.ChatStyle(card="#1F232C", border="#272C36", border_soft="#333A46",
+                         dash="#333A46", text="#F3F5F9", text_dim="#9BA3B0",
+                         accent="#2F52D8", muted="#9BA3B0", icon_shell="#272C36",
+                         icon_color="#9BA3B0", tag_bg="#333A46", tag_fg="#9BA3B0",
+                         user_bg="#2F52D8", user_fg="#FFFFFF", cmd_fg="#F3F5F9",
+                         ok_fg="#5B82F6", hover="#272C36", panel="#181B21",
+                         bg="#101216")
+    rb = cb.CostRibbon(style)
+    rb.freeze(75)
+    assert rb.styleSheet() == "", "计时行外壳不设任何样式表（无底、无描边、无圆角）"
+    qss = rb._text.styleSheet()
+    assert "border: none" in qss, "文本行不描边"
+    assert style.text_dim in qss, "文本用次要色（ quiet caption ）"
+    assert "tabular" not in qss and style.font_numeric in qss, \
+        "数字走等宽字体栈（tabular figures）"
+    assert rb._text.text() == "已处理 1分钟15秒"
+    assert rb.height() == cb.TIMER_ROW_H
+
+
+def test_timer_row_sits_above_dash_line():
+    """结构：计时行在左上角（y=0），顶部虚线下移到计时行底边之下。"""
+    host = Host()
+    turn = _plain_turn(host)
+    host.show()
+    turn.render([(cb.KIND_STREAM, {"html": "<div>正文</div>"}, ("s1", 0))],
+                live=False, cost=65, done=True)
+    host.w.update()
+    app.processEvents()
+    rb = turn._ribbon
+    assert rb is not None and not rb.isHidden(), "计时行常驻"
+    assert rb.y() == 0, "计时行贴在容器顶（左上角）"
+    assert rb.x() == cb.LEFT_GUTTER, "计时行与顶部虚线同起点"
+    assert turn._inset == cb.TIMER_ROW_H + cb.TIMER_DASH_GAP, \
+        "虚线落在计时行底边之下（先文本、再虚线、后内容）"
+    # 内容盒顶边距必须含计时行高度：输出内容不会被计时行压住
+    m = turn._box_lay.contentsMargins()
+    assert m.top() >= cb.TIMER_ROW_H, "内容盒让出计时行高度"
+    # 防回归：虚线必须由 _TurnBox 自己画。曾由 ChatTurn.paintEvent 画 —— 落在子
+    # 控件矩形内的父控件绘制会被 Qt 合成时清掉，整条虚线只剩右缘约 9px 可见
+    # （2026-10-25 真机抓图实锤）。若此断言失败，说明虚线又回到被遮挡的旧画法。
+    assert isinstance(turn._box, cb._TurnBox), "虚线须由 _TurnBox 自画（防遮挡回归）"

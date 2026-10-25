@@ -313,7 +313,7 @@ my-plugin/
 | 启用失败：找不到锚点 | 目标文件版本不一致 | 用 `read_file` 重新取锚点，或改用行号 |
 | 启用失败：锚点不唯一 | 锚点串在文件里出现多次 | 加长锚点，包含更多上下文 |
 | 启用失败：编译检查未通过 | 插入/替换后的代码不完整 | 检查缩进与括号；`replace_module` 的 `end` 是否漏了 |
-| 插件在但没效果 | 变更落在被跳过的模块（如 `agent_panel`） | 重启应用一次 |
+| 插件在但没效果 | 热加载失败被自动回滚（摘要里有 failed） | 查看热加载摘要/校验日志，停用再启用一次；不需要重启 |
 | 插件被删除 | 校验系统判定危险代码 | 查看校验日志 `copilot_plugins/.guard_log.jsonl` |
 
 设计阶段建议先 `read_file` 目标文件确认锚点，再用「创建 Copilot 插件（自然语言）」
@@ -362,8 +362,11 @@ my-plugin/
 **热插拔（2026-10-25 起支持）**：页面页签、玻璃窗口、托盘动作、快捷键都是可撤销登记。
 停用/删除插件时立即从界面摘掉（`main_window.unregister_copilot_plugin`），启用时当场挂上
 （`start_copilot_plugin`，面板缺省用启动时登记的宿主）；后台服务同样即时启停。
-所以**只有源码级变更落在 `agent_panel` / `main_window` / `styles` 时才需要重启**。
-回归用例：`tests/test_copilot_hotplug.py`。
+**源码级变更（含 `agent_panel` / `main_window` / `styles`）由热加载引擎在运行进程内
+即时装载（活类热修补 + 活实例刷新 + UI 事件桥），任何模块都不需要重启应用**；
+热加载失败会自动回滚，不会留下半套变更。
+回归用例：`tests/test_copilot_hotplug.py`、`tests/test_hot_reload_engine.py`、
+`tests/test_copilot_hotplug_lifecycle.py`。
 
 **液体玻璃窗口**：`pages` 条目加 `"window": "glass"` 即把页面托管到独立无框玻璃窗口
 （GPU 实时折射/反射/边缘高光，见根 README 第八章 8.8）：
@@ -396,7 +399,8 @@ python scripts/verify_overlay.py --inspect "D:\Program Files\zhuzhu Copilot"
 若体检报「缺少 `_copilot_src/zhuzhu_Copilot`」，说明该构建**不含**覆盖层机制
 （例如仓库里 2026-10-19 那版 `dist/`），必须 `.\build_release.ps1` 重新打包。
 
-**再验证**：装一个看得见的插件（`code-map` 最合适）→ 启用 → 重启 exe，然后看三个信号：
+**再验证**：装一个看得见的插件（`code-map` 最合适）→ 启用（无需重启，运行进程内即时生效），
+然后看三个信号：
 
 | 信号 | 说明 |
 | --- | --- |
@@ -404,7 +408,7 @@ python scripts/verify_overlay.py --inspect "D:\Program Files\zhuzhu Copilot"
 | AI 能调 `code_map` 工具 | 源码级 `insert_after` 生效（工具被登记进 TOOLS） |
 | 插件页顶部「生效位置」有模块数、卡片显示「已写入转译层」 | 转译层机制自报状态 |
 
-反证：停用插件 → 重启 → 页签消失、工具不可用、模块数归零。
+反证：停用插件 → 页签立即消失、工具不可用、模块数归零（同样无需重启）。
 
 > 详细的手把手教程（含锚点取法、行号 vs 锚点、排错表、让 AI 帮你写插件）见仓库根目录
 > `README.md` 第八章「插件开发指南」。

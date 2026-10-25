@@ -11,9 +11,11 @@
                               自定义语言 / 增删替换任何模块，全部走这条路）
   · 覆盖层没有              → 原样回落打包内（或源码目录）的版本，行为与未装插件一致
   · 覆盖层里的新文件        → 成为可被正常 import 的新模块（create_file 的落地形态）
+  · 覆盖层里的新子包        → 即使没有 __init__.py（命名空间包）也可直接导入；
+                              包 __path__ 同时挂覆盖层与原版目录，两边子模块都能解析
 
-因此**任何人都能把 Copilot 自定义成想要的样子**，且在打包版上同样生效
-（应用/回滚插件后重启应用即生效）。
+因此**任何人都能把 Copilot 自定义成想要的样子**，且在打包版上同样生效。
+配套的热插拔引擎（core/hot_reload.py）在应用/回滚插件时**即时热加载，无需重启**。
 
 用法：src/main.py 在 `from zhuzhu_Copilot import ...` **之前**调用 install()。
 本模块因此不能 import zhuzhu_Copilot 任何子模块（否则循环），
@@ -104,8 +106,12 @@ class _OverlayFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if not fullname.startswith(_PACKAGE + ".") and fullname != _PACKAGE:
             return None
+        if fullname == _PACKAGE:
+            # 包根保持命名空间包语义：不覆盖，让标准导入链把源码树挂上 __path__
+            return None
         rel = fullname.split(".")
-        base = overlay_dir().joinpath(*rel)
+        root = overlay_dir()
+        base = root.joinpath(*rel)
         is_pkg = False
         cand = None
         init = base / "__init__.py"
@@ -114,6 +120,17 @@ class _OverlayFinder(importlib.abc.MetaPathFinder):
             cand, is_pkg = init, True
         elif mod.is_file():
             cand = mod
+        elif base.is_dir() and any(p.is_file() for p in base.glob("*.py")):
+            # 覆盖层新增子包、没有 __init__.py：造命名空间包 spec（loader=None），
+            # __path__ 同时挂覆盖层与原版目录——支持热插拔的"整包新建"场景。
+            locations = [str(base)]
+            orig_pkg = _original_root()
+            orig_dir = orig_pkg.joinpath(*rel) if orig_pkg is not None else None
+            if orig_dir is not None and orig_dir.is_dir() and str(orig_dir) not in locations:
+                locations.append(str(orig_dir))
+            spec = importlib.util.spec_from_loader(fullname, None, is_package=True)
+            spec.submodule_search_locations = locations
+            return spec
         if cand is None:
             return None          # 未覆盖 → 交回正常导入链（打包内/源码目录版本）
         try:
@@ -124,6 +141,14 @@ class _OverlayFinder(importlib.abc.MetaPathFinder):
             return None
         if spec is None or spec.loader is None:
             return None
+        if is_pkg:
+            # 包 __path__ 同时挂覆盖层与原版目录：覆盖层只改了包 __init__ 时，
+            # 其未覆盖的子模块仍可通过 __path__（pkgutil/相对导入）正常解析。
+            orig_pkg = _original_root()
+            orig_dir = orig_pkg.joinpath(*rel) if orig_pkg is not None else None
+            if orig_dir is not None and orig_dir.is_dir() and \
+                    str(orig_dir) not in (spec.submodule_search_locations or []):
+                spec.submodule_search_locations.append(str(orig_dir))
         orig = _original_file(rel + (["__init__.py"] if is_pkg else []))
         if orig is not None:
             # 保持资源解析锚点指向原版文件（详见类 docstring）
@@ -160,6 +185,15 @@ class _LoaderProxy:
     def is_package(self, fullname):
         f = getattr(self._inner, "is_package", None)
         return bool(f(fullname)) if f else False
+
+    def get_source(self, fullname):
+        """委托给内部 loader：返回模块**实际加载时**的源码（热加载据此建立精确基线）。
+
+        内部 SourceFileLoader 以覆盖层文件为 data_path，故这里返回的就是覆盖层版本；
+        热加载引擎比对"加载时源码 vs 磁盘源码"即可精准识别真正变更的模块。
+        """
+        f = getattr(self._inner, "get_source", None)
+        return f(fullname) if callable(f) else None
 
 
 def install() -> bool:

@@ -30,7 +30,7 @@
 ~/.zhuzhu_Copilot/source_overlay/（目录结构镜像源码相对路径），由
 src/_copilot_overlay_hook.py 的导入钩子让 zhuzhu_Copilot.* 的导入优先命中转译层
 ——源码级插件因此可以改主题、自定义 Agent、自定义工具、自定义语言、增删替换任何
-模块，安装版与源码版行为一致（写入后重启生效）。
+模块，安装版与源码版行为一致（写入后由 core/hot_reload.py 即时热加载，无需重启）。
 
 对外入口（包目录级，Copilot 插件使用）：
   load_source_ops_from(pkg_dir)      读取插件包的变更清单
@@ -406,7 +406,8 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
     清单。返回 (ok, message)。
 
     写入目标固定为转译层（用户数据目录下的源码覆盖层）：打包版与源码版一致，
-    都不直接改写应用源码文件；导入钩子优先加载覆盖层，重启后生效。
+    都不直接改写应用源码文件；导入钩子优先加载覆盖层，写入后由热加载引擎
+    （core/hot_reload.py）即时装载，无需重启应用。
     """
     root, mode = apply_root()
     orig_root = app_source_root()   # 打包态为 None → _apply_op 回落打包内源码快照
@@ -482,7 +483,8 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
     lines = [f"源码插件「{name}」已应用：{len(ops)} 条变更、{len(done)} 个文件。"]
     lines += [f"  · {r['action']} {r['path']}" for r in done]
     lines.append(f"变更已写入转译层：{root}")
-    lines.append("重启应用后生效（导入钩子会优先加载转译层模块，应用源码文件保持不变）。")
+    lines.append("变更已写入转译层；由热加载引擎（core/hot_reload.py）即时装载，"
+                 "无需重启应用（应用源码文件保持不变）。")
     return True, "\n".join(lines)
 
 

@@ -187,10 +187,65 @@ def feedback_text(snap: dict, rating: int, comment: str = "") -> str:
 # 评分窗（GUI 线程调用）
 # ------------------------------------------------------------
 def build_dialog(snap: dict, parent=None):
-    """构造评分对话框（延迟导入 PyQt，避免非 GUI 环境 import 失败）。"""
-    from PyQt6.QtCore import Qt
+    """构造评分对话框（延迟导入 PyQt，避免非 GUI 环境 import 失败）。
+
+    按 client-uiux-design 招 1/2/5 精修：主题适配（无原生浅色突兀）、五颗等大星、
+    hover 实时预览、点击 OutBack Q弹。
+    """
+    from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize
     from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton,
                                  QTextEdit, QVBoxLayout)
+
+    # 主题色（从面板模块取，插件不自带颜色）
+    try:
+        from zhuzhu_Copilot.ui import agent_panel as _ap
+        C = dict(bg=_ap.PANEL, text=_ap.TEXT, dim=_ap.TEXT_DIM, star=_ap.WARN,
+                 accent=_ap.ACCENT, accent_h=_ap.ACCENT_HOVER, field=_ap.FIELD,
+                 hover=_ap.HOVER, w_title=_ap._W_TITLE,
+                 num=_ap.NUMERIC_FONT_STACK)
+    except Exception:
+        C = dict(bg="#1F232C", text="#F3F5F9", dim="#9BA3B0", star="#FBBF24",
+                 accent="#2F52D8", accent_h="#4464EE", field="#12151B",
+                 hover="#272C36", w_title=600, num="Consolas,monospace")
+
+    class _Star(QPushButton):
+        """单颗等大星：未激活空心灰、hover/选中亮金，点击 Q弹。"""
+
+        def __init__(self, idx, on_hover, on_click):
+            super().__init__("★")
+            self.idx = idx
+            self.setFixedSize(42, 42)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setAutoDefault(False)
+            self._base = 42
+            self._anim = QPropertyAnimation(self, b"iconSize")
+            self._anim.setDuration(240)
+            _ease = QEasingCurve(QEasingCurve.Type.OutBack)
+            _ease.setOvershoot(1.05)
+            self._anim.setEasingCurve(_ease)
+            self.clicked.connect(lambda: on_click(self.idx))
+            self._on_hover = on_hover
+            self.set_lit(False)
+
+        def enterEvent(self, e):
+            self._on_hover(self.idx)       # 实时预览（含本颗及之前）
+            super().enterEvent(e)
+
+        def pop(self):
+            """点击 Q弹：图标短暂放大回落（OutBack 咬死）。"""
+            self._anim.stop()
+            self._anim.setStartValue(QSize(30, 30))
+            self._anim.setEndValue(QSize(26, 26))
+            self._anim.start()
+
+        def set_lit(self, lit: bool):
+            color = C["star"] if lit else C["dim"]
+            alpha = "" if lit else "55"
+            self.setIconSize(QSize(26, 26))
+            self.setStyleSheet(
+                f"QPushButton {{ background: transparent; border: none;"
+                f" color: {color}; font-size: 26px; }}"
+                f"QPushButton:hover {{ color: {C['star']}; }}")
 
     class ScoreDialog(QDialog):
         def __init__(self, data: dict, parent=None):
@@ -200,50 +255,70 @@ def build_dialog(snap: dict, parent=None):
             self.setWindowTitle("任务评分 · 帮助 Agent 改进")
             self.setMinimumWidth(460)
             self.setModal(True)
+            self.setStyleSheet(
+                f"QDialog {{ background: {C['bg']}; }}"
+                f"QLabel {{ background: transparent; color: {C['text']}; }}"
+                f"QTextEdit {{ background: {C['field']}; color: {C['text']};"
+                f" border: none; border-radius: 10px; padding: 8px; }}")
             lay = QVBoxLayout(self)
-            lay.setContentsMargins(18, 16, 18, 16)
-            lay.setSpacing(10)
+            lay.setContentsMargins(20, 18, 20, 18)
+            lay.setSpacing(12)
             title = QLabel("本次任务表现如何？")
-            title.setStyleSheet("font-size: 15px; font-weight: 700;")
+            title.setStyleSheet(
+                f"font-size: 16px; font-weight: {C['w_title']}; color: {C['text']};")
             lay.addWidget(title)
             metrics = QLabel(format_metrics(data))
             metrics.setWordWrap(True)
-            metrics.setStyleSheet("font-size: 12px;")
+            metrics.setStyleSheet(
+                f"font-size: 12px; color: {C['dim']}; font-family: {C['num']};")
             metrics.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse)
             lay.addWidget(metrics)
             row = QHBoxLayout()
-            row.addWidget(QLabel("评分："))
-            self._btns = []
+            row.setSpacing(6)
+            row.addStretch(1)
+            self._stars = []
             for i in range(1, 6):
-                b = QPushButton("★" * i)
-                b.setCheckable(True)
-                b.setAutoDefault(False)
-                b.clicked.connect(lambda _c=False, _i=i: self._pick(_i))
-                row.addWidget(b)
-                self._btns.append(b)
+                s = _Star(i, self._preview, self._pick)
+                row.addWidget(s)
+                self._stars.append(s)
             row.addStretch(1)
             lay.addLayout(row)
             self.edit = QTextEdit()
             self.edit.setPlaceholderText("评语（可选）：哪里好、哪里可以更好…")
-            self.edit.setFixedHeight(88)
+            self.edit.setFixedHeight(84)
             lay.addWidget(self.edit)
             btns = QHBoxLayout()
             skip = QPushButton("跳过")
             skip.setAutoDefault(False)
+            skip.setCursor(Qt.CursorShape.PointingHandCursor)
+            skip.setStyleSheet(
+                f"QPushButton {{ background: transparent; color: {C['dim']};"
+                f" border: none; border-radius: 8px; padding: 7px 16px; }}"
+                f"QPushButton:hover {{ background: {C['hover']}; color: {C['text']}; }}")
             skip.clicked.connect(self.reject)
             submit = QPushButton("提交评分")
             submit.setDefault(True)
+            submit.setCursor(Qt.CursorShape.PointingHandCursor)
+            submit.setStyleSheet(
+                f"QPushButton {{ background: {C['accent']}; color: #FFFFFF;"
+                f" border: none; border-radius: 8px; padding: 7px 18px; }}"
+                f"QPushButton:hover {{ background: {C['accent_h']}; }}")
             submit.clicked.connect(self._submit)
             btns.addStretch(1)
             btns.addWidget(skip)
             btns.addWidget(submit)
             lay.addLayout(btns)
 
-        def _pick(self, n: int):
+        def _preview(self, n):
+            # 已锁定评分后不再跟随 hover（需点击才改）
+            for i, s in enumerate(self._stars, start=1):
+                s.set_lit(i <= n)
+
+        def _pick(self, n):
             self.rating = int(n)
-            for i, b in enumerate(self._btns, start=1):
-                b.setChecked(i <= n)
+            self._preview(n)
+            self._stars[n - 1].pop()
 
         def _submit(self):
             if self.rating <= 0:

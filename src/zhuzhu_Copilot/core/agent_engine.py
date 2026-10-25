@@ -1400,6 +1400,19 @@ class AgentEngine:
                              + (f"，失败: {'；'.join(errs)}" if errs else ""))
             except Exception as e:
                 notes.append(f"MCP 重连失败: {e}")
+        # 4) 应用转译层热加载：Copilot 源码插件 apply/revert/create 后在**本任务内**
+        #    即时装载/卸载（旧实现这里只刷技能/MCP，源码变更要等重启，违背热插拔承诺）。
+        #    引擎在工作线程，UI 刷新/扩展挂摘由热加载引擎自动 marshal 到 GUI 线程。
+        try:
+            from zhuzhu_Copilot.core import hot_reload
+            res = hot_reload.reload_overlay()
+            if res.get("failed"):
+                notes.append("应用热加载失败（请用 revert_copilot_plugin 回滚）："
+                             + "；".join(res["failed"][:2]))
+            elif any(res.get(k) for k in ("reloaded", "imported", "dropped")):
+                notes.append("应用热加载：" + hot_reload.summary(res))
+        except Exception as e:
+            notes.append(f"应用热加载失败: {e}")
         return "；".join(notes)
 
     def _exec_tool(self, name: str, args: dict, allow_dangerous: bool) -> dict:

@@ -81,15 +81,28 @@ class DesktopPet(QWidget):
 
     # ---------- 加载 GIF 帧 ----------
     def _load_frames(self, path: str) -> None:
-        """用 PIL 加载 GIF 所有帧为 QPixmap 列表"""
+        """用 PIL 加载 GIF 所有帧为 QPixmap 列表
+
+        GIF 透明只有 1-bit（像素要么全透要么不透，无半透明），边缘抗锯齿像素被
+        二值化后形成明显的黑色锯齿与孤立杂点。这里对每帧 alpha 做「中值去杂点 +
+        高斯羽化」，把硬边修成柔和的抗锯齿边缘。
+        """
         try:
-            from PIL import Image, ImageSequence
+            from PIL import Image, ImageSequence, ImageFilter
             import io
             img = Image.open(path)
             # 注意：不能先对整张 GIF 做 convert("RGBA")，否则会丢失多帧迭代能力；
             # 需在原始图像上逐帧迭代，再对每一帧单独转 RGBA。
             for frame in ImageSequence.Iterator(img):
                 frame_copy = frame.convert("RGBA")
+                try:
+                    _r, _g, _b, _a = frame_copy.split()
+                    # 中值滤波去掉孤立杂点，再轻微高斯羽化硬边
+                    _a = _a.filter(ImageFilter.MedianFilter(3))
+                    _a = _a.filter(ImageFilter.GaussianBlur(1.1))
+                    frame_copy = Image.merge("RGBA", (_r, _g, _b, _a))
+                except Exception:
+                    pass
                 buf = io.BytesIO()
                 frame_copy.save(buf, format="PNG")
                 buf.seek(0)

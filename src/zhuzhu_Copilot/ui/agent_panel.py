@@ -164,6 +164,7 @@ from zhuzhu_Copilot.ui.tokens import (
     SPACING_XS,
 )
 from zhuzhu_Copilot.ui import window_fx
+from zhuzhu_Copilot.ui import motion
 from zhuzhu_Copilot.ui.widgets import ArrowComboBox, add_brand_footer
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
@@ -203,12 +204,15 @@ def _theme_setting() -> str:
     return v if v in ("dark", "light", "auto") else "light"
 
 
-_FOCUS_GLOW_BLUR = 16
-_FOCUS_GLOW_ALPHA = 170
-# 自定义背景（壁纸）下界面大面积透明：泛光掩膜只剩描边与文字 → 半径再放宽一档、
-# 透明度拉满，边缘光才立得住
-_FOCUS_GLOW_BLUR_ON_WALLPAPER = 36
-_FOCUS_GLOW_ALPHA_ON_WALLPAPER = 255
+# 招 1「温润咬合」：聚焦光晕要柔、要弥散，不能在边缘形成一圈「实」蓝线。
+# blur 放宽到 24（光向外柔和扩散）、alpha 降到 120（整体淡），观感是温润的
+# 呼吸光而非发光边框。
+_FOCUS_GLOW_BLUR = 24
+_FOCUS_GLOW_ALPHA = 120
+# 自定义背景（壁纸）下界面大面积透明：泛光掩膜只剩描边与文字 → 半径再放宽、
+# 适度提亮让边缘光立得住；但不再拉满 255（会沿边缘糊成硬光带）。
+_FOCUS_GLOW_BLUR_ON_WALLPAPER = 44
+_FOCUS_GLOW_ALPHA_ON_WALLPAPER = 190
 # 光标闪烁周期（ms）：用Qt 默认的 1000ms，**自定义背景下也不缩短**。
 # 缩短周期是「光标在花背景上不显眼」的旧对策（靠加快闪烁补偿对比度），实测反而
 # 更难看清：620ms ≈ 每秒 1.6 次，视觉上是急促抖动而非提示，用户反馈「闪烁频率过快」。
@@ -610,11 +614,25 @@ def _input_qss() -> str:
                 f" border: 1px solid {border};"
                 f"border-radius: {_INPUT_RADIUS}px; padding: 5px 10px; font-size: 14px; }}"
                 f"QPlainTextEdit:focus {{ border: 1px solid {border}; }}")
-    focus_bg = _mix_hex(HOVER, FIELD, 0.55)
-    return (f"QPlainTextEdit {{ background: {FIELD}; color: {_input_fg()};"
+    # 背景由 _DropTextEdit.paintEvent 在 viewport 上自绘完整圆角矩形（QSS 背景被
+    # 路由到 viewport、呈直角，padding 会让 viewport 偏移导致画不到圆角弧形区域）。
+    # 故非壁纸模式：background transparent、padding 0、viewport 占满整个输入框，
+    # 文字边距改用 document margin（见 _apply_input_style，左右 10px）。
+    return (f"QPlainTextEdit {{ background: transparent; color: {_input_fg()};"
             f" border: none;"
-            f"border-radius: {_INPUT_RADIUS}px; padding: 5px 10px; font-size: 14px; }}"
-            f"QPlainTextEdit:focus {{ background: {focus_bg}; border: none; }}")
+            f"border-radius: {_INPUT_RADIUS}px; padding: 0; font-size: 14px; }}"
+            f"QPlainTextEdit:focus {{ background: transparent; border: none; }}")
+
+
+def _apply_input_style(inp) -> None:
+    """统一应用输入框 QSS + 文字边距（初始化 / 主题或模式刷新共用）。
+    非壁纸模式 padding 0，用 document margin 给文字留边（10px）；壁纸模式 QSS
+    自带 padding 5px 10px，document margin 还原默认（4）。"""
+    try:
+        inp.setStyleSheet(_input_qss())
+        inp.document().setDocumentMargin(10 if not _feedback_boosted() else 4)
+    except Exception:
+        pass
 
 
 def refresh_surface_mode() -> bool:
@@ -823,12 +841,13 @@ def _round_icon_btn_qss_active(diameter: int) -> str:
     与常态皮肤（`_round_icon_btn_qss`）刻意拉开差距：录音中必须一眼看出"正在收音"。
     主题切换时由面板的 `_voice_btn_qss()` 重新生成，不会残留旧主题色。
     """
+    # 招 1：实心渐变圆盘本身即强视觉，不画描边
     return (f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
             f"stop:0 {ACCENT}, stop:1 {ACCENT_HOVER});"
-            f"border: 1px solid {ACCENT_HOVER};"
+            f"border: none;"
             f"border-radius: {diameter // 2}px; }}"
             f"QPushButton:hover {{ background: {ACCENT_HOVER};"
-            f"border: 1px solid {ACCENT_HOVER}; }}")
+            f"border: none; }}")
 
 
 def _round_icon_btn_qss(diameter: int) -> str:
@@ -1160,6 +1179,14 @@ _WIFI_OFF_SVG = _lucide(
     '<path d="M10.66 5c4.01-.36 8.14.9 11.34 3.76"/>'
     '<path d="M16.85 11.25a10 10 0 0 1 2.22 1.68"/>'
     '<line x1="12" x2="12.01" y1="20" y2="20"/>')
+
+# 预览窗口撤销 / 重做：Lucide 开源线条矢量图（ISC 许可，undo-2 / redo-2）
+_UNDO_SVG = _lucide(
+    '<path d="M9 14 4 9l5-5"/>'
+    '<path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>')
+_REDO_SVG = _lucide(
+    '<path d="m15 14 5-5-5-5"/>'
+    '<path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"/>')
 
 
 # ---------------------------------------------------------------------------
@@ -3336,7 +3363,7 @@ class _CopilotPluginDetailDialog(QDialog):
                 lst.addItem(QListWidgetItem(txt))
         if not rows:
             item = QListWidgetItem(_ui("该插件没有声明应用扩展（仅源码级变更）。"
-                                       "扩展在插件包 copilot.json 中声明，重启应用后生效。"))
+                                       "扩展在插件包 copilot.json 中声明，启用后由热加载引擎即时生效。"))
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             lst.addItem(item)
         col.addWidget(lst, 1)
@@ -3899,7 +3926,7 @@ class _Card(QFrame):
         self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._icon.setStyleSheet(f"border-radius: {_CARD_ICON_RADIUS}px;"
                                  f" background: {_tint(ACCENT, 0.14)};"
-                                 "font-size: 15px; font-weight: 700;")
+                                 f"font-size: 15px; font-weight: {_W_STRONG};")
         # 占位字母只取首字符（icon_text 可能传的是整个名称）
         letter = (str(icon_text or self._title_text or "?")[:1] or "?").upper()
         self._icon.setText(letter)
@@ -3991,11 +4018,27 @@ class _Card(QFrame):
 
     # ---- 外观 ----
     def _apply_style(self):
-        border = ACCENT if self._sel else (ACCENT_HOVER if self._hover else BORDER)
-        bg = CARD if (self._sel or self._hover) else PANEL
+        """卡片三态（招 1：不画边框，全部用背景分层表达）：
+        常态 = 面板色；悬停 = 提亮一档（浮起）；选中 = 强调色淡染（tint）+ 标题着强调色。
+        选中态另加 3px 左侧强调条 —— 那是**选中指示器**不是描边，与大厂导航一致。"""
+        if self._sel:
+            bg = _mix_hex(ACCENT, PANEL, 0.16)
+        elif self._hover:
+            bg = _mix_hex(HOVER, PANEL, 0.6)
+        else:
+            bg = PANEL
         self.setStyleSheet(
-            f"QFrame#pluginCard {{ background: {bg};"
-            f" border: 1px solid {border}; border-radius: {_CARD_RADIUS}px; }}")
+            f"QFrame#pluginCard {{ background: {bg}; border: none;"
+            f" border-left: 3px solid {ACCENT if self._sel else 'transparent'};"
+            f" border-radius: {_CARD_RADIUS}px; }}")
+        self._title.setStyleSheet(
+            f"color: {ACCENT_HOVER if self._sel else TEXT};"
+            f" font-size: 13px; font-weight: {_W_STRONG};"
+            "background: transparent;")
+        if self._desc is not None:
+            self._desc.setStyleSheet(
+                f"color: {TEXT}; font-size: 12px;"
+                "background: transparent;")
 
     def set_selected(self, on: bool):
         self._sel = bool(on)
@@ -4262,6 +4305,113 @@ class _MarketCaptchaDialog(QDialog):
         super().done(result)
 
 
+_SAVE_OVERLAY_MIN_MS = 900   # 保存遮罩最短展示时长（避免一闪而过的闪烁）
+
+
+class _LoadingOverlay(QWidget):
+    """保存设置时的磨砂遮罩：高斯模糊下层内容 + 8 个圆点转圈（60fps）+ 描述文字。
+
+    背景在 start 时一次性抓取父窗口并高斯模糊（保存期间界面静止，无需实时模糊）；
+    8 圆点按相位差形成「高亮圆点沿圆周追逐」的拖尾，QTimer 16ms 驱动 ≈ 60fps。
+    """
+
+    DOTS = 8
+    TRACK_R = 15.0      # 圆点轨道半径
+    DOT_R = 3.3         # 圆点基础半径（head 处）
+    PERIOD_MS = 880.0   # 旋转一周周期
+
+    def __init__(self, parent, accent: str, text: str, text_color: str):
+        super().__init__(parent)
+        self._accent = QColor(accent)
+        self._text = text
+        self._text_color = QColor(text_color)
+        self._blur = None
+        self._frame = 0
+        self._angle = 0.0
+        self._t0 = 0.0
+        self.setStyleSheet("background: transparent;")
+        # 遮罩拦截其下所有鼠标 / 键盘事件，防止保存期间误操作
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)   # ≈ 60fps
+        # 高精度计时，避免后台/负载下降频时动画被拉慢
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        par = self.parent()
+        self.setGeometry(par.rect())
+        self._blur = self._capture_blur()
+        self.raise_()
+        self.show()
+        self._frame = 0
+        self._t0 = time.monotonic()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def _capture_blur(self):
+        """抓取父窗口当前画面并高斯模糊（此时遮罩尚未显示，grab 不含遮罩）。"""
+        from PyQt6.QtWidgets import (QGraphicsScene, QGraphicsPixmapItem,
+                                     QGraphicsBlurEffect)
+        pm = self.parent().grab()
+        effect = QGraphicsBlurEffect()
+        effect.setBlurRadius(22)
+        scene = QGraphicsScene()
+        item = QGraphicsPixmapItem(pm)
+        item.setGraphicsEffect(effect)
+        scene.addItem(item)
+        scene.setSceneRect(0, 0, pm.width(), pm.height())
+        out = QPixmap(pm.size())
+        out.fill(Qt.GlobalColor.transparent)
+        p = QPainter(out)
+        scene.render(p)
+        p.end()
+        return out
+
+    def _tick(self):
+        self._frame += 1
+        # 角度由真实经过时间决定：timer 偶尔降频也不改变旋转周期（只是帧率下降）
+        elapsed_ms = (time.monotonic() - self._t0) * 1000.0
+        self._angle = (elapsed_ms / self.PERIOD_MS) * 2.0 * math.pi
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._blur is not None:
+            p.drawPixmap(0, 0, self._blur)
+        # 半透明压暗，增强磨砂玻璃层次（深色 / 浅色主题均压一层）
+        p.fillRect(self.rect(), QColor(0, 0, 0, 64))
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0 - 12.0
+        n = self.DOTS
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(n):
+            theta = i * (2.0 * math.pi / n) - math.pi / 2.0
+            # 相对 head 的拖尾位置：0 = head（最亮最大），沿运动方向增大到接近 1。
+            # 8 个圆点都保持可见（最暗也有底量），避免末端淡出到看不见。
+            t = ((theta - self._angle) % (2.0 * math.pi)) / (2.0 * math.pi)
+            alpha = int(48 + 207 * (1.0 - t) ** 1.3)
+            r = self.DOT_R * (1.0 - 0.32 * t)
+            x = cx + self.TRACK_R * math.cos(theta)
+            y = cy + self.TRACK_R * math.sin(theta)
+            c = QColor(self._accent)
+            c.setAlpha(alpha)
+            p.setBrush(c)
+            p.drawEllipse(QPointF(x, y), r, r)
+        # 描述文字
+        p.setPen(self._text_color)
+        f = self.font()
+        f.setPointSize(10)
+        p.setFont(f)
+        tr = QRectF(0, cy + self.TRACK_R + 16, self.width(), 28)
+        p.drawText(tr, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                   self._text)
+        p.end()
+
+
 class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
@@ -4441,7 +4591,7 @@ class _AgentSettingsDialog(QDialog):
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
             f"QLineEdit, QPlainTextEdit, QComboBox {{ background: {_in_bg};"
             f"color: {self._TEXT}; border: 1px solid {self._BORDER};"
-            "border-radius: 12px; padding: 6px 10px; }}"
+            "border-radius: 12px; padding: 6px 10px; }"
             f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
             f"border: 1px solid {self._BORDER}; background: {_in_focus}; }}"
             f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
@@ -4459,7 +4609,7 @@ class _AgentSettingsDialog(QDialog):
         """左侧导航样式。"""
         return (
             f"QListWidget {{ background: {self._PANEL}; border: none;"
-            "padding-top: 10px; outline: none; }}"
+            "padding-top: 10px; outline: none; }"
             f"QListWidget::item {{ color: {self._DIM}; padding: 12px 14px;"
             "font-size: 13px; font-weight: 600; border: none;"
             f"border-left: 3px solid transparent; }}"
@@ -4735,7 +4885,7 @@ class _AgentSettingsDialog(QDialog):
         self.disable_tools_edit.setStyleSheet(
             f"QPlainTextEdit {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-            "padding: 6px 10px; font-size: 13px; }}"
+            "padding: 6px 10px; font-size: 13px; }"
             f"QPlainTextEdit:focus {{ border: 1px solid {self._BORDER}; }}")
         lay.addWidget(self.disable_tools_edit)
         # 网络代理：全局（系统代理指向本机转发器）或回退（仅失败时经 SSH 隧道）
@@ -4790,7 +4940,7 @@ class _AgentSettingsDialog(QDialog):
             edit.setStyleSheet(
                 f"QLineEdit {{ background: {self._PANEL}; color: {self._TEXT};"
                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                "padding: 6px 10px; font-size: 13px; }}"
+                "padding: 6px 10px; font-size: 13px; }"
                 f"QLineEdit:focus {{ border: 1px solid {self._BORDER}; }}")
             return edit
 
@@ -4833,7 +4983,7 @@ class _AgentSettingsDialog(QDialog):
         self.proxy_bypass_edit.setStyleSheet(
             f"QLineEdit {{ background: {self._PANEL}; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-            "padding: 6px 10px; font-size: 13px; }}"
+            "padding: 6px 10px; font-size: 13px; }"
             f"QLineEdit:focus {{ border: 1px solid {self._BORDER}; }}")
         lay.addWidget(self.proxy_bypass_edit)
         self.proxy_status_lbl = QLabel("")
@@ -7252,7 +7402,8 @@ class _AgentSettingsDialog(QDialog):
             QMessageBox.warning(self, _ui("导出失败"), msg)
 
     def _on_coplugin_toggle(self, *_):
-        """启用/停用 Copilot 插件：自动写入/回滚转译层，并热加载、重建服务。"""
+        """启用/停用 Copilot 插件：核心层一站式完成 转译层写入/回滚 + 热加载 +
+        失败自动回滚 + UI 挂摘（页面/服务/托盘/快捷键），全程不重启应用。"""
         p = self._current_coplugin()
         if not p.get("name"):
             QMessageBox.information(self, _ui("提示"), _ui("请先选择一个 Copilot 插件"))
@@ -7260,55 +7411,18 @@ class _AgentSettingsDialog(QDialog):
         name = p.get("name", "")
         target = not p.get("enabled", True)
         try:
+            # 导入 main_window 即注册热插拔 UI 事件（页面/服务/托盘/快捷键挂摘）
+            from zhuzhu_Copilot.ui import main_window as _mw  # noqa: F401
             from zhuzhu_Copilot.core import copilot_plugins
-            from zhuzhu_Copilot.core import hot_reload
-            from zhuzhu_Copilot.ui import main_window as _mw
-        except Exception as e:
-            QMessageBox.warning(self, _ui("操作失败"), str(e))
-            return
-        # 停用前先停服务：避免热加载期间旧句柄仍在运行
-        if not target:
-            _mw.stop_copilot_plugin(name)
-        try:
-            # set_enabled 内部已自动 apply（启用）/ revert（停用）转译层
+            # set_enabled：磁盘事务 → 热加载 → 失败自动回滚 → UI 事件（本线程同步执行）
             ok, msg = copilot_plugins.set_enabled(name, target)
         except Exception as e:
             ok, msg = False, f"操作失败: {e}"
-        if not ok:
-            # 停用流程可能已先停掉服务：失败时恢复原状
-            _mw.restart_copilot_services()
-            self._reload_coplugin_list()
-            QMessageBox.warning(self, _ui("操作失败"), msg)
-            return
-        result = hot_reload.reload_overlay()
-        detail = hot_reload.summary(result)
-        if target and result.get("failed"):
-            # 绝不重启策略：热加载失败 = 该变更无法在运行中生效 → 立即自动回滚，
-            # 让应用保持一致，而不是留一套"重启后才生效"的半吊子变更。
-            try:
-                copilot_plugins.set_enabled(name, False)
-                hot_reload.reload_overlay(force=True)
-                _mw.restart_copilot_services()
-                detail = ("该插件的变更无法热加载（%s），已自动回滚，未要求重启。"
-                          % (result["failed"][0] if result["failed"] else "未知原因"))
-                result = {"reloaded": [], "imported": [], "patched": [],
-                          "rebound": 0, "dropped": [], "refreshed": [],
-                          "skipped": [], "failed": ["自动回滚"]}
-            except Exception as e:
-                detail = f"热加载失败且回滚异常：{e}"
-        _mw.restart_copilot_services()
-        if target and not result.get("failed"):
-            # 热插拔：启用后当场把页面/玻璃窗口/托盘/快捷键挂上，不必重启应用
-            try:
-                _mw.start_copilot_plugin(name)
-            except Exception:
-                pass
         self._reload_coplugin_list()
-        text = f"{msg}\n{detail}" if detail else msg
-        if result.get("failed"):
-            QMessageBox.warning(self, _ui("插件"), text)
+        if ok:
+            QMessageBox.information(self, _ui("插件"), msg)
         else:
-            QMessageBox.information(self, _ui("插件"), text)
+            QMessageBox.warning(self, _ui("操作失败"), msg)
 
     def _on_coplugin_delete(self, *_):
         p = self._current_coplugin()
@@ -7325,19 +7439,13 @@ class _AgentSettingsDialog(QDialog):
         if ret != QMessageBox.StandardButton.Yes:
             return
         try:
-            from zhuzhu_Copilot.core import copilot_plugins, hot_reload
-            from zhuzhu_Copilot.ui import main_window as _mw
-        except Exception as e:
-            QMessageBox.warning(self, _ui("删除失败"), str(e))
-            return
-        _mw.stop_copilot_plugin(name)      # 先停服务，避免热加载期间仍在运行
-        try:
+            from zhuzhu_Copilot.ui import main_window as _mw  # noqa: F401
+            from zhuzhu_Copilot.core import copilot_plugins
+            # delete_plugin 内部顺序：摘 UI/停服务 → 回滚 → 清理 → 删目录 →
+            # 热加载卸载 → 重建其余服务（全程不重启）
             ok, msg = copilot_plugins.delete_plugin(name)
         except Exception as e:
             ok, msg = False, f"删除失败: {e}"
-        if ok:
-            hot_reload.reload_overlay()
-            _mw.restart_copilot_services()
         self._reload_coplugin_list()
         if ok:
             QMessageBox.information(self, _ui("已删除"), msg)
@@ -9291,6 +9399,20 @@ class _AgentSettingsDialog(QDialog):
                     p._set_session_workdir(sid, wd_edit.text().strip())
         except Exception:
             pass
+        # 数据收集完成 → 显示磨砂遮罩（高斯模糊 + 8 圆点转圈），延迟执行持久化，
+        # 让遮罩先渲染、转圈流畅（60fps），避免保存一闪而过。
+        self._pending_data = data
+        self._overlay = _LoadingOverlay(
+            self, self._ACCENT, _ui("请等待，正在应用更改中"), self._TEXT)
+        self._overlay.start()
+        self._save_t0 = time.monotonic()
+        QTimer.singleShot(220, self._finish_save)
+
+    def _finish_save(self):
+        """遮罩显示后执行实际持久化与应用，再保证最短展示时长后关闭。"""
+        data = getattr(self, "_pending_data", None)
+        if data is None:
+            return
         if agent_skills.save_settings(data):
             # 网络代理即时生效：全局模式启停本机转发器并接管/还原系统代理
             try:
@@ -9305,7 +9427,10 @@ class _AgentSettingsDialog(QDialog):
             if mcp_ok and p is not None and hasattr(p, "_reconnect_mcp"):
                 p._reconnect_mcp()
             if not mcp_ok:
-                QMessageBox.warning(self, _ui("提示"), _ui("MCP 配置保存失败（无写入权限），其余设置已保存"))
+                # 非阻断提示：先落遮罩，再弹（MCP 失败不影响其余设置）
+                QTimer.singleShot(0, lambda: QMessageBox.warning(
+                    self, _ui("提示"),
+                    _ui("MCP 配置保存失败（无写入权限），其余设置已保存")))
             # 音色与自动朗读：独立写入 tts.json，避免被 settings.json 覆写
             agent_tts.save_config(auto_read=self.auto_read_check.isChecked(),
                                   speech_rate=round(self.speed_slider.value() / 100.0, 2)
@@ -9318,9 +9443,22 @@ class _AgentSettingsDialog(QDialog):
                     fp._on_fun_settings_changed()
             except Exception:
                 pass
-            self.accept()
+            # 保证遮罩最短展示（大厂做法：即使保存很快也不闪烁），再关闭
+            elapsed_ms = (time.monotonic() - self._save_t0) * 1000.0
+            wait = max(0, int(_SAVE_OVERLAY_MIN_MS - elapsed_ms))
+            QTimer.singleShot(wait, self._close_after_save)
         else:
+            ov = getattr(self, "_overlay", None)
+            if ov is not None:
+                ov.stop()
             QMessageBox.warning(self, _ui("错误"), _ui("保存设置失败（无写入权限）"))
+
+    def _close_after_save(self):
+        ov = getattr(self, "_overlay", None)
+        if ov is not None:
+            ov.stop()
+        self._pending_data = None
+        self.accept()
 
     def _import_skill(self, *_):
         """导入市场标准技能文件：SKILL.md 单文件或含 SKILL.md 的 zip 包"""
@@ -10498,6 +10636,10 @@ class _DropTextEdit(QPlainTextEdit):
         self.setAcceptDrops(True)
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # viewport 透明：QSS 给 QPlainTextEdit 设了 border-radius 圆角，但 viewport
+        # 默认以直角矩形绘制背景，形成「外圆角边框 + 内嵌直角填充」的不统一。让
+        # viewport 透明，由外层 widget 绘制圆角背景，文本仍由 viewport 正常绘制。
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.textChanged.connect(lambda: QTimer.singleShot(0, self._auto_height))
         self._ime_preedit = ""   # 输入法预编辑串（组合态未上屏内容，inputMethodEvent 维护）
         # 初始校准：QPlainTextEdit 默认尺寸偏高，事件循环启动后立刻按内容压回单行高
@@ -10507,6 +10649,43 @@ class _DropTextEdit(QPlainTextEdit):
         # 窗口宽度变化 → 换行变化 → 高度需重新校准（去抖）
         super().resizeEvent(e)
         QTimer.singleShot(0, self._auto_height)
+
+    def _paint_bg(self):
+        """圆角背景色：壁纸模式返回 None（透出壁纸）；非壁纸返回 FIELD，聚焦 focus_bg。"""
+        try:
+            if _feedback_boosted():
+                return None
+            if self.hasFocus():
+                return _mix_hex(HOVER, FIELD, 0.55)
+            return FIELD
+        except Exception:
+            return None
+
+    def paintEvent(self, e):
+        # QPlainTextEdit 的 paintEvent 运行在 viewport 绘制上下文（event.rect 是
+        # viewport 714x32，非整个 widget 734x42）。先在 viewport 上绘制与整个输入框
+        # 对齐的圆角背景（负偏移 viewport 位置），再让默认逻辑绘制文字。
+        bg = self._paint_bg()
+        if bg:
+            vp = self.viewport()
+            ox, oy = vp.x(), vp.y()      # viewport 在输入框内的偏移（10, 5）
+            p = QPainter(vp)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(bg))
+            # 画覆盖整个输入框的圆角矩形（换算到 viewport 坐标）
+            p.drawRoundedRect(QRectF(-ox, -oy, self.width(), self.height()),
+                              _INPUT_RADIUS, _INPUT_RADIUS)
+            p.end()
+        super().paintEvent(e)
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self.update()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.update()
 
     def _auto_height(self):
         """高度随内容自适应：单行 42px，多行增高，最高 140px（超出内部滚动）"""
@@ -12446,8 +12625,10 @@ class _TokenStatsPopover(QFrame):
 
     PREFERRED_WIDTH = 340
     SLIDE = 8          # 弹出位移（px）：自下方 8px 上移到目标位置
-    IN_MS = 160        # 弹出时长（丝滑但不等候）
-    OUT_MS = 120       # 收起时长（略快于弹出，手感收得住）
+    # 时长已统一走动效性格注册表（招 5，见 ui/motion.py）；这两个类属性保留给
+    # 遗留引用（如 _arm_close_guard 的兜底定时），值与注册表同源不会漂移
+    IN_MS = motion.SETTLE_MS     # 弹出：落定性格
+    OUT_MS = motion.FADE_OUT_MS  # 收起：消退性格
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -12633,24 +12814,26 @@ class _TokenStatsPopover(QFrame):
         """
         card_bg = _base_color("PANEL")
         chip_bg = _base_color("HOVER")
+        # 招 4：浮层里的百分比 / 用量 / 明细值全部锁等宽数字（实时刷新不抖动）
+        _num = _numeric_css()
         self.setStyleSheet(
-            f"#tokenStatsPop {{ background: {card_bg}; border: 1px solid {_base_color('BORDER_SOFT')};"
+            f"#tokenStatsPop {{ background: {card_bg}; border: none;"
             f" border-radius: {RADIUS_MD}px; }}"
             f"#tokenStatsPop QLabel#tkTitle {{ color: {TEXT}; font-size: {FONT_BODY}px;"
-            " font-weight: 700; }"
+            f" font-weight: {_W_TITLE}; }}"
             f"#tokenStatsPop QLabel#tkChip {{ color: {TEXT_DIM}; background: {chip_bg};"
-            f" border: 1px solid {_base_color('BORDER_SOFT')}; border-radius: {RADIUS_SM}px;"
+            f" border: none; border-radius: {RADIUS_SM}px;"
             f" padding: 1px {SPACING_SM}px; font-size: {FONT_CAPTION}px; }}"
             f"#tokenStatsPop QLabel#tkRatio {{ color: {TEXT}; font-size: {FONT_TITLE}px;"
-            " font-weight: 700; }"
+            f" font-weight: {_W_TITLE}; {_num} }}"
             f"#tokenStatsPop QLabel#tkUsage {{ color: {TEXT_DIM};"
-            f" font-size: {FONT_SMALL}px; }}"
+            f" font-size: {FONT_SMALL}px; {_num} }}"
             f"#tokenStatsPop QLabel#tkDim {{ color: {TEXT_DIM};"
             f" font-size: {FONT_SMALL}px; }}"
             f"#tokenStatsPop QLabel#tkKey {{ color: {TEXT_DIM};"
             f" font-size: {FONT_SMALL}px; }}"
             f"#tokenStatsPop QLabel#tkVal {{ color: {TEXT}; font-size: {FONT_SMALL}px;"
-            " font-weight: 600; }"
+            f" font-weight: {_W_BUTTON}; }}"
             f"#tokenStatsPop QLabel#tkHint {{ color: {TEXT_DIM};"
             f" font-size: {FONT_CAPTION}px; }}")
         # 字阶随主题/映射变化：键列宽与值省略宽度需按新字体重算（否则会挤/溢出）
@@ -12888,7 +13071,12 @@ class _TokenStatsPopover(QFrame):
         return bool(alive)
 
     def popup_animated(self, rect: QRect):
-        """丝滑弹出：透明度 0→1（OutCubic）同时自下方 SLIDE 上移到目标位置"""
+        """丝滑弹出：透明度 0→1 同时自下方 SLIDE 上移到目标位置。
+
+        招 5：曲线/时长取自动效性格注册表（motion.settle 落定性格，
+        SETTLE_MS 240ms）—— 弹层属「落定」不属「咬合」，不加回弹过冲，
+        否则大卡片会出现「拽出去又收回来」的晃感。
+        """
         eff = self._ensure_effect()
         eff.setOpacity(0.0)
         start = QRect(rect.x(), rect.y() + self.SLIDE, rect.width(), rect.height())
@@ -12896,36 +13084,40 @@ class _TokenStatsPopover(QFrame):
         self.show()
         self.raise_()
         a_op = QPropertyAnimation(eff, b"opacity", self)
-        a_op.setDuration(self.IN_MS)
+        a_op.setDuration(motion.SETTLE_MS)
         a_op.setStartValue(0.0)
         a_op.setEndValue(1.0)
-        a_op.setEasingCurve(QEasingCurve.Type.OutCubic)
+        a_op.setEasingCurve(motion.settle())
         a_geo = QPropertyAnimation(self, b"geometry", self)
-        a_geo.setDuration(self.IN_MS)
+        a_geo.setDuration(motion.SETTLE_MS)
         a_geo.setStartValue(start)
         a_geo.setEndValue(rect)
-        a_geo.setEasingCurve(QEasingCurve.Type.OutCubic)
+        a_geo.setEasingCurve(motion.settle())
         self._run(a_op)
         self._run(a_geo)
 
     def close_animated(self):
-        """收起：透明度 1→0 同时轻微下移，动画结束后隐藏（可再次弹出复用本控件）"""
+        """收起：透明度 1→0 同时轻微下移，动画结束后隐藏（可再次弹出复用本控件）。
+
+        招 5：关闭走「消退」性格（fade_out，FADE_OUT_MS 160ms）——
+        比弹出更快，收得住手。
+        """
         if not self.isVisible() or self._closing:
             return
         self._closing = True
         eff = self._ensure_effect()
         cur = self.geometry()
         a_op = QPropertyAnimation(eff, b"opacity", self)
-        a_op.setDuration(self.OUT_MS)
+        a_op.setDuration(motion.FADE_OUT_MS)
         a_op.setStartValue(eff.opacity())
         a_op.setEndValue(0.0)
-        a_op.setEasingCurve(QEasingCurve.Type.InCubic)
+        a_op.setEasingCurve(motion.fade_out())
         a_geo = QPropertyAnimation(self, b"geometry", self)
-        a_geo.setDuration(self.OUT_MS)
+        a_geo.setDuration(motion.FADE_OUT_MS)
         a_geo.setStartValue(cur)
         a_geo.setEndValue(QRect(cur.x(), cur.y() + self.SLIDE // 2,
                                 cur.width(), cur.height()))
-        a_geo.setEasingCurve(QEasingCurve.Type.InCubic)
+        a_geo.setEasingCurve(motion.fade_out())
         a_op.finished.connect(self._after_close)
         self._run(a_op)
         self._run(a_geo)
@@ -12956,8 +13148,9 @@ class _ProfilePanel(QFrame):
     #: 而不是被压成「barth…」；真正的上限由 MAX_WIDTH / 可用宽兜底。
     _USERNAME_MAX_PX = 188
     SLIDE = 16          # 水平滑入位移（px）
-    IN_MS = 180
-    OUT_MS = 130
+    # 时长同源自动效注册表（招 5，见 ui/motion.py）
+    IN_MS = motion.SETTLE_MS
+    OUT_MS = motion.FADE_OUT_MS
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -13438,15 +13631,17 @@ class _ProfilePanel(QFrame):
         self.show()
         self.raise_()
         a_op = QPropertyAnimation(eff, b"opacity", self)
-        a_op.setDuration(self.IN_MS)
+        a_op.setDuration(motion.SETTLE_MS)
         a_op.setStartValue(0.0)
         a_op.setEndValue(1.0)
-        a_op.setEasingCurve(QEasingCurve.Type.OutCubic)
+        # 招 5：滑入走「落定」性格（motion.settle，无过冲）—— 侧面板是大件，
+        # 加回弹会晃
+        a_op.setEasingCurve(motion.settle())
         a_geo = QPropertyAnimation(self, b"geometry", self)
-        a_geo.setDuration(self.IN_MS)
+        a_geo.setDuration(motion.SETTLE_MS)
         a_geo.setStartValue(start)
         a_geo.setEndValue(rect)
-        a_geo.setEasingCurve(QEasingCurve.Type.OutCubic)
+        a_geo.setEasingCurve(motion.settle())
         self._run(a_op)
         self._run(a_geo)
 
@@ -13466,16 +13661,17 @@ class _ProfilePanel(QFrame):
         eff = self._ensure_effect()
         cur = self.geometry()
         a_op = QPropertyAnimation(eff, b"opacity", self)
-        a_op.setDuration(self.OUT_MS)
+        a_op.setDuration(motion.FADE_OUT_MS)
         a_op.setStartValue(eff.opacity())
         a_op.setEndValue(0.0)
-        a_op.setEasingCurve(QEasingCurve.Type.InCubic)
+        # 招 5：滑出走「消退」性格（motion.fade_out，比滑入快，收得住）
+        a_op.setEasingCurve(motion.fade_out())
         a_geo = QPropertyAnimation(self, b"geometry", self)
-        a_geo.setDuration(self.OUT_MS)
+        a_geo.setDuration(motion.FADE_OUT_MS)
         a_geo.setStartValue(cur)
         a_geo.setEndValue(QRect(cur.x() + self.SLIDE, cur.y(),
                                 cur.width(), cur.height()))
-        a_geo.setEasingCurve(QEasingCurve.Type.InCubic)
+        a_geo.setEasingCurve(motion.fade_out())
         a_op.finished.connect(self._after_close)
         self._run(a_op)
         self._run(a_geo)
@@ -14256,7 +14452,7 @@ class CodePreviewWindow(QWidget):
         mode_row.addWidget(self.open_btn)
         # 撤销 / 重做：仅作用于文本/代码编辑页（QPlainTextEdit 自带撤销栈）
         self.undo_btn = QPushButton()
-        self.undo_btn.setIcon(_line_icon("undo", 15, TEXT))
+        self.undo_btn.setIcon(_svg_icon(_UNDO_SVG, 15, TEXT))
         self.undo_btn.setToolTip(_ui("撤销上一步 (Ctrl+Z)"))
         self.undo_btn.setFixedSize(26, 26)
         self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -14264,7 +14460,7 @@ class CodePreviewWindow(QWidget):
         self.undo_btn.clicked.connect(self._undo_code)
         mode_row.addWidget(self.undo_btn)
         self.redo_btn = QPushButton()
-        self.redo_btn.setIcon(_line_icon("redo", 15, TEXT))
+        self.redo_btn.setIcon(_svg_icon(_REDO_SVG, 15, TEXT))
         self.redo_btn.setToolTip(_ui("重做下一步 (Ctrl+Y)"))
         self.redo_btn.setFixedSize(26, 26)
         self.redo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -14406,6 +14602,11 @@ class CodePreviewWindow(QWidget):
                 f"border-radius: 5px; padding: 2px 11px; font-size: 11px;"
                 f"font-weight: 600; }}"
                 f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
+        # 撤销 / 重做图标随主题重新着色（_svg_icon 按颜色缓存，TEXT 已更新）
+        for name, svg in (("undo_btn", _UNDO_SVG), ("redo_btn", _REDO_SVG)):
+            b = getattr(self, name, None)
+            if b is not None:
+                b.setIcon(_svg_icon(svg, 15, TEXT))
 
     def apply_surface_theme(self):
         """按当前表面色就地刷新本面板（主题/壁纸透明态变化时由主面板快路径调用，**不重建**）。
@@ -17755,8 +17956,10 @@ class _TitleBar(QWidget):
         lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
 
         name = QLabel("zhuzhu Copilot", self)
+        # 招 2：字重随主题降档（暗色 600，浅色 700）
         name.setStyleSheet(
-            f"color: {TEXT}; font-size: 12px; font-weight: 700; background: transparent;")
+            f"color: {TEXT}; font-size: 12px; font-weight: {_W_TITLE};"
+            " background: transparent;")
         lay.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # Agent 徽章：沿用启动页样式，深浅色自动反色（深色白底黑字 / 浅色黑底白字）。
@@ -18771,23 +18974,24 @@ class AgentPanel(QDialog):
         stats_layout.setSpacing(2)
         stats_layout.setContentsMargins(0, 0, 0, 0)
         self.cpu_label = QLabel("CPU 0%")
-        self.cpu_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        # 招 4：实时跳动数字锁等宽，防止刷新时整串左右抖动
+        self.cpu_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; {_numeric_css()}")
         self.cpu_label.setContentsMargins(0, 0, 0, 0)
         self.cpu_label.setMinimumWidth(48)
         stats_layout.addWidget(self.cpu_label)
         self.mem_label = QLabel("MEM 0%")
-        self.mem_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        self.mem_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; {_numeric_css()}")
         self.mem_label.setContentsMargins(0, 0, 0, 0)
         self.mem_label.setMinimumWidth(52)
         stats_layout.addWidget(self.mem_label)
         self.speed_label = QLabel("↑0 KB/s ↓0 KB/s")
-        self.speed_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        self.speed_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px; {_numeric_css()}")
         self.speed_label.setContentsMargins(0, 0, 0, 0)
         self.speed_label.setMinimumWidth(108)
         stats_layout.addWidget(self.speed_label)
         # 时间显示：xxxx年-xx月-xx日-xx:xx:xx（每秒刷新）
         self.clock_label = QLabel("")
-        self.clock_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        self.clock_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; {_numeric_css()}")
         self.clock_label.setContentsMargins(0, 0, 0, 0)
         self.clock_label.setToolTip(_ui("本地时间"))
         stats_layout.addWidget(self.clock_label)
@@ -18968,7 +19172,7 @@ class AgentPanel(QDialog):
         self.input.setMinimumHeight(32)
         self.input.setMaximumHeight(110)
         # 壁纸 + 浅色下：描边/文字（含光标色系）纯黑；聚焦蓝色泛光见 _install_focus_glow
-        self.input.setStyleSheet(_input_qss())
+        _apply_input_style(self.input)
         self.input.submit.connect(self._send)   # Enter 发送（Shift+Enter 换行）
         self.input.textChanged.connect(self._cmd_debounce.start)   # 防抖：暂停后再刷候选
         self.input.textChanged.connect(self._sync_action_style)
@@ -19127,7 +19331,8 @@ class AgentPanel(QDialog):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(10)
         t = QLabel("zhuzhu Copilot")
-        t.setStyleSheet(f"color: {TEXT}; font-size: {FONT_HERO}px; font-weight: 800;")
+        # 招 2：大标题字重随主题降档（暗色 600，浅色 700），800 在深色底发糊
+        t.setStyleSheet(f"color: {TEXT}; font-size: {FONT_HERO}px; font-weight: {_W_TITLE};")
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
         box.addWidget(t)
         sub = QLabel(_welcome_greeting())
@@ -20883,12 +21088,17 @@ class AgentPanel(QDialog):
         on = self._code_enabled()
         try:
             btn.setIcon(_line_icon("preview", 18, ACCENT if on else TEXT_DIM))
-            btn.setStyleSheet(
-                f"QPushButton {{ background: transparent; color: {ACCENT if on else TEXT_DIM};"
-                f"border: 1px solid {ACCENT if on else BORDER};"
-                f"border-radius: {RADIUS_SM}px; }}"
-                f"QPushButton:hover {{ border-color: {ACCENT_HOVER};"
-                f"color: {ACCENT if on else TEXT}; background: {HOVER}; }}")
+            if on:
+                # 招 1：选中态不画蓝色方框，用「强调色低透明淡染」填充，hover 加深
+                _active_bg = _mix_hex(ACCENT, PANEL, 0.18)
+                _active_bg_hover = _mix_hex(ACCENT, PANEL, 0.28)
+                btn.setStyleSheet(
+                    f"QPushButton {{ background: {_active_bg}; color: {ACCENT};"
+                    f"border: none; border-radius: {RADIUS_SM}px; }}"
+                    f"QPushButton:hover {{ background: {_active_bg_hover};"
+                    f"color: {ACCENT_HOVER}; }}")
+            else:
+                btn.setStyleSheet(_BTN_GHOST)
         except Exception:
             pass
 
@@ -21257,6 +21467,11 @@ class AgentPanel(QDialog):
             # 命令块标题栏三点的实色：取**未受壁纸透明覆写**的原始描边色（见 _base_color）。
             # 壁纸模式下 BORDER 会让位给壁纸（transparent），若圆点也取它就会整个消失。
             dot=_base_color("BORDER"),
+            # 招 2：字重档位随主题降档（暗色减细一档）；招 4：等宽数字栈
+            w_title=_W_TITLE,
+            w_strong=_W_STRONG,
+            w_emphasis=_W_EMPHASIS,
+            font_numeric=NUMERIC_FONT_STACK,
         )
 
     def _topbar_wide(self) -> bool:
@@ -22494,10 +22709,7 @@ class AgentPanel(QDialog):
         inp = getattr(self, "input", None)
         if inp is None:
             return
-        try:
-            inp.setStyleSheet(_input_qss())
-        except Exception:
-            pass
+        _apply_input_style(inp)
         apply_input_caret(inp)
 
     def _refresh_side_windows(self):
@@ -24775,7 +24987,7 @@ class AgentPanel(QDialog):
         _set(getattr(self, "settings_btn", None), _BTN_ICON)
         _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
         _set(getattr(self, "token_btn", None), _BTN_GHOST)
-        _set(getattr(self, "input", None), _input_qss())
+        _apply_input_style(getattr(self, "input", None))
         # 光标宽度 / 闪烁周期随壁纸状态走：输入框在快路径下不重建，
         # 不在这里补一刀就会残留旧档位（壁纸下光标仍细得看不见）。
         apply_input_caret(getattr(self, "input", None))

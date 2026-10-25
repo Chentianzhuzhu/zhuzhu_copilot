@@ -234,7 +234,7 @@ class PerfPage(QWidget):
         k = _kernel()
         if k is None:
             self.lbl_hint.setText(
-                "性能内核未加载：请启用插件并重启应用（源码级变更需要重启才生效）。")
+                "性能内核未加载：请在设置中启用本插件（启用后即时热加载，无需重启）。")
             return
         try:
             snap = k.snapshot()
@@ -359,7 +359,7 @@ def show_report():
     """托盘动作：弹窗展示完整性能报告（无需打开面板）。"""
     from PyQt6.QtWidgets import QMessageBox
     k = _kernel()
-    text = k.report_text() if k is not None else "性能内核未加载（请启用插件后重启应用）。"
+    text = k.report_text() if k is not None else "性能内核未加载（请在设置中启用本插件，启用后即时热加载，无需重启）。"
     box = QMessageBox()
     box.setWindowTitle("性能报告")
     box.setTextFormat(Qt.TextFormat.PlainText)

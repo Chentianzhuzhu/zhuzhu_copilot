@@ -35,7 +35,13 @@
   · 打包运行（安装版）：变更写入用户数据目录的源码覆盖层
     ~/.zhuzhu_Copilot/source_overlay/（镜像源码相对路径），由导入钩子让
     zhuzhu_Copilot.* 的导入优先命中覆盖层——安装版同样支持改主题、自定义
-    Agent、自定义工具、自定义语言、增删替换任何模块（应用后重启生效）。
+    Agent、自定义工具、自定义语言、增删替换任何模块。
+
+热插拔（硬承诺，不允许退化为"重启生效"）：本模块的启用/停用/删除/导入/AI 生成
+全部经由 `core/hot_reload.py` 在运行进程内即时装载/卸载；热加载失败时**自动回滚**
+该插件（revert 磁盘变更 + 强制热加载回滚结果），绝不给用户留半套生效变更。
+声明式扩展（页面/服务/托盘/快捷键）通过 hot_reload 的 UI 事件桥由 main_window
+即时挂摘；AI 工具链路（工作线程）触发时事件自动 marshal 到 GUI 线程执行。
 """
 
 import json
@@ -431,52 +437,100 @@ def overlay_info() -> dict:
 # ---------------------------------------------------------------------------
 
 def set_enabled(name: str, enabled: bool) -> tuple:
-    """启用/停用插件：启用时自动把变更写入转译层，停用时自动回滚。
+    """启用/停用插件并**即时热插拔**（绝对不需要重启应用）。
 
-    保证「转译层内容 == 启用中的插件」，用户不再需要手动点「应用/回滚」。
-    应用失败（校验不通过、编译失败）则启用失败并整体回滚，元数据保持停用。
+    启用流程：source_ops 写入转译层 → 热加载引擎在运行进程内装载 → 失败自动回滚
+    （revert + 强制热加载回滚结果）→ 成功后 UI 事件桥挂页面/服务/托盘/快捷键；
+    停用流程：先通过 UI 事件桥摘除页面/服务/托盘/快捷键 → revert 磁盘 →
+    热加载引擎立即卸载（新建模块直接摘出 sys.modules，修改模块还原回原版）。
+
+    保证两件事：① 转译层内容 == 启用中的插件；② 任何时候系统要么生效、要么
+    回滚，不存在"重启一下才生效"的半套变更。
     """
+    from zhuzhu_Copilot.core import hot_reload
+
     meta = _read_meta(name)
     if not meta:
         return False, f"插件「{name}」不存在"
     enabled = bool(enabled)
-    note = ""
+
     if enabled:
+        # 1) 磁盘事务：写入转译层（内部自带校验/备份/编译检查，失败一行未动）
         if source_ops(name) and not status(name).get("applied"):
             ok, msg = apply(name)
             if not ok:
                 return False, f"插件「{name}」启用失败：{msg}"
-            note = "，变更已自动写入转译层"
-    elif status(name).get("applied"):
+        # 2) 热加载：运行进程内即时装载（预编译失败不动任何模块；exec 失败中止后续）
+        res = hot_reload.reload_overlay()
+        if res.get("failed"):
+            # 3) 热加载失败 → 自动回滚（磁盘 + 运行态），绝不留半套变更
+            try:
+                revert(name)
+            except Exception:
+                pass
+            hot_reload.reload_overlay(force=True)
+            hot_reload.emit_ui("after_change", name)
+            bad_meta = _read_meta(name) or meta
+            bad_meta["enabled"] = False
+            bad_meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            _write_meta(name, bad_meta)
+            detail = "；".join(res["failed"][:3])
+            return False, (f"插件「{name}」热加载失败，已自动回滚（无需重启）：{detail}。"
+                           "请检查插件代码后重新启用")
+        # 4) 声明式扩展挂装（页面/服务/托盘/快捷键）；GUI 线程同步、工作线程自动 marshal
+        hot_reload.emit_ui("after_enable", name)
+        # 5) 写元数据
+        meta = _read_meta(name) or meta
+        meta["enabled"] = True
+        meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if not _write_meta(name, meta):
+            return False, "写入插件元数据失败"
+        hint = hot_reload.summary(res)
+        return True, f"插件「{name}」已启用并即时生效（无需重启）：{hint}"
+
+    # 停用：先摘 UI/服务，再回滚磁盘并热卸载
+    hot_reload.emit_ui("before_disable", name)
+    if status(name).get("applied"):
         ok, msg = revert(name)
         if not ok:
             return False, f"插件「{name}」停用失败：{msg}"
-        note = "，变更已自动回滚"
-    # apply/revert 会改写同一份 plugin.json（source_applied 等），故重新读取再写
+    res = hot_reload.reload_overlay()
+    hot_reload.emit_ui("after_change", name)
     meta = _read_meta(name) or meta
-    meta["enabled"] = enabled
+    meta["enabled"] = False
     meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     if not _write_meta(name, meta):
         return False, "写入插件元数据失败"
-    return True, ("已启用" if enabled else "已停用") + f"插件「{name}」{note}"
+    hint = hot_reload.summary(res)
+    return True, f"插件「{name}」已停用并即时卸载（无需重启）：{hint}"
 
 
 def delete_plugin(name: str) -> tuple:
-    """删除插件：已应用的源码变更先回滚，再删目录（含 agent 子包登记清理）。"""
+    """删除插件：先摘 UI/服务 → 已应用源码回滚 → 清理 agent 子包 → 删目录 →
+    热加载即时卸载（死模块摘除、修改模块还原）。"""
+    from zhuzhu_Copilot.core import hot_reload
     import shutil
     d = plugin_dir(name)
     if not d.is_dir():
         return False, f"插件「{name}」不存在"
+    # 1) 先摘页面/服务/托盘/快捷键（避免服务还持着插件代码跑）
+    hot_reload.emit_ui("before_disable", name)
     parts = []
+    # 2) 磁盘回滚
     if (d / "applied.json").is_file():
         ok, msg = revert(name)
         parts.append(msg)
+    # 3) agent 子包登记清理
     _unregister_agent_pkg(name)
+    # 4) 删目录
     try:
         shutil.rmtree(d)
     except OSError as e:
         return False, f"删除失败: {e}"
-    parts.append(f"已删除 Copilot 插件「{name}」")
+    # 5) 热加载：死模块立即摘除、被改模块还原为原版
+    res = hot_reload.reload_overlay()
+    hot_reload.emit_ui("after_change", name)
+    parts.append(f"已删除 Copilot 插件「{name}」并即时卸载（{hot_reload.summary(res)}）")
     return True, "；".join(parts)
 
 
@@ -690,11 +744,11 @@ def import_plugin_zip(zip_path: str) -> tuple:
             _write_meta(name, failed)
             return False, f"{msg}，但自动启用失败：{emsg}（插件已保持停用）"
         if n_ops:
-            msg += "。变更已自动写入转译层并生效"
+            msg += "。变更已即时热加载生效（无需重启）"
         else:
-            msg += "。该插件只含运行时扩展，已启用"
+            msg += "。该插件只含运行时扩展，已即时启用"
     elif n_ops:
-        msg += "。当前为停用状态，启用时会自动写入转译层"
+        msg += "。当前为停用状态，启用时会即时热加载生效"
     return True, msg
 
 
@@ -760,7 +814,7 @@ _COPILOT_OP_RULES = (
     "拿得到完整源码（如 GitHub 仓库）时最直接）或**文本锚点**（anchor / start，须真实"
     "存在且唯一，对版本差异更鲁棒）；设计前先 read_file 看清目标文件内容与行号；\n"
     "  · 严禁改动受保护核心程序：plugin_guard.py、security.py、security_engine/、"
-    "plugin_source.py、copilot_plugins.py、_copilot_overlay_hook.py、main.py；\n"
+    "plugin_source.py、copilot_plugins.py、hot_reload.py、_copilot_overlay_hook.py、main.py；\n"
     "  · 代码用 Python 3.13 标准库或已在依赖清单内的库，风格与目标文件一致；\n"
     "  · 每条 op 的 content 必须是完整、可独立编译的代码；\n"
     "  · 可以一次设计多条 op、跨多个功能模块综合修改并集成功能。\n"
@@ -946,6 +1000,6 @@ def create_from_nl(description: str, on_status=None) -> tuple:
         failed["enabled"] = False
         _write_meta(name, failed)
         return False, f"{msg}\n自动启用失败：{emsg}（插件已保持停用，可排查后手动启用）"
-    msg += ("\n变更已自动写入转译层并生效（不修改应用源码文件；逐文件备份、"
-            "编译检查，可 revert_copilot_plugin 回滚）")
+    msg += ("\n变更已即时热加载生效（无需重启；不修改应用源码文件；逐文件备份、"
+            "编译检查，可 revert_copilot_plugin 即时回滚）")
     return True, msg

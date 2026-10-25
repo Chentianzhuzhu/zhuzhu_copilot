@@ -552,14 +552,16 @@ MCP 型插件的配置会以大写环境变量注入 server 子进程（api_key 
 - **别和已装插件抢同一锚点**：同一行被两个插件改会互相覆盖，动手前先看已装插件的
   source_ops.json，选另一处特征行；
 - 受保护核心程序不得改动：`plugin_guard.py`、`plugin_source.py`、`copilot_plugins.py`、
-  `security.py`、`security_engine/`、`_copilot_overlay_hook.py`、`main.py`。
+  `hot_reload.py`、`security.py`、`security_engine/`、`_copilot_overlay_hook.py`、`main.py`。
 
 ### 四、生效与验证
 
 - 变更写入**转译层** `~/.zhuzhu_Copilot/source_overlay/`（镜像源码相对路径），**不改应用
   源码文件**，源码运行与 exe 安装版行为一致；启用即写入，停用即回滚（新建的删、改过的还原）。
-- 热加载会跳过持有进程级状态的模块（`agent_panel` / `main_window` / `styles`），
-  这类改动**必须重启应用**才生效——「装上了却没反应」九成是没重启。
+- 全部模块（含 `agent_panel` / `main_window` / `styles` 这类持有界面状态的模块）都由
+  热加载引擎在**运行进程内即时装载**（活类热修补、活实例自动刷新、UI 事件即时挂摘），
+  **任何插件都不需要重启应用**；启用后若看不到效果，先查热加载摘要里是否有 failed
+  （失败会自动回滚并保持插件停用），而不是让用户重启。
 - 验证三看：① 新页签 / 新托盘项 / 新快捷键是否出现；② 新工具能否被调用（让 AI 直接调一次）；
   ③ 设置-Copilot 插件页顶部「生效位置」的已加载模块数是否增加、卡片是否显示「已写入转译层」。
 - exe 里排查：先确认安装目录有 `_copilot_src/`（没有 = 该构建不含覆盖层机制，需重新打包），
@@ -675,8 +677,8 @@ browser_click/browser_type/browser_scroll/browser_eval/browser_html/browser_clos
   （自然语言 → AI 生成 source_ops 变更清单，三种写法可混用：`create_file` 新建模块、
   `insert_after` / `insert_at` / `append` 插入现有源码、`replace_module` / `replace_lines` /
   `replace_file` 修改既有实现，可跨多文件综合修改）→ `apply_copilot_plugin` 应用
-  （校验系统 → 逐文件备份 → 编译检查，任一失败整体回滚）→ **重启应用生效**；
-  改错了用 `revert_copilot_plugin` 一键回滚。变更只写转译层、不改应用源码文件，
+  （校验系统 → 逐文件备份 → 编译检查，任一失败整体回滚）→ **热加载引擎在运行进程内即时生效，任何模块都不需要重启应用**；
+  改错了用 `revert_copilot_plugin` 一键回滚（回滚同样即时）。变更只写转译层、不改应用源码文件，
   源码运行与 exe 安装版一致。插件包记得配 `icon.png`（方形 128~256px）与 author/updated_at，
   设置页列表会展示。老旧的「UI/UX 包」引擎已移除，界面定制一律走这里。
   现成范本：`perf-turbo`（性能优化：渲染缓存 + 节拍自适应 + 看板 + 工具）、
@@ -1324,6 +1326,16 @@ def create_md_skill(name: str, description: str, instruction: str,
         return False, "技能名仅支持字母/数字/下划线/连字符（≤50 字符）"
     description = (description or "").strip() or name
     instruction = (instruction or "").strip()
+    # 防御：调用方若把「完整 SKILL.md（含 frontmatter）」误当正文传入（AI 生成插件
+    # 时 skill_md 自带 frontmatter、或 AI 把整篇文档塞进 instruction），落盘会出现
+    # 双重 frontmatter，模型注入的技能正文以 "---" 开头且字段重复。这里统一剥掉外层
+    # frontmatter 只保留正文；description 缺失时顺带取其 frontmatter 字段。
+    if instruction.startswith("---"):
+        parsed = _parse_skill_md(instruction)
+        if parsed.get("instruction"):
+            instruction = parsed["instruction"]
+            if not description or description == name:
+                description = parsed.get("description") or description
     if not instruction:
         return False, "技能说明（instruction）不能为空"
     try:
@@ -1807,12 +1819,24 @@ def list_skills_for_workflow(workflow: str = "") -> list:
         name = s.get("name") or ""
         if not name or name in seen:
             continue
+        wf_skill = bool(s.get("workflow"))
+        if workflow:
+            # 与运行时隔离口径一致（见 _load_workflow_skills）：
+            # · 工作流专属技能：只在其所属工作流出现；
+            # · 绑定到其他工作流的技能：本工作流视图不显示（否则勾了也不加载，
+            #   表现为「配置了不起作用/无法配置」）；
+            # · 未绑定（全局）或绑定本工作流：显示并可启停。
+            if wf_skill and s.get("workflow") != workflow:
+                continue
+            b = bindings.get(name)
+            if b and not wf_skill and workflow not in b:
+                continue
         seen.add(name)
         out.append({
             "name": name,
             "description": s.get("description", "") or "",
             "builtin": is_builtin_skill(name),
-            "workflow_skill": bool(s.get("workflow")),
+            "workflow_skill": wf_skill,
             "enabled": states.get(name, True),
             "workflows": list(bindings.get(name, [])),
         })

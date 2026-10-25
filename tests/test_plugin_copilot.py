@@ -407,13 +407,13 @@ def test_set_enabled_auto_writes_and_reverts_overlay(frozen, iso):
     ov = frozen["overlay"]
     ok, msg = copilot_plugins.set_enabled("auto1", True)
     assert ok, msg
-    assert "自动写入转译层" in msg
+    assert "已启用" in msg and "无需重启" in msg
     assert (ov / "zhuzhu_Copilot" / "core" / "auto_mod.py").is_file()
     assert copilot_plugins.status("auto1")["applied"]
 
     ok, msg = copilot_plugins.set_enabled("auto1", False)
     assert ok, msg
-    assert "自动回滚" in msg
+    assert "已停用" in msg and "无需重启" in msg
     assert not (ov / "zhuzhu_Copilot" / "core" / "auto_mod.py").exists()
     assert not copilot_plugins.status("auto1")["applied"]
 
@@ -434,12 +434,14 @@ def test_hot_reload_picks_up_overlay_module(tmp_path, monkeypatch):
     before = list(sys.meta_path)
     try:
         res = hot_reload.reload_overlay()
-        assert "zhuzhu_Copilot.core.hotdemo" in res["reloaded"], res
+        # 转译层新增、从未导入的模块走「imported」（区别于已在运行的「reloaded」）
+        assert "zhuzhu_Copilot.core.hotdemo" in res["imported"], res
         mod = importlib.import_module("zhuzhu_Copilot.core.hotdemo")
         assert mod.VALUE == 1
 
         demos.write_text("VALUE = 2\n", encoding="utf-8")
-        hot_reload.reload_overlay()
+        res2 = hot_reload.reload_overlay()
+        assert "zhuzhu_Copilot.core.hotdemo" in res2["reloaded"], res2
         assert importlib.import_module("zhuzhu_Copilot.core.hotdemo").VALUE == 2
     finally:
         sys.meta_path[:] = before
@@ -526,7 +528,7 @@ def test_import_auto_applies_overlay(iso, tmp_path):
     p = copilot_plugins.get_plugin("custom-hello-tool")
     assert p["enabled"] is True
     assert copilot_plugins.status("custom-hello-tool")["applied"] is True
-    assert "已自动写入转译层" in msg
+    assert ("即时热加载" in msg or "即时生效" in msg) and "无需重启" in msg
 
 
 def test_import_keeps_disabled_plugin_unapplied(iso, tmp_path):

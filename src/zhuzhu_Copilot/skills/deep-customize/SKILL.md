@@ -40,8 +40,8 @@ description: 深度自定义总入口（Cordis 一切皆可替换/热插拔）�
 - **界面 / 主题 / 语言 / 任意模块（Copilot 插件，源码级定制）**：`create_copilot_plugin`
   （自然语言 → AI 生成 source_ops 变更清单，可 `create_file` 新建模块、`insert_at` 按行号插入、
   `replace_lines` 按行号替换、`replace_module` / `replace_file` 整段替换，跨多文件综合修改）
-  → `apply_copilot_plugin` 应用（校验 → 备份 → 编译检查，失败整体回滚）→ 重启生效；
-  改错了用 `revert_copilot_plugin` 一键回滚。
+  → `apply_copilot_plugin` 应用（校验 → 备份 → 编译检查，失败整体回滚）→ 热加载引擎在运行进程内即时生效，**任何模块都不需要重启**；
+  改错了用 `revert_copilot_plugin` 一键回滚（同样即时生效）。
 - **子 agent（小功能的常用落地通道，绑定当前工作流）**：`list_sub_agents` 看现状 → `register_sub_agent`
   （name/description/goal/allowed）注册进当前工作流，立即作为 `sub_<name>` 工具可调用，不新建工作流。
   用户说「创建一个子 agent / 新增一个下属 agent」时必须走这条注册通道：注册式才同时支持

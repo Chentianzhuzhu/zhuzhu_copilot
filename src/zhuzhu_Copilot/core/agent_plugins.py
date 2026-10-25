@@ -902,10 +902,13 @@ def _read_skill_desc(md_path: Path) -> str:
 
 # ---------- 工具：AI 生成插件 ----------
 
-def create_plugin_from_nl(description: str, kind: str = "combined", on_status=None) -> tuple:
+def create_plugin_from_nl(description: str, kind: str = "combined", on_status=None,
+                          workflow: str = "") -> tuple:
     """用自然语言描述创建插件（真实 AI 生成）：生成 SKILL.md + MCP server 脚本，
     并自动登记到技能目录与 mcp_servers.json。返回 (ok, message)。
-    on_status 可选回调，用于生成阶段及时反馈 (百分比, 文案)。"""
+    on_status 可选回调，用于生成阶段及时反馈 (百分比, 文案)。
+    workflow 非空（且非默认工作流）时，插件及其技能/MCP 自动绑定到该工作流，
+    使 @工作流 会话中 AI 生成的插件生成后即在当前会话可配置、可调用。"""
     def rep(pct, msg):
         if callable(on_status):
             try:
@@ -993,17 +996,39 @@ def create_plugin_from_nl(description: str, kind: str = "combined", on_status=No
             servers[:] = [s for s in servers if s.get("name") != mcp_name]   # 幂等：同名覆盖
             servers.append(entry)
             agent_skills.save_mcp_servers(servers)
-        # 登记技能：SKILL.md 复制到技能目录（技能是纯文档，不受 server 自检结果影响）
+        # 登记技能：SKILL.md 复制到技能目录（技能是纯文档，不受 server 自检结果影响）。
+        # create_md_skill 会自动剥离 skill_md 自带的 frontmatter，避免双重 frontmatter。
         if has_skill:
             ok_s, _msg = agent_skills.create_md_skill(
                 name, parts["summary"], parts["skill_md"])
             if ok_s:
                 meta["skill_name"] = name
         _write_meta(name, meta)
+        # 非默认工作流会话中生成：插件 + 其技能/MCP 同步绑定到当前会话工作流，
+        # 并在该工作流启用技能 —— 否则生成的能力在当前对话里不可见、不可配置。
+        bind_msg = ""
+        wf = str(workflow or "").strip()
+        if wf and has_skill:
+            try:
+                from zhuzhu_Copilot.core import agent_workflow as _awf
+                _awf.set_skill_state(wf, name, True)
+            except Exception:
+                pass
+        if wf:
+            try:
+                from zhuzhu_Copilot.core import agent_workflow as _awf
+                if wf != _awf.DEFAULT_WORKFLOW:
+                    bok, _bmsg = set_plugin_workflows(name, [wf])
+                    if bok:
+                        bind_msg = f"；已绑定工作流「{wf}」"
+            except Exception:
+                pass
     except OSError as e:
         return False, f"创建插件失败: {e}"
 
     lines = [f"已创建插件「{name}」（{kind} 型）", f"描述: {parts['summary'] or desc}"]
+    if bind_msg:
+        lines.append(bind_msg.lstrip("；"))
     if has_mcp and verified:
         lines.append(f"MCP: 本地 stdio {d / 'server.py'}（已登记并即时生效）")
     if has_skill:

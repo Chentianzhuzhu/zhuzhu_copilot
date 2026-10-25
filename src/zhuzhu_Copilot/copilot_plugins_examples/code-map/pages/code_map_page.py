@@ -215,7 +215,7 @@ class CodeMapPage(QWidget):
         k = _kernel()
         if k is None:
             self.lbl_hint.setText(
-                "代码地图内核未加载：请启用插件并重启应用（源码级变更需要重启才生效）。")
+                "代码地图内核未加载：请在设置中启用本插件（启用后即时热加载，无需重启）。")
             return
         try:
             data = k.cached()
@@ -442,7 +442,7 @@ def quick_report():
     k = _kernel()
     if k is None:
         QMessageBox.information(None, "代码地图",
-                                "内核未加载：请启用插件并重启应用。")
+                                "内核未加载：请在设置中启用本插件（启用后即时热加载，无需重启）。")
         return
     data = k.cached(max_age=600)
     if not data:

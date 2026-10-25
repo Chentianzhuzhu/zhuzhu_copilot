@@ -1660,8 +1660,9 @@ TOOLS = [
                            "落盘后强制过插件校验系统（静态危险规则 + LLM 源码评审，危险即删除并提示）；"
                            "启用时自动写入**转译层**（用户数据目录的源码覆盖层，不改应用源码文件）、"
                            "逐文件备份、全部 py_compile（失败整体回滚），源码运行与 exe 安装版行为一致，"
-                           "重启应用生效；改错了用 revert_copilot_plugin 一键回滚。"
-                           "受保护核心程序（校验系统/源码引擎/安全引擎/导入钩子/main.py）不得改动；"
+                           "并由热加载引擎在运行进程内**即时生效，无需重启应用**；热加载失败会自动回滚，"
+                           "改错了用 revert_copilot_plugin 一键回滚（同样即时卸载）。"
+                           "受保护核心程序（校验系统/源码引擎/热加载引擎/安全引擎/导入钩子/main.py）不得改动；"
                            "插件图标 icon 为包内方形 PNG（128~256px），列表展示开发者与更新时间。"
                            "完整开发指南与九个可导入示例见 src/zhuzhu_Copilot/copilot_plugins_examples/。",
             "parameters": {"type": "object",
@@ -1680,8 +1681,8 @@ TOOLS = [
                            "再逐文件备份（插件目录 backups/）、逐条写入、全部编译检查（任一失败整体回滚，"
                            "源码一行不动），最后写 applied.json 清单。变更只写 "
                            "~/.zhuzhu_Copilot/source_overlay/（转译层），**绝不修改应用源码文件**；"
-                           "导入钩子优先加载转译层，热加载跳过持有进程级状态的模块"
-                           "（agent_panel / main_window / styles 等），这类变更**重启应用后生效**。",
+                           "导入钩子优先加载转译层，热加载引擎原地重执行模块、热修补活实例、重绑旧引用，"
+                           "写入后**立即热生效，无需重启应用**；任何模块热加载失败都会自动回滚。",
             "parameters": {"type": "object",
                            "properties": {
                                "name": {"type": "string",
@@ -1696,7 +1697,8 @@ TOOLS = [
             "description": "卸载回滚 Copilot 插件已应用的源码变更：新建的文件删除、修改的文件还原备份"
                            "（还原内容与原版一致时直接删掉转译层副本，让模块回落原版，转译层不留残骸）；"
                            "应用后被用户手动改过的文件跳过并注明，不覆盖用户劳动成果。"
-                           "插件「停用」走的就是这条回滚链路；回滚后同样需要重启应用才彻底回落。",
+                           "插件「停用」走的就是这条回滚链路；回滚后由热加载引擎即时卸载，"
+                           "新建模块直接摘出运行进程，被改模块还原回原版，**无需重启应用**。",
             "parameters": {"type": "object",
                            "properties": {
                                "name": {"type": "string",
@@ -2886,6 +2888,43 @@ def _record_edit_delta(path, old_text: str, new_text: str) -> None:
 
 
 def execute_tool(name: str, args: dict, allow_dangerous: bool = False,
+                 reject_risky: bool = False,
+                 ask_user_cb=None, status_cb=None, workflow=None) -> dict:
+    """工具执行入口：把本会话工作流落地到**当前线程**的线程局部后再执行。
+
+    引擎在 worker 线程（_call_with_stop 派生的 daemon 线程 / 线程池）执行工具，
+    而线程局部（agent_workflow / agent_skills 的当前工作流）不会跨线程继承。
+    若不在此重新落地，create_skill/create_plugin 等读 active_workflow() 的工具
+    会拿到「全局激活工作流」而非「本会话工作流」——在 @工作流 路由的会话里
+    生成的技能会被错误地全局创建/绑定到别的工作流，表现为「当前对话里生成的
+    技能看不见、调不动、技能页里无法按当前工作流配置」。
+    引擎已显式传入 workflow；UI/测试等未传时取本线程 TLS（通常为空=全局）。
+    """
+    wf = workflow if workflow is not None else _wf_current()
+    try:
+        from zhuzhu_Copilot.core import agent_workflow as _awf
+        import zhuzhu_Copilot.core.agent_skills as _ask
+        prev_wf = _awf._current_workflow()
+        prev_sk = _ask._current_workflow()
+        _awf.set_current_workflow(wf or "")
+        _ask.set_current_workflow(wf or "")
+    except Exception:
+        prev_wf = prev_sk = None
+    try:
+        return _execute_tool_impl(name, args, allow_dangerous=allow_dangerous,
+                                  reject_risky=reject_risky,
+                                  ask_user_cb=ask_user_cb, status_cb=status_cb,
+                                  workflow=wf)
+    finally:
+        if prev_wf is not None:
+            try:
+                _awf.set_current_workflow(prev_wf)
+                _ask.set_current_workflow(prev_sk)
+            except Exception:
+                pass
+
+
+def _execute_tool_impl(name: str, args: dict, allow_dangerous: bool = False,
                  reject_risky: bool = False,
                  ask_user_cb=None, status_cb=None, workflow=None) -> dict:
     """执行工具，返回 {"text", "images"}。
@@ -5168,16 +5207,39 @@ def _fast_download(url: str, dest_dir: str) -> dict:
         return _blocked(f"[fast_download] 下载失败: {e}")
 
 
+def _slugify_skill_name(name: str, description: str = "") -> str:
+    """把 AI 传入的技能名归一为合法标识符（字母/数字/下划线/连字符，≤50）。
+
+    AI 常直接用中文/空格/标点命名（如「周报助手」），直接落盘会被名校验拒绝，
+    表现为「生成失败、无法导入」。归一策略：抽 ASCII 字母数字连字符 → 合法即用；
+    抽不出（纯中文等）→ 按 description 抽；仍不行 → skill-<短哈希>，保证不阻断。"""
+    import re as _re
+    import hashlib as _hl
+    raw = str(name or "").strip()
+    slug = _re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-_")
+    if not slug:
+        slug = _re.sub(r"[^A-Za-z0-9_-]+", "-", str(description or "").strip()).strip("-_")
+    if not slug:
+        seed = str(name or description or "skill").encode("utf-8", "replace")
+        slug = "skill-" + _hl.sha1(seed).hexdigest()[:8]
+    return slug[:50].strip("-_") or "skill-custom"
+
+
 def _create_skill(name: str, description: str, instruction: str) -> dict:
     """生成市场标准 SKILL.md 技能并注册（创建后立即生效）。
     自动绑定到当前会话工作流（@工作流 切换后仅该工作流加载），
     实现"对话中描述即可一键生成并配置到当前工作流"。"""
     from zhuzhu_Copilot.core import agent_skills
     from zhuzhu_Copilot.core import agent_workflow
+    # 非法名（中文/空格等）不阻断生成：归一为合法 slug，避免「生成失败无法导入」
+    legal_name = name if re.match(r"^[A-Za-z0-9_-]{1,50}$", str(name or "")) \
+        else _slugify_skill_name(name, description)
+    if legal_name != name:
+        description = f"{description}（原始名: {name}）" if name else description
     wf = agent_workflow.active_workflow()
     # 仅绑定到非默认工作流：默认工作流为全局，无需绑定
     bind_wf = wf if wf and wf != agent_workflow.DEFAULT_WORKFLOW else ""
-    ok, msg = agent_skills.create_md_skill(name, description, instruction, workflow=bind_wf)
+    ok, msg = agent_skills.create_md_skill(legal_name, description, instruction, workflow=bind_wf)
     # 热加载：技能缓存已失效，但引擎还要按本任务输入重新匹配技能才能在本轮注入 —— 见
     # agent_engine.reload_extensions（否则「创建成功却要等下一个任务才生效」）。
     return ({"text": msg, "images": [], "reload_extensions": True} if ok else _blocked(msg))
@@ -5224,7 +5286,8 @@ def _create_plugin(description: str, kind: str, status_cb=None) -> dict:
     """
     from zhuzhu_Copilot.core import agent_plugins
     ok, msg = agent_plugins.create_plugin_from_nl(
-        description, kind, on_status=_generation_status_adapter(status_cb))
+        description, kind, on_status=_generation_status_adapter(status_cb),
+        workflow=_wf_current())
     if ok:
         return {"text": msg, "images": [], "reload_extensions": True}
     return _blocked(msg)
@@ -5244,7 +5307,7 @@ def _create_copilot_plugin(description: str, status_cb=None) -> dict:
 
 def _apply_copilot_plugin(name: str) -> dict:
     """应用 Copilot 插件的源码变更（校验 → 备份 → 应用 → 编译检查，失败整体回滚）。
-    变更写入插件源码层（安装版为源码覆盖层），重启应用后生效。"""
+    变更写入转译层（安装版为源码覆盖层）后，由引擎 reload_extensions 即时热加载。"""
     from zhuzhu_Copilot.core import copilot_plugins
     if not name:
         return _blocked("缺少插件名")
@@ -5932,7 +5995,7 @@ def _inspect_customization() -> dict:
                      "界面与模块类改动走 Copilot 插件源码级 op；"
                      "仅大而独立的功能才新建工作流或 Copilot 插件。")
         lines.append("引导：先用 ask_user 问清用户想自定义/新增的功能，再按上述维度调用对应工具落地，"
-                     "创建后提示用户生效方式（工作流热插拔、插件/技能即时登记、源码级变更需重启）。")
+                     "创建后提示用户生效方式（工作流热插拔、插件/技能即时登记、源码级变更由热加载引擎即时生效，全部无需重启）。")
         return {"text": "\n".join(lines), "images": []}
     except Exception as e:
         return _blocked(f"[inspect_customization] {e}")

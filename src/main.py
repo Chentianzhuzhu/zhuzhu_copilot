@@ -12,7 +12,8 @@ multiprocessing.freeze_support()
 # 目录，改为写入用户数据目录的源码覆盖层 ~/.zhuzhu_Copilot/source_overlay/，
 # 由该钩子让 zhuzhu_Copilot.* 的导入优先命中覆盖层——任何人都能把 Copilot
 # 自定义成想要的样子（改主题 / 自定义 Agent / 自定义工具 / 自定义语言 / 增删
-# 替换任何模块），打包版上同样生效（应用后重启即生效）。无覆盖层时零侵入。
+# 替换任何模块），打包版上同样生效。插件启停由 core/hot_reload.py 在运行进程内
+# 即时热加载，**绝不要求重启应用**。无覆盖层时零侵入。
 try:
     import _copilot_overlay_hook
     _copilot_overlay_hook.install()
@@ -495,6 +496,45 @@ def main():
     # 应用级调色板必须跟随「设置里的主题」：styles.PALETTE 的模块默认是深色，
     # 不同步就会出现「对话框深底 + 面板浅色控件」的混搭（详见 _sync_app_palette）
     _sync_app_palette(app)
+
+    # ── 热插拔基建（与 2 秒启动动画并行，用户无感）──────────────────────────
+    # ① UI 桥：AI 工具链路在工作线程触发插件启停时，UI 挂摘（页面/服务/托盘/
+    #    快捷键）必须回到 GUI 线程。信号槽跨线程 QueuedConnection 是官方安全通道。
+    try:
+        from PyQt6.QtCore import QObject, pyqtSignal
+        from zhuzhu_Copilot.core import hot_reload
+
+        class _HotplugBridge(QObject):
+            requested = pyqtSignal(object)
+
+            def __init__(self):
+                super().__init__()
+                self.requested.connect(self._on_request,
+                                       Qt.ConnectionType.QueuedConnection)
+
+            def _on_request(self, fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+
+        app._hotplug_bridge = _HotplugBridge()   # 驻留 GUI 线程，引用挂在 app 上
+        hot_reload.set_ui_dispatcher(app._hotplug_bridge.requested.emit)
+    except Exception:
+        pass
+
+    # ② 热加载基线：后台线程给全部应用模块建内容哈希（不执行任何代码），
+    #    完成后首个插件启停只处理真正变化的模块。旧实现没有这一步，进程内
+    #    第一次启用插件会把变更误判为基线跳过——那正是"首个插件必须重启"的根因。
+    def _build_hotplug_baseline():
+        try:
+            from zhuzhu_Copilot.core import hot_reload
+            hot_reload.establish_baseline()
+        except Exception:
+            pass
+
+    threading.Thread(target=_build_hotplug_baseline, daemon=True,
+                     name="hotplug_baseline").start()
 
     # 媒体解码自检入口（MEDIA_SELFTEST 环境变量或 --media-selftest <file> 参数触发，
     # 仅诊断用）：UAC 提升会丢失环境变量，故同时支持命令行参数方式

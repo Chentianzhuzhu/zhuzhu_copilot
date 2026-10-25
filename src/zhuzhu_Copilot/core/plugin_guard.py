@@ -42,11 +42,13 @@ PROTECTED_CORE_FILES = (
     "zhuzhu_Copilot/core/plugin_guard.py",
     "zhuzhu_Copilot/core/plugin_source.py",
     "zhuzhu_Copilot/core/copilot_plugins.py",
+    "zhuzhu_Copilot/core/hot_reload.py",
     "zhuzhu_Copilot/core/security.py",
     "zhuzhu_Copilot/core/security_engine/",
     # 覆盖层导入钩子与应用入口：源码插件改它们等于拆掉「打包态也能源码级定制」
     # 的地基（钩子被拆 → 覆盖层不再生效；入口被换 → 钩子根本不会安装），
-    # 与校验系统同属「唯一不可替换」范畴。
+    # 与校验系统同属「唯一不可替换」范畴。热加载引擎同理：被改就等于拆掉
+    # 「任何插件无需重启即生效」的保证。
     "_copilot_overlay_hook.py",
     "main.py",
 )
@@ -82,7 +84,7 @@ _RULES = [
      "danger", "大规模删除/格式化", None),
     ("defender_off", r"(?i)Set-MpPreference|netsh\s+advfirewall|DisableAntiSpyware",
      "danger", "关闭系统安全防护", None),
-    ("guard_tamper", r"(?i)plugin_guard|plugin_source|copilot_plugins|security_engine|quarantine\.py|yara_engine|overlay_hook|source_overlay",
+    ("guard_tamper", r"(?i)plugin_guard|plugin_source|copilot_plugins|hot_reload|security_engine|quarantine\.py|yara_engine|overlay_hook|source_overlay",
      "danger", "试图改动内置校验/安全程序", {".py"}),
     ("obfuscation", r"base64\.b64decode|codecs\.decode|bytes\.fromhex|marshal\.loads",
      "warn", "编码/混淆解码（可能是恶意载荷）", None),

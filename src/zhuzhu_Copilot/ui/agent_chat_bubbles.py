@@ -4,9 +4,9 @@
 结构规范：AI 事件流（每个可见节点有固定的类名与几何，见下方各处的 `.xxx` 标注）。
 与旧实现（单个填充色气泡 + 内部富文本）的关键差异：
 
-- AI 回合**没有填充气泡**：改为**顶部一条 1px 虚线分区**（早期版本还有底部横虚线与
-  左侧竖虚线 demo `.vline`，为简约化已移除 —— 见 `ChatTurn.paintEvent`），
-  左上角骑在虚线上的「耗时徽章」（demo `.cost-ribbon`）。
+- AI 回合**没有填充气泡**：改为**左上角一行计时文本**（``已处理 X小时X分钟X秒``，
+  2026-10-25 起为无外壳纯文本；其下是**顶部一条 1px 虚线分区** —— 早期版本还有
+  底部横虚线与左侧竖虚线 demo `.vline`，为简约化已移除 —— 见 `ChatTurn.paintEvent`）。
 - 思考过程是**独立气泡**（demo `.think-bubble`：卡片底 + 1px 边框 + 非对称圆角
   6/16/16/16 + 图标壳 + tag 胶囊），正文超 THINK_FOLD_LINES 行自动折叠渐隐。
 - 工具调用是**无气泡行内条目**（demo `.tool-call`：图标壳 + 工具名 + meta + 参数 chip）。
@@ -86,12 +86,16 @@ from zhuzhu_Copilot.ui.tokens import (
 BUBBLE_PAD_V = 13              # .msg padding: 13px 18px
 BUBBLE_PAD_H = 18
 # 回合内/回合间留白：demo 原值 18/6/30，实测观感过于松散（每段文字上下都有大片空白），
-# 按用户反馈收紧到 12/6/18；「顶部虚线分区 + 耗时徽章骑线」的结构不变。
+# 按用户反馈收紧到 12/6/18；「左上角计时行 + 顶部虚线分区」的结构不变。
 # 注：AI_TURN_GAP 原同时充当底部虚线的上边距，底部虚线移除后它只剩「回合间距」语义。
 AI_TURN_PAD_TOP = 8            # demo 18 → 8（收紧）
 AI_TURN_PAD_BOTTOM = 3         # demo 6  → 3
 AI_TURN_GAP = 10               # demo 30 → 10（回合间距；原值在紧凑界面里像大片空白）
-RIBBON_H = 21                  # .cost-ribbon 实测高度（上下 padding 4 + 行高 12 + 边框）
+# 计时行高度（2026-10-25 重构）：原 RIBBON_H=21 是「骑线 pill 徽章」的外壳高度；
+# 现左上角只留一行纯文本（无外壳/无图标/无描边），高度 = 12px 字号单行行高。
+TIMER_ROW_H = 17
+# 计时行底边到顶部虚线的间距（px）：文本与虚线之间留 1px 呼吸位
+TIMER_DASH_GAP = 1
 LEFT_GUTTER = 14               # 顶部虚线的起画 x（原为左侧竖虚线 demo .vline left:-14px
                  # 的等效留白，竖线移除后仍作为横线起点 —— 与内容左缘对齐）
 THINK_PAD_V = 11               # .think-bubble padding: 13px 15px → 11px 15px（收紧）
@@ -126,8 +130,8 @@ CMD_PAD_H = 13                 # .cmd .in / .out 左右内边距
 DOT_D = 8                      # .cmd .bar .dotbtn 直径
 DOT_GAP = 5
 DOTS_TICK_MS = 260             # 思考胶囊三点动画节拍
-RIBBON_TICK_MS = 200           # 耗时徽章实时刷新节拍
-RIBBON_UNKNOWN_TEXT = "--"     # 徽章常驻但拿不到耗时时的占位文案（老会话）
+RIBBON_TICK_MS = 200           # 计时行实时刷新节拍（200ms：秒级文本无需更高频）
+RIBBON_UNKNOWN_TEXT = "已处理 --"   # 计时行常驻但拿不到耗时时的占位文案（老会话）
 FADE_H = 22                    # 折叠遮罩渐变高度（约 1.5 行）
 
 # ---------------------------------------------------------------------------
@@ -228,6 +232,15 @@ class ChatStyle:
     dot: str = ""           # 命令块标题栏三点的**实色**（壁纸模式下也必须可见）；留空则回退 border
     font_ui: str = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
     font_mono: str = 'Consolas, "Cascadia Code", "Courier New", monospace'
+    # 等宽数字栈（招 4）：实时跳动的数字（计时行 / token 计数）锁 tabular
+    # figures，防止流式刷新时整串文字左右抖动
+    font_numeric: str = '"Segoe UI", "Microsoft YaHei UI", "Cascadia Mono", Consolas, monospace'
+    # 字重档位（招 2，由面板按主题注入：浅色 700/600/500，暗色降一档 600/500/400）。
+    # 深色底上粗体视觉发糊，标题/强调字重随主题减细 —— 组件内不写死数字。
+    w_title: int = 700
+    w_strong: int = 600
+    w_emphasis: int = 500
+    w_emphasis: int = 500   # 次级强调小字（计时行等次要信息）
 
     # ---- 派生色解析（空串 = 未派生 → 回退基础色）----
     def think_bg_of(self) -> str:
@@ -293,11 +306,34 @@ def fmt_seconds(seconds: float) -> str:
     return f"{int(seconds // 60)}m{int(seconds % 60):02d}s"
 
 
+def fmt_elapsed(seconds: float) -> str:
+    """计时行文案（2026-10-25 用户要求的新格式）：``已处理 X小时X分钟X秒``。
+
+    规则：
+    - 零档省略：不足 1 分钟只显秒（``已处理 45秒``），不足 1 小时只显分秒
+      （``已处理 23分钟45秒``），满 1 小时才显小时（``已处理 1小时23分钟45秒``）——
+      「已处理 0小时…」这种空挂档位是视觉噪音；
+    - 数字不补零：等宽字体（ChatStyle.font_numeric，tabular figures）已保证每位
+      数字同宽，逐秒刷新时不会左右抖动；补零反而多出 always-on 的前导零噪音；
+    - 取整到秒：进行中每 200ms 刷新一次（RIBBON_TICK_MS），但秒级文本每秒才
+      变一次，整数秒足够，小数位只会增加无意义的重绘。
+    """
+    seconds = max(0.0, float(seconds or 0.0))
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"已处理 {h}小时{m}分钟{s}秒"
+    if m:
+        return f"已处理 {m}分钟{s}秒"
+    return f"已处理 {s}秒"
+
+
 def cost_from_meta(meta: str) -> Optional[float]:
     """系统时间行「HH:MM:SS → HH:MM:SS」→ 秒数（老会话没有 cost 时的兜底）。
 
     时间行只有时刻、没有日期，故结束早于开始时按**跨零点**处理（+24h）。整行解析
-    失败一律返回 None —— 宁可让徽章显示占位符，也不显示一个错误时长。
+    失败一律返回 None —— 宁可让计时行显示占位符，也不显示一个错误时长。
     """
     txt = str(meta or "")
     if "\u2192" not in txt:
@@ -616,15 +652,19 @@ class PillButton(QPushButton):
             self.setIconSize(QSize(FONT_SMALL, FONT_SMALL))
 
     def _apply_style(self, style: ChatStyle):
-        """按样式快照重设 QSS（构造与 `restyle` 共用同一来源，避免两处漂移）"""
-        border_style = "dashed" if self._dashed else "solid"
-        border_color = style.dash if self._dashed else style.border
+        """按样式快照重设 QSS（构造与 `restyle` 共用同一来源，避免两处漂移）
+
+        招 1：不画实线 / 虚线描边（含 dashed 变体），用「强调色低透明淡染」做
+        胶囊填充，hover 加深 —— 视觉上是柔和的标签而非框线。
+        """
+        ac = QColor(style.accent)
+        _tint = lambda a: f"rgba({ac.red()},{ac.green()},{ac.blue()},{a})"
         self.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {style.accent};"
-            f" font-family: {style.font_ui}; font-size: {FONT_SMALL}px; font-weight: 600;"
-            f" border: 1px {border_style} {border_color};"
+            f"QPushButton {{ background: {_tint(0.14)}; color: {style.accent};"
+            f" font-family: {style.font_ui}; font-size: {FONT_SMALL}px; font-weight: {style.w_strong};"
+            f" border: none;"
             f" border-radius: {RADIUS_PILL}px; padding: 5px 16px; }}"
-            f"QPushButton:hover {{ background: {style.hover}; border-style: solid; }}")
+            f"QPushButton:hover {{ background: {_tint(0.24)}; color: {style.accent}; }}")
 
     def restyle(self, style: ChatStyle):
         """原地换肤（不重建控件）：主题/表面色变化时由 `ChatTurn.restyle` 调用。"""
@@ -815,7 +855,7 @@ def _tile(style: ChatStyle, icon: QIcon, size: int, radius: int,
     lbl.setPixmap(_tile_pixmap(icon, size, ratio))
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
-        f"background: {bg or style.icon_shell}; border: 1px solid {style.border};"
+        f"background: {bg or style.icon_shell}; border: none;"
         f" border-radius: {radius}px;")
     return lbl
 
@@ -1839,7 +1879,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         hl.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
         self._title = QLabel(_ui("思考过程"))
         self._title.setStyleSheet(
-            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
+            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: {style.w_strong};"
             f" font-family: {style.font_ui}; background: transparent;")
         hl.addWidget(self._title, 0, Qt.AlignmentFlag.AlignVCenter)
         hl.addStretch(1)
@@ -1883,10 +1923,14 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._emerge_init(style.band or style.think_bg_of(), self._emerge_area)
 
     def _apply_style(self, style: ChatStyle):
-        """按样式快照重设外壳 QSS（构造与 `restyle` 共用，避免两处漂移）"""
+        """按样式快照重设外壳 QSS（构造与 `restyle` 共用，避免两处漂移）
+
+        招 1：思考气泡不描边 —— 底色是「深蓝淡染」层（think_bg，比正文面底亮约 2%
+        且带色相倾向），与正文的层次靠色阶+色相拉开，不靠线条。
+        """
         self.setStyleSheet(
             f"ThinkBubble {{ background: {style.think_bg_of()};"
-            f" border: 1px solid {style.think_border_of()};"
+            f" border: none;"
             f" border-top-left-radius: {BUBBLE_RADIUS_THINK_TAIL}px;"
             f" border-top-right-radius: {RADIUS_LG}px;"
             f" border-bottom-right-radius: {RADIUS_LG}px;"
@@ -1901,7 +1945,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._style = style
         self._apply_style(style)
         self._title.setStyleSheet(
-            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
+            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: {style.w_strong};"
             f" font-family: {style.font_ui}; background: transparent;")
         self._tag_style(getattr(self, "_tag_name", "") or "")
         self._tag_text.setStyleSheet(
@@ -1912,7 +1956,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
             f" font-size: {FONT_BODY}px; line-height: 1.75;"
             f" font-family: {style.font_ui};")
         self._icon.setStyleSheet(
-            f"background: {style.icon_shell}; border: 1px solid {style.border};"
+            f"background: {style.icon_shell}; border: none;"
             f" border-radius: {RADIUS_SM}px;")
         self._icon.setPixmap(_tile_pixmap(
             self._icon_provider("think", FONT_BODY + 3, style.icon_color),
@@ -2072,7 +2116,7 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
         bl.setSpacing(3)
         self._title = QLabel("")
         self._title.setStyleSheet(
-            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
+            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: {style.w_strong};"
             f" font-family: {style.font_mono}; background: transparent;")
         bl.addWidget(self._title)
         self._meta = QLabel("")
@@ -2223,7 +2267,7 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
         """原地换肤工具行（标题/meta/chip/输出区/图标壳 + 折叠区），不重建控件。"""
         self._style = style
         self._title.setStyleSheet(
-            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: 600;"
+            f"color: {style.text}; font-size: {FONT_BODY}px; font-weight: {style.w_strong};"
             f" font-family: {style.font_mono}; background: transparent;")
         self._meta.setStyleSheet(
             f"color: {style.muted}; font-size: {FONT_CAPTION}px;"
@@ -2243,7 +2287,7 @@ class ToolCallRow(_FoldMixin, _PinMixin, _EmergeMixin, QWidget):
             f" font-size: {FONT_SMALL}px; font-family: {style.font_mono}; line-height: 1.6;")
         # 图标壳：壳底 + 描边 + 图标线条色全部随主题
         self._icon.setStyleSheet(
-            f"background: {style.tool_shell_of()}; border: 1px solid {style.border};"
+            f"background: {style.tool_shell_of()}; border: none;"
             f" border-radius: {RADIUS_TILE}px;")
         self._icon.setPixmap(_tile_pixmap(
             self._icon_provider(self._icon_kind or "tool", FONT_BASE + 2,
@@ -2314,7 +2358,7 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(
             f"CmdBlock {{ background: {style.panel};"
-            f" border: 1px solid {style.border}; border-radius: {RADIUS_CMD}px; }}")
+            f" border: none; border-radius: {RADIUS_CMD}px; }}")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -2391,7 +2435,7 @@ class CmdBlock(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._style = style
         self.setStyleSheet(
             f"CmdBlock {{ background: {style.panel};"
-            f" border: 1px solid {style.border}; border-radius: {RADIUS_CMD}px; }}")
+            f" border: none; border-radius: {RADIUS_CMD}px; }}")
         self._bar.setStyleSheet(
             f"QWidget {{ background: transparent;"
             f" border-bottom: 1px solid {style.border}; }}")
@@ -2625,27 +2669,37 @@ class UserBubble(QLabel):
 
 
 class CostRibbon(QFrame):
-    """耗时徽章（demo .cost-ribbon）：骑在回合顶部虚线上，时钟图标 + 耗时文本。
+    """回合左上角计时行（demo `.cost-ribbon` 节点；2026-10-25 重构为简化版）。
 
-    回合进行中按 RIBBON_TICK_MS 实时刷新，完成后冻结为总耗时（由面板持久化）。
+    用户反馈原设计「边框丑陋、显示累赘」：原样是「时钟图标 + 圆角 pill 外壳 +
+    1px 描边，骑在顶部虚线上」。现改为**一行纯文本**，坐在气泡左上角、
+    顶部虚线的**上方**（虚线在其下承担分区语义）：
+
+        已处理 1小时23分钟45秒      ← 左上角计时行（无外壳/无图标/无描边）
+        ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─     ← 顶部虚线分区
+        （过程区 / 正文输出内容）
+
+    实现要点：
+    - 无外壳：QFrame 不设任何样式表背景（不填底、不描边、不圆角），只有内部
+      一个 QLabel 承载文本；
+    - 等宽数字：文本字体走 ChatStyle.font_numeric（tabular figures），
+      逐秒刷新时每位数字同宽，不会整串乱跳（招 4）；
+    - 位置由 ChatTurn._place_ribbon 绝对定位到 (LEFT_GUTTER, 0)，高度钉
+      TIMER_ROW_H；计时逻辑（start/freeze/freeze_unknown + 200ms 节拍）不变。
     """
 
-    def __init__(self, style: ChatStyle, icon: QIcon, parent: QWidget = None):
+    def __init__(self, style: ChatStyle, parent: QWidget = None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._style = style
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 4, 12, 4)
-        lay.setSpacing(7)
-        self._icon = QLabel(self)
-        self._icon.setPixmap(icon.pixmap(FONT_SMALL + 1, FONT_SMALL + 1))
-        self._icon.setStyleSheet("background: transparent; border: none;")
-        lay.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
         self._text = QLabel("")
-        lay.addWidget(self._text, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self._text)
         # 子控件建好后再统一套样式（`_apply_style` 会写 `_text`，顺序不能反）
         self._apply_style(style)
-        self.setFixedHeight(RIBBON_H)
+        self.setFixedHeight(TIMER_ROW_H)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._t0 = 0.0
         self._live = False
@@ -2654,35 +2708,33 @@ class CostRibbon(QFrame):
         self._timer.timeout.connect(self._tick)
 
     def _apply_style(self, style: ChatStyle):
-        """徽章外壳与文本 QSS（构造与 restyle 共用）"""
-        self.setStyleSheet(
-            f"CostRibbon {{ background: {style.card};"
-            f" border: 1px solid {style.border}; border-radius: {RADIUS_PILL}px; }}")
+        """计时行文本 QSS（构造与 restyle 共用）：无外壳，只有一行次要色文本。"""
         self._text.setStyleSheet(
-            f"background: transparent; border: none; color: {style.accent};"
-            f" font-size: {FONT_SMALL}px; font-weight: 600;"
-            f" font-family: {style.font_ui};")
+            f"background: transparent; border: none; color: {style.text_dim};"
+            f" font-size: {FONT_SMALL}px; font-weight: {style.w_emphasis};"
+            # 招 4：耗时数字每秒刷新，锁等宽字体（tabular figures）防抖动
+            f" font-family: {style.font_numeric};")
 
     def restyle(self, style: ChatStyle):
-        """原地换肤耗时徽章"""
+        """原地换肤计时行"""
         self._style = style
         self._apply_style(style)
 
     def start(self, t0: float = None):
         self._t0 = float(t0 or time.time())
         self._live = True
-        self._text.setText(fmt_seconds(time.time() - self._t0))
+        self._text.setText(fmt_elapsed(time.time() - self._t0))
         self.show()
         self._timer.start()
 
     def freeze(self, seconds: float):
         self._live = False
         self._timer.stop()
-        self._text.setText(fmt_seconds(seconds))
+        self._text.setText(fmt_elapsed(seconds))
         self.show()
 
     def freeze_unknown(self):
-        """拿不到耗时（老会话未落盘）：徽章**仍然常驻**，只显示占位符。
+        """拿不到耗时（老会话未落盘）：计时行**仍然常驻**，只显示占位符。
 
         用户要求「每个 agent 气泡都要有时间计时器样式」：此前无数据即 hide，重启后
         整条回合的计时样式整块消失，视觉上与其他回合不一致。样式常驻、数值待补，
@@ -2694,7 +2746,7 @@ class CostRibbon(QFrame):
         self.show()
 
     def _tick(self):
-        self._text.setText(fmt_seconds(time.time() - self._t0))
+        self._text.setText(fmt_elapsed(time.time() - self._t0))
 
     @property
     def is_live(self) -> bool:
@@ -2708,6 +2760,43 @@ class CostRibbon(QFrame):
         super().showEvent(e)
         if self._live:
             self._timer.start()
+
+
+class _TurnBox(QWidget):
+    """回合内容盒：**顶部虚线由本控件自己画**（不由 ChatTurn.paintEvent 画）。
+
+    为什么必须这样（2026-10-25 实测抓图实锤，Windows 真机 + 离屏均复现）：
+    虚线落在 `_box` 的矩形内（盒顶边距之下、第一个区块之上）。Qt 对带
+    `WA_TranslucentBackground` 的父控件（ChatTurn）会**先清除每个子控件的
+    区域再合成子控件** —— 父控件 `paintEvent` 里画的内容只要落在子控件矩形
+    下就会被整块清掉：整条虚线只剩盒子右缘外一小段（约 9px）可见，用户视角
+    就是「虚线没了 / 只有一点点」。把线改由 `_box` 在自己的 `paintEvent` 里画，
+    它就在盒自己的 backing store 里，z 序稳定位于盒内各区块之下、不受父控件
+    合成策略影响，任何平台都完整可见。
+
+    几何（盒内坐标，由 paintEvent 时按回合实时算，不缓存）：
+    - y = 回合 `_inset`（计时行底边之下）− 盒自身在回合里的 y；
+    - x 起 = `LEFT_GUTTER` − 盒自身 x；x 止 = 回合宽 − 1 − 盒自身 x。
+    """
+
+    def __init__(self, turn: "ChatTurn", parent: QWidget = None):
+        super().__init__(parent)
+        self._turn = turn
+
+    def paintEvent(self, _e):
+        t = self._turn
+        try:
+            y = int(getattr(t, "_inset", 0) or 0) - self.y()
+            if y >= 0:
+                x0 = LEFT_GUTTER - self.x()
+                x1 = max(x0, t.width() - 1 - self.x())
+                p = QPainter(self)
+                p.setPen(_dashed_pen(t._style.dash))
+                p.drawLine(x0, y, x1, y)
+                p.end()
+        except Exception:
+            pass          # 绘制异常不得冒泡进事件循环（回合随时可能已销毁）
+        super().paintEvent(_e)
 
 
 class _BlockRef:
@@ -2753,7 +2842,8 @@ class _BlockRef:
 class ChatTurn(QWidget):
     """AI 回合容器（demo .ai-turn）。
 
-    结构：顶部 1px 虚线分区 + 耗时徽章（骑线）+ 过程区 + 正文 + 系统时间。
+    结构：左上角计时行（已处理 X小时X分钟X秒，纯文本）→ 顶部 1px 虚线分区 →
+    过程区 + 正文 + 系统时间。
     过程区（思考/工具/命令/富文本段，以及多轮任务里非最终的正文）在回合完成后整体
     收起，只留最后一段正文与「查看执行过程」开关（demo `.ai-turn.done .ai-proc`）。
     """
@@ -2777,7 +2867,9 @@ class ChatTurn(QWidget):
         self._live = False
         self._cost: Optional[float] = None
         self._t0 = 0.0
-        self._inset = RIBBON_H // 2     # 顶部虚线相对容器顶部的偏移（徽章骑线）
+        # 顶部虚线相对容器顶部的偏移：计时行（TIMER_ROW_H 纯文本行）在其**上方**，
+        # 虚线落在文本行底边 + TIMER_DASH_GAP 处，承担回合分区语义
+        self._inset = TIMER_ROW_H + TIMER_DASH_GAP
         self._lay_w = -1                # 上次重算高度所用的宽度（去重用）
         self._hfw_cache: Optional[tuple] = None   # (width, height) 回合级高度缓存
         self._lay_min_h = 0              # 内部布局的最小高度（回合高度兜底）
@@ -2797,7 +2889,9 @@ class ChatTurn(QWidget):
 
         self._lay = QVBoxLayout(self)
         self._lay.setSpacing(0)
-        self._box = QWidget(self)
+        # _box 用 _TurnBox：顶部虚线由它自己画（父控件绘制会被子控件区域清除，
+        # 见 _TurnBox 文档 —— 这是「虚线只剩右缘一小段」的根因）
+        self._box = _TurnBox(self, self)
         self._box_lay = QVBoxLayout(self._box)
         self._box_lay.setContentsMargins(0, self._inset + AI_TURN_PAD_TOP, 0,
                                          AI_TURN_PAD_BOTTOM + AI_TURN_GAP)
@@ -2813,7 +2907,7 @@ class ChatTurn(QWidget):
         # 长对话首屏要为**每条**历史回复各建一套 —— 120 轮 ≈ 白花 0.8s，
         # 而它们在历史回合里全是隐藏的，纯浪费。
         #
-        # 为什么徽章（_ribbon）虽然「常驻」也能惰性：常驻指的是「不因为无数据而隐藏」
+        # 为什么计时行（_ribbon）虽然「常驻」也能惰性：常驻指的是「不因为无数据而隐藏」
         # （见 _finalize_ribbon），而不是「构造期必须存在」—— 首次 render 就会
         # 经 _lazy_ribbon() 建出来，对调用方完全透明。
         #
@@ -2830,8 +2924,8 @@ class ChatTurn(QWidget):
     # ---------- 惰性控件构造（首次需要时才建；参数与原 __init__ 完全一致） ----------
     def _lazy_ribbon(self) -> "CostRibbon":
         if self._ribbon is None:
-            r = CostRibbon(self._style, self._icon_provider("clock", FONT_SMALL,
-                                                             self._style.accent), self)
+            # 左上角计时行：纯文本（无图标参数，2026-10-25 简化）
+            r = CostRibbon(self._style, self)
             r.hide()
             self._ribbon = r
         return self._ribbon
@@ -2875,7 +2969,7 @@ class ChatTurn(QWidget):
         return self._sys
 
     def restyle(self, style: ChatStyle):
-        """原地换肤整条回合：外壳按钮/徽章/时间行 + 逐块 `restyle`，**不重建任何控件**。
+        """原地换肤整条回合：外壳按钮/计时行/时间行 + 逐块 `restyle`，**不重建任何控件**。
 
         这是「主题切换不再全量重建」的关键：回合内的块控件全部复用，只重设 QSS 与
         派生色。正文富文本（HTML 内联主题色）由面板侧在清空 `_seg_cache` 后按新主题
@@ -2883,6 +2977,8 @@ class ChatTurn(QWidget):
         """
         self._style = style
         self.style_obj = style
+        # 虚线色随主题变（由 _TurnBox 按 _style 现画，这里只需触发重绘）
+        self._box.update()
         # 惰性控件：未建则跳过（建出来时会用**当前** style 构造，天然是新样式）
         for name in ("_ribbon", "_toggle", "_more", "_sys"):
             w = getattr(self, name, None)
@@ -2967,7 +3063,7 @@ class ChatTurn(QWidget):
         return self._cost
 
     def set_cost(self, seconds: Optional[float]):
-        """注入已持久化的耗时（会话恢复）或重置为未知；徽章在下一次 render 生效"""
+        """注入已持久化的耗时（会话恢复）或重置为未知；计时行在下一次 render 生效"""
         self._cost = None if seconds is None else float(seconds)
 
     def content_labels(self) -> list:
@@ -2986,7 +3082,7 @@ class ChatTurn(QWidget):
         self._blocks_full = blocks
         self._proc_count = sum(1 for kind, payload, _sig in blocks
                                if self._block_proc(kind, payload))
-        # 系统时间行**先落位**：耗时徽章在缺少 cost 时要由它推导（老会话兜底），
+        # 系统时间行**先落位**：计时行在缺少 cost 时要由它推导（老会话兜底），
         # 因此必须先于 _finalize_ribbon 写入，否则读到的是上一轮的时间行。
         # 惰性：有 sys_meta 才建控件（历史回合多为空 → 不建）。
         if sys_meta:
@@ -3620,19 +3716,19 @@ class ChatTurn(QWidget):
         if self._menu_handler is not None:
             self._menu_handler(pos)
 
-    # ---------- 耗时徽章 ----------
+    # ---------- 左上角计时行 ----------
     def _finalize_ribbon(self, cost: Optional[float], live: bool):
-        """耗时徽章**常驻**：每个 AI 回合都必须有计时器样式（用户硬性要求）。
+        """计时行**常驻**：每个 AI 回合都必须有计时器样式（用户硬性要求）。
 
-        - 进行中（live）：自任务起点实时刷新；
+        - 进行中（live）：自任务起点实时刷新（每秒变一次文本）；
         - 已结束：优先用冻结/持久化的耗时；老会话没有该数据时退化为系统时间行的
           起止差（`cost_from_meta`）；两者都拿不到就显示占位符。
         此前「无耗时即 hide」会让重启加载的历史回合整块丢掉计时样式，与其他回合
-        不一致 —— 现在任何情况下都不隐藏徽章。
+        不一致 —— 现在任何情况下都不隐藏计时行。
         """
         if live:
             self._t0 = self._t0 or time.time()
-            rb = self._lazy_ribbon()          # 徽章常驻（见 _finalize_ribbon 文档）
+            rb = self._lazy_ribbon()          # 计时行常驻（见 _finalize_ribbon 文档）
             if not rb.is_live:
                 rb.start(self._t0)   # 进行中：实时刷新（重复渲染不重启计时）
             self._ensure_inset(True)
@@ -3648,15 +3744,17 @@ class ChatTurn(QWidget):
         else:
             self._lazy_ribbon().freeze_unknown()
         self._ensure_inset(True)
-        self._place_ribbon()         # 徽章由隐藏转常驻：立即就位（resize 之前也要贴住虚线）
+        self._place_ribbon()         # 计时行由隐藏转常驻：立即就位（resize 之前也要贴住左上角）
 
     def _ensure_inset(self, has_ribbon: bool):
-        inset = RIBBON_H // 2 if has_ribbon else 0
+        # 有时计时行：顶部虚线下移到计时行底边之下；无计时行（异常兜底路径）时虚线贴顶
+        inset = (TIMER_ROW_H + TIMER_DASH_GAP) if has_ribbon else 0
         if inset == self._inset:
             return
         self._inset = inset
         self._box_lay.setContentsMargins(0, inset + AI_TURN_PAD_TOP, 0,
                                          AI_TURN_PAD_BOTTOM + AI_TURN_GAP)
+        self._box.update()           # 虚线位置随 inset 变（由 _TurnBox 重画）
         self._layer_dirty = True    # 边距变了：回合总额必须全量重算（增量会少算/多算边距）
 
     def relayout_heights(self, width: int = None, monotonic: bool = False,
@@ -3883,7 +3981,7 @@ class ChatTurn(QWidget):
         return float(self._t0 or 0.0)
 
     def start_live(self, t0: float = None):
-        """任务开始：启动耗时计时（徽章实时刷新）。
+        """任务开始：启动耗时计时（左上角计时行实时刷新）。
 
         `t0` 给定时用**任务起点**（发送那一刻）而不是「第一个内容事件到达」—— 慢首字、
         派发子 Agent 后长时间无输出这些静默期此前整段被漏掉，正是用户反馈的
@@ -3892,9 +3990,9 @@ class ChatTurn(QWidget):
         self._t0 = float(t0 or time.time())
 
     def finish(self) -> float:
-        """任务结束：停止计时并冻结耗时徽章，返回总耗时（秒）。
+        """任务结束：停止计时并冻结左上角计时行，返回总耗时（秒）。
 
-        重复调用返回已冻结的值（幂等），避免任务收尾路径被多次触发时徽章反复重置。
+        重复调用返回已冻结的值（幂等），避免任务收尾路径被多次触发时计时行反复重置。
         """
         if not self._t0:
             return float(self._cost or 0.0)
@@ -3915,35 +4013,34 @@ class ChatTurn(QWidget):
         return max(0, self.height() - AI_TURN_GAP - 1)
 
     def paintEvent(self, _e):
-        """只画**顶部一条横虚线**（回合与上一条消息之间的分区线）。
+        """顶部虚线的**兜底绘制**：仅当虚线被顶到 `_box` 上沿之外时才由这里画。
 
-        早期版本画三条：顶部横线 + 底部横线 + 左侧竖虚线（demo `.vline`，
-        left:-14px，故竖线画在 x=0）。三者同时存在时，回合被一个「左开口的口」框住，
-        视觉上像一个未闭合的容器边框，简约感被破坏 —— 用户反馈要求去掉左侧与尾部
-        （底部）的虚线轮廓。
+        正常路径下虚线由 `_TurnBox.paintEvent` 自己画（落在盒矩形内的线会被
+        盒的合成清掉，见 `_TurnBox` 文档）。本路径只覆盖 `_inset` 小于盒 y 的
+        理论情况（当前 `_ensure_inset` 只会把 inset 设为计时行高度，恒大于盒
+        y，故此路径不可达；保留是为将来若把计时行藏起来时虚线仍有出处）。
 
-        现只保留顶部一条：它承担的是**分区语义**（这里是一条 AI 回合并的开始），
-        去掉它就失去了回合边界；而左侧/尾部两条纯属装饰，边框感越强越不简约。
-
-        副作用（均为预期）：
-        - `LEFT_GUTTER` 这个「竖线到内容左缘」的留白不再被竖线占用，横线仍从该 x 起
-          画（与内容左缘对齐），故内容位置不变，无需调整任何边距常量；
-        - 耗时徽章仍骑在顶部虚线上（见 `_inset` / `_place_ribbon`），不受影响。
+        虚线语义：计时行（左上角「已处理 …」）之下的**分区线**，线下方即 AI
+        输出内容。2026-10-25 计时器从骑线 pill 简化为左上角文本后，虚线不再
+        被徽章压住，整体位于计时行底边之下（见 `_inset`）。
         """
-        p = QPainter(self)
-        p.setPen(_dashed_pen(self._style.dash))
-        top = self._inset
-        right = max(LEFT_GUTTER, self.width() - 1)
-        p.drawLine(LEFT_GUTTER, top, right, top)
-        # 已移除（简约化）：底部横虚线与左侧竖虚线（demo .vline）。理由见上。
-        p.end()
+        if 0 <= self._inset < self._box.y():
+            p = QPainter(self)
+            p.setPen(_dashed_pen(self._style.dash))
+            top = self._inset
+            right = max(LEFT_GUTTER, self.width() - 1)
+            p.drawLine(LEFT_GUTTER, top, right, top)
+            p.end()
+        super().paintEvent(_e)
 
     def _place_ribbon(self):
         if self._ribbon is None:
             return          # 惰性：未建（无耗时数据）时无处可贴
         self._ribbon.adjustSize()
         try:
-            self._ribbon.move(0, 0)
+            # 左上角计时行：x 与顶部虚线同起点（LEFT_GUTTER），y=0（贴在容器顶，
+            # 虚线在其下方 TIMER_DASH_GAP 处）
+            self._ribbon.move(LEFT_GUTTER, 0)
             self._ribbon.raise_()
         except Exception:
             pass

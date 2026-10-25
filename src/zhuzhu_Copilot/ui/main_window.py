@@ -1617,9 +1617,9 @@ class CopilotPanel(QFrame):
                              "shortcuts": []}
         load_copilot_extensions(panel=self)
 
-    def _import_copilot_module(self, d: Path, rel: str):
+    def _import_copilot_module(self, name: str, d: Path, rel: str):
         """从插件包目录动态导入模块（按文件路径加载；失败抛异常由调用方捕获）。"""
-        return import_copilot_module(d, rel)
+        return import_copilot_module(name, d, rel)
 
     def _register_copilot_entry(self, name: str, d: Path, section: str,
                                 entry: dict):
@@ -1629,7 +1629,7 @@ class CopilotPanel(QFrame):
     def _register_copilot_entry_impl(self, name: str, d: Path, section: str,
                                      entry: dict):
         if section == "pages":
-            mod = self._import_copilot_module(d, entry.get("module"))
+            mod = self._import_copilot_module(name, d, entry.get("module"))
             widget_cls = getattr(mod, str(entry.get("widget") or ""), None)
             if widget_cls is None:
                 raise AttributeError(f"页面类不存在: {entry.get('widget')}")
@@ -1647,7 +1647,7 @@ class CopilotPanel(QFrame):
             self._copilot_ext["pages"].append(
                 {"plugin": name, "id": entry.get("id"), "index": idx})
         elif section == "services":
-            mod = self._import_copilot_module(d, entry.get("module"))
+            mod = self._import_copilot_module(name, d, entry.get("module"))
             start = getattr(mod, str(entry.get("entry") or ""), None)
             if not callable(start):
                 raise AttributeError(f"服务入口函数不存在: {entry.get('entry')}")
@@ -1656,7 +1656,7 @@ class CopilotPanel(QFrame):
                 {"plugin": name, "id": entry.get("id"), "module": mod,
                  "stop": str(entry.get("stop") or ""), "handle": handle})
         elif section == "tray":
-            mod = self._import_copilot_module(d, entry.get("module"))
+            mod = self._import_copilot_module(name, d, entry.get("module"))
             action = getattr(mod, str(entry.get("action") or ""), None)
             if not callable(action):
                 raise AttributeError(f"托盘动作函数不存在: {entry.get('action')}")
@@ -1667,7 +1667,7 @@ class CopilotPanel(QFrame):
                 {"plugin": name, "id": entry.get("id"), "action": act})
         elif section == "shortcuts":
             from PyQt6.QtGui import QShortcut, QKeySequence
-            mod = self._import_copilot_module(d, entry.get("module"))
+            mod = self._import_copilot_module(name, d, entry.get("module"))
             action = getattr(mod, str(entry.get("action") or ""), None)
             if not callable(action):
                 raise AttributeError(f"快捷键动作函数不存在: {entry.get('action')}")
@@ -2490,20 +2490,79 @@ _COPILOT_EXT_STATE = {"started": set(), "services": [], "tray": [], "shortcuts":
                       "host": None}   # host：页面宿主（MainWindow），停用时据此摘页签
 
 
-def import_copilot_module(d: Path, rel: str):
-    """从插件包目录按文件路径动态导入模块（失败抛异常由调用方捕获）。"""
-    import importlib.util
+def _ext_pkg_name(name: str) -> str:
+    """插件在 sys.modules 里的合成包名（每插件一个包，支撑包内相对导入）。"""
     import re as _re
-    p = (Path(d) / str(rel)).resolve()
-    if not str(p).startswith(str(Path(d).resolve())) or not p.is_file():
+    return "_copilot_ext_" + _re.sub(r"\W", "_", str(name))
+
+
+def _ensure_ext_package(name: str, d: Path) -> str:
+    """为插件目录建合成包（__path__ 指向插件目录），支持插件内多模块/相对导入。
+
+    这是热插拔的基础设施：旧实现把每个文件映射成扁平顶层模块，插件内部
+    `from . import xxx` / `from .services.xxx import y` 全部会失败；
+    而且重新启用时旧模块对象残留，改了代码也拿到旧版本。
+    """
+    import sys
+    import types
+    d = Path(d).resolve()
+    pkg_name = _ext_pkg_name(name)
+    pkg = sys.modules.get(pkg_name)
+    if pkg is None or list(getattr(pkg, "__path__", []) or []) != [str(d)]:
+        pkg = types.ModuleType(pkg_name)
+        pkg.__path__ = [str(d)]
+        pkg.__package__ = pkg_name
+        pkg.__file__ = str(d / "__init__.py")
+        sys.modules[pkg_name] = pkg
+    return pkg_name
+
+
+def import_copilot_module(name: str, d: Path, rel: str):
+    """从插件包目录按相对路径动态导入模块（失败抛异常由调用方捕获）。
+
+    每次调用都重新执行磁盘最新代码（热插拔：停用再启用立即拿到新实现）。
+    模块挂在 `_copilot_ext_<plugin>.<路径>` 合成包下，支持包内相对导入。
+    """
+    import sys
+    import importlib.util
+    import types
+    d = Path(d).resolve()
+    p = (d / str(rel)).resolve()
+    if not str(p).startswith(str(d)) or not p.is_file():
         raise FileNotFoundError(f"模块不存在: {rel}")
-    mod_name = "zhuzhu_copilot_ext_" + _re.sub(r"\W", "_", str(rel))
+    pkg_name = _ensure_ext_package(name, d)
+    parts = list(Path(str(rel)).with_suffix("").parts)
+    # 补齐中间父包（合成 namespace package），保证相对导入链完整
+    for i in range(1, len(parts)):
+        sub_name = pkg_name + "." + ".".join(parts[:i])
+        if sub_name not in sys.modules:
+            sub = types.ModuleType(sub_name)
+            sub.__path__ = [str(d.joinpath(*parts[:i]))]
+            sub.__package__ = sub_name
+            sys.modules[sub_name] = sub
+    mod_name = pkg_name + "." + ".".join(parts)
+    # 旧版本先摘掉（同一次启用中重复调用也以磁盘代码为准）
+    sys.modules.pop(mod_name, None)
     spec = importlib.util.spec_from_file_location(mod_name, str(p))
     if spec is None or spec.loader is None:
         raise ImportError(f"无法加载模块: {rel}")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def unload_extension_modules(name: str) -> None:
+    """停用/删除插件时把它的合成包模块全部摘出 sys.modules。
+
+    不摘的话再次启用会命中旧模块对象（"改了没生效"），也避免长期运行的插件
+    旧版本在 sys.modules 里无限堆积。
+    """
+    import sys
+    pkg_name = _ext_pkg_name(name)
+    prefix = pkg_name + "."
+    for m in [m for m in list(sys.modules) if m == pkg_name or m.startswith(prefix)]:
+        sys.modules.pop(m, None)
 
 
 def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict):
@@ -2528,7 +2587,7 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
         key = f"{name}:{section}:{entry.get('id')}"
         if key in _COPILOT_EXT_STATE["started"]:
             return None          # 已登记过：不重复加页签
-        mod = import_copilot_module(d, entry.get("module"))
+        mod = import_copilot_module(name, d, entry.get("module"))
         widget_cls = getattr(mod, str(entry.get("widget") or ""), None)
         if widget_cls is None:
             raise AttributeError(f"页面类不存在: {entry.get('widget')}")
@@ -2562,7 +2621,7 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
     if key in _COPILOT_EXT_STATE["started"]:
         return None              # 已启动过：不重复注册
     if section == "services":
-        mod = import_copilot_module(d, entry.get("module"))
+        mod = import_copilot_module(name, d, entry.get("module"))
         start = getattr(mod, str(entry.get("entry") or ""), None)
         if not callable(start):
             raise AttributeError(f"服务入口函数不存在: {entry.get('entry')}")
@@ -2571,7 +2630,7 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
             {"plugin": name, "id": entry.get("id"), "module": mod,
              "stop": str(entry.get("stop") or ""), "handle": handle})
     elif section == "tray":
-        mod = import_copilot_module(d, entry.get("module"))
+        mod = import_copilot_module(name, d, entry.get("module"))
         action = getattr(mod, str(entry.get("action") or ""), None)
         if not callable(action):
             raise AttributeError(f"托盘动作函数不存在: {entry.get('action')}")
@@ -2586,7 +2645,7 @@ def register_copilot_entry(panel, name: str, d: Path, section: str, entry: dict)
              "menu": menu, "callable": action})
     elif section == "shortcuts":
         from PyQt6.QtGui import QKeySequence, QShortcut
-        mod = import_copilot_module(d, entry.get("module"))
+        mod = import_copilot_module(name, d, entry.get("module"))
         action = getattr(mod, str(entry.get("action") or ""), None)
         if not callable(action):
             raise AttributeError(f"快捷键动作函数不存在: {entry.get('action')}")
@@ -2757,6 +2816,12 @@ def stop_copilot_plugin(name: str) -> None:
     _COPILOT_EXT_STATE["started"].difference_update(
         {k for k in _COPILOT_EXT_STATE["started"]
          if k.startswith(f"{name}:")})
+    # 服务已停、UI 已摘：插件合成包模块整体摘出 sys.modules，
+    # 再启用时 import_copilot_module 会按磁盘最新代码重新执行。
+    try:
+        unload_extension_modules(name)
+    except Exception:
+        pass
 
 
 def copilot_plugin_running(name: str) -> bool:
@@ -2851,3 +2916,53 @@ def shutdown_copilot_extensions() -> None:
                 pass
     _COPILOT_EXT_STATE["started"].clear()
     _COPILOT_EXT_STATE["services"] = []
+
+
+# ---------------------------------------------------------------------------
+# 热插拔 UI 事件桥：核心层（copilot_plugins）在启停/删除/回滚时触发事件，
+# 本模块负责把页面/服务/托盘/快捷键即时挂摘。GUI 线程直接执行；AI 工具链路
+# （工作线程）由 main.py 注册的 UI 派发器经信号槽 marshal 到 GUI 线程。
+# 回调以稳定 key 注册：本模块自身被热重载后函数对象会重建，按 key 替换不重复挂。
+# ---------------------------------------------------------------------------
+
+def _hot_hook_before_disable(name: str) -> None:
+    try:
+        stop_copilot_plugin(name)
+    except Exception:
+        pass
+
+
+def _hot_hook_after_enable(name: str) -> None:
+    try:
+        start_copilot_plugin(name)
+    except Exception:
+        pass
+    # 源码变更可能改写了其他启用插件的服务代码：全量重建一次（幂等）
+    restart_copilot_services()
+
+
+def _hot_hook_after_change(name: str) -> None:
+    # 停用/删除/回滚/强制回滚后：按启用列表重建服务与页面（被删插件不会再登记）
+    restart_copilot_services()
+
+
+def install_hotplug_hooks() -> bool:
+    """把 UI 挂摘动作注册到热加载引擎（幂等；可在任意线程导入本模块时调用）。
+
+    注意：只注册回调，不创建 QObject；跨线程 marshal 由 main.py 的 UI 桥负责。
+    """
+    try:
+        from zhuzhu_Copilot.core import hot_reload
+    except Exception:
+        return False
+    hot_reload.on_ui_event("before_disable", _hot_hook_before_disable,
+                           key="main_window.before_disable")
+    hot_reload.on_ui_event("after_enable", _hot_hook_after_enable,
+                           key="main_window.after_enable")
+    hot_reload.on_ui_event("after_change", _hot_hook_after_change,
+                           key="main_window.after_change")
+    return True
+
+
+# 模块导入即注册（预热线程导入也安全：这里不碰任何 QWidget）。
+install_hotplug_hooks()

@@ -16,6 +16,7 @@ from PyQt6.QtGui import (QColor, QPainter, QIcon, QFont, QFontMetrics, QPixmap,
 
 from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
 from zhuzhu_Copilot.ui.tokens import COMBO_ARROW_W
+from zhuzhu_Copilot.ui import motion
 from zhuzhu_Copilot.core.i18n import ui as _ui, uim as _uim, uif as _uif
 
 # 卸载/安装类程序名，图标无意义，查找主程序时排除
@@ -38,7 +39,11 @@ def _danger_hover() -> str:
 
 
 class SwitchButton(QWidget):
-    """滑块开关：点击切换，带动画。信号 toggled(bool) 在用户点击时发射"""
+    """滑块开关：点击切换，带动画。信号 toggled(bool) 在用户点击时发射
+
+    招 5：拨动用「咬合」性格（motion.snap，OutBack 5% 微簧 + SNAP_MS）——
+    滑块到位时轻微回弹一下再咬死，比纯 OutCubic 的「滑过去就停」有质感。
+    """
 
     toggled = pyqtSignal(bool)
 
@@ -49,8 +54,8 @@ class SwitchButton(QWidget):
         self.setFixedSize(48, 26)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._anim = QPropertyAnimation(self, b"knob", self)
-        self._anim.setDuration(160)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.setDuration(motion.SNAP_MS)
+        self._anim.setEasingCurve(motion.snap())
 
     def knob(self) -> float:
         return self._knob
@@ -83,19 +88,25 @@ class SwitchButton(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._checked:
+            # 开：主色浮起；关：凹陷字段色（招 1：不描边，用底色分层表达状态）
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(PALETTE["primary"]))
             p.drawRoundedRect(self.rect(), 13, 13)
         else:
-            p.setPen(QPen(QColor(PALETTE["border"]), 1))
-            p.setBrush(QColor(PALETTE["bg_bottom"]))
-            p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 13, 13)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(PALETTE.get("field") or PALETTE["bg_bottom"]))
+            p.drawRoundedRect(self.rect(), 13, 13)
         pad = 3
         d = self.height() - pad * 2
         x = pad + self._knob * (self.width() - d - pad * 2)
+        # 滑块：白芯 + 浅色主题下加一圈淡描边（白 knob 压在浅灰轨道上需要轮廓）
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor("#FFFFFF"))
         p.drawEllipse(int(round(x)), pad, d, d)
+        if not self._checked and QColor(PALETTE["bg_top"]).lightness() >= 128:
+            p.setPen(QPen(QColor(PALETTE["border"]), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(int(round(x)) + 1, pad + 1, d - 2, d - 2)
 
 
 class ArrowComboBox(QComboBox):
@@ -119,8 +130,9 @@ class ArrowComboBox(QComboBox):
         self._arrow_open = False
         self._arrow_hover = False
         self._arrow_anim = QPropertyAnimation(self, b"arrowAngle", self)
-        self._arrow_anim.setDuration(160)
-        self._arrow_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        # 招 5：箭头旋转是「微反馈」性格（motion.hover，110ms 快反馈）
+        self._arrow_anim.setDuration(motion.HOVER_MS)
+        self._arrow_anim.setEasingCurve(motion.hover())
 
     # ---------- 动画属性 ----------
     def get_arrowAngle(self) -> float:
@@ -698,16 +710,16 @@ class ToastNotification(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(self._WIDTH)
 
-        # 滑入：从右侧外平移到目标位置
+        # 滑入：从右侧外平移到目标位置（招 5：落定性格，240ms 内完成不等候）
         self._anim_in = QPropertyAnimation(self, b"pos", self)
-        self._anim_in.setDuration(320)
-        self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
-        # 滑出：向右平移 + 淡出
+        self._anim_in.setDuration(motion.SETTLE_MS)
+        self._anim_in.setEasingCurve(motion.settle())
+        # 滑出：向右平移 + 淡出（招 5：消退性格，快于滑入）
         self._anim_out = QPropertyAnimation(self, b"pos", self)
-        self._anim_out.setDuration(300)
-        self._anim_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._anim_out.setDuration(motion.FADE_OUT_MS)
+        self._anim_out.setEasingCurve(motion.fade_out())
         self._fade_out = QPropertyAnimation(self, b"windowOpacity", self)
-        self._fade_out.setDuration(280)
+        self._fade_out.setDuration(motion.FADE_OUT_MS)
         self._fade_out.setStartValue(1.0)
         self._fade_out.setEndValue(0.0)
         self._out_group = QParallelAnimationGroup(self)

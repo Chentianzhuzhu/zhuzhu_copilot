@@ -35,6 +35,7 @@ def _isolated_data_root(tmp_path_factory):
     """
     from zhuzhu_Copilot import app_identity
     from zhuzhu_Copilot.core import plugin_source
+    import _copilot_overlay_hook
 
     mp = pytest.MonkeyPatch()
     home = tmp_path_factory.mktemp("home")
@@ -44,8 +45,14 @@ def _isolated_data_root(tmp_path_factory):
     # 转译层也钉到临时目录（真实缺陷：应用/回滚类用例会把桩文件写进用户
     # ~/.zhuzhu_Copilot/source_overlay，下次启动导入钩子优先加载桩模块 →
     # agent_tools 缺 get_workdir，界面周期刷新直接 AttributeError）。
-    mp.setattr(plugin_source, "overlay_root",
-               lambda: home / app_identity.DATA_DIR_NAME / "source_overlay")
+    overlay_dir = home / app_identity.DATA_DIR_NAME / "source_overlay"
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    mp.setattr(plugin_source, "overlay_root", lambda: overlay_dir)
+    # 导入钩子的 overlay_dir 是内联 expanduser 实现（不经过 app_identity），
+    # 必须单独钉到同一临时目录；否则热加载引擎会在测试进程里看到开发机
+    # 真实覆盖层，把已加载的 src 模块判定为"已变更"而全量重跑，扰动运行态。
+    mp.setattr(_copilot_overlay_hook, "overlay_dir", lambda: overlay_dir)
+    _copilot_overlay_hook.install()
     yield home
     mp.undo()
 
