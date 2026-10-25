@@ -350,7 +350,8 @@ _TASK_GROUPS = [
      ("创建技能", "新技能", "自定义技能", "下载技能", "安装技能",
       # 对话内调用技能：「用 XX 技能 / 按 XX 规范来」等点名措辞
       "调用技能", "使用技能", "用技能", "按技能", "技能规范", "用一下技能",
-      "技能调用", "调用一下"),
+      "技能调用", "调用一下", "用个技能", "技能列表", "有什么技能", "哪些技能",
+      "可用技能", "技能清单"),
      frozenset({"create_skill", "use_skill"})),
     ("tts",
      ("朗读", "语音回复", "读出来", "听一下", "配音"),
@@ -774,6 +775,13 @@ class AgentEngine:
         self._empty_retries = 0         # 上游空响应连续纠正重试计数（每任务归零，达上限仍空才报错）
         self._ask_answered = {}         # ask_user 问答去重缓存（会话级）：question -> 已回答文本
         self._task_groups = None        # 按任务裁剪的工具类别（run 时按 user_input 计算；None=不裁剪）
+        # 会话级工具集并集：一旦某个任务类别用过某批工具，本会话后续轮次继续保留它们。
+        # 为什么必须黏住（这是「上下文缓存命中率」的关键，别改成每轮重新裁剪）：
+        # 上游的 prompt cache 按**前缀逐字节**匹配，而工具 schema 恰好排在前缀最前面。
+        # 每轮按 user_input 重新算裁剪集 → 用户一问代码、一问文件，工具块就整体换形状，
+        # 前缀每一轮都不同 → 缓存永远命中不了，每轮都按全价重新计费。
+        # 黏住之后：本会话最多在「首次出现新类别」那一次失效，其余轮次全部命中。
+        self._tool_group_union = set()
         self._compress_cooldown = 0     # 压缩冷却计数器（>0 时跳过压缩）
         # 自动朗读（用户要求"朗读/语音回复"时，AI 流式输出边生成边合成播放）
         self._tts_auto = False          # 本任务是否需要自动朗读
@@ -886,6 +894,7 @@ class AgentEngine:
 
     def clear_context(self, path=CONTEXT_FILE):
         """删除持久化上下文文件（配合 /clear 使用）"""
+        self._tool_group_union = set()      # 新上下文重新开始累积工具集（见 _all_tools）
         try:
             Path(path).unlink(missing_ok=True)
         except Exception:
@@ -1260,6 +1269,8 @@ class AgentEngine:
             keep = set(_CORE_TOOLS)
             for g in self._task_groups:
                 keep |= _TASK_GROUP_TOOLS.get(g, frozenset())
+            # 与本会话历史类别取并集：工具块只在「出现新类别」时变一次，其余轮次逐字节稳定
+            keep |= self._tool_group_union
             # 工作流自定义工具（tools.py 注册）随时可调：任务裁剪永不清除自定义工具，
             # 保证自定义工具在默认/任意任务类型下都具备可调用性
             try:
@@ -1278,6 +1289,7 @@ class AgentEngine:
                     if any(s in self._auto_skills for s in skills):
                         keep.add(tool)
             tools = [t for t in tools if t["function"]["name"] in keep]
+            self._tool_group_union = keep      # 记住：以后轮次继续保留，保证前缀稳定
         if self.auto_vd:
             # 自动虚拟桌面接管时，不再暴露 virtual_desktop 工具（避免 AI 重复切桌面）
             tools = [t for t in tools if t["function"]["name"] != "virtual_desktop"]
