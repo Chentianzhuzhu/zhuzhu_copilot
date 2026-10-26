@@ -1,0 +1,3 @@
+{"name": "screen_shot", "arguments": {"mode": "full"}}
+{"name": "click", "arguments": {"x": 675, "y": 230, "space": "image", "snap": false, "button": "left", "clicks": 1, "verify": true}}
+{"name": "screen_shot", "arguments": {"mode": "full"}}

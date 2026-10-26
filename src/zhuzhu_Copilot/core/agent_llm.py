@@ -2771,9 +2771,15 @@ def _cts_ctr_keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
     return bytes(out[:length])
 
 
-def _encrypt_config(data: str) -> str:
+def _encrypt_config(data: str, salt: bytes = None) -> str:
     """A2 方案加密：A2:<base64url( salt(16) + nonce(16) + ciphertext + tag(32) )>。
-    空串原样返回（与 A2 标记区分）。"""
+    空串原样返回（与 A2 标记区分）。
+
+    salt 非空时复用（重加密场景）：同一机器主密钥下盐仅作域分离，nonce 仍每次
+    随机——复用旧密文的盐可命中 _pbkdf2_derive 的 lru 缓存（加载时已用同一盐
+    解密过），避免每次保存重复 200k 迭代把主线程冻结 ~0.7s。盐本身随密文公开
+    存储，复用不削弱机密性；传入非法长度时回退新随机盐。
+    """
     import base64
     import hashlib
     import hmac
@@ -2781,7 +2787,8 @@ def _encrypt_config(data: str) -> str:
     if not data:
         return data
     master = _machine_key()
-    salt = _os.urandom(16)
+    if not salt or len(salt) != 16:
+        salt = _os.urandom(16)
     nonce = _os.urandom(16)
     enc_key = _derive_key(master, salt, "enc")
     mac_key = _derive_key(master, salt, "mac")
@@ -2824,16 +2831,18 @@ def _decrypt_config(data: str) -> str:
     return bytes(b ^ key[i % len(key)] for i, b in enumerate(raw)).decode("utf-8", "replace")
 
 
-def encrypt_model_config(model_section: dict) -> dict:
+def encrypt_model_config(model_section: dict, salt: bytes = None) -> dict:
     """将 model 配置节加密后存入 settings.json。
-    
+
     返回一个新 dict，其中 model 字段替换为加密后的 {"_encrypted": true, "data": "<cipher>"}。
+    salt 非空时复用（见 _encrypt_config）：保存设置时传旧密文的盐，命中 PBKDF2
+    派生缓存，避免每次保存重复 200k 迭代冻结主线程。
     外部调用方用此返回值安全存储。
     """
     if not model_section or not isinstance(model_section, dict):
         return model_section
     raw = json.dumps(model_section, ensure_ascii=False, separators=(",", ":"))
-    return {"_encrypted": True, "data": _encrypt_config(raw)}
+    return {"_encrypted": True, "data": _encrypt_config(raw, salt)}
 
 
 def decrypt_model_config(model_section: dict) -> dict:

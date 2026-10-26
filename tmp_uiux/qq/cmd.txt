@@ -1,0 +1,12 @@
+control action=ignore_input seconds=300
+open_app name=QQ
+screen_shot mode=window hwnd=40307840
+click x=85 y=64
+type_text text=李奕辰
+screen_shot mode=window hwnd=40307840
+click x=170 y=64
+type_text text=李奕辰
+screen_shot mode=window hwnd=40307840
+copy text=李奕辰
+key_press key=ctrl+v
+screen_shot mode=window hwnd=40307840

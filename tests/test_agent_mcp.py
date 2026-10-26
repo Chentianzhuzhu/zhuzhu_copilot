@@ -24,7 +24,7 @@ class _FakeTransport:
         self.tools = _FakeTransport.tool_sets[idx] if idx < len(_FakeTransport.tool_sets) else []
         self._results = _FakeTransport.results
 
-    def request(self, method, params):
+    def request(self, method, params, timeout=None):
         if self._fail:
             raise McpError("fake transport failure")
         if method == "tools/list":
@@ -35,6 +35,12 @@ class _FakeTransport:
                 return self._results[name]
             return {"content": [{"type": "text", "text": f"ok:{name}"}]}
         return {}
+
+    def call(self, method, params, timeout=None):
+        return self.request(method, params, timeout=timeout)
+
+    def notify(self, method, params):
+        return None
 
     def close(self):
         pass

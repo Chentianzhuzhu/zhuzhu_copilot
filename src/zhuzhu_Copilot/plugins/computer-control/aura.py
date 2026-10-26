@@ -1,4 +1,4 @@
-"""AI 操控期间的屏幕提示层：彩色呼吸光带 + 顶部胶囊提示窗，零第三方依赖。
+﻿"""AI 操控期间的屏幕提示层：彩色呼吸光带 + 顶部胶囊提示窗，零第三方依赖。
 
 两件东西
 --------
@@ -92,6 +92,12 @@ SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
+SWP_HIDEWINDOW = 0x0080
+# 异步定位：SetWindowPos 默认是同步的 —— 它会向目标窗口所属线程发消息并等它处理。
+# 我们的窗口线程只跑渲染循环、**不泵 Windows 消息**，一旦别的线程对别人的窗口调用
+# 同步 SetWindowPos，就会永久阻塞（实测光带线程卡死在 hint.raise_top() 上，只剩胶囊）。
+# 带这个标志后调用立即返回、由系统异步投递，任何线程调用都不会卡。
+SWP_ASYNCWINDOWPOS = 0x4000
 ULW_ALPHA = 0x00000002
 AC_SRC_OVER = 0x00
 BI_RGB = 0
@@ -325,7 +331,8 @@ class _LayeredWindow:
             self._error = f"CreateWindowExW 失败 err={ctypes.get_last_error()}"
             return False
         user32.SetWindowPos(self._hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                            SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW)
         bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         bmi.bmiHeader.biWidth = w
@@ -403,15 +410,22 @@ class _LayeredWindow:
 
     # ---- 显隐（截图兜底用） ----
     def hide(self):
+        """隐藏窗口（截图兜底：系统不支持截图排除时才走这里）。
+
+        用带 `SWP_ASYNCWINDOWPOS` 的 SetWindowPos 而不是 `ShowWindow`：后者同样是
+        跨线程窗口操作，目标线程不泵消息时会阻塞调用方（截图线程卡住 = 工具超时）。
+        """
         if self._hwnd and user32.IsWindow(self._hwnd):
-            user32.ShowWindow(self._hwnd, SW_HIDE)
+            user32.SetWindowPos(self._hwnd, 0, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                                SWP_ASYNCWINDOWPOS | SWP_HIDEWINDOW)
             self._visible = False
 
     def show(self):
         if self._hwnd and user32.IsWindow(self._hwnd):
-            user32.ShowWindow(self._hwnd, SW_SHOWNOACTIVATE)
             user32.SetWindowPos(self._hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                                SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW)
             self._visible = True
 
     def raise_top(self):
@@ -421,12 +435,18 @@ class _LayeredWindow:
         我们建窗之后只要再调一次 SetWindowPos，就会排到我们前面 —— 于是屏幕底部
         那条光带被任务栏整条盖住，看起来就是「光带没有包围全屏、底部缺一截」。
         置顶组内只能靠「再设一次 HWND_TOPMOST」把自己挪回最前。
+
+        **必须带 SWP_ASYNCWINDOWPOS**：本方法可能被光带线程用来重申**胶囊窗口**
+        的置顶，而胶囊窗口属于胶囊线程。两个线程都不泵消息，同步 SetWindowPos 会
+        互相发消息并永久等待 —— 这正是「首帧之后光带线程卡死、只剩胶囊在转」的
+        根因（faulthandler 实测栈停在 SetWindowPos）。异步标志让调用立即返回。
         """
         if not self._hwnd or not user32.IsWindow(self._hwnd):
             return
         try:
             user32.SetWindowPos(self._hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                                SWP_ASYNCWINDOWPOS)
         except Exception:
             pass
 
@@ -668,6 +688,7 @@ class Aura:
                 return          # 光带建窗失败时淡入时间轴永远不会推进，胶囊别空转
             if not self._create_hint():
                 return
+            last_top = 0.0
             while not self._stop.is_set():
                 now = time.time()
                 fade = self._fade_at(now)
@@ -677,6 +698,11 @@ class Aura:
                 # 胶囊只跟淡入淡出走，**不参与**呼吸/闪烁：上面有要读的文字，
                 # 跟着一起忽明忽暗会看不清（呼吸感只属于边缘光带）。
                 self._hint.push(int(255 * fade))
+                # 置顶重申由**本线程**完成：胶囊窗口属于本线程，跨线程同步
+                # SetWindowPos 会永久阻塞（见 raise_top 的注释）。
+                if now - last_top >= 2.0:
+                    last_top = now
+                    self._hint.raise_top()
                 if fade <= 0.004 and not self._active:
                     break
                 time.sleep(interval)
@@ -883,12 +909,12 @@ class Aura:
             return
         # 周期性重申置顶（2s 一次）：任务栏是 topmost，会在我们之后抢到更前的位置，
         # 把底部光带整条盖掉。四条边都要重申。
+        # **只重申本线程自己的窗口**：胶囊窗属于胶囊线程，跨线程 SetWindowPos 即使
+        # 加了异步标志也没必要，交给胶囊线程自己重申（它在 _run_hint 里做）。
         if now - self._last_top_ts >= 2.0:
             self._last_top_ts = now
             for lw in getattr(self, "_bands", None) or []:
                 lw.raise_top()
-            if self._hint is not None:
-                self._hint.raise_top()
         lut = self._core_lut
         shift = int(now * AURA_FLOW_SPEED * 256) & 255
         sca = int(self._pulse(now) * fade)

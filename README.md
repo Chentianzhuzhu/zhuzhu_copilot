@@ -37,7 +37,7 @@
 - **文档生成**：`create_docx` / `create_pptx` / `create_xlsx`；编辑：`edit_docx` / `edit_pptx` / `edit_xlsx`；美化：`beautify_*`。
 - **系统管理**：`system_info` / `get_time` / `env_var` / `optimize_memory`。
 - **任务编排**：`update_todo` / `list_todo`；记忆：`save_memory` / `load_memory`。
-- **工作流/技能/Agent 管理**：`list_workflows` / `create_workflow` / `switch_workflow` / `inspect_workflow` / `create_skill` / `create_plugin`（Agent 插件：MCP server + SKILL.md + web 型本地 HTTP 页面）/ `create_copilot_plugin`（Copilot 应用级插件：AI 生成源码变更清单 + 应用扩展清单）/ `apply_copilot_plugin` / `revert_copilot_plugin` / `register_sub_agent` 等（`skill_manager.py` / `workflow_manager.py` / `sub_agent_manager.py`）。
+- **工作流/技能/Agent 管理**：`list_workflows` / `create_workflow` / `switch_workflow` / `inspect_workflow` / `use_skill`（对话内按名调用技能：读取 SKILL.md 规范并入本任务）/ `create_skill` / `create_plugin`（Agent 插件：MCP server + SKILL.md + web 型本地 HTTP 页面）/ `create_copilot_plugin`（Copilot 应用级插件：AI 生成源码变更清单 + 应用扩展清单）/ `apply_copilot_plugin` / `revert_copilot_plugin` / `register_sub_agent` 等（`skill_manager.py` / `workflow_manager.py` / `sub_agent_manager.py`）。
 - **MCP 注册**：`create_mcp` / `list_mcp` / `set_mcp`。
 - **微信 ClawBot**：`send_file_to_wechat` / `send_files_to_wechat`（推送文件到绑定的手机微信）；入站文件读取由 `wechat_bridge.py` 处理。
 - **进度反馈**：`set_generation_progress`（长耗时生成任务）。
@@ -47,6 +47,8 @@
 ### 1.3 技能系统
 
 `src/zhuzhu_Copilot/core/skill_manager.py` 扫描 `~/.zhuzhu_Copilot/agent/skills/<name>/SKILL.md`。每个 SKILL.md 包含 description 与 instruction（可含 tool 白名单）。内置 23 个技能：brainstorming、browser-control、cmd-ops、code-review、complex-task、create-cordis、deep-customize、doc-gen、download-skill、file-ops、frontend-design-pro、git-commit、image-gen、memory、plugin-create、skill-create、skill-mgmt、sub-agent、system-admin、systematic-debugging、test-driven-development、web-search、writing-plans。支持 `@skillname` 激活。
+
+技能进入上下文有两条路：**关键词自动匹配**（按任务输入命中 `_SKILL_KEYWORDS`，自动注入规范）与**对话内点名调用**——`use_skill` 工具按名读取技能的「说明 + 规范正文」直接返回给模型并纳入本任务（后续轮次持续生效、路由硬拦截随之覆盖），`name` 留空则返回可用技能清单。用户说「用 plugin-create 技能帮我生成一个 copilot 插件」时，即使措辞不在关键词表里，Agent 也能点名调到规范再动手。
 
 ### 1.4 MCP 支持
 
@@ -741,6 +743,10 @@ exe 里的代码路径没问题。
 | 「帮我做个插件，给 AI 加个 XX 工具」 | `create_plugin` + `plugin-create` 技能 | Agent 插件（MCP server + SKILL.md，web 型带浏览器界面） |
 | 「帮我做个插件，在浮层加一个 XX 页面 / 改一下界面」 | `create_copilot_plugin` | Copilot 插件（source_ops + copilot.json） |
 | 「我要深度自定义 XX」 | `deep-customize` 技能 | 先盘点可自定义维度，再选最小落地通道 |
+
+**对话内调用技能**：用户点名「用 XX 技能 / 按 XX 规范来」时，Agent 调 `use_skill(name=...)` 读取该技能规范正文并纳入本任务（`name` 留空返回可用技能清单）；生成插件前也可主动 `use_skill("plugin-create")` 取到完整生成规范（含 web 型三件套质量约束、冒烟自检流程、何时改用 Copilot 插件）。
+
+**直接描述即可生成**：「生成一个 copilot 插件，在设置页加一个每日一句页面」这类自然语言会命中 cordis 任务组与 `plugin-create` 技能关键词，Agent 按规范调用 `create_plugin` / `create_copilot_plugin` 生成，`apply_copilot_plugin` 应用后由 `reload_extensions` + `hot_reload` **即时热插拔**（技能/MCP/源码覆盖层当轮生效，无需重启）；生成或应用失败可用 `revert_copilot_plugin` 一键回滚。
 
 提示词模板（越具体越准）：
 

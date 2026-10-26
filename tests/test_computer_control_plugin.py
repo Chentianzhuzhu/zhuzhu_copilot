@@ -840,23 +840,46 @@ def test_resolve_point_autofixes_out_of_range_physical_coordinates(monkeypatch):
     assert mod._take_coord_note() == ""
 
 
-def test_tool_execution_returns_a_readable_error_instead_of_hanging(monkeypatch):
-    """工具卡死时必须**在客户端超时之前**返回可读错误，而不是让整条 MCP 通道拖死。
+def test_tool_execution_is_serial_and_reports_errors(monkeypatch):
+    """工具在主循环线程**直接串行执行**，异常返回 isError 而不是让通道卡死。
 
-    用户侧的现象就是「MCP 请求超时」，而插件进程明明还活着 —— 因为调用方在等一个
-    永远不会回来的响应。有了这个看门狗，模型至少能拿到「动作可能已执行，别重复」
-    这句话，不会盲目再点一次。
+    这是「MCP 工具频繁超时」的根因修复：早先用一个 max_workers=1 的线程池做看门狗，
+    `fut.result(timeout=…)` 超时返回后那个工具仍在 worker 里跑，worker 被它占着，
+    下一个请求只能排队 → 一个工具偶然卡一下，后面所有工具全部跟着排队超时（雪崩）。
+    现在恢复直接串行：单个工具耗时即其耗时，绝不排队。
     """
-    import time as _t
     mod = _load_module()
-    monkeypatch.setattr(mod, "TOOL_TIMEOUT_S", 0.2)
-    mod._HANDLERS["_slow_probe"] = lambda a: (_t.sleep(0.7) or "done")
+    calls = []
+
+    def _ok(args):
+        calls.append(("ok", args))
+        return "done"
+
+    def _boom(args):
+        calls.append(("boom", args))
+        raise ValueError("bad arg")
+
+    mod._HANDLERS["_serial_ok"] = _ok
+    mod._HANDLERS["_serial_boom"] = _boom
+
     r = mod._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                     "params": {"name": "_slow_probe", "arguments": {}}})
-    txt = r["result"]["content"][0]["text"]
-    assert "仍未返回" in txt
-    assert "不要重复调用" in txt
-    assert "screen_shot" in txt
+                     "params": {"name": "_serial_ok", "arguments": {"a": 1}}})
+    assert r["result"]["isError"] is False
+    assert r["result"]["content"][0]["text"] == "done"
+
+    r2 = mod._handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                      "params": {"name": "_serial_boom", "arguments": {}}})
+    assert r2["result"]["isError"] is True
+    assert "ValueError" in r2["result"]["content"][0]["text"]
+    assert calls == [("ok", {"a": 1}), ("boom", {})]
+
+
+def test_no_worker_thread_pool_in_server(monkeypatch):
+    """源码里不得再出现单 worker 线程池看门狗 —— 它是「频繁超时」雪崩的根源。"""
+    src = SERVER.read_text(encoding="utf-8")
+    assert "ThreadPoolExecutor" not in src, \
+        "server.py 里出现了线程池：单 worker + 超时会让后续工具全部排队超时"
+    assert "concurrent.futures" not in src
 
 
 def test_window_sig_no_longer_uses_printwindow():

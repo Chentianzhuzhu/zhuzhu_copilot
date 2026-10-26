@@ -27,12 +27,18 @@ class _FakeTransport:
         _FakeTransport.counter += 1
         self.tools = _FakeTransport.tool_sets[idx] if idx < len(_FakeTransport.tool_sets) else []
 
-    def request(self, method, params):
+    def request(self, method, params, timeout=None):
         if method == "tools/list":
             return {"tools": self.tools}
         if method == "tools/call":
             return {"content": [{"type": "text", "text": "ok"}]}
         return {}
+
+    def call(self, method, params, timeout=None):
+        return self.request(method, params, timeout=timeout)
+
+    def notify(self, method, params):
+        return None
 
     def close(self):
         pass

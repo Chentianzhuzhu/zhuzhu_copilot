@@ -1653,16 +1653,22 @@ class AgentEngine:
                     if srv not in allowed:
                         return {"text": f"[工作流隔离] MCP 服务器「{srv}」未绑定当前工作流，已拒绝调用。"
                                         "可在设置-MCP服务器 中为该服务器指定工作流。", "images": []}
+                # MCP 工具**不设引擎侧等待上限**：工具的真实耗时取决于用户机器与界面
+                # 状态（截图 / 图像吸附 / 点击校验都可能秒级），拿固定秒数卡只会把
+                # 正在正常执行的动作判成「超时」，而服务端仍在跑、后续调用继续排队，
+                # 最终演变成成片的「MCP 频繁超时」。连接真死时由客户端读循环死亡检测
+                # **立即**报错唤醒，不需要引擎再兜一层；用户随时可点停止（stop 事件）。
                 text, imgs = _call_with_stop(self._with_edit_bucket(
                     lambda: self.mcp.call_tool(name, args)),
-                    self._stop, timeout=30.0)
+                    self._stop, timeout=None)
+                if text is None:
+                    return {"text": "[已停止等待] MCP 工具仍在后台执行，本轮已跳过",
+                            "images": []}
                 if imgs and self.text_only:
                     # 纯文本模型：图片内容项会被接口拒绝，丢弃图片并提示改用文本感知
                     imgs = []
                     text += "\n（当前模型不支持图片输入，截图已省略）"
                 return {"text": text, "images": imgs}
-            except TimeoutError:
-                return {"text": f"[MCP 超时] 工具 {name} 无响应，已放弃（30 秒）", "images": []}
             except Exception as e:
                 return {"text": f"[MCP 错误] {e}", "images": []}
         return {"text": f"[未知工具] {name}", "images": []}

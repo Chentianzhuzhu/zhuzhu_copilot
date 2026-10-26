@@ -210,8 +210,14 @@ def test_mcp_client_passes_env_to_stdio_transport(iso, monkeypatch):
         def __init__(self, command, args, env=None):
             seen["command"], seen["args"], seen["env"] = command, args, env
 
-        def request(self, method, params):
+        def request(self, method, params, timeout=None):
             return {}
+
+        def call(self, method, params, timeout=None):
+            return {}
+
+        def notify(self, method, params):
+            return None
 
         def close(self):
             pass

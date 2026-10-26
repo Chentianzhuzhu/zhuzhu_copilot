@@ -24,7 +24,6 @@
 """
 
 import base64
-import concurrent.futures
 import contextlib
 import ctypes
 import difflib
@@ -68,10 +67,10 @@ SESSION_TTL_S = 45.0         # 操控会话滑动有效期：期内真人输入�
                               # 鼠标就会被判接管 → 任务直接卡死（用户看到的是「MCP
                               # 超时、5 分钟没完成」）。45s 足够覆盖「下一次工具
                               # 调用」的间隔，又不会误伤。
-MOVE_TAKEOVER_PX = 40         # 鼠标移动累计位移阈值：低于它不算「用户接管」
-TOOL_TIMEOUT_S = 10.0         # 单个工具执行的最长等待：超过就返回可读错误，而不是
-                              # 让客户端干等到自己的超时阈值再把整次调用判死。
-                              # 用户侧的现象就是「MCP 请求超时」，而插件明明活着。
+MOVE_TAKEOVER_PX = 160        # 鼠标移动累计位移阈值：低于它不算「用户接管」。
+                              # 40 太敏感 —— 用户正常挪一下鼠标就超了，AI 会被踢下线、
+                              # 任务直接卡住（实测：用户在旁边用电脑时必现）。按键/点击
+                              # 仍然立即判定接管（那是明确的抢回意图）。
 WM_MOUSEMOVE = 0x0200        # 低级鼠标钩子里的「移动」事件
 INJECT_SIGNATURE = 0x5A5A5A5A       # SendInput dwExtraInfo 签名：标记 AI 自身注入
 INJECT_GRACE_S = 0.35       # 注入后抑制窗口：钩子在此窗口内不把事件判为真人输入
@@ -246,6 +245,10 @@ def _bind_win32():
     u.IsChild.argtypes = (wintypes.HWND, wintypes.HWND)
     u.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
     u.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    u.SendMessageTimeoutW.restype = LRESULT
+    u.SendMessageTimeoutW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                     wintypes.LPARAM, wintypes.UINT, wintypes.UINT,
+                                     ctypes.POINTER(ctypes.c_size_t))
     u.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
     u.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.POINTER(GUITHREADINFO))
     u.GetGUIThreadInfo.restype = wintypes.BOOL
@@ -3293,13 +3296,48 @@ def clipboard_set(text: str) -> bool:
 
 
 # ---- 窗口 ----
+
+WM_GETTEXT = 0x000D
+SMTO_BLOCK = 0x0001         # 允许系统在等待期间处理本线程的其它消息
+SMTO_ABORTIFHUNG = 0x0002   # 目标线程卡死时立即放弃
+_TITLE_BUF = 512            # 窗口标题缓冲：Win32 标题上限 256 字符，512 足够
+_TITLE_TIMEOUT_MS = 120     # 单个窗口取标题的最长等待
+
+
 def window_title(hwnd: int) -> str:
-    n = user32.GetWindowTextLengthW(hwnd)
-    if n <= 0:
+    """窗口标题（**任何窗口都不会拖住调用方**）。
+
+    必须用 `SendMessageTimeoutW` 而不是 `GetWindowTextLengthW`/`GetWindowTextW`：
+    后两者的语义是「向窗口所属**线程**同步发 WM_GETTEXTLENGTH/WM_GETTEXT 并等它处理」。
+    本插件的光带/胶囊提示窗由只跑渲染循环、**从不泵 Windows 消息**的线程创建，
+    于是主线程取它们标题时会永久阻塞 —— 实测调用栈卡死在
+    `window_title → GetWindowTextLengthW`，该次 MCP 工具永不返回，之后所有工具
+    全部超时（用户侧表现就是「MCP 工具频繁报错」）。
+    `SendMessageTimeoutW` 会在目标不响应时按超时返回，枚举任何窗口都安全。
+    """
+    hwnd = int(hwnd or 0)
+    if not hwnd:
         return ""
-    buf = ctypes.create_unicode_buffer(n + 1)
-    user32.GetWindowTextW(hwnd, buf, n + 1)
-    return buf.value.strip()
+    buf = ctypes.create_unicode_buffer(_TITLE_BUF)
+    result = ctypes.c_size_t(0)
+    ok = user32.SendMessageTimeoutW(
+        hwnd, WM_GETTEXT, _TITLE_BUF, ctypes.addressof(buf),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, _TITLE_TIMEOUT_MS, ctypes.byref(result))
+    return buf.value.strip() if ok else ""
+
+
+def is_own_window(hwnd) -> bool:
+    """窗口是否属于本进程（即本插件的提示层：光带四边条 + 顶部胶囊）。
+
+    这类窗口既不该出现在「桌面窗口」清单里，也不能被取标题（它们的线程不泵消息）。
+    判 pid 比读标题便宜且绝不会阻塞。
+    """
+    try:
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(int(hwnd or 0), ctypes.byref(pid))
+        return bool(pid.value) and pid.value == os.getpid()
+    except Exception:
+        return False
 
 
 def window_rect(hwnd: int) -> wintypes.RECT:
@@ -3511,11 +3549,6 @@ def _enum_health() -> str:
             f"{('底层错误：' + d['error']) if d['error'] else ''}")
 
 
-# 屏幕提示层窗口的标题前缀（aura.py 建窗时用的名字）。枚举窗口/列清单时必须把它们
-# 过滤掉：光带是全屏 topmost 窗口，留在清单里会让模型看到"一扇覆盖整屏的窗口"。
-OVERLAY_WIN_PREFIX = "zhuzhu-aura"
-
-
 def list_top_windows(visible_only: bool = True, min_size: int = 1,
                      kinds: tuple = ()) -> list:
     """列出顶层窗口（**含无标题 / 工具窗口 / 分层窗口 / 弹出菜单**）。
@@ -3534,11 +3567,12 @@ def list_top_windows(visible_only: bool = True, min_size: int = 1,
                 continue
             if visible_only and not user32.IsWindowVisible(hwnd):
                 continue
-            title = window_title(hwnd)
-            if title.startswith(OVERLAY_WIN_PREFIX):
-                # 自己的屏幕提示层（光带是全屏的、胶囊窗在顶部中央）：它们既不能被
-                # 列进窗口清单去干扰判断，也绝不能被模型当成"要点开的应用"。
+            if is_own_window(hwnd):
+                # 自己的屏幕提示层（光带是四条全屏窄窗、胶囊窗在顶部中央）：它们既
+                # 不该被列进窗口清单去干扰判断，也绝不能被当成"要点开的应用"。
+                # 必须在取标题**之前**跳过 —— 它们的线程不泵消息，取标题会阻塞。
                 continue
+            title = window_title(hwnd)
             r = window_rect(hwnd)
             l, t, b_r, b_b = r.left, r.top, r.right, r.bottom
             w, h = max(0, b_r - l), max(0, b_b - t)
@@ -4259,6 +4293,8 @@ class InputWatcher:
                 return                      # AI 自身注入 → 不算真人输入
             if time.time() > _STATE["active_until"]:
                 return                      # 非操控会话期 → 不打扰（用户正常用电脑）
+            if time.time() < (_STATE.get("ignore_input_until") or 0):
+                return                      # 用户已授权「这期间别理我的鼠标」
             if wparam == WM_MOUSEMOVE:
                 # 鼠标**移动**不立即算接管：手抖、鼠标被桌宠蹭到、用户只是挪开
                 # 一下 —— 这些都不该把 AI 踢下线（踢了任务就卡住不动）。
@@ -4339,6 +4375,7 @@ _STATE = {
     "aura": False,             # 屏幕光带提示层是否点亮
     "aura_error": "",          # 提示层点亮失败的原因（空=正常）
     "interrupt_reason": "",    # 最近一次被接管的原因（空=未被接管）
+    "ignore_input_until": 0.0, # 忽略真人输入的截止时间（用户授权后长任务用）
     # 最近一次 refine_point 的候选清单（点击可直接按编号取用，见 _resolve_cand）
     "cands": {"ts": 0.0, "items": []},
 }
@@ -5707,6 +5744,14 @@ def tool_control(args: dict) -> str:
                 f"会话剩余 {max(0, int(_STATE['active_until'] - time.time()))}s；"
                 f"{_aura_status_line()}"
                 + (f"；接管原因：{why}" if intr and why else ""))
+    if action == "ignore_input":
+        # 长任务授权：期间忽略真人鼠标/键盘，不判定接管。
+        # 必须在**用户明确同意**后才用（否则用户就抢不回控制权了）。
+        secs = max(0.0, min(600.0, _num(args.get("seconds"), 60)))
+        _STATE["ignore_input_until"] = time.time() + secs
+        _log("ai", f"忽略真人输入 {secs:.0f} 秒")
+        return (f"已忽略真人输入 {secs:.0f} 秒：这段时间里即使你动了鼠标/键盘也不会"
+                f"判定接管、不会中断任务。{secs:.0f} 秒后自动恢复「一动就接管」的正常行为。")
     if action == "take_over":
         mark_interrupted("AI 主动交还控制权")
         _log("ai", "主动交还控制权给用户")
@@ -5715,6 +5760,7 @@ def tool_control(args: dict) -> str:
         _STATE["interrupted"] = False
         _STATE["paused"] = False
         _STATE["interrupt_reason"] = ""
+        _STATE["ignore_input_until"] = 0.0
         _touch_session()
         _log("ai", "恢复操控（已确认用户要求继续）")
         return "已清除接管/暂停标记，可继续操控。"
@@ -6637,12 +6683,6 @@ def ensure_http() -> int:
 # MCP（stdio）：JSON-RPC 分发
 # ============================================================================
 
-# 工具执行池：只有一个 worker —— 语义仍是串行（一次一个工具），但调用方可以
-# 用 result(timeout=…) 设上限，避免某个工具卡死时把整个 MCP 通道拖死。
-_TOOL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1,
-                                                   thread_name_prefix="cc-tool")
-
-
 def _handle(msg: dict):
     """处理单个请求/通知；通知（无 id）返回 None 不回复。"""
     method = msg.get("method", "")
@@ -6677,20 +6717,17 @@ def _handle(msg: dict):
         # 纯查询（截屏/列窗口/看环境）不点亮，避免用户被无意义闪烁打扰。
         if name in _CONTROL_TOOLS:
             _aura_on()
+        # 工具在主循环线程里**直接串行执行**。为什么不再用「单 worker 线程池 +
+        # 超时」那套看门狗（实测教训，别改回去）：main() 是单线程逐行读 stdin，
+        # 线程池 max_workers=1 时，`fut.result(timeout=10)` 超时返回后**那个工具仍在
+        # worker 里继续跑**，worker 被它占着 —— 下一个请求 submit 只能排队，于是
+        # 一个工具偶然卡一下，后面所有工具全部跟着排队超时（雪崩）。这正是用户看到
+        # 「MCP 工具频繁/一直超时」的根因。直接串行执行：单个工具的真实耗时就是
+        # 它的耗时，客户端对工具调用**不设超时**（连接真死时读循环会立即报错唤醒），
+        # 因此慢工具既不会被误判超时，也不会把后续调用拖进排队超时。
+        # 串行还保证了操控状态（_VIEW 截图基准、_STATE 会话）不会被并发调用撕裂。
         try:
-            fut = _TOOL_POOL.submit(fn, params.get("arguments", {}) or {})
-            try:
-                out = fut.result(timeout=TOOL_TIMEOUT_S)
-            except concurrent.futures.TimeoutError:
-                _log("sys", f"工具 {name} 超过 {TOOL_TIMEOUT_S:.0f}s 未返回"
-                            f"（动作可能已执行，不要重复调用同一动作）")
-                return {"jsonrpc": "2.0", "id": rid,
-                        "result": {"content": [{"type": "text", "text":
-                            f"工具 {name} 执行超过 {TOOL_TIMEOUT_S:.0f} 秒仍未返回。"
-                            f"**动作可能已经执行** —— 不要重复调用同一动作。"
-                            f"请改用 screen_shot 看一眼当前界面；若只是想打开/切换应用，"
-                            f"用 open_app(name=…) 或 taskbar_open(index=N)，别再列窗口。"}],
-                            "isError": True}}
+            out = fn(params.get("arguments", {}) or {})
             content = out if isinstance(out, list) else [{"type": "text", "text": str(out)}]
             result = {"content": content, "isError": False}
         except Exception as e:

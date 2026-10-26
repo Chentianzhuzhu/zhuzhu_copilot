@@ -22,6 +22,7 @@
 
 ## 插件体系
 - 两套：Agent 插件（`~/.zhuzhu_Copilot/plugins/`，扩展 AI Agent）与 Copilot 插件（`~/.zhuzhu_Copilot/copilot_plugins/`，源码级定制任何模块）。共用 `plugin_source.py`（五类 op）+ `plugin_guard.py`（导入/AI 生成前强制校验，内置唯一）。
+- **对话内生成+热插拔链路已完备**：`create_plugin`/`create_copilot_plugin`/`apply_copilot_plugin` 生成应用后经 `reload_extensions` + `hot_reload.reload_overlay` 当轮生效；**`use_skill` 工具（2026-10-25 新增）**让 Agent 在对话内按名读技能规范（SKILL.md）并入本任务——用户点名「用 XX 技能」或生成插件前主动取规范都走它（`_CORE_TOOLS` 恒可用 + skill/cordis 任务组 + 关键词已补「生成插件/做个插件/copilot插件」类措辞）。回归 `tests/test_use_skill_tool.py`。
 - 源码级插件落 `~/.zhuzhu_Copilot/source_overlay/`，由 `_copilot_overlay_hook.py`（meta_path 最前置）优先命中；**停用插件后若覆盖层 .py 仍遮住源码，需手动删 overlay 副本再启用**。
 - 开发约定：图标必须是包根方形 PNG 且 plugin.json 只写文件名；页面/托盘/快捷键需重启生效（services 即时）；改插件 bump `revision`；`source_ops` 改 agent_panel/main_window/styles 必须重启。
 - 插件目录下不放备份（`list_plugins` 会把含 plugin.json 的子目录当插件）。
@@ -33,3 +34,4 @@
 
 ## 用户偏好
 - 中文沟通、交付物用中文；部署类任务倾向"直接做"（Agent 模式），仅网络暴露范围等安全分叉需要确认。
+- **禁止跑全量测试文件、禁止跑 CI/CD**：验证只跑与改动直接相关的单个/少量目标测试文件（如 `tests/test_use_skill_tool.py`），不扫整个 tests/ 目录。

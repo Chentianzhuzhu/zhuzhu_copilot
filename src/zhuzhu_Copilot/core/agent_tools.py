@@ -1607,8 +1607,11 @@ TOOLS = [
             "name": "use_skill",
             "description": "调用技能：按名读取该技能的规范正文（SKILL.md）并纳入本任务执行。"
                            "用户说「用 XX 技能」「按 XX 规范来」「调用 XX 技能」，或任务需要"
-                           "某技能指导（如 plugin-create 生成插件、create-cordis 深度定制、"
-                           "code-review 代码审查、computer-control 桌面操控）时调用。"
+                           "某技能指导时调用。常用技能：plugin-create（生成 Agent 插件，"
+                           "其规范末尾也说明何时改用 Copilot 插件）、deep-customize"
+                           "（深度自定义/新增功能总入口， copilot 插件源码级定制走它）、"
+                           "create-cordis（自定义 Agent 工作流）、code-review（代码审查）、"
+                           "computer-control（桌面操控）。"
                            "name 留空或传 list = 返回当前可用技能清单（含用途简介），先查再调。"
                            "返回的规范正文必须严格遵守；调用后该技能后续轮次持续生效。",
             "parameters": {"type": "object",
