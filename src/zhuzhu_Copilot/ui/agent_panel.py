@@ -7473,6 +7473,7 @@ class _AgentSettingsDialog(QDialog):
             from zhuzhu_Copilot.core import agent_skills
             self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
             self._reload_mcp_list()
+            self._reconnect_mcp()   # 新插件登记的 MCP 服务器需重连才生效
         except Exception:
             pass
 
@@ -7689,12 +7690,24 @@ class _AgentSettingsDialog(QDialog):
         dlg.config_saved.connect(self._on_coplugin_config_saved)
         dlg.exec()
 
+    def _reconnect_mcp(self):
+        """请求重连 MCP（后台线程）。
+
+        设置对话框只持有配置表（`_mcp_servers`），MCP 客户端与 `_init_mcp` 属于
+        AgentPanel：重连必须委托给父面板，不能就地 `self._init_mcp`（对话框没有
+        该属性，曾导致导入插件后抛 AttributeError）。面板不可用时静默跳过。
+        """
+        owner = self.parent()
+        fn = getattr(owner, "_reconnect_mcp", None)
+        if callable(fn):
+            fn()
+
     def _on_coplugin_config_saved(self, *_):
         """配置已保存：刷新列表与 MCP 服务器，并重连使 env 注入生效"""
         self._reload_coplugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
-        threading.Thread(target=self._init_mcp, daemon=True).start()
+        self._reconnect_mcp()
 
     def _on_plugin_create(self, *_):
         """自然语言描述 → 后台线程 AI 生成插件（真实 API），生成期间显示百分比进度"""
@@ -7742,7 +7755,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
-        threading.Thread(target=self._init_mcp, daemon=True).start()
+        self._reconnect_mcp()
 
     def _on_plugin_progress(self, pct: int, text: str):
         """生成期间更新进度百分比与文案"""
@@ -7773,7 +7786,7 @@ class _AgentSettingsDialog(QDialog):
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
         if ok:
-            threading.Thread(target=self._init_mcp, daemon=True).start()
+            self._reconnect_mcp()
 
     def _on_plugin_import_skill(self, *_):
         """导入标准技能为 skill 型插件"""
