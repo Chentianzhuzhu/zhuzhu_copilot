@@ -160,4 +160,86 @@ def test_preview_page_has_latest_render_hero():
     mod = _load()
     html = mod._PREVIEW_HTML
     assert 'id="hero"' in html and "最新渲染" in html
-    assert "setInterval(tick,2000)" in html, "页面必须自动刷新"
+    assert "setInterval(tick,1000)" in html, "页面必须每秒自动刷新（一步一帧靠它落地）"
+    assert "applyHero" in html, "hero 需要按实时视图/正式渲染的新旧切换"
+
+
+# ---------- F. 一步一帧：每个改动场景的调用都补一张实时图 ----------
+class _FakeBridge:
+    version = "3.5.0"
+
+    def __init__(self, result=None):
+        self.calls = []
+        self.result = result if result is not None else {
+            "path": "x/view.png", "resolution": 360, "engine": "BLENDER_WORKBENCH",
+            "seconds": 0.42, "bytes": 1234}
+
+    def alive(self):
+        return True
+
+    def call(self, method, params=None, timeout=None):
+        self.calls.append((method, dict(params or {})))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def test_live_frame_is_taken_for_every_mutating_step(monkeypatch):
+    mod = _load(monkeypatch)
+    fake = _FakeBridge()
+    monkeypatch.setattr(mod, "BRIDGE", fake)
+    assert mod._live_frame() is True
+    assert fake.calls and fake.calls[0][0] == "live_snapshot"
+    assert fake.calls[0][1]["resolution"] == mod.LIVE_PX
+
+
+def test_live_frame_can_be_disabled(monkeypatch):
+    mod = _load(monkeypatch)
+    fake = _FakeBridge()
+    monkeypatch.setattr(mod, "BRIDGE", fake)
+    monkeypatch.setattr(mod, "LIVE_ENABLED", False)
+    assert mod._live_frame() is False
+    assert fake.calls == [], "关闭后不得再打扰 Blender"
+
+
+def test_live_frame_failure_never_blocks_modeling(monkeypatch):
+    mod = _load(monkeypatch)
+    monkeypatch.setattr(mod, "BRIDGE", _FakeBridge(RuntimeError("boom")))
+    assert mod._live_frame() is False, "出图失败只能吞掉，不能抛给调用方"
+
+
+def test_handle_takes_live_frame_but_not_after_official_render(monkeypatch):
+    mod = _load(monkeypatch)
+    fake = _FakeBridge()
+    monkeypatch.setattr(mod, "BRIDGE", fake)
+    monkeypatch.setattr(mod, "PREVIEW", _FakePreview())
+    monkeypatch.setattr(mod, "_open_in_browser", lambda u: True)
+    monkeypatch.setattr(mod, "_preview_opened", True)     # 跳过开页逻辑
+    monkeypatch.setitem(mod._HANDLERS, "object_add", lambda a: "已创建 Cube")
+    monkeypatch.setitem(mod._HANDLERS, "render_image", lambda a: [
+        {"type": "image", "data": "AAA", "mimeType": "image/png"}])
+
+    mod._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                 "params": {"name": "object_add", "arguments": {}}})
+    assert [c[0] for c in fake.calls] == ["live_snapshot"], "加体块这一步必须出一帧"
+
+    fake.calls.clear()
+    mod._handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "render_image", "arguments": {}}})
+    assert fake.calls == [], "正式渲染本身就是一帧，不要再补一张 360px 预览覆盖它"
+
+
+def test_preview_state_reports_live_view(tmp_path, monkeypatch):
+    mod = _load(monkeypatch)
+    live = tmp_path / mod.LIVE_SUBDIR
+    live.mkdir()
+    (live / mod.LIVE_NAME).write_bytes(b"\x89PNG" + b"0" * 200)
+    monkeypatch.setattr(mod, "output_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod, "BRIDGE", _FakeBridge())
+    state = mod._preview_state()
+    assert state["live"]["url"].startswith("live.png?v=")
+    assert state["live"]["bytes"] > 200
+    assert state["live_enabled"] is True
+
+    (live / mod.LIVE_NAME).unlink()
+    assert mod._preview_state()["live"] == {}, "没有实时图时不该给出虚假地址"

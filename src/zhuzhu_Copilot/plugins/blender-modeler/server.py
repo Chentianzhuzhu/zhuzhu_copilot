@@ -443,6 +443,19 @@ PREVIEW_PORT = int(os.environ.get("BLENDER_PREVIEW_PORT") or 8787)
 # 页面展示的图片数量上限：只保留最近的渲染结果，避免目录长期使用后列表过重
 PREVIEW_MAX_IMAGES = 60
 
+# ---- 实时视图：每完成一步建模就出一帧，用户能一步步看着建模过程 ----
+#: 关掉整条实时出图（BLENDER_LIVE_PREVIEW=0）：出问题时可用，不影响正式渲染
+LIVE_ENABLED = (os.environ.get("BLENDER_LIVE_PREVIEW") or "1").strip().lower() \
+    not in ("0", "false", "off", "no")
+#: 实时图边长（px）：Workbench 360px 实测 ~0.4s/帧，够看清体块与材质，又不拖节奏
+LIVE_PX = int(os.environ.get("BLENDER_LIVE_PX") or 360)
+#: 实时图落在输出目录的 _live/ 子目录：不进正式渲染列表，也不污染交付目录
+LIVE_SUBDIR = "_live"
+LIVE_NAME = "view.png"
+#: 这些工具本身会产出正式图或不改变画面，不必再补一帧实时图
+_LIVE_SKIP = frozenset({"render_image", "export_model", "scene_save", "scene_open",
+                        "blender_start"})
+
 _STATE = {"scene": None, "scene_at": 0.0}
 
 
@@ -474,8 +487,47 @@ def _lan_ip() -> str:
     return "127.0.0.1"
 
 
+def _live_path() -> Path:
+    """实时视图文件路径（输出目录/_live/view.png）。"""
+    return output_dir() / LIVE_SUBDIR / LIVE_NAME
+
+
+def _live_info() -> dict:
+    """实时视图的元信息（页面据此决定 hero 显示实时图还是最新正式渲染）。"""
+    p = _live_path()
+    try:
+        if p.is_file():
+            st = p.stat()
+            return {"url": f"live.png?v={int(st.st_mtime)}", "mtime": st.st_mtime,
+                    "bytes": st.st_size, "path": str(p)}
+    except OSError:
+        pass
+    return {}
+
+
+def _live_frame() -> bool:
+    """让预览页「一步一帧」：每次建模工具返回前补一张快速实时图。
+
+    失败一律静默（记 runtime.log）：看预览是给人看的，绝不能让出图失败
+    把建模本身搞挂或拖慢。
+    """
+    if not LIVE_ENABLED:
+        return False
+    try:
+        r = BRIDGE.call("live_snapshot", {"resolution": LIVE_PX}, timeout=90)
+    except Exception as e:
+        _log(f"实时快照失败（不影响建模）：{e}")
+        return False
+    if not isinstance(r, dict) or r.get("skipped"):
+        # 场景空/黑帧时跳过是正常的（第一步之前没有东西可看），但留痕便于排查
+        _log(f"实时帧跳过：{(r or {}).get('reason') or r}")
+        return False
+    _log(f"实时帧 {r.get('seconds')}s · {r.get('bytes')}B · {r.get('resolution')}px")
+    return True
+
+
 def _preview_state() -> dict:
-    """预览页数据：渲染实例状态 + 场景摘要（缓存）+ 输出目录里的 PNG 列表。"""
+    """预览页数据：渲染实例状态 + 场景摘要（缓存）+ 实时视图 + PNG 列表。"""
     out = output_dir()
     images = []
     try:
@@ -490,7 +542,8 @@ def _preview_state() -> dict:
     info = PREVIEW.info()
     return {"running": BRIDGE.alive(), "blender": BRIDGE.version or "",
             "output_dir": str(out), "scene": _STATE.get("scene"),
-            "images": images, "now": time.time(),
+            "images": images, "now": time.time(), "live": _live_info(),
+            "live_enabled": LIVE_ENABLED, "live_px": LIVE_PX,
             "lan_url": info["url"] if info["running"] else "",
             "bind": info["bind"], "port": info["port"]}
 
@@ -533,10 +586,10 @@ _PREVIEW_HTML = """<!doctype html>
 <header><h1>ZHIZHU BLENDER PREVIEW</h1><span class="url" id="addr"></span>
 <span class="pill" id="status">连接中</span></header>
 <main><div id="stats"></div>
-<figure id="hero"><span class="tag">最新渲染</span><img id="heroImg" alt="latest render">
+<figure id="hero"><span class="tag" id="heroTag">最新渲染</span><img id="heroImg" alt="latest">
 <figcaption id="heroCap"></figcaption></figure>
 <div id="grid"></div>
-<div id="empty">尚无渲染图：让 Agent 调用 render_image 后这里会自动出现。</div>
+<div id="empty">尚无正式渲染图：实时视图在上方，正式渲染图由 render_image 产出后出现在这里。</div>
 <div id="meta"></div></main>
 <script>
 (function(){
@@ -544,7 +597,7 @@ _PREVIEW_HTML = """<!doctype html>
       gridEl=document.getElementById('grid'),emptyEl=document.getElementById('empty'),
       metaEl=document.getElementById('meta'),addrEl=document.getElementById('addr'),
       heroEl=document.getElementById('hero'),heroImg=document.getElementById('heroImg'),
-      heroCap=document.getElementById('heroCap');
+      heroCap=document.getElementById('heroCap'),heroTag=document.getElementById('heroTag');
   var sig='';
   function pad(n){return n<10?'0'+n:''+n;}
   function timeText(s){var d=new Date(s*1000);return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());}
@@ -565,43 +618,49 @@ _PREVIEW_HTML = """<!doctype html>
   }
   function applyGrid(images){
     var next=images.map(function(i){return i.name+'@'+i.bytes+'@'+i.mtime;}).join('|');
-    if(next!==sig){
-      sig=next;gridEl.textContent='';
-      emptyEl.style.display=images.length?'none':'block';
-      images.forEach(function(it){
-        var a=document.createElement('a');a.className='card';a.href=it.url;
-        a.target='_blank';a.rel='noopener';
-        var img=document.createElement('img');img.src=it.url;img.alt=it.name;img.loading='lazy';
-        var cap=document.createElement('div');cap.className='cap';
-        var name=document.createElement('b');name.textContent=it.name;
-        var info=document.createElement('span');info.textContent=timeText(it.mtime)+' · '+sizeText(it.bytes);
-        cap.appendChild(name);cap.appendChild(info);
-        a.appendChild(img);a.appendChild(cap);gridEl.appendChild(a);
-      });
+    if(next===sig){return;}
+    sig=next;gridEl.textContent='';
+    emptyEl.style.display=images.length?'none':'block';
+    images.forEach(function(it){
+      var a=document.createElement('a');a.className='card';a.href=it.url;
+      a.target='_blank';a.rel='noopener';
+      var img=document.createElement('img');img.src=it.url;img.alt=it.name;img.loading='lazy';
+      var cap=document.createElement('div');cap.className='cap';
+      var name=document.createElement('b');name.textContent=it.name;
+      var info=document.createElement('span');info.textContent=timeText(it.mtime)+' · '+sizeText(it.bytes);
+      cap.appendChild(name);cap.appendChild(info);
+      a.appendChild(img);a.appendChild(cap);gridEl.appendChild(a);
+    });
+  }
+  // hero 取「实时视图」与「最新正式渲染」里更新的那张：
+  // 建模中每步都出实时图（逐步推进），正式渲染后自动切回成品大图
+  function applyHero(live, images){
+    var cand=null;
+    if(live&&live.url){cand={url:live.url,mtime:live.mtime,bytes:live.bytes,live:true,name:'实时视图'};}
+    if(images.length&&(!cand||images[0].mtime>cand.mtime)){
+      cand={url:images[0].url,mtime:images[0].mtime,bytes:images[0].bytes,live:false,name:images[0].name};
     }
-    // 最新一张单独放大置顶：建模每轮渲染后，用户第一眼就看到改动效果
-    if(images.length){
-      heroEl.style.display='block';
-      heroImg.src=images[0].url;
-      heroCap.textContent=images[0].name+' · '+timeText(images[0].mtime)
-        +' · '+sizeText(images[0].bytes);
-    }else{
-      heroEl.style.display='none';
-    }
+    if(!cand){heroEl.style.display='none';return;}
+    heroEl.style.display='block';
+    if(heroImg.getAttribute('src')!==cand.url){heroImg.src=cand.url;}
+    heroTag.textContent=cand.live?'实时视图':'最新渲染';
+    heroCap.textContent=timeText(cand.mtime)+' · '+sizeText(cand.bytes)
+      +(cand.live?' · 每当 Agent 完成一步就刷新':' · '+cand.name);
   }
   function tick(){
     fetch('api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
       statusEl.textContent=s.running?'渲染实例运行中':'渲染实例未启动';
       statusEl.className='pill'+(s.running?' on':'');
       addrEl.textContent=s.lan_url||'';
-      applyStats(s.scene);applyGrid(s.images||[]);
+      applyStats(s.scene);applyGrid(s.images||[]);applyHero(s.live,s.images||[]);
       metaEl.textContent='最近刷新 '+timeText(s.now)+' · 输出目录 '+s.output_dir
-        +' · 共 '+(s.images||[]).length+' 张（最近 60 张）';
+        +' · 渲染图 '+(s.images||[]).length+' 张（最近 60 张）'
+        +(s.live_enabled?' · 实时视图 '+s.live_px+'px 每步自动刷新':' · 实时视图已关闭');
     }).catch(function(){
       statusEl.textContent='连接中断';statusEl.className='pill';
     });
   }
-  tick();setInterval(tick,2000);
+  tick();setInterval(tick,1000);
 })();
 </script></body></html>"""
 
@@ -758,12 +817,24 @@ def _preview_handler():
                 elif path == "/api/state":
                     body = json.dumps(_preview_state(), ensure_ascii=False).encode("utf-8")
                     self._send(200, body, "application/json; charset=utf-8")
+                elif path == "/live.png":
+                    self._live()
                 elif path.startswith("/img/"):
                     self._image(path[len("/img/"):])
                 else:
                     self._send(404, b"not found", "text/plain; charset=utf-8")
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+        def _live(self):
+            """实时视图：每步都换图，必须 no-store（URL 上另有 ?v=mtime 兜底）。"""
+            p = _live_path()
+            try:
+                body = p.read_bytes()
+            except OSError:
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "image/png")
 
         def _image(self, name: str):
             # 只允许输出目录下的单层 .png 文件名，杜绝 ../ 穿越
@@ -1217,6 +1288,10 @@ def _handle(msg: dict):
         try:
             out = fn(params.get("arguments", {}) or {})
             content = out if isinstance(out, list) else [{"type": "text", "text": str(out)}]
+            # 「一步一刷新一步」：每次真正改动场景的调用都补一帧实时图，
+            # 用户在预览页看到的就是逐步推进的建模过程（不是只有最后一张成品）。
+            if name in _MODELING_TOOLS and name not in _LIVE_SKIP:
+                _live_frame()
             if note:
                 content = _prepend_text(content, note)
             result = {"content": content, "isError": False}

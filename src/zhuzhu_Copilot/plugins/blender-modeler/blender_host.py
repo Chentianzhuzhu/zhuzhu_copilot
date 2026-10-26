@@ -180,6 +180,14 @@ def _make_material(name, color=None, metallic=0.0, roughness=0.5,
         mat.blend_method = "BLEND" if alpha < 1.0 else "OPAQUE"
     except Exception:
         pass
+    # 视口显示色（预览页的实时快照用 Workbench 渲染，它读的是 diffuse_color，
+    # 不读节点里的 Base Color；不设就会一片灰，看不出材质进度）
+    try:
+        mat.diffuse_color = rgba if len(rgba) == 4 else (rgba[0], rgba[1], rgba[2], 1.0)
+        mat.metallic = float(metallic)
+        mat.roughness = float(roughness)
+    except Exception:
+        pass
     return mat
 
 
@@ -271,6 +279,22 @@ def _parent(child, parent):
 
 _PRIMITIVES = {"cube", "uv_sphere", "ico_sphere", "cylinder", "cone",
                "torus", "plane", "capsule", "text", "empty"}
+
+#: 常见别称 → 真实几何体名。模型（和用户）口语里就是 sphere / box / 球，
+#: 硬报「不支持的几何体」会让它白烧一轮再重试；这里直接映射掉。
+_PRIMITIVE_ALIAS = {
+    "sphere": "ico_sphere", "ball": "ico_sphere", "round": "ico_sphere",
+    "uvsphere": "uv_sphere", "uv-sphere": "uv_sphere",
+    "box": "cube", "block": "cube",
+    "cyl": "cylinder", "column": "cylinder", "tube": "cylinder",
+    "quad": "plane", "floor": "plane", "ground": "plane",
+    "ring": "torus", "donut": "torus",
+    "pill": "capsule",
+    "球": "ico_sphere", "球体": "ico_sphere",
+    "立方体": "cube", "方块": "cube",
+    "圆柱": "cylinder", "圆柱体": "cylinder",
+    "圆锥": "cone", "圆环": "torus", "平面": "plane", "胶囊": "capsule",
+}
 
 
 def _create_primitive(kind, size, segments, vertices):
@@ -467,7 +491,8 @@ def h_scene_open(params):
 # ============================================================================
 
 def h_object_add(params):
-    kind = str(params.get("kind") or "cube").lower()
+    kind = str(params.get("kind") or "cube").strip().lower()
+    kind = _PRIMITIVE_ALIAS.get(kind, kind)   # sphere/box/球 等口语别名先归一
     if kind not in _PRIMITIVES:
         raise ValueError(f"不支持的几何体：{kind}（可用：{', '.join(sorted(_PRIMITIVES))}）")
     name = str(params.get("name") or "").strip()
@@ -990,6 +1015,89 @@ def h_render_image(params):
             "seconds": round(time.time() - t, 2), "bytes": os.path.getsize(path) if os.path.exists(path) else 0}
 
 
+#: 预览页「实时视图」的出图参数：Workbench 360px 实测 ~0.4s/帧（Cycles 同尺寸要
+#: 1.4~2.8s，太慢；每步都出图会把建模节奏拖垮）。可用参数逐次覆盖。
+LIVE_ENGINE = "BLENDER_WORKBENCH"
+LIVE_PX = 360
+
+
+def h_live_snapshot(params):
+    """给预览页出一张**快速实时图**，让用户能一步步看着建模过程。
+
+    两个硬约束：
+      1. **必须完整恢复渲染设置**：引擎/分辨率/采样/文件路径/透明/Workbench 着色
+         全部存起来，出图后原样写回 —— 否则模型自己设的 960px Cycles 会被改成
+         360px Workbench，最终成品直接变糊。
+      2. 场景为空（还没加对象）直接跳过，省一次渲染。
+    """
+    sc = _scene()
+    if not sc.objects:
+        return {"skipped": True, "reason": "场景为空", "objects": 0}
+    if sc.camera is None:
+        h_camera_frame({"view": str(params.get("view") or "hero")})
+    px = max(160, _int(params.get("resolution"), LIVE_PX))
+    engine = str(params.get("engine") or LIVE_ENGINE).upper()
+    path = _safe_path(params.get("path") or os.path.join("_live", "view.png"))
+    _ensure_dir(path)
+    r = sc.render
+    st = r.image_settings
+    saved = {"engine": r.engine, "x": r.resolution_x, "y": r.resolution_y,
+             "pct": r.resolution_percentage, "filepath": r.filepath,
+             "fmt": st.file_format, "mode": st.color_mode,
+             "transparent": r.film_transparent}
+    shading = None
+    try:
+        sh = sc.display.shading
+        shading = {"type": sh.type, "light": sh.light, "color_type": sh.color_type,
+                   "show_shadows": sh.show_shadows, "show_cavity": sh.show_cavity,
+                   "cavity_type": sh.cavity_type, "background_type": sh.background_type}
+        saved["shading"] = shading
+    except Exception:
+        shading = None
+    t = time.time()
+    try:
+        r.engine = engine
+        r.resolution_x = r.resolution_y = px
+        r.resolution_percentage = 100
+        st.file_format = "PNG"
+        st.color_mode = "RGB"
+        if engine == "BLENDER_WORKBENCH" and shading is not None:
+            # 让实时图接近成品观感：材质色 + 棚拍光 + 阴影/腔体 + 世界背景
+            sh = sc.display.shading
+            sh.type = "SOLID"
+            sh.light = "STUDIO"
+            sh.color_type = "MATERIAL"
+            sh.show_shadows = True
+            sh.show_cavity = True
+            sh.background_type = "WORLD"
+        r.filepath = path
+        bpy.ops.render.render(write_still=True)
+        return {"path": path, "resolution": px, "engine": engine,
+                "seconds": round(time.time() - t, 3),
+                "bytes": os.path.getsize(path) if os.path.exists(path) else 0}
+    finally:
+        # 无论成功失败都恢复，绝不让「看预览」污染正式渲染参数
+        r.engine = saved["engine"]
+        r.resolution_x, r.resolution_y = saved["x"], saved["y"]
+        r.resolution_percentage = saved["pct"]
+        r.filepath = saved["filepath"]
+        st.file_format = saved["fmt"]
+        st.color_mode = saved["mode"]
+        r.film_transparent = saved["transparent"]
+        if shading:
+            try:
+                sh = sc.display.shading
+                sh.type = shading["type"]
+                sh.light = shading["light"]
+                sh.color_type = shading["color_type"]
+                sh.show_shadows = shading["show_shadows"]
+                sh.show_cavity = shading["show_cavity"]
+                sh.cavity_type = shading["cavity_type"]
+                sh.background_type = shading["background_type"]
+            except Exception:
+                pass
+
+
 def h_export_model(params):
     fmt = str(params.get("format") or "glb").lower()
     name = str(params.get("name") or "model").strip()
@@ -1146,6 +1254,7 @@ def h_template_apply(params):
 
 HANDLERS = {
     "status": h_status,
+    "live_snapshot": h_live_snapshot,
     "scene_new": h_scene_new,
     "scene_info": h_scene_info,
     "scene_save": h_scene_save,

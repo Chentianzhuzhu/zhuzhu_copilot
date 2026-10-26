@@ -6,5 +6,7 @@
   "blender_idle_timeout": 1800,
   "blender_preview_port": 8787,
   "blender_preview_bind": "0.0.0.0",
-  "blender_preview_auto_open": true
+  "blender_preview_auto_open": true,
+  "blender_live_preview": true,
+  "blender_live_px": 360
 }
