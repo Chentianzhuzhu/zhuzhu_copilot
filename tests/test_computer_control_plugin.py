@@ -714,19 +714,22 @@ def test_overlay_windows_report_native_capture_exclusion():
 
 
 def test_overlay_windows_are_hidden_from_window_list():
-    """自己的提示层绝不能出现在 list_windows 里（否则模型会看到一扇覆盖整屏的窗口）。"""
+    """自己的提示层绝不能出现在 list_windows 里（否则模型会看到一扇覆盖整屏的窗口）。
+
+    过滤按**进程归属**（is_own_window）而不是窗口标题前缀：光带/胶囊的窗口线程只
+    跑渲染循环、不泵 Windows 消息，对它取标题会永久阻塞调用方 —— 必须在取标题之前
+    就用 GetWindowThreadProcessId 判断并跳过。
+    """
     mod = _load_module()
-    assert mod.OVERLAY_WIN_PREFIX == "zhuzhu-aura"
-    # 过滤靠窗口标题前缀，所以建窗用的名字必须带这个前缀
-    # （光带现在是四条独立边条：top/bottom/left/right）
+    assert callable(mod.is_own_window)
+    # 建窗名字仍应区分边条（光带是四条独立边条：top/bottom/left/right）
     aura_src = AURA.read_text(encoding="utf-8")
     assert '"zhuzhu-aura-hint"' in aura_src
     assert 'zhuzhu-aura-{name}' in aura_src, "光带窗口名应由边名拼出"
     for side in ("top", "bottom", "left", "right"):
         assert f'"{side}"' in aura_src, f"缺少 {side} 边条"
     wins = mod.list_windows()
-    leaked = [w for w in wins
-              if str(w.get("title", "")).startswith(mod.OVERLAY_WIN_PREFIX)]
+    leaked = [w for w in wins if mod.is_own_window(int(w.get("hwnd") or 0))]
     assert not leaked, f"提示层泄漏进窗口清单: {leaked}"
 
 
