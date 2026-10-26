@@ -26,6 +26,7 @@ build/runtime_bundle/
 build/redist/
 dist/
 dist_new/
+dist_3d/
 *.spec
 !build/zhuzhu_Copilot.spec
 
