@@ -31,8 +31,10 @@ description: Blender 低模建模技能：真实驱动本机 Blender（headless 
 | 一键布光 | `light_rig(preset="product")` / `preset="dramatic"` |
 | 摆相机 | `camera_frame(view="hero")`；渲染时 `render_image(view=...)` 会自己取景 |
 | 看图 | `render_image(name=..., resolution=..., samples=...)` |
-| 想在手机/别的电脑上看实时预览 | `preview_start`（返回局域网地址，页面 2 秒自动刷新） |
-| 关掉预览页 | `preview_stop` |
+| 让用户实时看建模过程 | **自动**：第一次建模调用（`blender_start` / `scene_new` …）就开好预览页并在浏览器打开 |
+| 用户关掉后要重开 | `preview_start`（返回本机 + 局域网地址；`open=false` 只起服务） |
+| 想在手机/别的电脑上看 | `preview_start` 返回的局域网地址（同 Wi-Fi，页面 2 秒刷新） |
+| 关掉预览页 | `preview_stop`（下次建模会自动重开） |
 | 存工程 | `scene_save(name=...)` |
 | 交付模型 | `export_model(name=..., format="glb")` |
 | 任务结束 | `blender_stop`（释放内存；闲置 30 分钟也会自动退出） |
@@ -51,6 +53,19 @@ description: Blender 低模建模技能：真实驱动本机 Blender（headless 
 
 **不要每一步都 `blender_start(restart=true)`**：常驻实例保留场景、材质、相机与渲染缓存，
 重启一次就丢全部进度；`restart` 只在确实要推倒重来时用。
+
+## 实时预览页（用户要能看着你建模）
+
+- **建模开始时自动打开**：第一次会改场景的调用（`blender_start` / `scene_new` / 任意建模或
+  渲染工具）之前，插件会自动起预览服务并在默认浏览器打开本机地址
+  `http://127.0.0.1:<port>/`，页面每 2 秒刷新。工具结果首行会带一行
+  「预览页已自动打开：…」——**把它转述给用户**（含局域网地址，手机同 Wi-Fi 可看）。
+- 页面内容：最新一张渲染图（大图置顶）+ 场景统计（对象/三角面/材质/引擎/分辨率/相机）
+  + 最近 60 张历史渲染。只读，不占用 Blender、不改场景。
+- 不要在每一步都调 `preview_start`（会重复开标签页）；用户说「没看到预览」时才用它重开，
+  或用 `preview_stop` 关掉后再 `preview_start`。
+- 建模期间**每完成一轮修改就 `render_image`**：预览页靠输出目录里的 PNG 刷新，
+  只改场景不渲染，用户看不到变化。
 
 ## 低模建模要点
 

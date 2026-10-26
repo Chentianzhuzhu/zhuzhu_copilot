@@ -518,20 +518,33 @@ _PREVIEW_HTML = """<!doctype html>
   .card img{display:block;width:100%;height:auto;background:#000}
   .cap{padding:8px 10px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);display:flex;justify-content:space-between;gap:8px}
   .cap b{color:var(--fg);font-weight:500;word-break:break-all}
+  #hero{position:relative;margin:0 0 14px;border:1px solid var(--line);border-radius:8px;
+        overflow:hidden;background:#000;display:none}
+  #hero img{display:block;width:100%;height:auto}
+  #hero .tag{position:absolute;top:10px;left:10px;font-size:11px;letter-spacing:.08em;
+        color:var(--ok);border:1px solid #24486B;border-radius:999px;padding:2px 9px;
+        background:rgba(5,7,10,.72)}
+  #hero figcaption{position:absolute;left:0;right:0;bottom:0;padding:10px 12px;font-size:12px;
+        color:var(--fg);background:linear-gradient(180deg,rgba(5,7,10,0),rgba(5,7,10,.88))}
   #empty{color:var(--dim);padding:28px 0;text-align:center;border:1px dashed var(--line);border-radius:8px}
   #meta{color:var(--dim);font-size:12px;margin-top:16px}
 </style></head>
 <body>
 <header><h1>ZHIZHU BLENDER PREVIEW</h1><span class="url" id="addr"></span>
 <span class="pill" id="status">连接中</span></header>
-<main><div id="stats"></div><div id="grid"></div>
+<main><div id="stats"></div>
+<figure id="hero"><span class="tag">最新渲染</span><img id="heroImg" alt="latest render">
+<figcaption id="heroCap"></figcaption></figure>
+<div id="grid"></div>
 <div id="empty">尚无渲染图：让 Agent 调用 render_image 后这里会自动出现。</div>
 <div id="meta"></div></main>
 <script>
 (function(){
   var statusEl=document.getElementById('status'),statsEl=document.getElementById('stats'),
       gridEl=document.getElementById('grid'),emptyEl=document.getElementById('empty'),
-      metaEl=document.getElementById('meta'),addrEl=document.getElementById('addr');
+      metaEl=document.getElementById('meta'),addrEl=document.getElementById('addr'),
+      heroEl=document.getElementById('hero'),heroImg=document.getElementById('heroImg'),
+      heroCap=document.getElementById('heroCap');
   var sig='';
   function pad(n){return n<10?'0'+n:''+n;}
   function timeText(s){var d=new Date(s*1000);return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());}
@@ -552,19 +565,29 @@ _PREVIEW_HTML = """<!doctype html>
   }
   function applyGrid(images){
     var next=images.map(function(i){return i.name+'@'+i.bytes+'@'+i.mtime;}).join('|');
-    if(next===sig){return;}
-    sig=next;gridEl.textContent='';
-    emptyEl.style.display=images.length?'none':'block';
-    images.forEach(function(it){
-      var a=document.createElement('a');a.className='card';a.href=it.url;
-      a.target='_blank';a.rel='noopener';
-      var img=document.createElement('img');img.src=it.url;img.alt=it.name;img.loading='lazy';
-      var cap=document.createElement('div');cap.className='cap';
-      var name=document.createElement('b');name.textContent=it.name;
-      var info=document.createElement('span');info.textContent=timeText(it.mtime)+' · '+sizeText(it.bytes);
-      cap.appendChild(name);cap.appendChild(info);
-      a.appendChild(img);a.appendChild(cap);gridEl.appendChild(a);
-    });
+    if(next!==sig){
+      sig=next;gridEl.textContent='';
+      emptyEl.style.display=images.length?'none':'block';
+      images.forEach(function(it){
+        var a=document.createElement('a');a.className='card';a.href=it.url;
+        a.target='_blank';a.rel='noopener';
+        var img=document.createElement('img');img.src=it.url;img.alt=it.name;img.loading='lazy';
+        var cap=document.createElement('div');cap.className='cap';
+        var name=document.createElement('b');name.textContent=it.name;
+        var info=document.createElement('span');info.textContent=timeText(it.mtime)+' · '+sizeText(it.bytes);
+        cap.appendChild(name);cap.appendChild(info);
+        a.appendChild(img);a.appendChild(cap);gridEl.appendChild(a);
+      });
+    }
+    // 最新一张单独放大置顶：建模每轮渲染后，用户第一眼就看到改动效果
+    if(images.length){
+      heroEl.style.display='block';
+      heroImg.src=images[0].url;
+      heroCap.textContent=images[0].name+' · '+timeText(images[0].mtime)
+        +' · '+sizeText(images[0].bytes);
+    }else{
+      heroEl.style.display='none';
+    }
   }
   function tick(){
     fetch('api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
@@ -639,6 +662,72 @@ class PreviewServer:
 
 PREVIEW = PreviewServer()
 atexit.register(lambda: PREVIEW.stop())
+
+#: 建模时自动打开预览页（用户要能实时看到每一步渲染）。配置
+#: BLENDER_PREVIEW_AUTO_OPEN=0 可关闭；出问题时也可随时 preview_start 手动开。
+PREVIEW_AUTO_OPEN = (os.environ.get("BLENDER_PREVIEW_AUTO_OPEN") or "1").strip().lower() \
+    not in ("0", "false", "off", "no")
+
+#: 本进程内是否已弹出过预览标签页：只开一次，绝不每次调用都弹新窗口
+#: （用户可能已经把它钉在旁边看；每步都开新标签会立刻变成骚扰）。
+_preview_opened = False
+_preview_lock = threading.Lock()
+
+#: 会真正改动场景/产出的工具：调用**之前**确保预览页已打开，
+#: 这样用户从第一步（blender_start / scene_new）就能实时看到进展。
+#: 不含只读工具（status/scene_info/template_list）与预览自身工具。
+_MODELING_TOOLS = frozenset({
+    "blender_start", "scene_new", "scene_save", "scene_open",
+    "object_add", "object_transform", "object_duplicate", "object_delete",
+    "object_join", "object_shade", "object_modifier", "object_boolean",
+    "material_create", "material_assign", "text_add",
+    "camera_add", "camera_frame", "light_add", "light_rig", "world_set",
+    "render_image", "export_model", "template_apply",
+})
+
+
+def _open_in_browser(url: str) -> bool:
+    """用系统默认浏览器打开 URL（Windows 走 os.startfile，最稳）。
+
+    绝不抛异常：打开失败也要让建模继续，只是退回「把地址告诉模型」。
+    """
+    try:
+        if os.name == "nt":
+            os.startfile(url)   # noqa: S606 — 打开用户自己的预览页，非可执行文件
+            return True
+    except Exception as e:
+        _log(f"os.startfile 打开预览页失败：{e}")
+    try:
+        import webbrowser
+        return bool(webbrowser.open(url, new=2))
+    except Exception as e:
+        _log(f"webbrowser 打开预览页失败：{e}")
+        return False
+
+
+def open_preview(force_open: bool = False) -> tuple:
+    """确保预览页在跑，并在首次建模时打开浏览器标签。
+
+    返回 (info or None, 本次是否新开标签)。任何失败只记日志，
+    **绝不影响建模本身** —— 预览是给人看的，不能反过来挡住干活。
+    """
+    global _preview_opened
+    try:
+        info = PREVIEW.info() if PREVIEW.running() else PREVIEW.start()
+    except Exception as e:
+        _log(f"预览页启动失败（建模继续，不影响出图）：{e}")
+        return None, False
+    if not PREVIEW_AUTO_OPEN and not force_open:
+        return info, False
+    if _preview_opened and not force_open:
+        return info, False
+    with _preview_lock:
+        if _preview_opened and not force_open:
+            return info, False
+        ok = _open_in_browser(info["local_url"])
+        _preview_opened = True
+        _log(f"已打开预览页：{info['local_url']}（{'成功' if ok else '失败，地址可由模型告知用户'}）")
+        return info, ok
 
 
 def _preview_handler():
@@ -737,8 +826,13 @@ def tool_status(args):
         # 上一实例为什么没了：排查「频繁重启」的第一手证据（同时写在 runtime.log）
         state += f"\n上次实例：{BRIDGE.last_reason}（退出码 {BRIDGE.exit_code}）"
     preview = PREVIEW.info()
-    page = (f"局域网预览页：{preview['url']}（手机同网段可看，2 秒自动刷新）"
-            if preview["running"] else "局域网预览页未启动（preview_start 可开启）")
+    if preview["running"]:
+        page = (f"预览页：{preview['local_url']}（本机看，2 秒自动刷新）"
+                f"\n        {preview['url']}（手机/同网段看）")
+    else:
+        page = ("预览页未启动（建模时自动打开；也可 preview_start 手动开"
+                + ("" if PREVIEW_AUTO_OPEN else "，当前配置已关闭自动打开")
+                + "）")
     return f"{found}\n{state}\n输出目录：{output_dir()}\n{page}"
 
 
@@ -761,21 +855,38 @@ def tool_scene_info(args):
 
 
 def tool_preview_start(args):
-    info = PREVIEW.start(args.get("port"), args.get("bind"))
-    return ("局域网预览页已启动（只读：不占用、不改动 Blender 场景）。\n"
-            f"本机打开：{info['local_url']}\n"
-            f"局域网打开：{info['url']}\n"
+    """手动开预览页。显式调用时**总是**再打开一次浏览器（用户明确要看的意图）。"""
+    global _preview_opened
+    want_open = bool(args.get("open", True))
+    try:
+        PREVIEW.start(args.get("port"), args.get("bind"))
+    except Exception as e:
+        raise RuntimeError(f"预览页启动失败：{e}")
+    info = PREVIEW.info()
+    opened = _open_in_browser(info["local_url"]) if want_open else False
+    if opened:
+        _preview_opened = True
+    return ("预览页已就绪（只读：不占用、不改动 Blender 场景）。\n"
+            f"本机打开：{info['local_url']}"
+            + ("（已在浏览器打开）\n" if opened else "\n")
+            + f"局域网打开：{info['url']}\n"
             f"监听地址：{info['bind']}:{info['port']}\n"
-            f"页面每 2 秒拉取一次 /api/state，显示输出目录（{output_dir()}）里最新的渲染图与场景摘要；"
+            f"页面每 2 秒刷新一次，显示输出目录（{output_dir()}）里最新的渲染图、"
+            "场景统计（对象/三角面/材质/引擎/分辨率/相机）与最近 60 张历史渲染；"
             "手机连同一 Wi-Fi 打开局域网地址即可。\n"
             "若 Windows 首次弹出防火墙提示，请勾选“专用网络”并允许。")
 
 
 def tool_preview_stop(args):
-    return "预览页已关闭" if PREVIEW.stop() else "预览页本来就没有运行"
+    """关闭预览页。下次建模会重新拉起并再开一次标签页。"""
+    global _preview_opened
+    was = PREVIEW.stop()
+    _preview_opened = False
+    return "预览页已关闭（下次建模会自动重新打开）" if was else "预览页本来就没有运行"
 
 
 def tool_render(args):
+    # 预览页由 _handle 在分发前统一确保已打开（见 _MODELING_TOOLS），这里不再重复
     result = BRIDGE.call("render_image", args, timeout=1800)
     # 渲染成功后顺带刷新场景摘要：预览页轮询时只读缓存，不再打扰 Blender
     try:
@@ -860,13 +971,16 @@ TOOLS = [
     {"name": "blender_stop", "description": "停止常驻 Blender 后台实例并释放内存。",
      "inputSchema": _schema({})},
     {"name": "preview_start", "description":
-        "开启局域网预览页（只读 HTTP 服务）：手机/同网段电脑用浏览器打开返回的地址，"
-        "即可每 2 秒看到输出目录里最新的渲染图和场景摘要（对象/三角面/材质/引擎/分辨率）。"
+        "开启预览页（只读 HTTP 服务）并在浏览器打开：每 2 秒刷新输出目录里最新的渲染图"
+        "与场景统计（对象/三角面/材质/引擎/分辨率/相机）。建模时会**自动**打开，"
+        "用户手动关掉后可用它重开（open=false 只起服务不开浏览器）。"
         "不占用 Blender、不改场景；默认监听 0.0.0.0:8787。",
      "inputSchema": _schema({
          "port": {"type": "integer", "description": "端口，默认 8787（0 表示系统自动分配）"},
-         "bind": {"type": "string", "description": "监听地址，默认 0.0.0.0（局域网可访问）"}})},
-    {"name": "preview_stop", "description": "关闭局域网预览页（不影响 Blender 与已渲染的图）。",
+         "bind": {"type": "string", "description": "监听地址，默认 0.0.0.0（局域网可访问）"},
+         "open": {"type": "boolean", "description": "是否同时在默认浏览器打开（默认 true）"}})},
+    {"name": "preview_stop", "description":
+        "关闭预览页（不影响 Blender 与已渲染的图）；下次建模会自动重新打开。",
      "inputSchema": _schema({})},
     {"name": "scene_new", "description":
         "新建空场景并设置世界背景（默认纯黑）与单位比例。建模任务的第一步。",
@@ -1060,6 +1174,15 @@ TOOLS = [
 # MCP 分发
 # ============================================================================
 
+def _prepend_text(content: list, note: str) -> list:
+    """把提示行插到工具结果最前面（图片项保持原有顺序，不破坏视觉输入）。"""
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            item["text"] = note + str(item.get("text") or "")
+            return content
+    return [{"type": "text", "text": note}] + list(content)
+
+
 def _handle(msg: dict):
     method = msg.get("method", "")
     params = msg.get("params", {}) or {}
@@ -1082,9 +1205,20 @@ def _handle(msg: dict):
         if fn is None:
             return {"jsonrpc": "2.0", "id": rid,
                     "error": {"code": -32601, "message": f"未知工具: {name}"}}
+        # 建模前先把预览页开起来并打开浏览器：用户要求「建模时必须能实时看」。
+        # 放在调用**之前**（而不是渲染之后），第一步加体块就能看到进度；
+        # 失败不影响建模，只退化成「把地址告诉模型」。
+        note = ""
+        if name in _MODELING_TOOLS:
+            info, opened = open_preview()
+            if opened and info:
+                note = (f"预览页已自动打开：{info['local_url']}（每 2 秒刷新，用户可实时看到"
+                        f"每一步建模与渲染；局域网/手机看 {info['url']}）。\n")
         try:
             out = fn(params.get("arguments", {}) or {})
             content = out if isinstance(out, list) else [{"type": "text", "text": str(out)}]
+            if note:
+                content = _prepend_text(content, note)
             result = {"content": content, "isError": False}
         except Exception as e:
             result = {"content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
