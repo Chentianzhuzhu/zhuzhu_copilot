@@ -28912,13 +28912,12 @@ class AgentPanel(QDialog):
                 if ok:
                     _hot_apply_plugins()   # 对话页导入：立即生效，设置页下次打开即为最新
             else:
-                from zhuzhu_Copilot.core import agent_plugins, agent_skills
+                from zhuzhu_Copilot.core import agent_plugins
                 ok, msg = agent_plugins.import_plugin_zip(path)
-                self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
-                if hasattr(self, "_reload_mcp_list"):
-                    self._reload_mcp_list()
+                # 面板本身没有 MCP 列表控件（列表归设置对话框），这里只需重连，
+                # 让插件登记的服务器立即起来（原先的 hasattr(_reload_mcp_list) 恒为 False）
                 if ok:
-                    threading.Thread(target=self._init_mcp, daemon=True).start()
+                    self._reconnect_mcp()
         except Exception as e:
             ok, msg = False, f"导入失败: {e}"
         if ok:
