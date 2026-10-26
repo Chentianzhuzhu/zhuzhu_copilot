@@ -170,6 +170,8 @@ class BlenderBridge:
         self.version = ""
         self.exit_code = None        # 上一次实例的退出码（None=正常/by design 停止）
         self.last_reason = ""        # 上一次实例消失的原因（供 status / 重启日志说明）
+        self.restored = {}           # 本次实例启动时从上次工作恢复的信息
+        self._parking = False        # 正在退出前保存恢复文件（防 stop 递归）
 
     # ---------- 进程生命周期 ----------
 
@@ -244,7 +246,21 @@ class BlenderBridge:
                 self.exit_code = None
                 self.last_reason = ""
                 _log(f"Blender 就绪：{self.version}（pid={self.proc.pid}, port={port}）")
-                return {"version": self.version, "pid": self.proc.pid, "restarted": True}
+                # 恢复上一次的工作：闲置退出/重启/崩溃后不该回到空场景。
+                # 失败只记日志（例如首次使用、文件被删），不阻断建模。
+                self.restored = {}
+                try:
+                    r = self.call("session_restore", {}, timeout=max(60.0, START_TIMEOUT))
+                    if isinstance(r, dict) and r.get("restored"):
+                        self.restored = r
+                        _log(f"已恢复上次工作：{r.get('restored')}（{r.get('source')}，"
+                             f"{r.get('objects')} 个对象）")
+                    elif isinstance(r, dict):
+                        _log(f"未恢复上次工作：{r.get('reason')}")
+                except Exception as e:
+                    _log(f"恢复上次工作失败（继续用空场景）：{e}")
+                return {"version": self.version, "pid": self.proc.pid, "restarted": True,
+                        "restored": self.restored}
             except Exception as e:
                 tail = "\n".join(list(self._stderr)[-12:])
                 self.stop()
@@ -253,12 +269,31 @@ class BlenderBridge:
                     f"可执行文件：{exe}\n"
                     f"--- Blender 输出（末尾）---\n{tail or '（无输出）'}")
 
-    def stop(self, reason: str = "") -> None:
-        """关闭实例。reason 只用于日志（写进 runtime.log，便于回溯重启原因）。"""
+    def stop(self, reason: str = "") -> dict:
+        """关闭实例，返回 {"parked": bool, "recovery": str}。
+
+        reason 只用于日志（写进 runtime.log，便于回溯重启原因）。
+        关之前先请 host 把「未保存的改动」另存为恢复文件：重启/重连后能接着干，
+        不至于因为一次 restart 丢掉整个场景。`_parking` 防递归（park 内部若失败
+        会走 call() → stop()）。
+        """
+        parked = {"parked": False, "recovery": ""}
         if reason:
             self.last_reason = reason
         if self.proc is not None and reason:
             _log(f"停止 Blender 实例：{reason}")
+        if (not self._parking and self.proc is not None
+                and self.proc.poll() is None and self.conn is not None):
+            self._parking = True
+            try:
+                r = self.call("session_park", {}, timeout=20)
+                if isinstance(r, dict) and r.get("parked"):
+                    parked = {"parked": True, "recovery": str(r.get("recovery") or "")}
+                    _log(f"退出前已保存恢复文件：{r.get('recovery')}")
+            except Exception as e:
+                _log(f"退出前保存恢复文件失败（忽略）：{e}")
+            finally:
+                self._parking = False
         try:
             self.conn.close()
         except Exception:
@@ -272,7 +307,7 @@ class BlenderBridge:
         p = self.proc
         self.proc = None
         if p is None:
-            return
+            return parked
         try:
             if p.poll() is None:
                 p.terminate()
@@ -292,6 +327,7 @@ class BlenderBridge:
         except Exception:
             pass
         self.version = ""
+        return parked
 
     @staticmethod
     def _drain(pipe, sink: deque, tag: str):
@@ -453,8 +489,8 @@ LIVE_PX = int(os.environ.get("BLENDER_LIVE_PX") or 360)
 LIVE_SUBDIR = "_live"
 LIVE_NAME = "view.png"
 #: 这些工具本身会产出正式图或不改变画面，不必再补一帧实时图
-_LIVE_SKIP = frozenset({"render_image", "export_model", "scene_save", "scene_open",
-                        "blender_start"})
+#: （scene_open 不在其中：换文件后预览页要立刻显示新场景）
+_LIVE_SKIP = frozenset({"render_image", "export_model", "scene_save", "blender_start"})
 
 _STATE = {"scene": None, "scene_at": 0.0}
 
@@ -736,7 +772,7 @@ _preview_lock = threading.Lock()
 #: 这样用户从第一步（blender_start / scene_new）就能实时看到进展。
 #: 不含只读工具（status/scene_info/template_list）与预览自身工具。
 _MODELING_TOOLS = frozenset({
-    "blender_start", "scene_new", "scene_save", "scene_open",
+    "blender_start", "scene_new", "scene_save", "scene_open", "scene_import",
     "object_add", "object_transform", "object_duplicate", "object_delete",
     "object_join", "object_shade", "object_modifier", "object_boolean",
     "material_create", "material_assign", "text_add",
@@ -896,9 +932,20 @@ def tool_status(args):
     if BRIDGE.last_reason:
         # 上一实例为什么没了：排查「频繁重启」的第一手证据（同时写在 runtime.log）
         state += f"\n上次实例：{BRIDGE.last_reason}（退出码 {BRIDGE.exit_code}）"
+    if BRIDGE.restored:
+        state += (f"\n本次已恢复上次工作：{BRIDGE.restored.get('restored')}"
+                  f"（{BRIDGE.restored.get('source')}）")
+    try:
+        sess = BRIDGE.call("blend_list", {}) if BRIDGE.alive() else {}
+    except Exception:
+        sess = {}
+    if isinstance(sess, dict) and (sess.get("work_file") or sess.get("recovery")):
+        state += (f"\n工作文件：{sess.get('work_file') or '（未保存过）'}"
+                  f"\n恢复文件：{sess.get('recovery') or '（无）'}"
+                  f"\n未保存改动：{'有' if sess.get('dirty') else '无'}")
     preview = PREVIEW.info()
     if preview["running"]:
-        page = (f"预览页：{preview['local_url']}（本机看，2 秒自动刷新）"
+        page = (f"预览页：{preview['local_url']}（本机看，1 秒自动刷新）"
                 f"\n        {preview['url']}（手机/同网段看）")
     else:
         page = ("预览页未启动（建模时自动打开；也可 preview_start 手动开"
@@ -910,13 +957,25 @@ def tool_status(args):
 def tool_start(args):
     info = BRIDGE.start(restart=bool(args.get("restart")))
     summary = BRIDGE.call("status", {})
-    return f"Blender 后台实例已就绪（版本 {info.get('version') or '?'}，pid={info['pid']}）\n{_pretty(summary)}"
+    head = f"Blender 后台实例已就绪（版本 {info.get('version') or '?'}，pid={info['pid']}）"
+    restored = info.get("restored") or {}
+    if restored.get("restored"):
+        # 重启/闲置退出后自动接续上一次的工作文件（含未保存改动的恢复文件）
+        head += (f"\n已自动恢复上次工作：{restored['restored']}"
+                 f"（{restored.get('source')}，{restored.get('objects')} 个对象）"
+                 "\n继续在既有场景上改即可；不需要 scene_new（那会清空场景）。")
+    return f"{head}\n{_pretty(summary)}"
 
 
 def tool_stop(args):
     was = BRIDGE.alive()
-    BRIDGE.stop()
-    return "已停止 Blender 后台实例" if was else "后台实例本来就没有运行"
+    parked = BRIDGE.stop("用户要求停止 (blender_stop)") or {}
+    if not was:
+        return "后台实例本来就没有运行"
+    if parked.get("parked"):
+        return ("已停止 Blender 后台实例；未保存的改动已存为恢复文件"
+                f"（{parked.get('recovery')}），下次 blender_start 会自动接回原场景。")
+    return "已停止 Blender 后台实例（无未保存改动，下次启动会回到上次保存的工作文件）"
 
 
 def tool_scene_info(args):
@@ -994,7 +1053,9 @@ _HANDLERS = {
     "scene_new": _forward("scene_new"),
     "scene_info": tool_scene_info,
     "scene_save": _forward("scene_save"),
-    "scene_open": _forward("scene_open", 600),
+    "scene_open": _forward("scene_open", 900),
+    "scene_import": _forward("scene_import", 900),
+    "blend_list": _forward("blend_list"),
     "object_add": _forward("object_add"),
     "object_transform": _forward("object_transform"),
     "object_duplicate": _forward("object_duplicate"),
@@ -1064,14 +1125,33 @@ TOOLS = [
      "inputSchema": _schema({"detail": {"type": "string", "enum": ["brief", "full"],
                                         "description": "brief=概要（默认）；full=含尺寸/修改器/集合"}})},
     {"name": "scene_save", "description":
-        "保存当前场景为 .blend（相对路径落在输出目录，绝对路径原样使用）。",
+        "保存当前场景为 .blend（相对路径落在输出目录，绝对路径原样使用）。"
+        "保存后的文件会被记为「工作文件」：Blender 实例闲置退出/重启/崩溃后，"
+        "下次自动重新打开它接着干。",
      "inputSchema": _schema({
          "name": {"type": "string", "description": "文件名（不含扩展名），默认用场景名"},
          "path": {"type": "string", "description": "自定义保存路径（可选）"},
          "compress": {"type": "boolean", "description": "是否压缩，默认 true"}})},
     {"name": "scene_open", "description":
-        "打开已有 .blend 场景（相对路径按输出目录解析）。",
-     "inputSchema": _schema({"path": {"type": "string", "description": ".blend 路径"}}, ["path"])},
+        "打开已有 .blend **替换**当前场景（相对路径按输出目录解析）。"
+        "只想把别的文件里的模型搬进当前场景，用 scene_import，别用这个（会丢掉当前进度）。"
+        "文件不存在时返回同目录可用的 .blend 列表。",
+     "inputSchema": _schema({"path": {"type": "string", "description": ".blend 路径或文件名"}}, ["path"])},
+    {"name": "blend_list", "description":
+        "列出可打开/可导入的 .blend（默认输出目录，可传 dir），按修改时间倒序；"
+        "同时返回当前工作文件、恢复文件与是否有未保存改动。接续旧项目前先用它找文件。",
+     "inputSchema": _schema({"dir": {"type": "string", "description": "要列出的目录，默认输出目录"}})},
+    {"name": "scene_import", "description":
+        "把另一个 .blend 里的对象**追加**进当前场景（保留当前所有改动），"
+        "连带材质/贴图依赖一起带入。names 为空 = 导入全部（最多 limit 个）。"
+        "典型用法：接手一个已有的模型文件，把零件搬进正在搭的场景继续做。",
+     "inputSchema": _schema({
+         "path": {"type": "string", "description": "源 .blend 路径（或用 blend_list 查）"},
+         "names": {"type": "array", "items": {"type": "string"},
+                   "description": "要导入的对象名（空=全部）"},
+         "prefix": {"type": "string", "description": "给导入对象加名称前缀，避免重名"},
+         "collection": {"type": "string", "description": "导入到指定集合（不存在则新建）"},
+         "limit": {"type": "integer", "description": "最多导入多少个，默认 200"}}, ["path"])},
     {"name": "object_add", "description":
         "创建低模基础体：cube / uv_sphere / ico_sphere / cylinder / cone / torus / plane / capsule / text / empty。"
         "尺寸单位是米，Z 轴朝上；size 是整体最大尺寸（球=直径，立方体=边长，圆柱=高度/直径）。"
@@ -1219,12 +1299,16 @@ TOOLS = [
          "transparent": {"type": "boolean", "description": "透明背景（PNG RGBA）"},
          "denoise": {"type": "boolean", "description": "Cycles 降噪，默认 true"}})},
     {"name": "export_model", "description":
-        "导出模型：glb（推荐，含材质）/ fbx / obj / stl。selected_only=true 只导出选中对象。",
+        "导出给应用/游戏引擎用的模型：glb（推荐，单一文件自带材质贴图）/ fbx（Unity、Unreal 常用）"
+        "/ obj / stl。默认应用修改器（否则倒角/布尔只存在于 Blender 里）并嵌入贴图；"
+        "FBX 用 FBX_SCALE_ALL 统一缩放，引擎里不用再手调 import scale。",
      "inputSchema": _schema({
          "name": {"type": "string", "description": "输出文件名（不含扩展名）"},
          "format": {"type": "string", "enum": ["glb", "fbx", "obj", "stl"], "description": "默认 glb"},
          "path": {"type": "string", "description": "自定义输出路径"},
-         "selected_only": {"type": "boolean", "description": "只导出选中对象，默认 false"}})},
+         "selected_only": {"type": "boolean", "description": "只导出选中对象，默认 false"},
+         "apply_modifiers": {"type": "boolean", "description": "导出前应用修改器，默认 true"},
+         "embed_textures": {"type": "boolean", "description": "FBX 是否把贴图嵌进文件，默认 true"}})},
     {"name": "template_list", "description":
         "列出内置模板（桌宠 pet / 电路板 pcb）及其可调参数与风格。新建模板只需在 presets/ 增加 JSON。",
      "inputSchema": _schema({})},

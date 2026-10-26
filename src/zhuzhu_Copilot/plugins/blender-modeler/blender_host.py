@@ -13,6 +13,7 @@
 import json
 import math
 import os
+import pathlib
 import select
 import socket
 import sys
@@ -30,6 +31,81 @@ START_TS = time.time()
 
 _LAST_ACTIVITY = time.time()
 _IDLE_EXIT = False
+
+# ============================================================================
+# 会话状态：上一次的工作文件 + 未保存改动的恢复文件
+#
+# 为什么需要：常驻实例会因**闲置超时**、显式 restart、崩溃而退出。没有这份状态，
+# 下一次拉起就是空场景 —— 用户侧「刚才做的模型没了」。这里记录：
+#   work_file   最近 save/open 的 .blend（重启时优先打开它）
+#   recovery    退出前（idle / stop / restart）自动另存的一份 `copy=True` 副本
+# 恢复规则：recovery 比 work_file 新 → 用 recovery（未保存的改动也能回来）；
+#           否则回到 work_file；都没有就空场景。
+# ============================================================================
+
+_SESSION: dict = {}
+_SESSION_FLUSH_AT = 0.0
+#: 会改动场景的处理器：成功后标记 dirty（只是内存翻标志，最多 2 秒落一次盘）
+#: 注意**不含 scene_open**：它是「载入一个已保存的干净文件」，本身不清 dirty 才对；
+#: 但载入后由 h_scene_open 主动置 dirty=False，分发层不能再把它标脏。
+_DIRTY_METHODS = frozenset({
+    "scene_new", "scene_import", "object_add", "object_transform", "object_duplicate",
+    "object_delete", "object_join", "object_shade", "object_modifier", "object_boolean",
+    "material_create", "material_assign", "text_add", "camera_add", "camera_frame",
+    "light_add", "light_rig", "world_set", "template_apply",
+})
+_RECOVERY_NAME = os.path.join("_live", "recovery.blend")
+
+
+def _log_host(text: str) -> None:
+    """host 侧日志 → stderr，服务端的 _drain 线程会转发进 runtime.log。"""
+    try:
+        sys.stderr.write(f"[host] {text}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _session_path() -> str:
+    return os.path.join(OUTPUT_DIR, "_live", "session.json")
+
+
+def _load_session() -> dict:
+    """读会话状态（首次访问时从磁盘载入，之后用内存副本）。"""
+    global _SESSION
+    if _SESSION:
+        return _SESSION
+    try:
+        with open(_session_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        _SESSION = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        _SESSION = {}
+    return _SESSION
+
+
+def _save_session(**kw) -> dict:
+    data = _load_session()
+    data.update(kw)
+    data["at"] = time.time()
+    try:
+        _ensure_dir(_session_path())
+        with open(_session_path(), "w", encoding="utf-8") as f:
+            json.dump(_SESSION, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+    return _SESSION
+
+
+def _mark_dirty() -> None:
+    """标记「有未保存改动」。每步都写盘没必要，最多每 2 秒落一次。"""
+    global _SESSION_FLUSH_AT
+    data = _load_session()
+    data["dirty"] = True
+    now = time.time()
+    if now - _SESSION_FLUSH_AT > 2.0:
+        _SESSION_FLUSH_AT = now
+        _save_session()
 
 
 # ============================================================================
@@ -475,15 +551,190 @@ def h_scene_save(params):
     path = _ensure_ext(path, "blend")
     _ensure_dir(path)
     bpy.ops.wm.save_as_mainfile(filepath=path, compress=bool(params.get("compress", True)))
+    # 记住工作文件：重启/崩溃后据此恢复；已保存 → 旧恢复文件作废
+    _save_session(work_file=path, dirty=False)
+    _drop_recovery()
     return {"path": path, "message": f"场景已保存：{path}"}
 
 
 def h_scene_open(params):
     path = _safe_path(params.get("path"))
     if not os.path.isfile(path):
-        raise ValueError(f"文件不存在：{path}")
+        near = _blend_files()
+        hint = ("\n可用的 .blend：" + "、".join(os.path.basename(p) for p in near[:10])) if near else ""
+        raise ValueError(f"文件不存在：{path}{hint}")
     bpy.ops.wm.open_mainfile(filepath=path)
+    _save_session(work_file=path, dirty=False)
+    _drop_recovery()
     return {"path": path, "message": f"已打开场景：{path}", "scene": _scene_summary()}
+
+
+def _blend_files(folder: str = "") -> list:
+    """输出目录（或指定目录）里的 .blend，按修改时间倒序。"""
+    root = folder or OUTPUT_DIR
+    try:
+        files = [p for p in pathlib.Path(root).glob("*.blend") if p.is_file()]
+    except OSError:
+        return []
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [str(p) for p in files]
+
+
+def _drop_recovery() -> None:
+    """删掉过期的恢复文件（已经有更新的正式保存，留着只会在下次恢复时误导）。"""
+    p = _safe_path(_RECOVERY_NAME)
+    try:
+        if os.path.isfile(p):
+            os.remove(p)
+    except OSError:
+        pass
+    data = _load_session()
+    if data.get("recovery"):
+        _save_session(recovery="")
+
+
+def h_blend_list(params):
+    """列出可打开的 .blend（输出目录，或指定目录）：导入/继续工作前先看有什么。"""
+    folder = str(params.get("dir") or "").strip()
+    if folder:
+        folder = os.path.abspath(os.path.expanduser(folder))
+    items = []
+    for p in _blend_files(folder):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        items.append({"path": p, "name": os.path.basename(p),
+                      "bytes": st.st_size, "mtime": st.st_mtime})
+    data = _load_session()
+    return {"dir": folder or OUTPUT_DIR, "files": items[:50], "count": len(items),
+            "work_file": data.get("work_file", ""),
+            "recovery": data.get("recovery", ""),
+            "dirty": bool(data.get("dirty"))}
+
+
+def h_scene_import(params):
+    """把另一个 .blend 里的对象**追加**到当前场景（继续在既有素材上工作）。
+
+    与 scene_open 的区别：open 是换掉整个场景；import 只在现有场景里加东西，
+    当前已做的修改全部保留。用 bpy.ops.wm.append 逐个追加，连带把材质/网格/贴图
+    依赖一起带进来（libraries.load 只 append 对象会丢材质，踩过）。
+    """
+    path = _safe_path(params.get("path"))
+    if not os.path.isfile(path):
+        raise ValueError(f"文件不存在：{path}")
+    if os.path.abspath(path) == os.path.abspath(bpy.data.filepath or ""):
+        raise ValueError("不能从当前打开的文件自身导入")
+    wanted = params.get("names") or params.get("objects") or []
+    if isinstance(wanted, str):
+        wanted = [wanted]
+    wanted = [str(w).strip() for w in wanted if str(w).strip()]
+    limit = max(1, _int(params.get("limit"), 200))
+    prefix = str(params.get("prefix") or "").strip()
+    link = bool(params.get("link", False))
+
+    # 先用 libraries.load 只看名字（不载入数据），再决定追加哪些
+    try:
+        with bpy.data.libraries.load(path, link=False) as (src, _dst):
+            available = [n for n in src.objects if n]
+    except Exception as e:
+        raise RuntimeError(f"读取 {os.path.basename(path)} 失败：{e}")
+    if not available:
+        raise RuntimeError(f"{os.path.basename(path)} 里没有可导入的对象")
+    picks = [n for n in available if not wanted or n in wanted][:limit]
+    missing = [n for n in wanted if n not in available]
+    if not picks:
+        raise RuntimeError(
+            f"没有匹配的对象。文件里的对象有：{'、'.join(available[:20])}"
+            + ("…" if len(available) > 20 else ""))
+
+    before = set(_scene().objects.keys())
+    coll = _collection(params.get("collection"))
+    imported = []
+    for name in picks:
+        try:
+            bpy.ops.wm.append(
+                filepath=os.path.join(path, "Object", name),
+                directory=os.path.join(path, "Object"),
+                filename=name, link=link)
+        except Exception as e:
+            raise RuntimeError(f"导入「{name}」失败：{e}")
+        imported.append(name)
+    # 追加进来的对象默认落在当前集合；再按需改名与移动集合
+    new_objs = [o for o in _scene().objects if o.name not in before]
+    for o in new_objs:
+        if prefix:
+            o.name = f"{prefix}{o.name}"
+        if coll is not None:
+            _move_to_collection(o, coll)
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in new_objs:
+        o.select_set(True)
+    _mark_dirty()
+    _step_all()
+    return {"path": path, "imported": [o.name for o in new_objs], "count": len(new_objs),
+            "missing": missing,
+            "message": f"已从 {os.path.basename(path)} 导入 {len(new_objs)} 个对象"
+                       + (f"（未找到：{'、'.join(missing[:5])}）" if missing else ""),
+            "scene": _scene_summary()}
+
+
+def h_session_park(params):
+    """进程退出/重启前把当前场景另存为恢复文件（copy=True：不改当前文件路径）。
+
+    由服务端在 stop()/restart 前调用；闲置退出由 _run 自己调用。
+    只有「有未保存改动」时才写，避免每次重启都白写一份大文件。
+    """
+    sc = _scene()
+    if not sc.objects:
+        return {"parked": False, "reason": "场景为空"}
+    data = _load_session()
+    if not data.get("dirty"):
+        return {"parked": False, "reason": "无未保存改动", "work_file": data.get("work_file", "")}
+    path = _safe_path(_RECOVERY_NAME)
+    _ensure_dir(path)
+    try:
+        bpy.ops.wm.save_as_mainfile(filepath=path, compress=True, copy=True)
+    except Exception as e:
+        return {"parked": False, "reason": f"保存恢复文件失败：{e}"}
+    _save_session(recovery=path)
+    return {"parked": True, "recovery": path,
+            "work_file": _load_session().get("work_file", ""),
+            "objects": len(sc.objects)}
+
+
+def h_session_restore(params):
+    """新实例启动后恢复上一次的工作：优先恢复文件（含未保存改动），否则工作文件。
+
+    判定**不用文件修改时间**：整个建模流程可能在一秒内跑完，mtime 精度不足以区分
+    「刚存的工作文件」和「刚写的恢复文件」（实测会把 5 个对象的恢复文件判负）。
+    改看语义标志：只有存在未保存改动（dirty）时 park 才会写恢复文件，所以
+    「有 recovery + dirty」就等于「这份恢复文件比工作文件新」。
+    """
+    data = _load_session()
+    work = str(data.get("work_file") or "")
+    rec = str(data.get("recovery") or "")
+    dirty = bool(data.get("dirty"))
+    work_ok = bool(work) and os.path.isfile(work)
+    rec_ok = bool(rec) and os.path.isfile(rec)
+    if rec_ok and (dirty or not work_ok):
+        pick, why = rec, "未保存改动的恢复文件"
+    elif work_ok:
+        pick, why = work, "上一次的工作文件"
+    elif rec_ok:
+        pick, why = rec, "恢复文件"
+    else:
+        pick, why = "", ""
+    if not pick:
+        return {"restored": "", "objects": 0,
+                "reason": "没有可恢复的文件（上次是全新场景或未保存过）",
+                "work_file": work, "recovery": rec}
+    bpy.ops.wm.open_mainfile(filepath=pick)
+    # 恢复文件本身就是「未保存的改动」，继续标记 dirty，下次退出还会再存一次
+    _save_session(dirty=(pick == rec), work_file=work or pick)
+    return {"restored": pick, "source": why, "objects": len(_scene().objects),
+            "scene": _scene_summary(),
+            "message": f"已恢复上次工作：{pick}（{why}）"}
 
 
 # ============================================================================
@@ -1099,38 +1350,76 @@ def h_live_snapshot(params):
 
 
 def h_export_model(params):
-    fmt = str(params.get("format") or "glb").lower()
+    """导出给应用/游戏引擎用的模型：glb / fbx / obj / stl。
+
+    默认按「引擎可直接用」的姿势导出：
+      · 应用修改器（否则 bevel/boolean 只存在于 Blender 里，进引擎就没了）
+      · FBX 用 FBX_SCALE_ALL（1 单位 = 1 米/1 厘米的问题不再靠手改 import scale）
+      · 嵌入贴图（FBX embed_textures / glTF GLB 自带打包）
+    返回对象数、三角面数与文件大小，导出空场景会明确报错（避免静默产出 0KB 文件）。
+    """
+    fmt = str(params.get("format") or "glb").strip().lower()
+    if fmt not in ("glb", "fbx", "obj", "stl"):
+        raise ValueError("format 只能是 glb / fbx / obj / stl")
     name = str(params.get("name") or "model").strip()
-    path = _safe_path(params.get("path") or f"{name}.{('glb' if fmt == 'glb' else fmt)}")
+    path = _safe_path(params.get("path") or f"{name}.{fmt}")
+    path = _ensure_ext(path, fmt)
     _ensure_dir(path)
     selected_only = bool(params.get("selected_only", False))
-    meshes = [o for o in _scene().objects if o.type == "MESH"]
+    apply_mod = bool(params.get("apply_modifiers", True))
+    embed_tex = bool(params.get("embed_textures", True))
+    sc = _scene()
+    meshes = [o for o in sc.objects if o.type == "MESH"]
+    if not meshes:
+        raise RuntimeError("场景里没有网格对象，导出只会得到空文件；先用 object_add/template_apply 建模")
     if selected_only:
         # 没有显式选择时退回「全部网格」，避免导出一个空文件
-        if not any(o.select_get() for o in _scene().objects):
-            for o in meshes:
-                o.select_set(True)
+        picked = [o for o in meshes if o.select_get()] or meshes
     else:
-        bpy.ops.object.select_all(action="DESELECT")
-        for o in meshes:
-            o.select_set(True)
-    if fmt == "glb":
-        path = _ensure_ext(path, "glb")
-        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=selected_only)
-    elif fmt == "fbx":
-        path = _ensure_ext(path, "fbx")
-        bpy.ops.export_scene.fbx(filepath=path, use_selection=selected_only, apply_scale_options="FBX_SCALE_ALL")
-    elif fmt == "obj":
-        path = _ensure_ext(path, "obj")
-        bpy.ops.wm.obj_export(filepath=path, export_selected_objects=selected_only) if hasattr(bpy.ops.wm, "obj_export") \
-            else bpy.ops.export_scene.obj(filepath=path, use_selection=selected_only)
-    elif fmt == "stl":
-        path = _ensure_ext(path, "stl")
-        bpy.ops.export_mesh.stl(filepath=path, use_selection=selected_only)
-    else:
-        raise ValueError("format 只能是 glb / fbx / obj / stl")
+        picked = meshes
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in picked:
+        o.select_set(True)
+    tris = sum(len(o.data.polygons) for o in picked if o.data)
+    try:
+        if fmt == "glb":
+            bpy.ops.export_scene.gltf(
+                filepath=path, export_format="GLB", use_selection=True,
+                export_apply=apply_mod,          # 应用修改器
+                export_yup=True,                  # glTF 标准 Y 轴朝上
+                export_materials="EXPORT",
+                export_cameras=False, export_lights=False)
+        elif fmt == "fbx":
+            bpy.ops.export_scene.fbx(
+                filepath=path, use_selection=True, object_types={"MESH"},
+                use_mesh_modifiers=apply_mod,     # 应用修改器（FBX 侧的参数名不同）
+                apply_scale_options="FBX_SCALE_ALL",
+                bake_space_transform=bool(params.get("bake_transform", True)),
+                embed_textures=embed_tex,
+                path_mode="COPY" if embed_tex else "AUTO",
+                mesh_smooth_type="FACE")
+        elif fmt == "obj":
+            if hasattr(bpy.ops.wm, "obj_export"):
+                bpy.ops.wm.obj_export(filepath=path, export_selected_objects=True,
+                                      apply_modifiers=apply_mod, export_materials=True)
+            else:
+                bpy.ops.export_scene.obj(filepath=path, use_selection=True,
+                                         use_mesh_modifiers=apply_mod,
+                                         use_materials=True, path_mode="COPY")
+        else:   # stl
+            bpy.ops.export_mesh.stl(filepath=path, use_selection=True,
+                                    use_mesh_modifiers=apply_mod, global_scale=1.0)
+    except TypeError as e:
+        # 不同 Blender 版本的算子参数名会有差异：明确报出来，别静默失败
+        raise RuntimeError(f"当前 Blender 版本不支持该导出参数（{fmt}）：{e}")
     _step_all()
-    return {"path": path, "format": fmt, "bytes": os.path.getsize(path) if os.path.exists(path) else 0}
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    if not size:
+        raise RuntimeError(f"导出文件为空：{path}（检查选中对象/修改器/场景内容）")
+    return {"path": path, "format": fmt, "bytes": size,
+            "objects": len(picked), "triangles": tris,
+            "apply_modifiers": apply_mod,
+            "message": f"已导出 {fmt.upper()}：{len(picked)} 个对象 / {tris} 面 / {size // 1024} KB\n{path}"}
 
 
 # ============================================================================
@@ -1255,10 +1544,14 @@ def h_template_apply(params):
 HANDLERS = {
     "status": h_status,
     "live_snapshot": h_live_snapshot,
+    "session_park": h_session_park,
+    "session_restore": h_session_restore,
+    "blend_list": h_blend_list,
     "scene_new": h_scene_new,
     "scene_info": h_scene_info,
     "scene_save": h_scene_save,
     "scene_open": h_scene_open,
+    "scene_import": h_scene_import,
     "object_add": h_object_add,
     "object_transform": h_object_transform,
     "object_duplicate": h_object_duplicate,
@@ -1280,6 +1573,20 @@ HANDLERS = {
     "template_list": h_template_list,
     "template_apply": h_template_apply,
 }
+
+
+def _park_before_exit(reason: str) -> None:
+    """退出前把未保存改动存成恢复文件（闲置退出 / 服务端断开都走这里）。
+
+    服务端断开（应用退出、插件被停用）也要存：否则用户关掉应用再打开，
+    上一次没保存的建模成果就没了。
+    """
+    try:
+        park = h_session_park({})
+        if park.get("parked"):
+            _log_host(f"{reason}：已保存恢复文件 {park.get('recovery')}")
+    except Exception as e:
+        _log_host(f"{reason}：保存恢复文件失败 {e}")
 
 
 def _read_line(conn, buf: bytearray):
@@ -1352,9 +1659,13 @@ def _run(port):
     while True:
         kind, line = _read_line(conn, buf)
         if kind == "eof":
+            # 服务端断开（应用退出/插件停用）→ 先存恢复文件再退，别丢未保存的建模成果
+            _park_before_exit("服务端断开")
             break                      # 对端关闭 → 正常退出（服务端会自行决定是否重启）
         if kind == "idle":             # 空闲：到点就退出，避免长期占着 Blender
             if IDLE_TIMEOUT > 0 and time.time() - _LAST_ACTIVITY > IDLE_TIMEOUT:
+                # 闲置退出前把未保存的改动另存为恢复文件：下次拉起能接着干
+                _park_before_exit(f"闲置 {IDLE_TIMEOUT:.0f}s 退出")
                 break
             continue
         if kind == "blank" or not line.strip():
@@ -1372,6 +1683,8 @@ def _run(port):
         else:
             try:
                 resp = {"id": rid, "ok": True, "result": fn(msg.get("params") or {})}
+                if method in _DIRTY_METHODS:
+                    _mark_dirty()      # 有改动 → 崩溃/重启时值得恢复
             except Exception as e:
                 resp = {"id": rid, "ok": False,
                         "error": f"{type(e).__name__}: {e}",

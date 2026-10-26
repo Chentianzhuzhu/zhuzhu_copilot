@@ -35,9 +35,14 @@ description: Blender 低模建模技能：真实驱动本机 Blender（headless 
 | 用户关掉后要重开 | `preview_start`（返回本机 + 局域网地址；`open=false` 只起服务） |
 | 想在手机/别的电脑上看 | `preview_start` 返回的局域网地址（同 Wi-Fi，页面 2 秒刷新） |
 | 关掉预览页 | `preview_stop`（下次建模会自动重开） |
-| 存工程 | `scene_save(name=...)` |
+| 存工程 | `scene_save(name=...)`（同时记为工作文件，重启后自动接续） |
+| 接续上一次的工作 | 什么都不用做：实例重启/闲置退出后 `blender_start` 自动恢复上次场景 |
+| 找有哪些 .blend 可接手 | `blend_list`（输出目录，含工作文件/恢复文件/是否有未保存改动） |
+| 接手一个现成 .blend | `scene_open(path=...)` **替换**当前场景（想接着上次做就别用这个） |
+| 把别的文件里的零件搬进来 | `scene_import(path=..., names=[...])` 追加进当前场景，保留现有进度 |
+| 交付给应用/游戏引擎 | `export_model(format="glb")`（通用）/ `format="fbx"`（Unity/Unreal） |
 | 交付模型 | `export_model(name=..., format="glb")` |
-| 任务结束 | `blender_stop`（释放内存；闲置 30 分钟也会自动退出） |
+| 任务结束 | `blender_stop`（释放内存；未保存改动会存成恢复文件，闲置 30 分钟也会自动退出并保存） |
 
 ## 标准流程
 
@@ -71,6 +76,33 @@ description: Blender 低模建模技能：真实驱动本机 Blender（headless 
   或用 `preview_stop` 关掉后再 `preview_start`。
 - 建模期间**每改完一轮就 `render_image`**：实时图是 360px 快速预览（颜色近似、无景深/降噪），
   交判定还是要看正式渲染图；预览页也会把最新正式渲染切到顶部大图。
+
+## 工作文件的接续与交接
+
+**重启不丢活**（用户最容易踩的坑）：
+- `scene_save` 会把文件记为「工作文件」；实例**闲置退出 / 显式 restart / 应用退出**前，
+  插件会把未保存的改动另存为 `输出目录/_live/recovery.blend`。
+- 新实例启动时自动恢复：恢复文件比工作文件新 → 用它（连未保存改动一起回来）；
+  否则打开工作文件；都没有才空场景。`blender_start` 的返回里会说明恢复了什么。
+- 因此：**恢复出场景后不要用 `scene_new`**（那是"清空重来"），直接在现有对象上改；
+  想另存一个版本用 `scene_save(name="xxx_v2")`。
+- 多轮建模中途不做保存也没关系，但正式交付前仍应 `scene_save` 一次。
+
+**接手别人/以前的文件**：
+- `blend_list` 先看有哪些文件（含大小、时间、当前工作文件与恢复文件、dirty 状态）。
+- `scene_open(path)` = **换掉**当前场景（当前未保存的改动会问都不问就没了，谨慎）。
+- `scene_import(path, names=[...])` = 把对方文件里的对象**追加**进当前场景，
+  材质/贴图依赖一起带进来；`names` 留空 = 全部（最多 `limit` 个）。
+  这是"在既有素材上继续做"的正解：既有进度全保留。
+
+**导出给应用/游戏引擎**（`export_model`）：
+- `format="glb"`：单文件、自带材质与贴图，Three.js / Godot / Unity(glTFast) 首选。
+- `format="fbx"`：Unity / Unreal 传统流程首选，用 `FBX_SCALE_ALL`，引擎里不再手调 import scale。
+- 默认 `apply_modifiers=true`：倒角/布尔/镜像等修改器会被真实烘进网格
+  —— 忘记应用是"引擎里模型变样"的最常见原因。只想保留修改器可传 false。
+- 单位是**米**、Z 轴朝上（FBX 导出会按引擎约定转 Y 轴）；导出前用 `scene_info` 核对包围盒尺寸，
+  一个"2 米高的桌宠"多半是单位搞错了。
+- 导出会返回对象数/三角面数/文件大小；场景里没有网格时会直接报错（不会产出 0KB 空文件）。
 
 ## 低模建模要点
 
@@ -158,8 +190,11 @@ description: Blender 低模建模技能：真实驱动本机 Blender（headless 
 ## 交付与验收
 
 - 输出目录默认 `<桌面>/zhuzhu Copilot/blender`（可用插件配置 `blender_output_dir` 改）。
-- 一次完整交付 = 渲染图（看效果）+ `.blend`（可继续改）+ `.glb`（可直接进引擎/网页）。
-- 验收清单：比例协调、无穿模、无悬空、丝印正向、材质不过曝、主体在画面内且留白合适。
+- 一次完整交付 = 渲染图（看效果）+ `.blend`（可继续改）+ `.glb` / `.fbx`（可直接进引擎/网页）。
+- 引擎用哪份：Three.js / Godot / 网页 → `glb`；Unity / Unreal 传统资产管线 → `fbx`。
+  两份都给最省事，体积都不大。
+- 验收清单：比例协调、无穿模、无悬空、丝印正向、材质不过曝、主体在画面内且留白合适；
+  导出后再用 `scene_info` 核对一次三角面数与包围盒（单位米）。
 - 三角面数用 `scene_info` 看；低模单个道具控制在几千面以内，别用 `subsurf` 堆面数。
 
 ## 禁则
