@@ -1,0 +1,384 @@
+{
+  "source": "kitty_pet.fbx",
+  "fps": 24,
+  "frames": 116,
+  "frame_start": 1,
+  "frame_end": 116,
+  "action": "Kitty_Skeleton|Kitty_Skeleton|Kitty_SkeletonAction",
+  "bones": [
+    "Spine",
+    "Spine_end",
+    "Head",
+    "Head_end",
+    "Tail_1",
+    "Tail_1_end",
+    "Tail_2",
+    "Tail_2_end",
+    "Tail_3",
+    "Tail_3_end",
+    "L_Foreleg",
+    "L_Foreleg_end",
+    "R_Foreleg",
+    "R_Foreleg_end",
+    "L_Hindleg",
+    "L_Hindleg_end",
+    "R_Hindleg",
+    "R_Hindleg_end",
+    "L_Ear",
+    "L_Ear_end",
+    "R_Ear",
+    "R_Ear_end"
+  ],
+  "parts": [
+    {
+      "key": "p0",
+      "name": "kitty_arm_l",
+      "material": "kitty_body",
+      "color": [
+        0.2747,
+        0.3663,
+        0.4793
+      ],
+      "verts": 62,
+      "tris": 120,
+      "skinned": false,
+      "bound_to": [
+        "L_Foreleg"
+      ]
+    },
+    {
+      "key": "p1",
+      "name": "kitty_arm_r",
+      "material": "kitty_body",
+      "color": [
+        0.2747,
+        0.3663,
+        0.4793
+      ],
+      "verts": 62,
+      "tris": 120,
+      "skinned": false,
+      "bound_to": [
+        "R_Foreleg"
+      ]
+    },
+    {
+      "key": "p2",
+      "name": "kitty_belly",
+      "material": "kitty_white",
+      "color": [
+        0.9131,
+        0.8714,
+        0.807
+      ],
+      "verts": 62,
+      "tris": 120,
+      "skinned": false,
+      "bound_to": [
+        "Spine"
+      ]
+    },
+    {
+      "key": "p3",
+      "name": "kitty_body",
+      "material": "kitty_orange",
+      "color": [
+        0.807,
+        0.3916,
+        0.1221
+      ],
+      "verts": 1922,
+      "tris": 3840,
+      "skinned": false,
+      "bound_to": [
+        "Spine"
+      ]
+    },
+    {
+      "key": "p4",
+      "name": "kitty_collar",
+      "material": "kitty_dark",
+      "color": [
+        0.0467,
+        0.0242,
+        0.0137
+      ],
+      "verts": 100,
+      "tris": 200,
+      "skinned": false,
+      "bound_to": [
+        "Spine"
+      ]
+    },
+    {
+      "key": "p5",
+      "name": "kitty_ear_in_l",
+      "material": "kitty_white",
+      "color": [
+        0.9131,
+        0.8714,
+        0.807
+      ],
+      "verts": 9,
+      "tris": 14,
+      "skinned": false,
+      "bound_to": [
+        "L_Ear"
+      ]
+    },
+    {
+      "key": "p6",
+      "name": "kitty_ear_in_r",
+      "material": "kitty_white",
+      "color": [
+        0.9131,
+        0.8714,
+        0.807
+      ],
+      "verts": 9,
+      "tris": 14,
+      "skinned": false,
+      "bound_to": [
+        "R_Ear"
+      ]
+    },
+    {
+      "key": "p7",
+      "name": "kitty_ear_l",
+      "material": "kitty_orange",
+      "color": [
+        0.807,
+        0.3916,
+        0.1221
+      ],
+      "verts": 9,
+      "tris": 14,
+      "skinned": false,
+      "bound_to": [
+        "L_Ear"
+      ]
+    },
+    {
+      "key": "p8",
+      "name": "kitty_ear_r",
+      "material": "kitty_orange",
+      "color": [
+        0.807,
+        0.3916,
+        0.1221
+      ],
+      "verts": 9,
+      "tris": 14,
+      "skinned": false,
+      "bound_to": [
+        "R_Ear"
+      ]
+    },
+    {
+      "key": "p9",
+      "name": "kitty_eye_l",
+      "material": "kitty_eye",
+      "color": [
+        0.0262,
+        0.0685,
+        0.0482
+      ],
+      "verts": 42,
+      "tris": 80,
+      "skinned": false,
+      "bound_to": [
+        "Head"
+      ]
+    },
+    {
+      "key": "p10",
+      "name": "kitty_eye_r",
+      "material": "kitty_eye",
+      "color": [
+        0.0262,
+        0.0685,
+        0.0482
+      ],
+      "verts": 42,
+      "tris": 80,
+      "skinned": false,
+      "bound_to": [
+        "Head"
+      ]
+    },
+    {
+      "key": "p11",
+      "name": "kitty_foot_l",
+      "material": "kitty_body",
+      "color": [
+        0.2747,
+        0.3663,
+        0.4793
+      ],
+      "verts": 62,
+      "tris": 120,
+      "skinned": false,
+      "bound_to": [
+        "L_Hindleg"
+      ]
+    },
+    {
+      "key": "p12",
+      "name": "kitty_foot_r",
+      "material": "kitty_body",
+      "color": [
+        0.2747,
+        0.3663,
+        0.4793
+      ],
+      "verts": 62,
+      "tris": 120,
+      "skinned": false,
+      "bound_to": [
+        "R_Hindleg"
+      ]
+    },
+    {
+      "key": "p13",
+      "name": "kitty_glint_l",
+      "material": "kitty_white",
+      "color": [
+        0.9131,
+        0.8714,
+        0.807
+      ],
+      "verts": 26,
+      "tris": 48,
+      "skinned": false,
+      "bound_to": [
+        "Head"
+      ]
+    },
+    {
+      "key": "p14",
+      "name": "kitty_glint_r",
+      "material": "kitty_white",
+      "color": [
+        0.9131,
+        0.8714,
+        0.807
+      ],
+      "verts": 26,
+      "tris": 48,
+      "skinned": false,
+      "bound_to": [
+        "Head"
+      ]
+    },
+    {
+      "key": "p15",
+      "name": "kitty_head",
+      "material": "kitty_orange",
+      "color": [
+        0.807,
+        0.3916,
+        0.1221
+      ],
+      "verts": 1922,
+      "tris": 3840,
+      "skinned": false,
+      "bound_to": [
+        "Head"
+      ]
+    },
+    {
+      "key": "p16",
+      "name": "kitty_muzzle",
+      "material": "kitty_white",
+      "color": [
+        0.9131,
+        0.8714,
+        0.807
+      ],
+      "verts": 62,
+      "tris": 120,
+      "skinned": false,
+      "bound_to": [
+        "Head"
+      ]
+    },
+    {
+      "key": "p17",
+      "name": "kitty_nose",
+      "material": "kitty_nose",
+      "color": [
+        0.807,
+        0.3515,
+        0.4564
+      ],
+      "verts": 26,
+      "tris": 48,
+      "skinned": false,
+      "bound_to": [
+        "Head"
+      ]
+    },
+    {
+      "key": "p18",
+      "name": "kitty_tail_1",
+      "material": "kitty_body",
+      "color": [
+        0.2747,
+        0.3663,
+        0.4793
+      ],
+      "verts": 3282,
+      "tris": 6560,
+      "skinned": false,
+      "bound_to": [
+        "Tail_1"
+      ]
+    },
+    {
+      "key": "p19",
+      "name": "kitty_tail_2",
+      "material": "kitty_body",
+      "color": [
+        0.2747,
+        0.3663,
+        0.4793
+      ],
+      "verts": 3282,
+      "tris": 6560,
+      "skinned": false,
+      "bound_to": [
+        "Tail_2"
+      ]
+    },
+    {
+      "key": "p20",
+      "name": "kitty_tail_3",
+      "material": "kitty_body",
+      "color": [
+        0.2747,
+        0.3663,
+        0.4793
+      ],
+      "verts": 3282,
+      "tris": 6560,
+      "skinned": false,
+      "bound_to": [
+        "Tail_3"
+      ]
+    }
+  ],
+  "bounds": {
+    "min": [
+      -0.6447,
+      -0.58,
+      -0.0002
+    ],
+    "max": [
+      0.6447,
+      0.9849,
+      1.8202
+    ]
+  },
+  "total_verts": 14360,
+  "total_tris": 28640
+}

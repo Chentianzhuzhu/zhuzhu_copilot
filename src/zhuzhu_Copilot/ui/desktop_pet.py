@@ -223,14 +223,35 @@ class DesktopPet(QWidget):
         super().closeEvent(event)
 
 
+def _create_pet(main_window):
+    """建桌宠：**默认 3D**（kitty_pet.fbx 烘焙资产 + Qt 3D + 跟随鼠标互动），
+    3D 不可用（没装 Qt3D / 资产缺失 / 初始化抛错）时回退到原来的 GIF 桌宠。
+
+    环境变量 ZHIZHU_PET3D=0 可强制回退 GIF（排障/省 GPU 时用）。
+    """
+    if str(os.environ.get("ZHIZHU_PET3D", "1")).strip().lower() not in ("0", "false", "off", "no"):
+        try:
+            from zhuzhu_Copilot.ui.pet3d import Pet3DWindow, asset_prefix, available
+            if available():
+                prefix = asset_prefix()
+                if prefix is not None:
+                    return Pet3DWindow(prefix, open_panel_cb=main_window._open_agent_panel)
+        except Exception as e:
+            print(f"[桌宠] 3D 桌宠不可用，回退 GIF：{e}")
+    gif = _pet_gif_path()
+    if not gif:
+        return None
+    return DesktopPet(gif, open_panel_cb=main_window._open_agent_panel)
+
+
 def ensure_pet(main_window) -> "DesktopPet | None":
     """随主程序启动桌宠（单例，附着在 main_window 生命周期上）。
     资源缺失时静默返回 None，避免拖累主程序。"""
     if not hasattr(main_window, "_pet") or main_window._pet is None:
-        gif = _pet_gif_path()
-        if not gif:
+        pet = _create_pet(main_window)
+        if pet is None:
             return None
-        main_window._pet = DesktopPet(gif, open_panel_cb=main_window._open_agent_panel)
+        main_window._pet = pet
     pet = main_window._pet
     if not pet.isVisible():
         pet.show()
