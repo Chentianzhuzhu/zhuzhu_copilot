@@ -31,6 +31,8 @@ description: Blender 低模建模技能：真实驱动本机 Blender（headless 
 | 一键布光 | `light_rig(preset="product")` / `preset="dramatic"` |
 | 摆相机 | `camera_frame(view="hero")`；渲染时 `render_image(view=...)` 会自己取景 |
 | 看图 | `render_image(name=..., resolution=..., samples=...)` |
+| 想在手机/别的电脑上看实时预览 | `preview_start`（返回局域网地址，页面 2 秒自动刷新） |
+| 关掉预览页 | `preview_stop` |
 | 存工程 | `scene_save(name=...)` |
 | 交付模型 | `export_model(name=..., format="glb")` |
 | 任务结束 | `blender_stop`（释放内存；闲置 30 分钟也会自动退出） |
@@ -121,6 +123,17 @@ description: Blender 低模建模技能：真实驱动本机 Blender（headless 
 - `template_apply(colors={"body": "#8899AA"})` 覆盖调色板；`size` 整体缩放；
   `prefix` 给对象名加前缀（同场景放两只桌宠时必用，否则根对象重名会被顶掉）。
 - 内置模板：`pet`（styles: cat / bear / rabbit）、`pcb`。
+
+## 局域网实时预览
+
+- `preview_start` 起一个**只读** HTTP 服务（默认 `0.0.0.0:8787`），返回两组地址：
+  `本机 http://127.0.0.1:8787/`、`局域网 http://<本机IP>:8787/`；手机连同一 Wi-Fi 直接打开。
+- 页面每 2 秒拉 `/api/state`，显示最近 60 张渲染图（按时间倒序）、渲染实例状态与场景摘要
+  （对象/三角面/材质/引擎/分辨率/相机）。图片地址带 `?v=<mtime>`，新图自动替换，无需手动刷新。
+- 它不占用 Blender 调用锁、不改场景，可以全程开着；只在读缓存，不影响渲染速度。
+- 场景摘要来自最近的 `scene_info` / `render_image`；想让统计立刻更新，渲染一次即可。
+- 监听端口/地址可用插件配置 `blender_preview_port` / `blender_preview_bind` 覆盖。
+  Windows 首次监听会弹防火墙提示，需允许「专用网络」，否则局域网设备访问不到。
 
 ## 交付与验收
 

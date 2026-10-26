@@ -10,6 +10,8 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ PRESETS = PLUGIN_DIR / "presets"
 
 EXPECTED_TOOLS = {
     "blender_status", "blender_start", "blender_stop",
+    "preview_start", "preview_stop",
     "scene_new", "scene_info", "scene_save", "scene_open",
     "object_add", "object_transform", "object_duplicate", "object_delete",
     "object_join", "object_shade", "object_modifier", "object_boolean",
@@ -100,7 +103,7 @@ def test_skill_md_frontmatter_and_workflow():
     assert "description:" in text
     # 工作流与纪律必须写进技能：先看状态 → 建场景 → 套模板 → 改 → 布光 → 渲染看图 → 交付
     for key in ("blender_status", "scene_new", "template_apply", "light_rig",
-                "render_image", "export_model", "不许伪造"):
+                "render_image", "export_model", "preview_start", "不许伪造"):
         assert key in text, f"SKILL.md 缺少关键约定: {key}"
 
 
@@ -215,6 +218,39 @@ def test_tools_call_status_is_readonly(tmp_path):
     if _have_blender():
         assert "Blender 已找到" in text
     assert "后台实例未启动" in text
+
+
+# ---------- 局域网预览页 ----------
+
+def test_preview_page_serves_state_and_blocks_traversal(tmp_path, monkeypatch):
+    """真实起 HTTP 服务：页面可打开、/api/state 返回结构化数据、图片路由只认单层 .png。"""
+    mod = _load_module()
+    monkeypatch.setenv("BLENDER_OUTPUT_DIR", str(tmp_path))
+    info = mod.PREVIEW.start(port=0, bind="127.0.0.1")
+    base = info["local_url"]
+    try:
+        assert info["port"] > 0
+        with urllib.request.urlopen(base, timeout=10) as r:
+            html = r.read().decode("utf-8")
+        assert "ZHIZHU BLENDER PREVIEW" in html and "api/state" in html
+        with urllib.request.urlopen(base + "api/state", timeout=10) as r:
+            state = json.loads(r.read().decode("utf-8"))
+        for key in ("running", "images", "output_dir", "now", "bind", "port"):
+            assert key in state
+        assert Path(state["output_dir"]) == tmp_path
+        assert isinstance(state["images"], list)
+        # 有真实渲染图时必须能取到（开发机常见；干净机器上列表为空也合法）
+        if state["images"]:
+            with urllib.request.urlopen(base + state["images"][0]["url"], timeout=10) as r:
+                assert r.headers.get("Content-Type") == "image/png"
+                assert len(r.read()) > 100
+        for bad in ("img/..%2F..%2Fplugin.json", "img/%2Fetc%2Fpasswd", "img/x.txt", "nope"):
+            with pytest.raises(urllib.error.HTTPError) as err:
+                urllib.request.urlopen(base + bad, timeout=10)
+            assert err.value.code == 404
+    finally:
+        assert mod.PREVIEW.stop() is True
+        assert mod.PREVIEW.running() is False
 
 
 # ---------- 真实集成：起 Blender → 建模 → 渲染 ----------

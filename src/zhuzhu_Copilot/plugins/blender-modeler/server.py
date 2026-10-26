@@ -17,7 +17,9 @@
 - stdout 只输出 JSON-RPC，日志一律走 stderr；
 - 不做任何 mock：所有结果来自真实 bpy 求值；
 - 插件配置（config.json → 环境变量）：BLENDER_EXE / BLENDER_OUTPUT_DIR /
-  BLENDER_RENDER_ENGINE / BLENDER_START_TIMEOUT / BLENDER_IDLE_TIMEOUT；
+  BLENDER_RENDER_ENGINE / BLENDER_START_TIMEOUT / BLENDER_IDLE_TIMEOUT /
+  BLENDER_PREVIEW_PORT / BLENDER_PREVIEW_BIND；
+- 局域网预览页是独立线程里的只读 HTTP 服务，轮询只读缓存，不挤占 Blender 调用锁；
 - 工具在主循环线程里串行执行（与 computer-control 相同的教训：不要用线程池 +
   超时，否则一个慢工具会把后续调用全部拖进排队超时）。
 """
@@ -32,7 +34,9 @@ import sys
 import threading
 import time
 from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote, unquote, urlparse
 
 APP_NAME = "blender-modeler"
 MCP_VERSION = "2024-11-05"
@@ -285,6 +289,267 @@ atexit.register(lambda: BRIDGE.stop())
 
 
 # ============================================================================
+# 局域网预览页：浏览器（手机 / 同网段电脑）实时看渲染图，只读、不改场景
+# ============================================================================
+
+PREVIEW_BIND = (os.environ.get("BLENDER_PREVIEW_BIND") or "0.0.0.0").strip() or "0.0.0.0"
+PREVIEW_PORT = int(os.environ.get("BLENDER_PREVIEW_PORT") or 8787)
+# 页面展示的图片数量上限：只保留最近的渲染结果，避免目录长期使用后列表过重
+PREVIEW_MAX_IMAGES = 60
+
+_STATE = {"scene": None, "scene_at": 0.0}
+
+
+def _remember_scene(result) -> None:
+    """缓存最近一次场景摘要，供预览页展示（页面轮询不直接占用 Blender 调用锁）。"""
+    if isinstance(result, dict) and isinstance(result.get("summary"), dict):
+        _STATE["scene"] = result["summary"]
+        _STATE["scene_at"] = time.time()
+
+
+def _lan_ip() -> str:
+    """取本机在局域网中的 IPv4：UDP connect 只做路由选择、不发包；失败再退回主机名解析。"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                return ip
+    except OSError:
+        pass
+    return "127.0.0.1"
+
+
+def _preview_state() -> dict:
+    """预览页数据：渲染实例状态 + 场景摘要（缓存）+ 输出目录里的 PNG 列表。"""
+    out = output_dir()
+    images = []
+    try:
+        files = [p for p in out.glob("*.png") if p.is_file()]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[:PREVIEW_MAX_IMAGES]:
+            st = p.stat()
+            images.append({"name": p.name, "url": f"img/{quote(p.name)}?v={int(st.st_mtime)}",
+                           "bytes": st.st_size, "mtime": st.st_mtime})
+    except OSError:
+        pass
+    info = PREVIEW.info()
+    return {"running": BRIDGE.alive(), "blender": BRIDGE.version or "",
+            "output_dir": str(out), "scene": _STATE.get("scene"),
+            "images": images, "now": time.time(),
+            "lan_url": info["url"] if info["running"] else "",
+            "bind": info["bind"], "port": info["port"]}
+
+
+_PREVIEW_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blender 预览</title>
+<style>
+  :root{--bg:#05070A;--panel:#0E1116;--line:#1E242C;--fg:#D8DDE4;--dim:#7A828C;--ok:#7FB2E5}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace}
+  header{position:sticky;top:0;z-index:2;background:rgba(5,7,10,.92);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.06em}
+  .url{color:var(--dim);font-size:12px}
+  .pill{margin-left:auto;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--dim)}
+  .pill.on{color:var(--ok);border-color:#24486B}
+  main{padding:14px 16px 40px;max-width:1400px;margin:0 auto}
+  #stats{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 10px;min-width:96px}
+  .stat b{display:block;font-size:11px;color:var(--dim);font-weight:400;letter-spacing:.04em}
+  .stat span{font-size:15px}
+  #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;display:block;color:inherit;text-decoration:none}
+  .card img{display:block;width:100%;height:auto;background:#000}
+  .cap{padding:8px 10px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);display:flex;justify-content:space-between;gap:8px}
+  .cap b{color:var(--fg);font-weight:500;word-break:break-all}
+  #empty{color:var(--dim);padding:28px 0;text-align:center;border:1px dashed var(--line);border-radius:8px}
+  #meta{color:var(--dim);font-size:12px;margin-top:16px}
+</style></head>
+<body>
+<header><h1>ZHIZHU BLENDER PREVIEW</h1><span class="url" id="addr"></span>
+<span class="pill" id="status">连接中</span></header>
+<main><div id="stats"></div><div id="grid"></div>
+<div id="empty">尚无渲染图：让 Agent 调用 render_image 后这里会自动出现。</div>
+<div id="meta"></div></main>
+<script>
+(function(){
+  var statusEl=document.getElementById('status'),statsEl=document.getElementById('stats'),
+      gridEl=document.getElementById('grid'),emptyEl=document.getElementById('empty'),
+      metaEl=document.getElementById('meta'),addrEl=document.getElementById('addr');
+  var sig='';
+  function pad(n){return n<10?'0'+n:''+n;}
+  function timeText(s){var d=new Date(s*1000);return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());}
+  function sizeText(n){return n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,Math.round(n/1024))+' KB';}
+  function stat(label,value){
+    var d=document.createElement('div');d.className='stat';
+    var b=document.createElement('b');b.textContent=label;
+    var s=document.createElement('span');
+    s.textContent=(value===undefined||value===null||value==='')?'—':String(value);
+    d.appendChild(b);d.appendChild(s);return d;
+  }
+  function applyStats(sc){
+    var res=(sc&&sc.resolution)||[];
+    var rows=[['对象',sc&&sc.objects],['三角面',sc&&sc.triangles],['材质',sc&&sc.materials],
+      ['引擎',sc&&sc.engine],['分辨率',res.length?res[0]+' x '+res[1]:''],['相机',sc&&sc.camera]];
+    statsEl.textContent='';
+    rows.forEach(function(r){statsEl.appendChild(stat(r[0],r[1]));});
+  }
+  function applyGrid(images){
+    var next=images.map(function(i){return i.name+'@'+i.bytes+'@'+i.mtime;}).join('|');
+    if(next===sig){return;}
+    sig=next;gridEl.textContent='';
+    emptyEl.style.display=images.length?'none':'block';
+    images.forEach(function(it){
+      var a=document.createElement('a');a.className='card';a.href=it.url;
+      a.target='_blank';a.rel='noopener';
+      var img=document.createElement('img');img.src=it.url;img.alt=it.name;img.loading='lazy';
+      var cap=document.createElement('div');cap.className='cap';
+      var name=document.createElement('b');name.textContent=it.name;
+      var info=document.createElement('span');info.textContent=timeText(it.mtime)+' · '+sizeText(it.bytes);
+      cap.appendChild(name);cap.appendChild(info);
+      a.appendChild(img);a.appendChild(cap);gridEl.appendChild(a);
+    });
+  }
+  function tick(){
+    fetch('api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
+      statusEl.textContent=s.running?'渲染实例运行中':'渲染实例未启动';
+      statusEl.className='pill'+(s.running?' on':'');
+      addrEl.textContent=s.lan_url||'';
+      applyStats(s.scene);applyGrid(s.images||[]);
+      metaEl.textContent='最近刷新 '+timeText(s.now)+' · 输出目录 '+s.output_dir
+        +' · 共 '+(s.images||[]).length+' 张（最近 60 张）';
+    }).catch(function(){
+      statusEl.textContent='连接中断';statusEl.className='pill';
+    });
+  }
+  tick();setInterval(tick,2000);
+})();
+</script></body></html>"""
+
+
+class PreviewServer:
+    """只读 HTTP 预览服务（ThreadingHTTPServer，守护线程）。"""
+
+    def __init__(self):
+        self.httpd = None
+        self.thread = None
+        self.port = 0
+        self.bind = ""
+        self.lan = ""
+
+    def running(self) -> bool:
+        return bool(self.httpd is not None and self.thread is not None and self.thread.is_alive())
+
+    def start(self, port=None, bind=None) -> dict:
+        if self.running():
+            return self.info()
+        bind = str(bind or PREVIEW_BIND).strip() or "0.0.0.0"
+        port = PREVIEW_PORT if port in (None, "") else int(port)
+        try:
+            httpd = ThreadingHTTPServer((bind, port), _preview_handler())
+        except OSError as e:
+            raise RuntimeError(f"预览页启动失败（{bind}:{port}）：{e}")
+        httpd.daemon_threads = True
+        self.httpd, self.bind = httpd, bind
+        self.port = int(httpd.server_address[1])
+        self.lan = _lan_ip()
+        self.thread = threading.Thread(target=httpd.serve_forever,
+                                       kwargs={"poll_interval": 0.3}, daemon=True)
+        self.thread.start()
+        _log(f"预览页已启动：{self.info()['url']}")
+        return self.info()
+
+    def stop(self) -> bool:
+        if self.httpd is None:
+            return False
+        try:
+            self.httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            self.httpd.server_close()
+        except Exception:
+            pass
+        self.httpd = self.thread = None
+        return True
+
+    def info(self) -> dict:
+        port = self.port or PREVIEW_PORT
+        return {"running": self.running(), "bind": self.bind or PREVIEW_BIND, "port": port,
+                "lan_ip": self.lan or "127.0.0.1",
+                "local_url": f"http://127.0.0.1:{port}/",
+                "url": f"http://{self.lan or '127.0.0.1'}:{port}/"}
+
+
+PREVIEW = PreviewServer()
+atexit.register(lambda: PREVIEW.stop())
+
+
+def _preview_handler():
+    """按请求构造 handler；`/` 页面、`/api/state` 数据、`/img/<name>` 图片，其余 404。"""
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "zhizhu-blender-preview/1.0"
+
+        def log_message(self, fmt, *args):   # 静默：HTTP 访问日志不淹 stderr
+            pass
+
+        def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store"):
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", cache)
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def do_GET(self):
+            try:
+                path = unquote(urlparse(self.path).path)
+                if path in ("/", "/index.html"):
+                    self._send(200, _PREVIEW_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                elif path == "/api/state":
+                    body = json.dumps(_preview_state(), ensure_ascii=False).encode("utf-8")
+                    self._send(200, body, "application/json; charset=utf-8")
+                elif path.startswith("/img/"):
+                    self._image(path[len("/img/"):])
+                else:
+                    self._send(404, b"not found", "text/plain; charset=utf-8")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def _image(self, name: str):
+            # 只允许输出目录下的单层 .png 文件名，杜绝 ../ 穿越
+            if (not name or "/" in name or "\\" in name or name.startswith(".")
+                    or not name.lower().endswith(".png")):
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            p = output_dir() / name
+            try:
+                if not p.is_file():
+                    raise OSError("missing")
+                body = p.read_bytes()
+            except OSError:
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "image/png", cache="public, max-age=86400")
+
+    return Handler
+
+
+# ============================================================================
 # 结果格式化
 # ============================================================================
 
@@ -318,10 +583,14 @@ def tool_status(args):
             return f"{found}\n启动失败：{e}"
     if BRIDGE.alive():
         info = BRIDGE.call("status", {})
+        _remember_scene(BRIDGE.call("scene_info", {"detail": "brief"}))
         state = f"后台实例运行中（版本 {BRIDGE.version or info.get('blender')}，pid={BRIDGE.proc.pid}）\n" + _pretty(info)
     else:
         state = "后台实例未启动（首次建模调用会自动拉起，也可先 blender_start）"
-    return f"{found}\n{state}\n输出目录：{output_dir()}"
+    preview = PREVIEW.info()
+    page = (f"局域网预览页：{preview['url']}（手机同网段可看，2 秒自动刷新）"
+            if preview["running"] else "局域网预览页未启动（preview_start 可开启）")
+    return f"{found}\n{state}\n输出目录：{output_dir()}\n{page}"
 
 
 def tool_start(args):
@@ -336,8 +605,34 @@ def tool_stop(args):
     return "已停止 Blender 后台实例" if was else "后台实例本来就没有运行"
 
 
+def tool_scene_info(args):
+    result = BRIDGE.call("scene_info", args)
+    _remember_scene(result)
+    return _pretty(result)
+
+
+def tool_preview_start(args):
+    info = PREVIEW.start(args.get("port"), args.get("bind"))
+    return ("局域网预览页已启动（只读：不占用、不改动 Blender 场景）。\n"
+            f"本机打开：{info['local_url']}\n"
+            f"局域网打开：{info['url']}\n"
+            f"监听地址：{info['bind']}:{info['port']}\n"
+            f"页面每 2 秒拉取一次 /api/state，显示输出目录（{output_dir()}）里最新的渲染图与场景摘要；"
+            "手机连同一 Wi-Fi 打开局域网地址即可。\n"
+            "若 Windows 首次弹出防火墙提示，请勾选“专用网络”并允许。")
+
+
+def tool_preview_stop(args):
+    return "预览页已关闭" if PREVIEW.stop() else "预览页本来就没有运行"
+
+
 def tool_render(args):
     result = BRIDGE.call("render_image", args, timeout=1800)
+    # 渲染成功后顺带刷新场景摘要：预览页轮询时只读缓存，不再打扰 Blender
+    try:
+        _remember_scene(BRIDGE.call("scene_info", {"detail": "brief"}))
+    except Exception:
+        pass
     text = _pretty(result)
     content = [{"type": "text", "text": text}]
     p = str(result.get("path") or "")
@@ -363,8 +658,10 @@ _HANDLERS = {
     "blender_status": tool_status,
     "blender_start": tool_start,
     "blender_stop": tool_stop,
+    "preview_start": tool_preview_start,
+    "preview_stop": tool_preview_stop,
     "scene_new": _forward("scene_new"),
-    "scene_info": _forward("scene_info"),
+    "scene_info": tool_scene_info,
     "scene_save": _forward("scene_save"),
     "scene_open": _forward("scene_open", 600),
     "object_add": _forward("object_add"),
@@ -412,6 +709,15 @@ TOOLS = [
         "restart=true 会丢弃当前场景重新拉起。",
      "inputSchema": _schema({"restart": {"type": "boolean", "description": "是否强制重启（会丢失未保存场景）"}})},
     {"name": "blender_stop", "description": "停止常驻 Blender 后台实例并释放内存。",
+     "inputSchema": _schema({})},
+    {"name": "preview_start", "description":
+        "开启局域网预览页（只读 HTTP 服务）：手机/同网段电脑用浏览器打开返回的地址，"
+        "即可每 2 秒看到输出目录里最新的渲染图和场景摘要（对象/三角面/材质/引擎/分辨率）。"
+        "不占用 Blender、不改场景；默认监听 0.0.0.0:8787。",
+     "inputSchema": _schema({
+         "port": {"type": "integer", "description": "端口，默认 8787（0 表示系统自动分配）"},
+         "bind": {"type": "string", "description": "监听地址，默认 0.0.0.0（局域网可访问）"}})},
+    {"name": "preview_stop", "description": "关闭局域网预览页（不影响 Blender 与已渲染的图）。",
      "inputSchema": _schema({})},
     {"name": "scene_new", "description":
         "新建空场景并设置世界背景（默认纯黑）与单位比例。建模任务的第一步。",

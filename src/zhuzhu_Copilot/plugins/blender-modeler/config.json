@@ -3,5 +3,7 @@
   "blender_output_dir": "",
   "blender_render_engine": "CYCLES",
   "blender_render_samples": 32,
-  "blender_idle_timeout": 1800
+  "blender_idle_timeout": 1800,
+  "blender_preview_port": 8787,
+  "blender_preview_bind": "0.0.0.0"
 }
