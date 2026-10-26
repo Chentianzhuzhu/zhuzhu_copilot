@@ -2328,6 +2328,15 @@ _EFFICIENT_PROMPT_ZH = (
     "（例如浏览器控制、文档生成、子 Agent、技能与插件），一律忽略那些提法，"
     "改用上面列出的工具达成同样的目标。")
 
+#: 高效模式下「用户显式调用技能/插件」的例外说明。
+#: 上面的高效模式段落写死了「不要调用插件/技能工具」，而手动 /技能名 /插件名 时引擎
+#: 确实会把这些工具与规范一并提供 —— 不补这一段，模型会按上文自我否定，规范等于白给。
+_EFFICIENT_MANUAL_NOTICE_ZH = (
+    "【高效模式·手动调用例外】用户本轮显式点名了技能/插件，其规范与工具已随本请求"
+    "一并提供。\n"
+    "这些工具是本任务的主要执行入口：按注入的规范直接调用即可，不受上文「最小工具集」"
+    "限制；也不得用其它工具替代、不得跳过流程，或只描述而不真正调用。")
+
 
 def _base_prompt_parts(agent: dict) -> list:
     """语言指令 + 人设 + 自定义系统提示词 + 严格规则（身份与纪律骨架）。
@@ -2566,6 +2575,15 @@ def ensure_efficient_notice(prompt: str) -> str:
     if "【高效模式】" in text or "[Efficient mode]" in text:
         return text
     return text + "\n\n" + efficient_notice()
+
+
+def efficient_manual_notice() -> str:
+    """高效模式下「用户显式调用技能/插件」的例外说明（语言随提示词语言）。
+
+    引擎只在 ``_manual_plugins`` / 手动技能非空时追加：此时高效模式仍按最小工具集
+    执行，但被点名的插件 MCP 工具与其规范已放行，必须明确告诉模型可以且必须用它们。
+    """
+    return _tp("prompt.block.efficient_manual", _EFFICIENT_MANUAL_NOTICE_ZH)
 
 
 def _efficient_prompt(agent: dict, text_only: bool = False,

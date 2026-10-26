@@ -159,3 +159,86 @@ def test_preview_prompt_replaces_local_keyword_decision():
     assert not hasattr(ap, "_UI_VISUAL_KEYWORDS"), \
         "本地词库判定必须移除（改由模型按任务内容决策）"
     assert not hasattr(ap.AgentPanel, "_maybe_ask_visual_browser")
+
+
+# ---------- E. 高效模式：手动调用必须照常生效 ----------
+# 用户反馈：「agent 插件配置完成后调用此插件，无法加载 skill 规范和 MCP 工具」。
+# 根因：高效模式（efficient_mode）把技能/插件规范与全部 MCP 工具一并关掉，连用户
+# 显式 /插件名 也不例外 —— 界面显示「已调用」，上游却既没规范也没工具。
+class _StubMCP:
+    """只实现引擎用到的工具表接口，按「工具 → 服务器」真实过滤（不启动真进程）。"""
+
+    _OWN = {"weather_query": f"{PLUGIN_NAME}-mcp"}
+    _OTHER = {"unrelated_tool": "other-mcp"}
+
+    def tool_schemas_for(self, allowed):
+        if not allowed:
+            return []
+        return [{"type": "function", "function": {"name": n, "parameters": {}}}
+                for mapping in (self._OWN, self._OTHER)
+                for n, srv in mapping.items() if srv in allowed]
+
+    def server_for_tool(self, name):
+        return self._OWN.get(name) or self._OTHER.get(name) or ""
+
+
+def _efficient_engine(monkeypatch, allow_servers=True):
+    """高效模式引擎 + 桩 MCP；工作流隔离由 allow_servers 控制。"""
+    monkeypatch.setattr(
+        agent_engine.agent_workflow, "allowed_mcp_servers",
+        lambda *a, **k: ({f"{PLUGIN_NAME}-mcp"} if allow_servers else set()))
+    return agent_engine.AgentEngine(object(), efficient_mode=True,
+                                    mcp_manager=_StubMCP())
+
+
+def test_efficient_mode_still_injects_manual_plugin_spec(iso, monkeypatch):
+    _make_plugin(iso)
+    monkeypatch.setattr(agent_skills, "load_skills", lambda *a, **k: [])
+    eng = _Eng()
+    eng.efficient_mode = True
+    _sync(eng, [], [PLUGIN_NAME])
+    assert len(eng._messages) == 2, "高效模式下手动调用的插件规范必须注入"
+    body = eng._messages[-1]["content"]
+    assert "插件规范" in body and SKILL_BODY in body
+
+
+def test_efficient_mode_skips_auto_skills(iso, monkeypatch):
+    monkeypatch.setattr(agent_skills, "load_skills", lambda *a, **k: [
+        {"name": "auto-one", "description": "自动匹配技能", "instruction": "按流程执行。"}])
+    eng = _Eng()
+    eng.efficient_mode = True
+    eng._auto_skills = ["auto-one"]
+    _sync(eng, [], [])
+    assert len(eng._messages) == 1, "高效模式仍应关闭自动匹配的技能注入"
+
+
+def test_efficient_mode_allows_only_manual_plugin_tools(iso, monkeypatch):
+    _make_plugin(iso)
+    monkeypatch.setattr(agent_skills, "load_skills", lambda *a, **k: [])
+    eng = _efficient_engine(monkeypatch)
+    baseline = {t["function"]["name"] for t in eng._all_tools()}
+    assert "read_file" in baseline, "高效模式最小工具集缺失"
+    assert "weather_query" not in baseline, "未调用插件时不得放行插件工具"
+
+    eng._manual_plugins = [PLUGIN_NAME]
+    got = {t["function"]["name"] for t in eng._all_tools()}
+    assert "weather_query" in got, "手动调用插件后必须放行它的 MCP 工具"
+    assert "unrelated_tool" not in got, "不得顺带放行其它 MCP 服务器的工具"
+
+
+def test_efficient_mode_respects_workflow_isolation(iso, monkeypatch):
+    _make_plugin(iso)
+    eng = _efficient_engine(monkeypatch, allow_servers=False)
+    eng._manual_plugins = [PLUGIN_NAME]
+    names = {t["function"]["name"] for t in eng._all_tools()}
+    assert "weather_query" not in names, "工作流隔离优先：未绑定当前工作流的服务器不放行"
+
+
+def test_system_prompt_explains_manual_exception(iso, monkeypatch):
+    _make_plugin(iso)
+    eng = _efficient_engine(monkeypatch)
+    assert "手动调用例外" not in eng._system_prompt(""), \
+        "没有手动调用时不该出现例外说明"
+    eng._manual_plugins = [PLUGIN_NAME]
+    assert "手动调用例外" in eng._system_prompt(""), \
+        "高效模式的最小工具集说明与放行工具自相矛盾，模型会拒绝调用"

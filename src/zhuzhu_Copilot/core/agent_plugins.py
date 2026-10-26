@@ -404,6 +404,25 @@ def plugin_skill_names_of(names: list) -> list:
     return out
 
 
+def plugin_mcp_servers_of(names: list) -> list:
+    """这些插件登记的 MCP 服务器名（引擎据此放行其工具）。
+
+    服务器名固定为 ``{插件名}-mcp``，以 plugin.json 的 mcp_name 为准；无 MCP 构件的
+    插件不返回名字。命名约定只在这里定义（MCP_SUFFIX），调用方不要自行拼串。
+    """
+    idx = plugin_index()["plugins"]
+    out = []
+    for raw in names or []:
+        n = str(raw or "").strip()
+        meta = idx.get(n) or {}
+        if not meta or not meta.get("has_mcp"):
+            continue
+        srv = str(meta.get("mcp_name") or f"{n}{MCP_SUFFIX}").strip()
+        if srv and srv not in out:
+            out.append(srv)
+    return out
+
+
 def plugin_skill_md(name: str) -> str:
     """插件自带 SKILL.md 正文（无则空串）"""
     try:

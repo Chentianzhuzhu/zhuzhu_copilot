@@ -71,7 +71,8 @@ def test_engine_drops_stale_workflow_binding(tmp_path, monkeypatch):
     """引擎在系统提示阶段发现工作流已不存在时，须清除绑定并回退默认人设。"""
     _tmp_root(tmp_path, monkeypatch)
     from zhuzhu_Copilot.core import agent_engine
-    prompt = agent_engine.AgentEngine._system_prompt
+    # 提示词构建主体在 _system_prompt_base（_system_prompt 只负责追加高效模式例外段）
+    prompt = agent_engine.AgentEngine._system_prompt_base
     src = inspect.getsource(prompt)
     assert "is_workflow(wf)" in src, "派生工作流人设前必须校验工作流存在"
     assert "self.workflow = None" in src, "陈旧绑定须被清除"

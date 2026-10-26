@@ -42,6 +42,7 @@ def test_en_prompt_has_no_chinese_in_system_prompt():
     eng.memory_enabled = True
     eng.direct = False
     eng.allow_subagents = True
+    eng.efficient_mode = False   # 引擎真实属性：提示词构建必读
     prompt = eng._system_prompt("")
     assert prompt.strip(), "系统提示词不应为空"
     hits = [ln.strip() for ln in prompt.splitlines() if CJK.search(ln)]
@@ -141,6 +142,7 @@ def test_en_prompt_declares_output_language_on_every_branch():
         e = agent_engine.AgentEngine.__new__(agent_engine.AgentEngine)
         e.persona = ""; e.workflow = None; e.text_only = False
         e.memory_enabled = True; e.direct = False; e.allow_subagents = True
+        e.efficient_mode = False   # 引擎真实属性：提示词构建必读，伪造对象也要补齐
         for k, v in kw.items():
             setattr(e, k, v)
         return e
@@ -176,6 +178,7 @@ def _mk_engine(**kw):
     e = agent_engine.AgentEngine.__new__(agent_engine.AgentEngine)
     e.persona = ""; e.workflow = None; e.text_only = False
     e.memory_enabled = True; e.direct = False; e.allow_subagents = True
+    e.efficient_mode = False   # 引擎真实属性：提示词构建必读，伪造对象也要补齐
     for k, v in kw.items():
         setattr(e, k, v)
     return e

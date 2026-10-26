@@ -5268,6 +5268,11 @@ def _create_skill(name: str, description: str, instruction: str) -> dict:
     return ({"text": msg, "images": [], "reload_extensions": True} if ok else _blocked(msg))
 
 
+#: use_skill 未命中时回显的「带简介」技能数；超出部分只列名字（保证不隐藏任何技能，
+#: 又不会让简介把上下文撑大）。技能库扩容后无需改这里。
+_SKILL_ECHO_DESC_MAX = 20
+
+
 def _use_skill(name: str) -> dict:
     """按名调用技能：把「说明 + 规范正文」直接返回给模型，并通知引擎把该技能
     纳入本任务（`__activate_skill__` 标志，由引擎消费后并入 _task_skills /
@@ -5307,8 +5312,13 @@ def _use_skill(name: str) -> dict:
                 if name in n or n in name
                 or any(w and w in n for w in _slugify_skill_name(name, "").split("-"))]
         tip = (f"\n近似技能：{'、'.join(near[:5])}" if near else "")
-        avail = "\n".join(f"- {n}：{(by_name[n].get('description') or '')[:40]}"
-                          for n in list(by_name)[:20])
+        # 回显全部技能名：只列前 N 个会把后面的技能「藏掉」，模型据此认定「没有这个技能」
+        # 而放弃（技能库超过 N 个时必现）。简介只给前 N 个以控 token，其余只列名。
+        names = list(by_name)
+        lines = [f"- {n}：{(by_name[n].get('description') or '')[:40]}"
+                 for n in names[:_SKILL_ECHO_DESC_MAX]]
+        lines += [f"- {n}" for n in names[_SKILL_ECHO_DESC_MAX:]]
+        avail = "\n".join(lines)
         return _blocked(f"技能「{name}」不存在。{tip}\n当前可用技能：\n{avail}")
     body = agent_skills.skill_instructions([name])
     if not body.strip():
