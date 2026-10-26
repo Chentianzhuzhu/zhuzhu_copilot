@@ -1,0 +1,10 @@
+{
+  "name": "blender-modeler",
+  "kind": "combined",
+  "enabled": true,
+  "description": "Blender 低模建模插件：AI 真实驱动本机 Blender（headless 常驻后台实例 + 本地 socket 调用 bpy，无任何 mock），产出高质量低模——Q 版桌宠（猫/熊/兔）与电路板实物图（阻焊板、金走线/焊盘、芯片引脚、丝印、开孔）；提供基础 PBR 材质（金属度/粗糙度/自发光/透明度）、三点布光与深色棚拍、自动取景、Cycles/EEVEE 渲染并把 PNG 直接返回给模型看图校对；支持 .blend 保存与 glb/fbx/obj/stl 导出。建模是多步迭代：加体块 → 倒角 → 材质 → 打光 → 渲染 → 看图修，所以后台进程常驻以保留场景与渲染缓存。模型/模板全部数据驱动（presets/*.json），调色板与风格可覆盖。",
+  "created_at": "2026-10-27 00:00:00",
+  "revision": 1,
+  "mcp_name": "blender-modeler-mcp",
+  "skill_name": "blender-modeler"
+}

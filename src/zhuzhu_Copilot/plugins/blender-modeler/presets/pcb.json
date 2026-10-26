@@ -1,0 +1,74 @@
+{
+  "name": "pcb",
+  "description": "低面数电路板实物模型：深绿阻焊板 + 金色走线/焊盘 + 芯片/电容/电阻/连接器 + 白色丝印，挂 PCB_Root 下便于整体摆位。",
+  "root": "PCB_Root",
+  "scale": 1.0,
+  "params": {
+    "size": "整体缩放倍数，默认 1.0",
+    "colors": "覆盖调色板，例如 {\"board\":\"#123D2B\",\"gold\":\"#C8A45B\"}"
+  },
+  "palette": {
+    "board": "#123D2B",
+    "gold": "#C8A45B",
+    "chip": "#14171C",
+    "chipmark": "#3A4048",
+    "plastic": "#20242B",
+    "plastic_alt": "#2E5C8A",
+    "solder": "#B8BEC6",
+    "silk": "#E8ECF2"
+  },
+  "materials": {
+    "board": {"roughness": 0.52},
+    "gold": {"metallic": 1.0, "roughness": 0.28},
+    "chip": {"roughness": 0.34},
+    "chipmark": {"metallic": 0.4, "roughness": 0.3},
+    "plastic": {"roughness": 0.45},
+    "plastic_alt": {"roughness": 0.5},
+    "solder": {"metallic": 0.9, "roughness": 0.35},
+    "silk": {"roughness": 0.75}
+  },
+  "parts": [
+    {"name": "board", "kind": "cube", "size": 4.4, "loc": [0, 0, 0.04], "scale": [1, 0.64, 0.018], "bevel": {"width": 0.05, "segments": 3}, "mat": "board"},
+
+    {"name": "hole_fl", "kind": "cylinder", "size": 0.18, "loc": [-2.0, -1.24, 0.04], "segments": 16, "boolean": {"target": "board", "op": "DIFFERENCE"}},
+    {"name": "hole_fr", "kind": "cylinder", "size": 0.18, "loc": [2.0, -1.24, 0.04], "segments": 16, "boolean": {"target": "board", "op": "DIFFERENCE"}},
+    {"name": "hole_bl", "kind": "cylinder", "size": 0.18, "loc": [-2.0, 1.24, 0.04], "segments": 16, "boolean": {"target": "board", "op": "DIFFERENCE"}},
+    {"name": "hole_br", "kind": "cylinder", "size": 0.18, "loc": [2.0, 1.24, 0.04], "segments": 16, "boolean": {"target": "board", "op": "DIFFERENCE"}},
+
+    {"name": "pad_fl", "kind": "torus", "size": 0.30, "loc": [-2.0, -1.24, 0.086], "segments": 20, "mat": "gold"},
+    {"name": "pad_fr", "kind": "torus", "size": 0.30, "loc": [2.0, -1.24, 0.086], "segments": 20, "mat": "gold"},
+    {"name": "pad_bl", "kind": "torus", "size": 0.30, "loc": [-2.0, 1.24, 0.086], "segments": 20, "mat": "gold"},
+    {"name": "pad_br", "kind": "torus", "size": 0.30, "loc": [2.0, 1.24, 0.086], "segments": 20, "mat": "gold"},
+
+    {"name": "u1", "kind": "cube", "size": 0.95, "loc": [-0.55, 0.40, 0.14], "scale": [1, 0.82, 0.12], "bevel": {"width": 0.015, "segments": 2}, "mat": "chip"},
+    {"name": "u1_dot", "kind": "cylinder", "size": 0.09, "loc": [-0.90, 0.70, 0.205], "segments": 12, "mat": "chipmark"},
+    {"name": "u1_pin_a", "kind": "cube", "size": 0.12, "loc": [-1.00, -0.04, 0.12], "scale": [0.45, 1.5, 0.35], "repeat": {"count": 8, "step": [0.125, 0, 0]}, "mat": "solder"},
+    {"name": "u1_pin_b", "kind": "cube", "size": 0.12, "loc": [-1.00, 0.84, 0.12], "scale": [0.45, 1.5, 0.35], "repeat": {"count": 8, "step": [0.125, 0, 0]}, "mat": "solder"},
+
+    {"name": "u2", "kind": "cube", "size": 0.62, "loc": [0.95, -0.55, 0.12], "scale": [1, 0.9, 0.10], "bevel": {"width": 0.012, "segments": 2}, "mat": "chip"},
+
+    {"name": "c1", "kind": "cylinder", "size": 0.24, "loc": [0.30, -0.55, 0.23], "scale": [1, 1, 1.2], "segments": 16, "mat": "plastic"},
+    {"name": "c1_top", "kind": "cylinder", "size": 0.20, "loc": [0.30, -0.55, 0.39], "scale": [1, 1, 0.12], "segments": 16, "mat": "solder"},
+    {"name": "c2", "kind": "cylinder", "size": 0.24, "loc": [0.30, -1.02, 0.23], "scale": [1, 1, 1.2], "segments": 16, "mat": "plastic"},
+    {"name": "c2_top", "kind": "cylinder", "size": 0.20, "loc": [0.30, -1.02, 0.39], "scale": [1, 1, 0.12], "segments": 16, "mat": "solder"},
+
+    {"name": "r1", "kind": "cube", "size": 0.28, "loc": [-1.70, -0.95, 0.11], "scale": [1.4, 0.5, 0.35], "mat": "plastic_alt"},
+    {"name": "r2", "kind": "cube", "size": 0.28, "loc": [-1.70, -0.60, 0.11], "scale": [1.4, 0.5, 0.35], "mat": "plastic_alt"},
+
+    {"name": "j1", "kind": "cube", "size": 0.75, "loc": [-1.65, 0.85, 0.29], "scale": [1, 0.55, 0.55], "bevel": {"width": 0.01, "segments": 2}, "mat": "plastic"},
+    {"name": "j1_pin", "kind": "cube", "size": 0.12, "loc": [-1.85, 0.47, 0.18], "scale": [0.4, 1.2, 0.3], "repeat": {"count": 5, "step": [0.14, 0, 0]}, "mat": "gold"},
+
+    {"name": "usb", "kind": "cube", "size": 0.55, "loc": [1.70, -0.95, 0.30], "scale": [1, 0.75, 0.8], "bevel": {"width": 0.01, "segments": 2}, "mat": "solder"},
+
+    {"name": "trace_h", "kind": "cube", "size": 1.8, "loc": [0.40, 0.98, 0.086], "scale": [1, 0.012, 0.004], "repeat": {"count": 3, "step": [0, -0.13, 0]}, "mat": "gold"},
+    {"name": "trace_v", "kind": "cube", "size": 1.2, "loc": [1.50, 0.20, 0.086], "scale": [0.012, 1, 0.004], "repeat": {"count": 2, "step": [0.12, 0, 0]}, "mat": "gold"},
+
+    {"name": "silk_u1", "kind": "text", "body": "U1", "size": 0.15, "loc": [-0.55, -0.22, 0.088], "mat": "silk"},
+    {"name": "silk_u2", "kind": "text", "body": "U2", "size": 0.15, "loc": [0.66, -0.16, 0.088], "mat": "silk"},
+    {"name": "silk_c1", "kind": "text", "body": "C1", "size": 0.13, "loc": [0.06, -0.55, 0.088], "mat": "silk"},
+    {"name": "silk_c2", "kind": "text", "body": "C2", "size": 0.13, "loc": [0.06, -1.02, 0.088], "mat": "silk"},
+    {"name": "silk_r1", "kind": "text", "body": "R1", "size": 0.13, "loc": [-1.95, -0.40, 0.088], "mat": "silk"},
+    {"name": "silk_j1", "kind": "text", "body": "J1", "size": 0.13, "loc": [-1.95, 0.55, 0.088], "mat": "silk"},
+    {"name": "silk_title", "kind": "text", "body": "ZHIZHU", "size": 0.12, "loc": [0.55, 1.22, 0.088], "mat": "silk"}
+  ]
+}
