@@ -182,10 +182,16 @@ class _StdioTransport:
             except Exception as e:
                 raise McpError(f"MCP 发送失败: {e}")
 
+    #: 允许自动重试的方法：全部是**只读/幂等**的协议请求。
+    #: tools/call 绝不能重试 —— 请求发出后写管道失败并不代表服务端没执行，
+    #: 重试会让 click / type_text 这类动作**执行两次**（用户侧就是「点了两下」）。
+    _RETRY_SAFE = frozenset({"initialize", "tools/list", "ping", "notifications/initialized"})
+
     def call(self, method: str, params: dict, timeout=None) -> dict:
         """带一次重试的请求：管道抖动 / 子进程刚就绪时不该直接失败。
 
-        连接已断开不重试（重试没意义）—— 直接抛给上层，让 McpManager 自愈重连。
+        只对幂等方法重试（见 `_RETRY_SAFE`）；连接已断开、超时、以及**工具调用**
+        一律不重试：重试要么再排一次队把界面搅乱，要么让动作执行两次。
         工具调用默认不设超时（见 `_tool_timeout`）。
         """
         last = None
@@ -194,8 +200,8 @@ class _StdioTransport:
                 return self.request(method, params, timeout=timeout)
             except McpError as e:
                 last = e
-                # 超时/已断开都不重试：重试会再排一次队，把界面状态搅得更乱
-                if "已断开" in str(e) or "超时" in str(e) or attempt:
+                if (attempt or method not in self._RETRY_SAFE
+                        or "已断开" in str(e) or "超时" in str(e)):
                     raise
                 time.sleep(0.12)
         raise last

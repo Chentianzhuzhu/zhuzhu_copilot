@@ -26260,6 +26260,15 @@ class AgentPanel(QDialog):
     def _init_mcp(self):
         try:
             self._mcp.close_all()   # 重连前关闭旧连接
+            # 连接前先把随包插件同步到本地（revision 更高才覆盖）：
+            # 不在这里做，「应用已修复但跑的是旧插件代码」会长期存在 —— 历史教训：
+            # 电脑操控插件的死锁修复（SendMessageTimeoutW / SWP_ASYNCWINDOWPOS）早已
+            # 进随包目录，但本地副本 revision 没变、从未同步，用户侧一直是全工具超时。
+            try:
+                from zhuzhu_Copilot.core import agent_plugins
+                agent_plugins.ensure_shipped_plugins()
+            except Exception:
+                pass
             # 这里**必须**用默认过滤（不含已停用）：停用的服务器连进程都不该起，
             # 更不该把工具暴露给上游。设置页读全量是为了能改回启用。
             servers = agent_skills.load_mcp_servers()

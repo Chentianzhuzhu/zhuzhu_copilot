@@ -54,6 +54,10 @@ from zhuzhu_Copilot.core import agent_runtime, agent_skills
 
 PLUGINS_DIR = app_identity.data_root() / "plugins"
 
+
+#: 插件目录里的用户数据文件：随包升级时**不覆盖**（配置由用户在设置页填写）
+_USER_DATA_FILE = "config.json"
+
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
 
 
@@ -122,13 +126,17 @@ def _update_shipped_plugin(src: Path, dst: Path) -> bool:
     覆盖随包提供的文件，不碰用户自己加的文件；再删除 plugin.json 的
     obsolete_files 里声明的历史文件（例如已并入 server.py 的 uia.py），
     并清掉 __pycache__，避免旧模块的字节码继续被加载。
+
+    **config.json 是用户数据，永不被覆盖**：它是插件配置（含密钥/路径），
+    随包同名文件只是首次安装时的默认值。历史上按 revision 覆盖时会把用户
+    填好的配置清空 —— 升级插件不该让用户重新配置一遍。
     """
     new, old = _plugin_meta(src), _plugin_meta(dst)
     if _plugin_revision(new) <= _plugin_revision(old):
         return False
     changed = False
     for f in src.iterdir():
-        if not f.is_file():
+        if not f.is_file() or f.name == _USER_DATA_FILE:
             continue
         try:
             shutil.copy2(f, dst / f.name)

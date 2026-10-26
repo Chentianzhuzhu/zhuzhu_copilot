@@ -27,6 +27,7 @@ import atexit
 import base64
 import json
 import os
+import select
 import shutil
 import socket
 import subprocess
@@ -50,11 +51,38 @@ IDLE_TIMEOUT = float(os.environ.get("BLENDER_IDLE_TIMEOUT") or 1800)
 DEFAULT_ENGINE = (os.environ.get("BLENDER_RENDER_ENGINE") or "CYCLES").upper()
 DEFAULT_SAMPLES = int(os.environ.get("BLENDER_RENDER_SAMPLES") or 32)
 
+#: 生命周期日志（拉起/退出/重启原因）：应用侧把 MCP 子进程 stderr 丢弃，
+#: 没有这份日志就完全无法回答「Blender 为什么又重启了」。只记事件、单文件滚动。
+RUNTIME_LOG = PLUGIN_DIR / "runtime.log"
+_RUNTIME_LOG_MAX = 192 * 1024
+_log_written = -1      # 已写入字节数；-1 = 尚未初始化（首次追加前 stat 一次）
+
 
 def _log(text: str) -> None:
+    """写 stderr（应用会丢弃）+ 追加到 runtime.log（滚动保留上一段）。
+
+    用自记字节数代替每次 stat：Blender 渲染时 stderr 会连续输出进度行，
+    逐行 stat 是白花的 syscall，而这里只需要「超过上限就滚动」。
+    """
+    global _log_written
     try:
         sys.stderr.write(f"[{APP_NAME}] {text}\n")
         sys.stderr.flush()
+    except Exception:
+        pass
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n"
+    try:
+        if _log_written < 0:
+            _log_written = RUNTIME_LOG.stat().st_size if RUNTIME_LOG.is_file() else 0
+        if _log_written > _RUNTIME_LOG_MAX:
+            try:
+                os.replace(RUNTIME_LOG, RUNTIME_LOG.with_suffix(".log.1"))
+            except OSError:
+                pass
+            _log_written = 0
+        with RUNTIME_LOG.open("a", encoding="utf-8") as f:
+            f.write(line)
+        _log_written += len(line.encode("utf-8"))
     except Exception:
         pass
 
@@ -132,25 +160,41 @@ class BlenderBridge:
     def __init__(self):
         self.proc = None
         self.conn = None
-        self.rf = None
-        self.wf = None
         self.listen = None
         self.expect_pid = None
         self._lock = threading.RLock()
         self._id = 0
         self._stderr = deque(maxlen=80)
         self._stdout = deque(maxlen=40)
+        self._buf = bytearray()      # 行协议缓冲：跨 recv 保留半行，绝不丢数据
         self.version = ""
+        self.exit_code = None        # 上一次实例的退出码（None=正常/by design 停止）
+        self.last_reason = ""        # 上一次实例消失的原因（供 status / 重启日志说明）
 
     # ---------- 进程生命周期 ----------
 
     def alive(self) -> bool:
-        return bool(self.proc and self.proc.poll() is None and self.conn)
+        if not (self.proc and self.conn):
+            return False
+        if self.proc.poll() is None:
+            return True
+        # 进程已退出：留下退出码与原因，下一次 start() 才说得清「为什么重启」
+        if self.exit_code is None:
+            self.exit_code = self.proc.returncode
+            self.last_reason = f"Blender 进程已退出（退出码 {self.exit_code}）"
+            _log(f"⚠ {self.last_reason}")
+        return False
 
     def start(self, restart: bool = False) -> dict:
         with self._lock:
             if self.alive() and not restart:
                 return {"version": self.version, "pid": self.proc.pid, "restarted": False}
+            # 记录「上一实例为什么没了」：用户看到的「频繁重启」绝大多数是
+            # 上一实例异常退出后这里被静默拉起，不留痕就无从排查。
+            prev = self.last_reason or ""
+            if self.proc is not None or self.conn is not None:
+                _log(f"重建 Blender 实例（重启={restart}，上次状态：{prev or '仍在运行/未启动'}"
+                     f"，退出码={self.exit_code}）")
             self.stop()
             exe = find_blender()
             if not HOST_SCRIPT.is_file():
@@ -183,14 +227,22 @@ class BlenderBridge:
 
             try:
                 self.conn, _ = self.listen.accept()
-                self.conn.settimeout(30)
-                self.rf = self.conn.makefile("rb")
-                self.wf = self.conn.makefile("wb")
-                hello = json.loads(self.rf.readline().decode("utf-8", "replace") or "{}")
+                # 全阻塞 + 自己维护行缓冲：**绝不**用 `conn.settimeout()` 配
+                # `makefile().readline()`。官方文档明确警告：套接字超时后文件对象
+                # 的内部缓冲可能处于不一致状态，半行数据会被丢掉 —— 表现为 Blender
+                # 端读到 EOF/报错后退出，下一次调用又被静默拉起，即用户看到的
+                # 「Blender 实例频繁重启」。读超时统一由 select() 控制。
+                self.conn.settimeout(None)
+                self._buf.clear()
+                kind, hello_line = self._read_msg(START_TIMEOUT)
+                if kind == "eof":
+                    raise RuntimeError("Blender 进程在握手前就关闭了连接")
+                hello = json.loads(hello_line.decode("utf-8", "replace") or "{}")
                 if not hello.get("hello"):
                     raise RuntimeError("Blender 服务握手失败（未收到 hello）")
                 self.version = str(hello.get("blender") or "")
-                self.conn.settimeout(None)
+                self.exit_code = None
+                self.last_reason = ""
                 _log(f"Blender 就绪：{self.version}（pid={self.proc.pid}, port={port}）")
                 return {"version": self.version, "pid": self.proc.pid, "restarted": True}
             except Exception as e:
@@ -201,12 +253,12 @@ class BlenderBridge:
                     f"可执行文件：{exe}\n"
                     f"--- Blender 输出（末尾）---\n{tail or '（无输出）'}")
 
-    def stop(self) -> None:
-        for f in (self.rf, self.wf):
-            try:
-                f.close()
-            except Exception:
-                pass
+    def stop(self, reason: str = "") -> None:
+        """关闭实例。reason 只用于日志（写进 runtime.log，便于回溯重启原因）。"""
+        if reason:
+            self.last_reason = reason
+        if self.proc is not None and reason:
+            _log(f"停止 Blender 实例：{reason}")
         try:
             self.conn.close()
         except Exception:
@@ -215,7 +267,8 @@ class BlenderBridge:
             self.listen.close()
         except Exception:
             pass
-        self.conn = self.rf = self.wf = self.listen = None
+        self.conn = self.listen = None
+        self._buf.clear()
         p = self.proc
         self.proc = None
         if p is None:
@@ -227,6 +280,15 @@ class BlenderBridge:
                     p.wait(timeout=8)
                 except subprocess.TimeoutExpired:
                     p.kill()
+                    try:
+                        p.wait(timeout=4)
+                    except subprocess.TimeoutExpired:
+                        pass
+        except Exception:
+            pass
+        try:
+            if p.returncode is not None:
+                self.exit_code = int(p.returncode)
         except Exception:
             pass
         self.version = ""
@@ -249,6 +311,85 @@ class BlenderBridge:
             except Exception:
                 pass
 
+    # ---------- 行协议（select 控超时，缓冲不丢半行） ----------
+
+    #: socket.recv 单次读取上限
+    _RECV_CHUNK = 65536
+    #: 单条响应上限：渲染结果含 base64 PNG，故放宽，但必须有界（防内存失控）
+    _LINE_LIMIT = 64 * 1024 * 1024
+
+    def _read_line(self, timeout: float = None) -> tuple:
+        """读一行 → (状态, 内容)：("line", 数据) / ("blank", b"") / ("eof", b"")。
+
+        超时抛 TimeoutError。**空行与 EOF 必须区分**：只返回 bytes 时，空行会等于
+        b"" 被误判成「进程已退出」，凭空触发一次重启。
+        为什么不用 `makefile().readline()` + socket 超时：见 start() 里的说明 ——
+        超时会把文件对象的缓冲弄坏，半行被丢 → 对端读到 EOF → Blender 退出重启。
+        """
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl >= 0:
+                line = bytes(self._buf[:nl])
+                del self._buf[:nl + 1]
+                return ("line", line) if line else ("blank", b"")
+            if len(self._buf) > self._LINE_LIMIT:
+                raise RuntimeError("Blender 响应超过单条上限，已中断（渲染结果可能过大）")
+            wait = 1.0
+            if deadline is not None:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    raise TimeoutError()
+                wait = min(remain, 1.0)
+            try:
+                ready, _, _ = select.select([self.conn], [], [], wait)
+            except (OSError, ValueError):
+                return ("eof", b"")
+            if not ready:
+                continue
+            try:
+                chunk = self.conn.recv(self._RECV_CHUNK)
+            except OSError:
+                return ("eof", b"")
+            if not chunk:
+                return ("eof", b"")
+            self._buf.extend(chunk)
+
+    def _read_msg(self, timeout: float = None) -> tuple:
+        """读一条**非空** JSON 行 → (状态, 内容)，状态为 "line" / "eof"。
+
+        空行（对端 flush 产生的空帧）直接跳过：它既不是响应也不是 EOF。
+        """
+        while True:
+            kind, line = self._read_line(timeout)
+            if kind == "eof":
+                return ("eof", b"")
+            if kind == "line" and line.strip():
+                return ("line", line)
+
+    def _send_all(self, payload: bytes, timeout: float = 120.0) -> bool:
+        """整包发送（select 控写就绪）：对端失联时不至于永久阻塞。"""
+        view = memoryview(payload)
+        deadline = time.monotonic() + float(timeout)
+        while view:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                return False
+            try:
+                _, ready, _ = select.select([], [self.conn], [], min(remain, 1.0))
+            except (OSError, ValueError):
+                return False
+            if not ready:
+                continue
+            try:
+                n = self.conn.send(view)
+            except OSError:
+                return False
+            if n <= 0:
+                return False
+            view = view[n:]
+        return True
+
     # ---------- 请求 ----------
 
     def call(self, method: str, params: dict, timeout: float = 600) -> dict:
@@ -259,29 +400,34 @@ class BlenderBridge:
             rid = self._id
             payload = json.dumps({"id": rid, "method": method, "params": params},
                                  ensure_ascii=False).encode("utf-8") + b"\n"
+            if not self._send_all(payload):
+                self.stop("请求发送失败（对端已断开）")
+                raise RuntimeError(
+                    f"与 Blender 的连接已断开（{method} 未能发出），实例已停止。\n"
+                    f"{self._tail()}")
             try:
-                self.conn.settimeout(timeout)
-                self.wf.write(payload)
-                self.wf.flush()
-                line = self.rf.readline()
-            except socket.timeout:
-                self.stop()
+                kind, line = self._read_msg(timeout)
+            except TimeoutError:
+                self.stop(f"{method} 超过 {timeout:.0f}s 未返回")
                 raise RuntimeError(
                     f"Blender 在 {timeout:.0f}s 内没有返回（操作可能过重）。后台实例已停止，"
                     f"请降低渲染分辨率/采样后重试，或先 blender_start 重新拉起。")
-            except (OSError, ValueError) as e:
-                tail = "\n".join(list(self._stderr)[-8:])
-                self.stop()
-                raise RuntimeError(f"与 Blender 的连接中断：{e}\n{tail}")
-            if not line:
-                tail = "\n".join(list(self._stderr)[-8:])
-                self.stop()
-                raise RuntimeError(f"Blender 进程已退出（场景丢失）。\n{tail}")
+            except RuntimeError:
+                self.stop("响应超长")
+                raise
+            if kind == "eof":
+                code = self.proc.poll() if self.proc is not None else None
+                self.stop(f"{method} 等待响应时对端关闭（退出码 {code}）")
+                raise RuntimeError(
+                    f"Blender 进程已退出（场景丢失，退出码 {code}）。\n{self._tail()}")
             resp = json.loads(line.decode("utf-8", "replace"))
             if not resp.get("ok"):
                 raise RuntimeError(str(resp.get("error") or "Blender 未知错误"))
             result = resp.get("result")
             return result if isinstance(result, dict) else {"result": result}
+
+    def _tail(self, n: int = 8) -> str:
+        return "\n".join(list(self._stderr)[-n:])
 
 
 BRIDGE = BlenderBridge()
@@ -587,6 +733,9 @@ def tool_status(args):
         state = f"后台实例运行中（版本 {BRIDGE.version or info.get('blender')}，pid={BRIDGE.proc.pid}）\n" + _pretty(info)
     else:
         state = "后台实例未启动（首次建模调用会自动拉起，也可先 blender_start）"
+    if BRIDGE.last_reason:
+        # 上一实例为什么没了：排查「频繁重启」的第一手证据（同时写在 runtime.log）
+        state += f"\n上次实例：{BRIDGE.last_reason}（退出码 {BRIDGE.exit_code}）"
     preview = PREVIEW.info()
     page = (f"局域网预览页：{preview['url']}（手机同网段可看，2 秒自动刷新）"
             if preview["running"] else "局域网预览页未启动（preview_start 可开启）")

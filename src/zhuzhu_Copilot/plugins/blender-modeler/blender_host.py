@@ -13,6 +13,7 @@
 import json
 import math
 import os
+import select
 import socket
 import sys
 import time
@@ -1172,24 +1173,83 @@ HANDLERS = {
 }
 
 
+def _read_line(conn, buf: bytearray):
+    """从 conn 读一行 → (状态, 内容)。
+
+    状态语义：
+      "eof"  → 对端关闭（服务端进程没了 / 主动停止），调用方应退出
+      "idle" → 本轮空闲（未到 IDLE_TIMEOUT），调用方继续等
+      "line" → 一行 JSON（不含换行）
+      "blank"→ 空行（忽略即可；**不能**当成 EOF，否则凭空退出一次）
+
+    为什么不 `conn.settimeout(5)` + `makefile().readline()`：socket 超时会让文件
+    对象的内部缓冲处于不一致状态（官方文档明确警告），半行数据可能被丢弃；表现为
+    读到 EOF 直接退出 → 服务端看到 Blender 消失 → 下一次调用又拉起 → 用户侧
+    「Blender 实例频繁重启」。用 select + 自己缓冲则完全避开这个坑。
+    """
+    while True:
+        nl = buf.find(b"\n")
+        if nl >= 0:
+            line = bytes(buf[:nl])
+            del buf[:nl + 1]
+            return ("line", line) if line else ("blank", b"")
+        try:
+            ready, _, _ = select.select([conn], [], [], 1.0)
+        except (OSError, ValueError):
+            return ("eof", b"")
+        if not ready:
+            return ("idle", b"")
+        try:
+            chunk = conn.recv(65536)
+        except OSError:
+            return ("eof", b"")
+        if not chunk:
+            return ("eof", b"")
+        buf.extend(chunk)
+
+
+def _send_all(conn, payload: bytes, timeout: float = 120.0) -> bool:
+    """整包发送（select 控写就绪）：对端失联时不至于永久阻塞。"""
+    view = memoryview(payload)
+    deadline = time.monotonic() + float(timeout)
+    while view:
+        remain = deadline - time.monotonic()
+        if remain <= 0:
+            return False
+        try:
+            _, ready, _ = select.select([], [conn], [], min(remain, 1.0))
+        except (OSError, ValueError):
+            return False
+        if not ready:
+            continue
+        try:
+            n = conn.send(view)
+        except OSError:
+            return False
+        if n <= 0:
+            return False
+        view = view[n:]
+    return True
+
+
 def _run(port):
     global _LAST_ACTIVITY
     conn = socket.create_connection(("127.0.0.1", port), timeout=30)
-    conn.settimeout(5.0)
-    rf, wf = conn.makefile("rb"), conn.makefile("wb")
-    wf.write(json.dumps({"hello": True, "blender": bpy.app.version_string}).encode() + b"\n")
-    wf.flush()
+    conn.settimeout(None)          # 全阻塞：读超时由 select 控制（见 _read_line）
+    buf = bytearray()
+    if not _send_all(conn, json.dumps(
+            {"hello": True, "blender": bpy.app.version_string}).encode() + b"\n"):
+        return
     while True:
-        try:
-            line = rf.readline()
-        except socket.timeout:
+        kind, line = _read_line(conn, buf)
+        if kind == "eof":
+            break                      # 对端关闭 → 正常退出（服务端会自行决定是否重启）
+        if kind == "idle":             # 空闲：到点就退出，避免长期占着 Blender
             if IDLE_TIMEOUT > 0 and time.time() - _LAST_ACTIVITY > IDLE_TIMEOUT:
                 break
             continue
-        except OSError:
-            break
-        if not line:
-            break
+        if kind == "blank" or not line.strip():
+            continue                   # 空行：忽略（既不响应也不退出）
         _LAST_ACTIVITY = time.time()
         try:
             msg = json.loads(line.decode("utf-8", "replace"))
@@ -1207,10 +1267,8 @@ def _run(port):
                 resp = {"id": rid, "ok": False,
                         "error": f"{type(e).__name__}: {e}",
                         "trace": traceback.format_exc(limit=4)}
-        try:
-            wf.write(json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n")
-            wf.flush()
-        except OSError:
+        _LAST_ACTIVITY = time.time()
+        if not _send_all(conn, json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n"):
             break
 
 
