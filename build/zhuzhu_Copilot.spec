@@ -159,6 +159,19 @@ a = Analysis(
         *collect_submodules('win32com'),
         # 三件套图片依赖：docx/pptx/openpyxl 的 add_picture/add_image 运行时 import PIL，显式声明确保随包
         'PIL',
+        # 3D 桌宠（ui/pet3d）：Qt3D 三件套 + numpy。pet3d 是 PEP 562 懒加载包，
+        # PyInstaller 静态分析看不到 `from . import window` 里的 Qt3D 导入，必须显式声明，
+        # 否则打包版会静默回退成 GIF 桌宠（用户侧就是「怎么还是那只 gif」）。
+        'PyQt6.Qt3DCore',
+        'PyQt6.Qt3DRender',
+        'PyQt6.Qt3DExtras',
+        'numpy',
+        # pet3d 的类是通过模块级 __getattr__ 暴露的（PEP 562 懒加载），
+        # 静态分析拿不到 `from ... import Pet3DWindow` 的落点，四个模块显式声明。
+        'zhuzhu_Copilot.ui.pet3d',
+        'zhuzhu_Copilot.ui.pet3d.rig',
+        'zhuzhu_Copilot.ui.pet3d.view',
+        'zhuzhu_Copilot.ui.pet3d.window',
     ],
     hookspath=[],
     hooksconfig={},
@@ -167,14 +180,14 @@ a = Analysis(
     # QtWebEngine 整体移除（约 180MB）：PPT 全屏放映、Office 保真预览、网页预览
     # 均已内置降级分支（QTextBrowser/静态渲染），剔除后包体显著缩小。
     excludes=[
-        'tkinter', 'PyQt6.QtQuick', 'PyQt6.QtQml', 'PyQt6.Qt3DCore', 'PyQt6.Qt3DRender',
+        'tkinter', 'PyQt6.QtQuick', 'PyQt6.QtQml',
         'PyQt6.QtCharts', 'PyQt6.QtDataVisualization', 'PyQt6.QtPdf',
         'PyQt6.QtBluetooth', 'PyQt6.QtNfc', 'PyQt6.QtSerialPort',
         'PyQt6.QtWebSockets', 'PyQt6.QtDesigner', 'PyQt6.QtHelp',
         'PyQt6.QtSql', 'PyQt6.QtXml', 'PyQt6.QtTest', 'PyQt6.QtDBus',
         'PyQt6.QtWebEngineCore', 'PyQt6.QtWebEngineWidgets', 'PyQt6.QtWebEngineQuick',
         'PyQt6.QtWebChannel', 'PyQt6.QtPositioning',
-        'numpy', 'pandas', 'scipy', 'matplotlib', 'sklearn', 'torch',
+        'pandas', 'scipy', 'matplotlib', 'sklearn', 'torch',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
