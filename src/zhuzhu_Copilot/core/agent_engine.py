@@ -372,8 +372,9 @@ _TASK_GROUPS = [
                 "list_workflow_agents", "use_workflow_agent",
                 "inspect_customization", "list_sub_agents", "register_sub_agent",
                 "list_builtin_workflows", "shared_context",
-                # 插件生成：自定义任务裁剪后仍需可用（自然语言生成/手动管理）
-                "create_plugin", "create_copilot_plugin", "apply_copilot_plugin",
+                # 插件生成/登记：自定义任务裁剪后仍需可用（骨架 → 自实现 → 登记热加载）
+                "create_plugin", "plugin_register",
+                "create_copilot_plugin", "apply_copilot_plugin",
                 "revert_copilot_plugin", "use_skill"})),
 ]
 _TASK_GROUP_TOOLS = {g: tools for g, _kw, tools in _TASK_GROUPS}
@@ -565,8 +566,7 @@ def _context_image(data_url: str) -> str:
 # 后台线程仍在跑 —— 于是超时后模型拿到的是「已停止等待」而非真实结果，上下文与实际进度错位。
 _NO_WAIT_TIMEOUT_TOOLS = frozenset({
     "run_command",      # 长命令（构建/训练/长脚本）天然无上限，由停止按钮取消
-    "create_plugin",    # 生成类：内部是完整 LLM 往返（设计 + 自检 + 可能自修），远超 40s
-    "create_copilot_plugin",  # 生成类：完整 LLM 往返（source_ops + 扩展清单设计 + 校验）
+    "plugin_register",  # 自检会真跑子进程（MCP 握手 / web 端点，上限 30s），超 40s 放弃会与真实结果错位
     "apply_copilot_plugin",   # 源码应用：备份 + 多文件写入 + 逐文件编译检查，可超 40s
     "revert_copilot_plugin",  # 源码回滚：多文件还原，可超 40s
     "send_file_to_wechat",   # 微信推送：大文件 CDN 上传可超 40s，超时放弃会与真实结果错位

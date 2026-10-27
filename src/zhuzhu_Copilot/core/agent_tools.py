@@ -1626,41 +1626,42 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_plugin",
-            "description": "用自然语言描述创建可运行的插件（统一存入插件目录）：根据用户描述用 AI 生成 "
-                           "可运行的 MCP server 脚本 + 标准 SKILL.md 技能，"
-                           "并自动生成运行脚本、依赖、示例文件，自动登记到技能与 MCP 配置，创建后即时生效。"
-                           "**生成后会自动做冒烟自检**（语法编译 → web 型真起本地 HTTP 服务拉页面并逐个调 "
-                           "/api 端点 → mcp 型走 stdio tools/list 握手），未通过会把错误回灌给 AI 自动修正一轮；"
-                           "仍不通过则如实告知且**不登记 MCP**（避免坏 server 进注册表）。"
-                           "需要图形化/可视化交互的能力（仪表盘/可视化面板/画布表单类工具）应选 web 型："
-                           "一次生成**三件套** —— SKILL.md 技能 + MCP 工具 + 本地 HTTP Server 浏览器界面"
-                           "（用户在浏览器直观操作，LLM 通过同名 MCP 工具操控同一份状态）。"
-                           "web 型创建后必须立即调用 web_url 获取地址并用 preview_open 在用户"
-                           "默认浏览器里打开界面给用户；"
-                           "操作者必须是用户本人，严禁 AI 自我演示、自问自答或与脚本/"
-                           "自动化程序互演；可用 web_fetch(\"http://127.0.0.1:<端口>/\") 复验本地页面"
-                           "（本地回环/内网地址已放开，可直接抓取）。设计时优先把能力拆成 LLM 可以直接"
-                           "调用的工具（动作/查询粒度，如把流程拆成创建/推进校验/读取状态/回退），而不是"
-                           "生成 LLM 无法直接操控的独立 GUI 应用。当用户想做一个独立功能/工具/能力并希望"
-                           "沉淀为插件时使用。"
-                           "插件包规范：plugin.json 含 name/kind/author/updated_at/icon/description；"
-                           "图标 icon 为**包内**方形 PNG（建议 128~256px，与插件名同目录，如 icon.png），"
-                           "留空则列表显示占位图标；config.json 放用户可编辑的键值（文本/数字/布尔标量），"
-                           "MCP 型会以大写环境变量注入 server 子进程（os.environ.get(\"API_KEY\") 读取）。"
-                           "随包示例：src/zhuzhu_Copilot/plugins/computer-control（combined 型，含 "
-                           "server.py + SKILL.md + plugin.json）。"
-                           "**分工**：只扩展 Agent 能力（工具/技能/网页）用本工具；要改应用源码"
-                           "（主题/界面/任意模块/新增页面与托盘）用 create_copilot_plugin。",
+            "description": "创建 Agent 插件**骨架**（不生成业务实现，也不调用其它 AI）：落 "
+                           "plugin.json / SKILL.md 模板 / 可运行的 server.py 示例 / README（规范与示例）。"
+                           "随后**必须由你自己** read_file 读 README，用 write_file / edit_file 实现 "
+                           "server.py 的 TOOLS 与 _HANDLERS（web 型为页面与 /api 端点）并补齐 SKILL.md，"
+                           "最后调 plugin_register 做自检 + 登记 + 热加载。"
+                           "四型：mcp（仅工具）/ skill（仅技能）/ combined（技能+工具，默认）/ "
+                           "web（本地 HTTP 页面 + 同名 MCP 工具，共用同一份状态；需要图形化交互时选它，"
+                           "创建后必须调 web_url 拿地址并用 preview_open 在用户浏览器里打开给用户；"
+                           "操作者必须是用户本人，严禁 AI 自我演示或与脚本互演）。"
+                           "**只扩展 Agent 能力**（工具/技能/网页）；要改应用源码（主题/界面/任意模块/"
+                           "页面与托盘）用 create_copilot_plugin。",
             "parameters": {"type": "object",
                            "properties": {
-                               "description": {"type": "string",
-                                               "description": "用户自然语言描述：插件要做什么、提供哪些能力"},
+                               "name": {"type": "string",
+                                        "description": "插件名（小写字母/数字/下划线/连字符，≤50 字符）"},
                                "kind": {"type": "string",
-                                        "description": "插件类型：mcp（仅工具）/ skill（仅技能）/ "
-                                                       "combined（技能+工具，默认）/ web（本地Server+浏览器界面，"
-                                                       "图形化交互类用）",
-                                        "enum": ["mcp", "skill", "combined", "web"]}},
-                           "required": ["description"]},
+                                        "description": "插件类型：mcp / skill / combined / web",
+                                        "enum": ["mcp", "skill", "combined", "web"]},
+                               "description": {"type": "string",
+                                               "description": "插件用途一句话描述（写进元数据与技能简介）"}},
+                           "required": ["name", "description"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plugin_register",
+            "description": "自检并登记 Agent 插件：语法编译 → 真跑一次（MCP stdio tools/list 握手；"
+                           "web 型起本地服务拉页面并逐个调 /api 端点）→ 通过后登记 MCP 服务器与 "
+                           "SKILL.md 技能 → 触发运行中引擎热加载（同一任务下一轮即可调用，"
+                           "**无需重启应用**；脚本文件改动也会被识别并重连）。"
+                           "改完插件文件可重复调用；自检失败会返回具体错误，照改后重试即可。",
+            "parameters": {"type": "object",
+                           "properties": {
+                               "name": {"type": "string", "description": "插件目录名（create_plugin 的 name）"}},
+                           "required": ["name"]},
         },
     },
     # ---------- Copilot 插件工具（应用级独立体系，与 Agent 插件分开） ----------
@@ -1668,30 +1669,21 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_copilot_plugin",
-            "description": "用自然语言描述创建 **Copilot 插件**（应用级独立插件体系，可改应用源码、"
-                           "注册页面/服务/托盘/快捷键，是 Agent 插件的超集）。AI 生成 source_ops "
-                           "变更清单，三种写法可混用：① create_file 新建功能模块（优先：先建模块，"
-                           "再在现有模块里做最小接线）；② insert_after / insert_at / append 插入到"
-                           "现有源码（不改原有代码行，锚点须真实存在且唯一，或按行号精确落位）；"
-                           "③ replace_module / replace_lines / replace_file 修改或整体替换既有实现"
-                           "（替换后代码必须完整可编译）。一次可跨多个模块综合集成。可选 copilot.json "
-                           "声明应用级扩展（pages 页面 / services 后台服务 / tray 托盘动作 / "
-                           "shortcuts 快捷键，module 指向插件包内模块），可选 agent/ 子包"
-                           "（SKILL.md + server.py，导入时登记为技能与 MCP）。"
-                           "落盘后强制过插件校验系统（静态危险规则 + LLM 源码评审，危险即删除并提示）；"
-                           "启用时自动写入**转译层**（用户数据目录的源码覆盖层，不改应用源码文件）、"
-                           "逐文件备份、全部 py_compile（失败整体回滚），源码运行与 exe 安装版行为一致，"
-                           "并由热加载引擎在运行进程内**即时生效，无需重启应用**；热加载失败会自动回滚，"
-                           "改错了用 revert_copilot_plugin 一键回滚（同样即时卸载）。"
-                           "受保护核心程序（校验系统/源码引擎/热加载引擎/安全引擎/导入钩子/main.py）不得改动；"
-                           "插件图标 icon 为包内方形 PNG（128~256px），列表展示开发者与更新时间。"
-                           "完整开发指南与九个可导入示例见 src/zhuzhu_Copilot/copilot_plugins_examples/。",
+            "description": "创建 Copilot 插件**骨架**（不生成源码变更，也不调用其它 AI）：落 plugin.json / "
+                           "空的 source_ops.json / README（五种 op 写法与安全约束）/ copilot.example.json。"
+                           "随后**由你自己** read_file 目标源码，用 write_file / edit_file 写 source_ops.json "
+                           "（create_file / insert_after / append / replace_lines / replace_module 可混用）与包内模块，"
+                           "需要页面/服务/托盘/快捷键时把 copilot.example.json 复制为 copilot.json 并改 module，"
+                           "最后调 apply_copilot_plugin 落地（校验 → 转译层 → 热加载）。"
+                           "Agent 插件只扩展 Agent 能力；要定制应用本身（主题/界面/任意模块/新增页面与托盘）用本工具。"
+                           "受保护核心程序（校验系统/源码引擎/热加载引擎/安全引擎/导入钩子/main.py）不得改动。",
             "parameters": {"type": "object",
                            "properties": {
+                               "name": {"type": "string",
+                                        "description": "Copilot 插件名（小写字母/数字/下划线/连字符，≤50 字符）"},
                                "description": {"type": "string",
-                                               "description": "用户自然语言描述：Copilot 插件要做什么、"
-                                                              "接入/新建哪些功能模块、要不要页面/服务/托盘/快捷键"}},
-                           "required": ["description"]},
+                                               "description": "插件用途一句话描述（写进元数据）"}},
+                           "required": ["name", "description"]},
         },
     },
     {
@@ -3461,11 +3453,15 @@ def _execute_tool_impl(name: str, args: dict, allow_dangerous: bool = False,
                                  str(args.get("description", "")),
                                  str(args.get("instruction", "")))
         if name == "create_plugin":
-            return _create_plugin(str(args.get("description", "")),
-                                  str(args.get("kind", "combined")), status_cb)
+            return _create_plugin(str(args.get("name", "")),
+                                  str(args.get("kind", "combined")),
+                                  str(args.get("description", "")))
+        if name == "plugin_register":
+            return _plugin_register(str(args.get("name", "")))
         # ---- Copilot 插件（应用级独立体系） ----
         if name == "create_copilot_plugin":
-            return _create_copilot_plugin(str(args.get("description", "")), status_cb)
+            return _create_copilot_plugin(str(args.get("name", "")),
+                                          str(args.get("description", "")))
         if name == "apply_copilot_plugin":
             return _apply_copilot_plugin(str(args.get("name", "")))
         if name == "revert_copilot_plugin":
@@ -5333,21 +5329,6 @@ def _use_skill(name: str) -> dict:
     }
 
 
-def _generation_status_adapter(status_cb):
-    """把生成回调 (pct, msg) 适配成引擎状态回调字符串「生成进度:<pct>:<msg>」。
-    status_cb 不可用时返回 None（生成函数会跳过回调）。"""
-    if not callable(status_cb):
-        return None
-
-    def _rep(pct, msg):
-        try:
-            status_cb(f"生成进度:{int(pct)}:{str(msg or '').strip()}")
-        except Exception:
-            pass
-
-    return _rep
-
-
 def _set_generation_progress(args: dict, status_cb=None) -> dict:
     """set_generation_progress 工具：把百分比 + 阶段说明实时上报到面板状态行。"""
     try:
@@ -5364,42 +5345,66 @@ def _set_generation_progress(args: dict, status_cb=None) -> dict:
     return {"text": f"进度已更新：{pct}%" + (f" {msg}" if msg else ""), "images": []}
 
 
-def _create_plugin(description: str, kind: str, status_cb=None) -> dict:
-    """用自然语言描述创建插件（AI 生成可运行 MCP server + SKILL.md + 脚本/资源/示例），
-    统一存入插件目录并登记技能/MCP 配置，创建后即时生效。生成期间上报进度。
+def _create_plugin(name: str, kind: str, description: str) -> dict:
+    """创建 Agent 插件**骨架**（不调用任何 AI）：元数据 + SKILL.md 模板 + 可运行
+    server.py 示例 + README（规范与示例），之后由主 Agent 自己实现并调 plugin_register。
 
-    成功时带 `reload_extensions` 标记：插件刚登记的技能与 MCP 服务器必须让**运行中的引擎**
-    热加载（技能缓存失效 + MCP 增量重连），否则同一次任务里刚生成的工具调不动
-    （见 agent_engine.reload_extensions）。
+    为什么不再在工具里调一次大模型：那会让同一次任务变成「AI 调 AI」（二次生成、
+    二次自修），既慢又不可控；用户要求由主 Agent 按 skill 规范与示例自行完成。
     """
     from zhuzhu_Copilot.core import agent_plugins
-    ok, msg = agent_plugins.create_plugin_from_nl(
-        description, kind, on_status=_generation_status_adapter(status_cb),
-        workflow=_wf_current())
+    ok, msg = agent_plugins.scaffold_plugin(name, kind, description)
+    if ok:
+        return {"text": msg, "images": []}
+    return _blocked(msg)
+
+
+def _plugin_register(name: str) -> dict:
+    """自检 + 登记 Agent 插件（MCP / 技能 / 工作流绑定），并触发引擎热加载。
+
+    改完 server.py / SKILL.md 后再调一次即可重新登记；返回 `reload_extensions`
+    让运行中引擎增量重连 MCP（脚本 mtime 变化会自动判定为「已更新」），
+    同一任务下一轮即可调用新工具，无需重启应用。
+    """
+    from zhuzhu_Copilot.core import agent_plugins
+    ok, msg = agent_plugins.register_plugin(name, workflow=_wf_current())
     if ok:
         return {"text": msg, "images": [], "reload_extensions": True}
     return _blocked(msg)
 
 
-def _create_copilot_plugin(description: str, status_cb=None) -> dict:
-    """用自然语言描述创建 Copilot 插件（应用级独立体系）：AI 生成 source_ops
-    变更清单（新建功能模块/按行号或锚点接入现有模块/多模块综合修改）与可选的 copilot.json
-    应用扩展清单（页面/服务/托盘/快捷键），落盘后强制过插件校验系统。"""
+def _create_copilot_plugin(name: str, description: str) -> dict:
+    """创建 Copilot 插件**骨架**（不调用任何 AI）：元数据 + 空变更清单 + 规范 README。
+
+    源码变更清单（source_ops）由主 Agent 自己读源码后用 write_file 写，
+    再调 apply_copilot_plugin 落地（校验 → 转译层 → 热加载）。
+    """
     from zhuzhu_Copilot.core import copilot_plugins
-    ok, msg = copilot_plugins.create_from_nl(
-        description, on_status=_generation_status_adapter(status_cb))
+    ok, msg = copilot_plugins.scaffold(name, description)
     if ok:
-        return {"text": msg, "images": [], "reload_extensions": True}
+        return {"text": msg, "images": []}
     return _blocked(msg)
 
 
 def _apply_copilot_plugin(name: str) -> dict:
-    """应用 Copilot 插件的源码变更（校验 → 备份 → 应用 → 编译检查，失败整体回滚）。
-    变更写入转译层（安装版为源码覆盖层）后，由引擎 reload_extensions 即时热加载。"""
+    """应用 Copilot 插件的源码变更（校验 → 备份 → 应用 → 编译检查，失败整体回滚），
+    并启用（挂载页面/服务/托盘/快捷键）。重复调用 = 用最新文件重新落地。
+
+    变更写入转译层（安装版为源码覆盖层）后，由引擎 reload_extensions 即时热加载。
+    """
     from zhuzhu_Copilot.core import copilot_plugins
     if not name:
         return _blocked("缺少插件名")
-    ok, msg = copilot_plugins.apply(name)
+    # 已应用过 → 先回滚再按最新文件重新落地（否则新写的 ops 永远不会生效，
+    # 用户只能重启应用 —— 正是要修掉的「改完不生效」）
+    try:
+        if copilot_plugins.status(name).get("applied"):
+            rok, rmsg = copilot_plugins.revert(name)
+            if not rok:
+                return _blocked(rmsg)
+    except Exception:
+        pass
+    ok, msg = copilot_plugins.set_enabled(name, True)
     if ok:
         return {"text": msg, "images": [], "reload_extensions": True}
     return _blocked(msg)
@@ -6042,7 +6047,8 @@ def _inspect_customization() -> dict:
                        for p in plugins if p.get("name")]
             lines.append(f"## 插件（{len(p_lines)} 个）")
             lines.append("  " + ("；".join(p_lines) if p_lines else "暂无"))
-            lines.append("  工具: create_plugin（mcp/skill/combined/web 四型，AI 生成或 zip 导入）")
+            lines.append("  工具: create_plugin（建 mcp/skill/combined/web 骨架）→ 自己 write_file 实现 "
+                         "→ plugin_register（自检 + 登记 + 热加载，无需重启）")
         except Exception as e:
             lines.append(f"## 插件（读取失败: {e}）")
         # 4) Copilot 插件（应用级：界面/主题/语言/任意模块的源码级定制）
@@ -6052,9 +6058,9 @@ def _inspect_customization() -> dict:
                         for p in cps if p.get("name")]
             lines.append(f"## Copilot 插件（{len(cp_lines)} 个，应用级源码定制）")
             lines.append("  " + ("；".join(cp_lines) if cp_lines else "暂无"))
-            lines.append("  工具: create_copilot_plugin / apply_copilot_plugin / revert_copilot_plugin"
-                         " —— 新建模块、按行号插入(insert_at)、按行号替换(replace_lines)、"
-                         "整段替换(replace_module)，可改主题/界面/语言/任何模块，改错一键回滚")
+            lines.append("  工具: create_copilot_plugin（建骨架）→ 自己 write_file 写 source_ops.json "
+                         "→ apply_copilot_plugin（校验 + 转译层 + 热加载）→ revert_copilot_plugin 回滚"
+                         " —— 可改主题/界面/语言/任何模块，全程无需重启")
         except Exception as e:
             lines.append(f"## Copilot 插件（读取失败: {e}）")
         # 5) MCP 服务器

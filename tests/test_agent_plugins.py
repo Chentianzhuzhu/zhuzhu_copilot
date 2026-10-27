@@ -204,3 +204,84 @@ def test_import_plugin_skill_wraps_into_plugin(iso, tmp_path):
     assert "skill 型" in msg
     assert (iso / "plugins" / "weird_skill" / "plugin.json").is_file()
     assert (iso / "plugins" / "weird_skill" / "SKILL.md").is_file()
+
+
+# ══════════════ 对话内生成：骨架 → 主 Agent 自实现 → 登记热加载 ══════════════
+# 用户要求：① 生成插件/技能后无需重启应用；② 生成过程不得「AI 调 AI」。
+# 这两条由 create_plugin(骨架) + plugin_register(自检/登记/热加载) 保证。
+
+@pytest.fixture()
+def iso_real(tmp_path, monkeypatch):
+    """同 iso，但保留真实解释器（自检要真跑 server.py）。"""
+    monkeypatch.setattr(agent_plugins, "PLUGINS_DIR", tmp_path / "plugins")
+    monkeypatch.setattr(agent_skills, "CONFIG_DIR", tmp_path / "agent")
+    agent_skills._MCP_CACHE["data"] = None
+    agent_skills.invalidate_skills_cache()
+    return tmp_path
+
+
+def test_scaffold_then_register_without_any_ai(iso_real, monkeypatch):
+    """骨架 + 登记全程不得请求大模型（回归：工具内 AI 调 AI 生成插件）。"""
+    def _boom(*a, **k):
+        raise AssertionError("对话内生成插件不允许在工具内部再调用大模型")
+    monkeypatch.setattr(agent_plugins, "_ai_generate_spec", _boom, raising=False)
+
+    ok, msg = agent_plugins.scaffold_plugin("demo_tool", "combined", "演示插件")
+    assert ok and "plugin_register" in msg
+    d = iso_real / "plugins" / "demo_tool"
+    for f in ("plugin.json", "SKILL.md", "server.py", "config.json", "README.md"):
+        assert (d / f).is_file(), f"骨架缺少 {f}"
+
+    ok, msg = agent_plugins.register_plugin("demo_tool")
+    assert ok, msg
+    assert "冒烟自检通过" in msg
+    meta = json.loads((d / "plugin.json").read_text(encoding="utf-8"))
+    assert meta["verified"] is True
+    assert meta["mcp_name"] == "demo_tool-mcp"
+    # MCP 已登记、技能已生效（同一进程内立刻可读，不存在「重启才加载」）
+    assert any(s.get("name") == "demo_tool-mcp" for s in agent_skills.load_mcp_servers())
+    assert "demo_tool" in [s.get("name") for s in agent_skills.load_skills()]
+
+
+def test_plugin_edit_reconnects_without_restart(iso_real):
+    """改写 server.py 后再次热加载必须重连并暴露新工具（而非继续跑旧代码）。"""
+    import time
+
+    from zhuzhu_Copilot.core.agent_mcp import McpManager
+
+    assert agent_plugins.scaffold_plugin("hot_demo", "mcp", "热加载演示")[0]
+    assert agent_plugins.register_plugin("hot_demo")[0]
+    d = iso_real / "plugins" / "hot_demo"
+    mgr = McpManager()
+    try:
+        tools = mgr.reload(agent_skills.load_mcp_servers())
+        names = [t["function"]["name"] for t in tools]
+        assert "run" in names, names
+
+        # 模拟主 Agent 改代码：换一个工具名
+        src = (d / "server.py").read_text(encoding="utf-8")
+        (d / "server.py").write_text(src.replace('"name": "run"', '"name": "run_v2"'),
+                                     encoding="utf-8")
+        time.sleep(0.02)
+        tools2 = mgr.reload(agent_skills.load_mcp_servers())
+        names2 = [t["function"]["name"] for t in tools2]
+        assert "run_v2" in names2, f"脚本改写后未热重连（仍只有 {names2}）"
+    finally:
+        mgr.close_all()
+
+
+def test_tool_schema_and_dispatch_use_scaffold(iso):
+    """工具表与分发必须走「骨架」语义：create_plugin 需要 name，另提供 plugin_register。"""
+    from zhuzhu_Copilot.core import agent_tools
+
+    schemas = {t["function"]["name"]: t for t in agent_tools.tool_schemas()}
+    assert "plugin_register" in schemas, "缺少 plugin_register（登记 + 热加载入口）"
+    assert "name" in schemas["create_plugin"]["function"]["parameters"]["required"]
+    assert "AI 生成" not in schemas["create_plugin"]["function"]["description"]
+
+    res = agent_tools.execute_tool(
+        "create_plugin",
+        {"name": "dispatch_demo", "kind": "skill", "description": "分发验证"},
+        allow_dangerous=True)
+    assert "骨架" in res.get("text", ""), res
+    assert (iso / "plugins" / "dispatch_demo" / "SKILL.md").is_file()

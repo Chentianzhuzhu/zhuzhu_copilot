@@ -7770,6 +7770,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
+        self._reconnect_mcp()   # 新插件登记的 MCP 必须增量重连后才可用（无需重启应用）
 
     def _on_plugin_import_zip(self, *_):
         """导入插件 zip 包（含 plugin.json）：导入后自动登记技能/MCP，刷新并重连"""
@@ -7817,6 +7818,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
+        self._reconnect_mcp()   # 启停会增删 MCP 登记 → 立即增量重连
 
     def _on_plugin_call(self, *_):
         """插件列表「调用」：关闭设置并回到对话页，输入框预填 `/插件名 `（回车即调用）。
@@ -7861,6 +7863,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
+        self._reconnect_mcp()   # 删除插件同时解绑 MCP → 立即断开
 
     def _on_plugin_workflows(self, *_):
         """指定插件可用的工作流（多选/逗号分隔；空=全局）"""
@@ -27492,7 +27495,38 @@ class AgentPanel(QDialog):
         # 切换模型不清空上下文：当前对话历史继续沿用，仅后续轮次使用新模型
 
     def _reconnect_mcp(self):
-        threading.Thread(target=self._init_mcp, daemon=True).start()
+        """请求重连 MCP（后台**增量**重连：只重建新增/配置变更/脚本被改写的服务器）。
+
+        为什么不再走 `_init_mcp`（close_all + connect_all）：全量重连会把正在被运行中
+        任务使用的服务器一起断掉（丢进程内状态），而插件导入/启用/改配置只需要连
+        变化的那一个。增量重连也让「改完插件代码 / 改完 config.json 的 env」无需重启。
+        """
+        threading.Thread(target=self._mcp_reload_worker, daemon=True).start()
+
+    def _mcp_reload_worker(self):
+        """后台线程：同步随包插件 → 增量重连 → 把结果发回状态行。"""
+        try:
+            from zhuzhu_Copilot.core import agent_plugins
+            agent_plugins.ensure_shipped_plugins()
+        except Exception:
+            pass
+        try:
+            tools = self._mcp.reload(agent_skills.load_mcp_servers())
+            act = getattr(self._mcp, "last_reload", {}) or {}
+            parts = []
+            for key, label in (("added", "新增"), ("updated", "更新"), ("removed", "移除")):
+                names = act.get(key) or []
+                if names:
+                    parts.append(f"{label} {len(names)}")
+            errs = "；".join(getattr(self._mcp, "errors", None) or [])
+            msg = f"MCP: 已重连 {len(tools)} 个工具"
+            if parts:
+                msg += "（" + "、".join(parts) + "）"
+            if errs:
+                msg += f"；失败: {errs}"
+        except Exception as e:
+            msg = f"MCP: 重连失败 {e}"
+        self.mcp_signal.emit(msg)
 
     # ---------- 命令补全（/ 展示全部命令 + 内联预测） ----------
     def _invalidate_cmd_cache(self):

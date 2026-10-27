@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 MCP_VERSION = "2024-11-05"
 # 建连/握手阶段的最长等待：只覆盖 initialize、tools/list 这类「本该瞬时」的请求。
@@ -409,8 +410,10 @@ class McpManager:
     调用时按原始工具名路由到对应服务器。"""
 
     def __init__(self):
+        self._lock = threading.RLock()   # 并发保护：UI 后台重连与引擎热加载可能同时发生
         self._clients: dict = {}
         self._configs: dict = {}      # 服务器名 -> 建连时所用配置（增量热加载据此判断「新增/变更」）
+        self._stamps: dict = {}       # 服务器名 -> stdio 脚本指纹（脚本改写 → 判定为变更）
         self._schemas: dict = {}      # 服务器名 -> 建连时抓到的工具 schema
         self._name_to_server: dict = {}
         self._tool_raw: dict = {}      # 聚合工具名 -> 服务器原始工具名
@@ -438,15 +441,38 @@ class McpManager:
             return False
         self._clients[name] = client
         self._configs[name] = dict(cfg)
+        self._stamps[name] = self._script_stamp(cfg)
         # 工具清单必须在这里抓一次并缓存：McpClient.list_tools 每次调用都会往内部去重表
         # 写名字，再调一次会把同一工具返回成「带前缀」的另一种形态（名字漂移 + 重复）。
         self._schemas[name] = schemas
         return True
 
+    @staticmethod
+    def _script_stamp(cfg: dict):
+        """stdio 服务器的脚本指纹 (路径, mtime_ns, 字节数)；非 stdio 返回 None。
+
+        为什么需要它：增量 reload 原来只比较「配置字典」——插件 server.py 被改写后
+        配置完全相同，于是进程保持旧代码，用户必须重启应用才生效。把脚本指纹纳入
+        变更判定后，任何人改完文件再触发一次扩展热加载（plugin_register / create_skill
+        等工具都会触发），就会自动重连并拿到新工具清单。
+        """
+        if str(cfg.get("type") or "stdio").strip().lower() != "stdio":
+            return None
+        for arg in (cfg.get("args") or []):
+            try:
+                p = Path(str(arg))
+                if p.is_file():
+                    st = p.stat()
+                    return (str(p.resolve()), st.st_mtime_ns, st.st_size)
+            except OSError:
+                continue
+        return None
+
     def _drop(self, name: str) -> None:
         """断开并移除单个服务器的连接与缓存"""
         client = self._clients.pop(name, None)
         self._configs.pop(name, None)
+        self._stamps.pop(name, None)
         self._schemas.pop(name, None)
         if client is not None:
             try:
@@ -477,14 +503,15 @@ class McpManager:
 
     def connect_all(self, servers: list) -> list:
         """servers: [{"name","type","command","args"|"url"}]，返回聚合后的工具 schema（全量重建）"""
-        self.close_all()
-        self.errors = []
-        self.last_reload = {"added": [str(c.get("name") or "mcp") for c in servers],
-                            "updated": [], "removed": []}
-        self._last_servers = [dict(c) for c in servers]
-        for cfg in servers:
-            self._connect(cfg)
-        return self._rebuild_aggregate()
+        with self._lock:
+            self.close_all()
+            self.errors = []
+            self.last_reload = {"added": [str(c.get("name") or "mcp") for c in servers],
+                                "updated": [], "removed": []}
+            self._last_servers = [dict(c) for c in servers]
+            for cfg in servers:
+                self._connect(cfg)
+            return self._rebuild_aggregate()
 
     def reload(self, servers: list) -> list:
         """**增量**热加载：只重建「新增或配置变更」的服务器，断开已移除的，未变的连接原样保留。
@@ -496,41 +523,48 @@ class McpManager:
         want: dict = {}
         for cfg in servers:
             want[str(cfg.get("name") or "mcp")] = cfg
-        added: list = []
-        updated: list = []
-        removed: list = []
-        for name in list(self._clients):
-            if name not in want:
-                self._drop(name)
-                removed.append(name)
-            elif self._configs.get(name) != want[name]:
-                self._drop(name)
-                updated.append(name)
-        self.errors = []
-        for cfg in servers:
-            name = str(cfg.get("name") or "mcp")
-            if name in self._clients:
-                continue                      # 未变：连接与工具清单都原样保留
-            # 建连失败只进 errors（会重试），不得混进 added 让摘要谎报「新增成功」
-            if self._connect(cfg) and name not in updated:
-                added.append(name)
-        self.last_reload = {"added": added, "updated": updated, "removed": removed}
-        self._last_servers = [want[k] for k in want]
-        return self._rebuild_aggregate()
+        with self._lock:
+            added: list = []
+            updated: list = []
+            removed: list = []
+            for name in list(self._clients):
+                if name not in want:
+                    self._drop(name)
+                    removed.append(name)
+                elif (self._configs.get(name) != want[name]
+                      or self._stamps.get(name) != self._script_stamp(want[name])):
+                    # 配置变了**或脚本文件被改写**都要重连：后者是「改完插件代码不重启」
+                    # 的关键（只比配置时进程会一直跑旧代码）
+                    self._drop(name)
+                    updated.append(name)
+            self.errors = []
+            for cfg in servers:
+                name = str(cfg.get("name") or "mcp")
+                if name in self._clients:
+                    continue                      # 未变：连接与工具清单都原样保留
+                # 建连失败只进 errors（会重试），不得混进 added 让摘要谎报「新增成功」
+                if self._connect(cfg) and name not in updated:
+                    added.append(name)
+            self.last_reload = {"added": added, "updated": updated, "removed": removed}
+            self._last_servers = [want[k] for k in want]
+            return self._rebuild_aggregate()
 
     def tool_schemas(self) -> list:
-        return self._tools
+        with self._lock:
+            return list(self._tools)
 
     def tool_schemas_for(self, allowed_servers) -> list:
         """按允许的服务器名过滤聚合工具（工作流 MCP 隔离：未绑定服务器的工具不暴露）"""
         if not allowed_servers:
             return []
-        return [t for t in self._tools
-                if self._name_to_server.get(t["function"]["name"]) in allowed_servers]
+        with self._lock:
+            return [t for t in self._tools
+                    if self._name_to_server.get(t["function"]["name"]) in allowed_servers]
 
     def server_for_tool(self, name: str) -> str:
         """工具所属服务器名（空 = 未知/非 MCP 工具）"""
-        return self._name_to_server.get(name, "")
+        with self._lock:
+            return self._name_to_server.get(name, "")
 
     def _self_heal(self) -> bool:
         """工具表为空时按上次的配置重连一次（有界：不并发、只此一次）。

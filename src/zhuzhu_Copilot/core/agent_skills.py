@@ -460,47 +460,46 @@ create_skill(name=技能名, description=用途简介, instruction=执行流程�
 5. 创建成功后提示：已可通过 /技能名 或对话描述调用；若用户描述的是可复用的流程，适合沉淀为技能。""",
     },
     "plugin-create": {
-        "description": "插件创建：根据用户自然语言描述自动生成可运行插件（MCP server + SKILL.md 技能 + web 型本地 HTTP UI 三件套）并加载，生成后自动冒烟自检；Agent 插件仅限 Agent 能力，不涉及应用源码（改应用源码用 Copilot 插件）",
+        "description": "插件创建：先建骨架（create_plugin），再由主 Agent 按规范与 README 自行实现 MCP 工具 / SKILL.md / web 页面，最后 plugin_register 自检登记并热加载（无需重启）；Agent 插件仅限 Agent 能力，不涉及应用源码（改应用源码用 Copilot 插件）",
         "instruction": """# plugin-create：创建新插件
 
 **核心原则：优先创建 LLM 可以直接操控的工具**，而不是生成 LLM 无法直接操控的独立 GUI 应用/完整程序。
+**实现方式（硬性）**：插件由**你本人**写 —— read_file 读规范/源码、write_file / edit_file 写实现、
+plugin_register 登记。禁止调用任何「AI 生成插件」类工具，也禁止派子 Agent 代写（那会变成 AI 调 AI）。
 
-1. 先判断是否「需要图形化/可视化交互」：
-   - **是**（仪表盘/可视化面板/画布或表单类工具等，用户在界面上直观操作/观看）→ 选 **web 型**：
-     一次生成**三件套** —— SKILL.md 技能 + 同名 MCP 工具 + 本地 HTTP Server 单页浏览器界面
-     （浏览器与 AI 共用同一份状态，LLM 通过工具读写状态）。
-     流程：create_plugin(kind="web") → 调 web_url 工具拿访问地址 → preview_open 在用户默认浏览器里打开给用户。
-     质量约束（违反会被自动自检打回）：页面所有样式/脚本内联、禁外网 CDN（离线可用）；
-     **必须提供 `state`（GET，读状态）端点**，其余 2-6 个为动作/查询粒度端点；
-     端点实现从 args 取参、读写共享状态 `_STATE`、返回可读文本、异常自行捕获（绝不抛出）；
-     页面首屏即 fetch('/api/state') 渲染状态，并在页面上显示操作结果/错误（禁止静默失败）。
-   - **否** → 走「能力 → 工具」拆解：把能力拆成 1-5 个职责单一、可单独调用的 MCP 工具
-     （参数 schema 清晰、返回可读文本结果），由 LLM 通过工具组合完成整件事；
-     工具是「动作/查询」粒度（创建、推进、校验、回退…），不是「打开整个应用」。
-2. **web 型硬性要求（必须做到，否则视为未完成）**：
-   ①创建后必须立即调用 web_url 获取地址并用 preview_open 在用户默认浏览器里打开界面给用户；
-   ②界面必须提供可供真人点击/输入/拖拽的交互控件，操作者必须是用户本人，
-     状态变化由用户亲手操作驱动；③严禁 AI 自我演示、自问自答或与脚本/自动化程序互演
-     （如 AI 自己连续调用工具推进状态）；AI 只负责读写共享状态、辅助用户（校验输入/展示状态/提示规则）。
-   ④生成链路**自带冒烟自检**（语法编译 → 真起本地服务拉页面并逐个调 /api 端点 → MCP tools/list
-     握手），未通过会把错误回灌给模型自动修正一轮；仍不通过会如实告知且**不登记 MCP**。
-     据报错信息修正后重试即可，**不要谎报成功**；也可用
-     web_fetch(url="http://127.0.0.1:<端口>/") 自行复验（本地回环/内网地址已放开）。
-3. 确认插件类型：
-   - web：三件套（SKILL.md 技能 + MCP 工具 + 本地 HTTP 浏览器界面，图形化交互类首选）
-   - mcp：仅提供工具能力（MCP server）
-   - skill：仅沉淀为标准技能（SKILL.md）
-   - combined：同时提供技能与 MCP 工具（默认）
-4. 用 create_plugin 工具创建，description 写清插件要做什么、提供哪些能力；
-   tools/api 的 implementation 用标准库实现真实操作，异常自行捕获并返回错误说明文本。
-   生成耗时较长时按阶段调用 `set_generation_progress(percent, message)` 上报进度
-   （如 5 分析需求 / 70 写入文件 / 95 自检 / 100 完成），让用户在面板上看到进度；
-   该工具与 create_plugin 内部进度回调同源，无需重复上报同一阶段。
-   本工具**不设 40s 放弃超时**：生成 + 自检 + 自修可能耗时数分钟，由停止按钮取消。
-5. 创建成功后提示：插件已统一存入插件目录，MCP 工具与技能均已自动登记即时生效
-   （返回文案会写明自检结论与是否登记）；用户可在设置-插件页查看/管理/停用/删除；
-   MCP 服务器需保存后自动重连。
-6. 若用户描述的是可复用的独立能力，适合沉淀为插件；若只是流程，用 skill-create 即可。
+## 1. 判断形态
+- **需要图形化/可视化交互**（仪表盘/可视化面板/画布或表单类工具）→ **web 型**：
+  SKILL.md 技能 + 同名 MCP 工具 + 本地 HTTP 单页浏览器界面（浏览器与 AI 共用 `_STATE`）。
+- **不需要** → 把能力拆成 1-5 个职责单一、可单独调用的 MCP 工具（动作/查询粒度：
+  创建、推进、校验、回退…），由工具组合完成整件事，而不是「打开整个应用」。
+
+## 2. 建骨架
+create_plugin(name=英文名, kind="mcp|skill|combined|web", description=一句话用途)
+→ 生成 plugin.json / SKILL.md 模板 / **可运行的** server.py 示例 / config.json / README（规范与示例）。
+
+## 3. 自己实现
+1) read_file(<插件目录>/README.md) 读规范与示例；再读 server.py / SKILL.md。
+2) 按 README 改写：
+   - mcp / combined：只改 `TOOLS` 与 `_HANDLERS`（协议骨架不要动；工具返回可读文本，异常自行捕获）；
+   - web：改 `_PAGE`（样式/脚本全内联、禁外网 CDN、首屏 fetch('/api/state')）与 `/api` 端点
+     （**必须保留 state(GET)**，其余 2-6 个动作/查询端点，返回 {"ok": true, ...}）；
+   - skill：把 SKILL.md 的四节（触发条件 / 流程 / 参数契约 / 禁用约束）写实。
+3) 可用 set_generation_progress 上报进度（写文件 / 自检 / 完成各一次即可）。
+
+## 4. 登记 + 热加载
+plugin_register(name=...) → 语法编译 → 真跑一次（MCP stdio tools/list 握手；web 型起本地服务
+拉页面并逐个调 /api 端点）→ 通过后登记 MCP 与技能 → 引擎热加载。
+自检失败会返回具体错误：按提示改文件后再次调用，**不得谎报成功**。
+通过后**同一任务下一轮即可调用**，脚本改动也会被识别重连，**无需重启应用**。
+
+## 5. web 型收尾（必须做到）
+登记后立即 web_url 拿访问地址，并用 preview_open 在用户默认浏览器里打开界面给用户；
+界面必须由用户本人操作，严禁 AI 自我演示、自问自答或与脚本/自动化程序互演。
+可用 web_fetch("http://127.0.0.1:<端口>/") 自行复验（本地回环地址已放开）。
+
+## 6. 汇报
+说明：插件名与类型、工具/技能清单、自检结论、调用方式（/插件名 或自然语言描述）、
+在设置-插件页如何管理（查看/配置/停用/删除）。可复用能力 → 插件；只是流程 → skill-create。
 
 ## Agent 插件的能力边界（不含源码级）
 
@@ -520,6 +519,9 @@ MCP 型插件的配置会以大写环境变量注入 server 子进程（api_key 
 当需求是**定制应用本身**——改主题/界面/语言、自定义工具、增删替换任何模块，或注册
 主窗口页面 / 后台服务 / 托盘动作 / 快捷键——用 Copilot 插件（`create_copilot_plugin` /
 `apply_copilot_plugin` / `revert_copilot_plugin`，设置页「Copilot 插件」）。
+**同样是两步**：`create_copilot_plugin(name, description)` 只建骨架（plugin.json +
+空 source_ops.json + README + copilot.example.json）；随后你自己 read_file 目标源码、
+写 source_ops.json / 包内模块，再调 `apply_copilot_plugin` 落地（校验 → 转译层 → 热加载）。
 
 ### 一、插件包结构
 
@@ -670,15 +672,17 @@ browser_click/browser_type/browser_scroll/browser_eval/browser_html/browser_clos
   tools.py（自定义工具）→ `switch_workflow` 热插拔生效。
 - **技能（SKILL.md 市场标准）**：`create_skill` 新建；或 skill-mgmt 导入/启停/删除。
   新技能描述写清触发条件与执行流程，创建后 /技能名 即可调用。
-- **插件（mcp/skill/combined/web 四型）**：`create_plugin` AI 生成可运行插件（含 MCP server +
-  SKILL.md），web 型本地 HTTP Server + 浏览器界面（创建后必须 web_url 拿地址 + preview_open
-  在用户默认浏览器里打开给用户，操作者必须是用户本人，严禁 AI 与脚本自动对战）。
+- **插件（mcp/skill/combined/web 四型）**：`create_plugin` 只建**骨架**（不生成实现），
+  再由你 read_file 读插件目录的 README、write_file / edit_file 实现 server.py 与 SKILL.md，
+  最后 `plugin_register` 自检 + 登记 + 热加载（同一任务下一轮即可调用，无需重启）。
+  web 型登记后必须 web_url 拿地址 + preview_open 在用户浏览器打开，操作者必须是用户本人。
 - **界面 / 主题 / 语言 / 任意模块（Copilot 插件，源码级定制）**：`create_copilot_plugin`
-  （自然语言 → AI 生成 source_ops 变更清单，三种写法可混用：`create_file` 新建模块、
-  `insert_after` / `insert_at` / `append` 插入现有源码、`replace_module` / `replace_lines` /
-  `replace_file` 修改既有实现，可跨多文件综合修改）→ `apply_copilot_plugin` 应用
-  （校验系统 → 逐文件备份 → 编译检查，任一失败整体回滚）→ **热加载引擎在运行进程内即时生效，任何模块都不需要重启应用**；
-  改错了用 `revert_copilot_plugin` 一键回滚（回滚同样即时）。变更只写转译层、不改应用源码文件，
+  只建骨架（plugin.json + 空 source_ops.json + README 五种 op 写法 + copilot.example.json）→
+  你自己 read_file 目标源码、写 source_ops.json 与包内模块（`create_file` 新建模块、
+  `insert_after` / `append` 插入现有源码、`replace_lines` / `replace_module` 修改既有实现）→
+  `apply_copilot_plugin` 落地（校验系统 → 逐文件备份 → 编译检查，任一失败整体回滚）→
+  **热加载引擎在运行进程内即时生效，任何模块都不需要重启应用**；重复调用会按最新文件重落地。
+  改错了用 `revert_copilot_plugin` 一键回滚（同样即时）。变更只写转译层、不改应用源码文件，
   源码运行与 exe 安装版一致。插件包记得配 `icon.png`（方形 128~256px）与 author/updated_at，
   设置页列表会展示。老旧的「UI/UX 包」引擎已移除，界面定制一律走这里。
   现成范本：`perf-turbo`（性能优化：渲染缓存 + 节拍自适应 + 看板 + 工具）、

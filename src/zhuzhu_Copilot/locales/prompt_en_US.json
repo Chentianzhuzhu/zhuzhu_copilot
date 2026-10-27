@@ -502,7 +502,7 @@
     "skill.git-commit.desc": "Commit, push and pull repositories following the Conventional Commits standard; standardize commit message format, check status and handle pull conflicts",
     "skill.image-gen.desc": "Call the Agnes Image 2.1 Flash API for text-to-image and image-to-image generation, auto-downloading results to the desktop",
     "skill.memory.desc": "Long-term memory: save_memory appends user preferences, important conclusions, conventions and paths to local memory, load_memory reads all memory",
-    "skill.plugin-create.desc": "Plugin creation: automatically generate a runnable plugin from a natural-language description (the three-piece set of MCP server + SKILL.md skill + web-type local HTTP UI) and load it, with an automatic smoke self-check after generation",
+    "skill.plugin-create.desc": "Plugin creation: create a plugin skeleton first (create_plugin), then the main agent implements the MCP tools / SKILL.md / web page itself following the spec and README, and finally plugin_register runs the smoke self-check, registers and hot-loads it (no restart); Agent plugins only extend agent capabilities, not app source code",
     "skill.skill-create.desc": "Skill creation: automatically generate a market-standard SKILL.md skill from a natural-language description and load it",
     "skill.skill-mgmt.desc": "Skill creation: create_skill automatically generates a market-standard SKILL.md skill from a natural-language description and loads it immediately",
     "skill.sub-agent.desc": "Subtask scheduling: dispatch_sub_agents dispatches independent subtasks in parallel, explore_project gets up to speed on a new project quickly, search_large searches across directories at scale",
