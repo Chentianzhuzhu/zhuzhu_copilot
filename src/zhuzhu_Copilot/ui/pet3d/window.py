@@ -1,15 +1,15 @@
-"""3D 桌宠窗口：QOpenGLWidget 直渲 + 跟随鼠标 + 交互动画状态机。
+"""3D 桌宠窗口：QOpenGLWidget 直渲 + 固定在右下角（可选跟随）+ 看光标 + 交互动画状态机。
 
 行为
 ----
-- **跟随鼠标**：窗口以缓动追着光标走（始终落后一小段，像跟着你跑），
-  移动越快播放越快、腿部摆动越大、身体前倾越多；
-- **看着你**：头部按「猫→光标」的方向做 yaw/pitch（这块是叠加在烘焙动画上的
-  附加骨骼旋转，不是换整套动画），光标在头顶上方会抬头、在侧面会转头；
+- **默认固定在右下角**（与 GIF 桌宠同一落点，留白 16px）：启动即在那里，**不吸附、
+  不追踪鼠标位置**；
+- **看着你**：头部 + 躯干按「猫→光标」的方向平滑转向（叠加骨骼旋转，不改烘焙动画）：
+  光标在头顶上方会抬头、在侧面会转头；
 - **互动**：单击 → 跳一下（挤压 + 起跳 + 尾巴大幅摆）；双击 → 打开 AI 主面板；
-  右键 → 菜单（回到右下角 / 暂停跟随 / 退出）；拖动 → 抓着走，四肢垂下；
-- **待机**：光标静止 6 秒后自己溜回右下角，用内置动画慢慢呼吸；再过一会儿把
-  播放速度降到最慢，避免一直抖。
+  右键 → 菜单（回到右下角 / 跟随鼠标 / 退出）；拖动 → 抓着走，四肢垂下；
+- **可选跟随（默认关闭）**：右键菜单「跟随鼠标」开启后窗口才缓动追着光标走，
+  移动越快播放越快、腿摆越大、身体前倾越多；光标静止 6 秒后自己回右下角。
 
 所有 3D 交互都是**程序化**的——烘焙进来的内置骨骼动画提供基础节奏（116 帧摇摆），
 扭头/甩尾/摆腿/跳跃是每帧叠加的附加旋转，因此不需要额外美术资源。
@@ -35,6 +35,11 @@ from zhuzhu_Copilot.core.i18n import ui as _ui
 from .rig import PetRig
 from .view import DEFAULT_WIDTH, Pet3DView
 
+#: 右下角留白（像素）：与 GIF 桌宠的位置一致（见 desktop_pet._place_bottom_right）
+PET_CORNER_MARGIN = 16
+#: 默认**不吸附鼠标**：启动即固定在右下角；右键菜单可手动开启「跟随鼠标」
+FOLLOW_BY_DEFAULT = False
+
 #: 追随的判定阈值（像素/秒）：低于 IDLE 认为光标没动；高于 RUN 视为奔跑
 SPEED_IDLE = 24.0
 SPEED_RUN = 900.0
@@ -44,6 +49,12 @@ IDLE_RETURN_S = 6.0
 MAX_DT = 0.1
 
 
+def corner_pos(size: QSize, avail) -> QPoint:
+    """右下角锚点（纯函数）：桌宠左上角坐标，与 GIF 桌宠的落点一致。"""
+    return QPoint(avail.right() - size.width() - PET_CORNER_MARGIN,
+                  avail.bottom() - size.height() - PET_CORNER_MARGIN)
+
+
 def follow_target(cursor: QPoint, size: QSize, avail, idle: bool) -> QPoint:
     """把「光标位置」翻译成桌宠窗口左上角该在的位置（纯函数，便于测试）。
 
@@ -51,8 +62,7 @@ def follow_target(cursor: QPoint, size: QSize, avail, idle: bool) -> QPoint:
     - 待机态（光标长时间不动）：回到屏幕右下角。
     """
     if idle:
-        return QPoint(avail.right() - size.width() - 24,
-                      avail.bottom() - size.height() - 8)
+        return corner_pos(size, avail)
     target = QPoint(cursor.x() - int(size.width() * 0.30),
                     cursor.y() - int(size.height() * 0.55))
     x = max(avail.left() + 4, min(target.x(), avail.right() - size.width() - 4))
@@ -143,7 +153,7 @@ class Pet3DWindow(QWidget):
         self.resize(self._view.size())
 
         # ---- 跟随状态 ----
-        self._follow = True
+        self._follow = FOLLOW_BY_DEFAULT
         self._dragging = False
         self._drag_offset = QPoint()
         self._last_cursor = None
@@ -173,7 +183,7 @@ class Pet3DWindow(QWidget):
 
     def _place_bottom_right(self) -> None:
         avail = self._screen_rect()
-        self.move(avail.right() - self.width() - 24, avail.bottom() - self.height() - 8)
+        self.move(corner_pos(self.size(), avail))
 
     # ---------- 主循环 ----------
     def _tick(self) -> None:
@@ -224,7 +234,10 @@ class Pet3DWindow(QWidget):
         pitch = max(-18.0, min(18.0, -dy / max(80.0, self.height() * 0.6) * 18.0))
 
         happy = now < self._happy_until
-        m = motion_for(self._vel, dragging=self._dragging, happy=happy)
+        # 未开启跟随时窗口不会移动：不能把「光标在动」当成「猫在跑」，否则会原地奔跑。
+        # 拖动时交给 dragging 分支（四肢垂下），与速度无关。
+        vel = self._vel if (self._follow or self._dragging) else 0.0
+        m = motion_for(vel, dragging=self._dragging, happy=happy)
         speed, tail, leg, lean, ear = (m["speed"], m["tail"], m["leg"],
                                       m["lean"], m["ear"])
 

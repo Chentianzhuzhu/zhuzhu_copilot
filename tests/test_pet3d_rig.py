@@ -101,6 +101,23 @@ def test_head_rotation_does_not_move_body(rig):
 
 
 # ---------- D. 跟随逻辑（纯函数） ----------
+def test_pet_defaults_to_fixed_bottom_right_without_following():
+    """默认不吸附鼠标：启动即固定在右下角（与 GIF 桌宠同一落点，留白 16px）。"""
+    from PyQt6.QtCore import QPoint, QRect, QSize
+
+    assert pet_window.FOLLOW_BY_DEFAULT is False, "默认不得吸附/追踪鼠标"
+    assert pet_window.PET_CORNER_MARGIN == 16, "落点留白必须与 GIF 桌宠一致（16px）"
+
+    screen = QRect(0, 0, 1920, 1040)
+    size = QSize(112, 126)
+    pos = pet_window.corner_pos(size, screen)
+    assert pos.x() == screen.right() - size.width() - 16
+    assert pos.y() == screen.bottom() - size.height() - 16
+    # 待机回角落用的也是同一锚点（不另写一份魔法数字）
+    idle = pet_window.follow_target(QPoint(5, 5), size, screen, idle=True)
+    assert idle == pos
+
+
 def test_follow_target_tracks_cursor_and_clamps():
     from PyQt6.QtCore import QPoint, QRect, QSize
     screen = QRect(0, 0, 1920, 1080)
