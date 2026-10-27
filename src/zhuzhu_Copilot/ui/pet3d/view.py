@@ -1,27 +1,108 @@
-"""Qt 3D 渲染层：把烘焙好的桌宠按帧蒙皮后画出来。
+"""桌宠渲染层：QOpenGLWidget 直渲 + 真透明背景（不依赖 Qt 3D，避开离屏回读）。
 
-为什么是「每帧上传顶点」而不是让 Qt 3D 自己蒙皮：Qt 6 的 Qt 3D 没有 FBX/glTF 场景
-导入插件，也不支持从 Python 侧组装 GPU 蒙皮管线；而这份资产的每个部件都是**刚性块**
-（只受一根骨头影响），CPU 侧用 numpy 做一次 3×3 变换只要零点几毫秒，14k 顶点/30fps
-的总上传量约 10MB/s，完全够用。好处是骨骼姿态完全由我们控制，交互动画（扭头、甩尾、
-跳跃）可以逐帧叠加在烘焙动画之上。
+## 为什么换实现
+旧方案（Qt3DWindow 离屏 + QRenderCapture 回读）在用户的 GT 730 + PyQt6 6.11 上
+**整链路必崩**（0xC0000005 / 0xC0000409，崩溃点飘忽），排查后确认是这台机器上
+「连续多 GL 上下文 + 回读 + 合成」的复合不稳定。本实现改用 QOpenGLWidget 直渲：
 
-坐标：资产是 Blender 世界空间（Z 朝上），根实体统一绕 X 轴 -90° 转到 Qt 的 Y 朝上；
-因此「面向 +Z」就是猫脸朝向相机。
+  - 窗口本身走 Qt 的普通 widget 合成，Windows DWM 对 QOpenGLWidget 的 alpha
+    合成是可靠路径（真机截图验证：桌面内容能透过背景显示）；
+  - 渲染完全自己控制：不用 Qt3D 场景图，不用回读，没有第二个 GL 上下文。
+
+## 本机（GT 730 + PyQt6 6.11）GL 避坑清单（全部经真机验证）
+  1. `addShaderFromSourceCode(str)` 必崩 → 用 `QOpenGLShader.compileSourceCode(QByteArray)` + `addShader`；
+  2. `glDrawElements` + EBO 必崩 → 索引展开为独立顶点，`glDrawArrays`；
+  3. `np.diag(...) @ ...` 在 paintGL 内必崩 → 用 numpy 列缩放（`r[:, i] *= k`）；
+  4. `glEnableVertexAttribArray(-1)` 触发驱动故障 → 先判 location >= 0；
+  5. QQuaternion 乘法在 GL 上下文内必崩 → 根旋转用纯 numpy 构造；
+  6. numpy 矩阵行主序 → `glUniformMatrix*` 传 `transpose=True`；
+  7. 像素回读（grab/grabWindow）必崩 → 验证透明用 PIL ImageGrab（GDI 路径）。
+
+## 蒙皮
+资产 21 个部件全是刚性块（只受一根骨头影响），顶点上传一次即可，每帧只换矩阵。
+骨骼姿态由 numpy 求解（rig.PetRig），交互动画（扭头/甩尾/摆腿/跳跃）逐帧叠加。
 """
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QMatrix4x4, QQuaternion, QSurfaceFormat, QVector3D
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
-from PyQt6.Qt3DCore import QAttribute, QBuffer, QEntity, QGeometry, QTransform
-from PyQt6.Qt3DExtras import Qt3DWindow, QPhongMaterial
-from PyQt6.Qt3DRender import QDirectionalLight, QGeometryRenderer, QPointLight
+from PyQt6.QtCore import QByteArray, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QSurfaceFormat
+from PyQt6.QtWidgets import QWidget
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from PyQt6.QtOpenGL import (QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram,
+                            QOpenGLVertexArrayObject, QOpenGLFunctions_2_0)
 
 from .rig import PetRig, _axis_angle
+
+def _default_width() -> int:
+    """桌宠显示宽度（像素）：ZHIZHU_PET3D_WIDTH 可覆盖，默认 112（真透明贴图，尺寸即猫的大小）。"""
+    try:
+        v = int(os.environ.get("ZHIZHU_PET3D_WIDTH") or 0)
+    except ValueError:
+        v = 0
+    return max(72, min(320, v or 112))
+
+
+#: 默认桌宠显示宽度（像素）；高度按 300:340 等比
+DEFAULT_WIDTH = _default_width()
+#: 渲染宽高比（与相机取景一致）
+_ASPECT_W, _ASPECT_H = 300.0, 340.0
+#: 相机视场角（度，与原版一致）
+_FOV_DEG = 34.0
+
+_GL_TRIANGLES = 0x0004
+_GL_FLOAT = 0x1406
+_GL_COLOR_BUFFER_BIT = 0x4000
+_GL_DEPTH_BUFFER_BIT = 0x100
+_GL_DEPTH_TEST = 0x0B71
+_GL_ARRAY_BUFFER = 0x8892
+
+VERT_SRC = """
+#version 120
+attribute vec3 a_pos;
+attribute vec3 a_nrm;
+uniform mat4 u_mvp;
+uniform mat4 u_mv;
+uniform mat3 u_norm;
+varying vec3 v_nrm;
+varying vec3 v_pos;
+void main(void) {
+    v_nrm = u_norm * a_nrm;
+    vec4 p = u_mv * vec4(a_pos, 1.0);
+    v_pos = p.xyz;
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+"""
+
+FRAG_SRC = """
+#version 120
+uniform vec4 u_color;
+uniform vec3 u_light1;    // view space 主光
+uniform vec3 u_light2;    // view space 补光
+uniform vec3 u_light3dir; // 轮廓光方向(view space)
+varying vec3 v_nrm;
+varying vec3 v_pos;
+vec3 safe_norm(vec3 v) { return v / max(length(v), 1e-6); }
+void main(void) {
+    vec3 N = safe_norm(v_nrm);
+    vec3 V = safe_norm(-v_pos);
+    vec3 L1 = safe_norm(u_light1 - v_pos);
+    vec3 L2 = safe_norm(u_light2 - v_pos);
+    vec3 L3 = safe_norm(u_light3dir);
+    float d1 = max(dot(N, L1), 0.0);
+    float d2 = max(dot(N, L2), 0.0);
+    float d3 = max(dot(N, L3), 0.0);
+    vec3 albedo = u_color.rgb;
+    vec3 c = albedo * (0.28 + 1.2 * d1 + 0.6 * d2 + 0.35 * d3);
+    vec3 H = safe_norm(L1 + V);
+    float spec = pow(max(dot(N, H), 0.0), 26.0) * 0.25;
+    c += vec3(0.35, 0.38, 0.45) * spec;
+    gl_FragColor = vec4(c, u_color.a);
+}
+"""
 
 
 def _srgb(c: float) -> float:
@@ -30,13 +111,8 @@ def _srgb(c: float) -> float:
     return 12.92 * c if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
 
 
-def _qcolor(rgb, alpha: int = 255) -> QColor:
-    r, g, b = (int(round(_srgb(v) * 255)) for v in rgb[:3])
-    return QColor(r, g, b, alpha)
-
-
-class Pet3DView(QWidget):
-    """桌宠 3D 视图（内嵌 Qt3DWindow）。外部只需喂 dt 与互动参数。"""
+class Pet3DView(QOpenGLWidget):
+    """透明桌宠视图：直接 GL 渲染，背景透明（DWM 合成）。"""
 
     pressed = pyqtSignal(object)          # 全局坐标 QPoint
     dragged = pyqtSignal(object)
@@ -44,10 +120,11 @@ class Pet3DView(QWidget):
     doubleClicked = pyqtSignal()
     contextRequested = pyqtSignal(object)
 
-    def __init__(self, rig: PetRig, parent=None, size: QSize | None = None,
-                 transparent: bool = True):
+    def __init__(self, rig: PetRig, parent: QWidget | None = None,
+                 size: QSize | None = None, transparent: bool = True):
         super().__init__(parent)
         self._rig = rig
+        self._transparent = bool(transparent)
         self._time = 0.0
         self._speed = 1.0
         self._look_yaw = 0.0
@@ -62,201 +139,163 @@ class Pet3DView(QWidget):
         self._body_yaw = 0.0
         self._breath_phase = 0.0
 
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, transparent)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, transparent)
+        if self._transparent:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            # 帧缓冲必须带 alpha 通道：否则真透明窗口会被 DWM 合成为黑底
+            # （「背景不透明」的根因）。必须在 show 之前设置。
+            fmt = QSurfaceFormat()
+            fmt.setAlphaBufferSize(8)
+            fmt.setDepthBufferSize(24)
+            fmt.setSamples(0)
+            self.setFormat(fmt)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setMouseTracking(True)
 
-        fmt = QSurfaceFormat()
-        fmt.setAlphaBufferSize(8 if transparent else 0)
-        fmt.setSamples(4)
-        QSurfaceFormat.setDefaultFormat(fmt)
-
-        self._win = Qt3DWindow()
-        # 显式给这个 QWindow 设带 alpha 的 surface format：只在 QApplication 之后
-        # setDefaultFormat 是不够的（平台集成已初始化），逐窗口设置才会真正申请 alpha 通道。
-        self._win.setFormat(fmt)
-        self._win.defaultFrameGraph().setClearColor(
-            QColor(0, 0, 0, 0) if transparent else QColor(6, 7, 10, 255))
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        self._container = QWidget.createWindowContainer(self._win, self)
-        self._container.setMinimumSize(1, 1)
-        self._container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        lay.addWidget(self._container)
-
-        self._root = QEntity()
-        self._root_tf = QTransform()
-        self._root_tf.setRotation(QQuaternion.fromEulerAngles(-90.0, 0.0, 0.0))
-        self._root.addComponent(self._root_tf)
-        self._build_parts()
-        self._build_lights()
-        self._win.setRootEntity(self._root)
-        self._frame_camera()
-
-        # 鼠标事件：Qt3D 的窗口是原生子窗口，事件只到 QWindow、不到父 widget，
-        # 也不能用「透明遮罩 widget 盖上去」——那会把 3D 视口遮住（实测整屏发白）。
-        # 正确做法是给 QWindow 装事件过滤器。
-        self._win.installEventFilter(self)
+        self._meshes = []          # [(vao, count, part)]
+        self._prog = None
+        self._f = None
+        self._attribs = (-1, -1)
+        self._uniforms = {}
+        self._mvp_cache = {}
 
         if size is not None:
             self.resize(size)
+        else:
+            self.resize(DEFAULT_WIDTH, int(DEFAULT_WIDTH * _ASPECT_H / _ASPECT_W))
 
-    def eventFilter(self, obj, ev) -> bool:
-        """把 3D 窗口上的鼠标事件转成信号，交给桌宠窗口做拖拽/点击。"""
-        if obj is self._win:
-            t = ev.type()
-            if t == QEvent.Type.MouseButtonPress:
-                self.pressed.emit(ev.globalPosition().toPoint())
-            elif t == QEvent.Type.MouseMove:
-                self.dragged.emit(ev.globalPosition().toPoint())
-            elif t == QEvent.Type.MouseButtonRelease:
-                self.released.emit(ev.globalPosition().toPoint())
-            elif t == QEvent.Type.MouseButtonDblClick:
-                self.doubleClicked.emit()
-            elif t == QEvent.Type.ContextMenu:
-                self.contextRequested.emit(ev.globalPos())
-        return super().eventFilter(obj, ev)
+    # ---------- GL ----------
+    def initializeGL(self) -> None:
+        f = QOpenGLFunctions_2_0()
+        f.initializeOpenGLFunctions()
+        self._f = f
 
-    def resizeEvent(self, event) -> None:
-        """相机宽高比跟着视口走（否则画面会被拉伸）。"""
-        super().resizeEvent(event)
-        try:
-            h = max(1, self.height())
-            w = max(1, self.width())
-            cam = self._win.camera()
-            cam.lens().setAspectRatio(w / h)
-        except Exception:
-            pass
+        prog = QOpenGLShaderProgram(self)
+        vs = QOpenGLShader(QOpenGLShader.ShaderTypeBit.Vertex, self)
+        fs = QOpenGLShader(QOpenGLShader.ShaderTypeBit.Fragment, self)
+        vs.compileSourceCode(QByteArray(VERT_SRC.encode()))
+        fs.compileSourceCode(QByteArray(FRAG_SRC.encode()))
+        prog.addShader(vs)
+        prog.addShader(fs)
+        if not prog.link():
+            raise RuntimeError("桌宠着色器链接失败: %s" % prog.log())
+        self._prog = prog
 
-    # ---------- 场景搭建 ----------
-    def _build_parts(self) -> None:
-        self._bufs = []
-        self._parts = []
-        for part in self._rig.parts:
-            geom = QGeometry(self._root)
-            pos = np.ascontiguousarray(part.pos[:, :3], dtype=np.float32)
-            nrm = np.ascontiguousarray(part.nrm[:, :3], dtype=np.float32)
+        self._attribs = (prog.attributeLocation(b"a_pos"),
+                         prog.attributeLocation(b"a_nrm"))
+        self._uniforms = {
+            "mvp": prog.uniformLocation(b"u_mvp"),
+            "mv": prog.uniformLocation(b"u_mv"),
+            "norm": prog.uniformLocation(b"u_norm"),
+            "color": prog.uniformLocation(b"u_color"),
+            "light1": prog.uniformLocation(b"u_light1"),
+            "light2": prog.uniformLocation(b"u_light2"),
+            "light3": prog.uniformLocation(b"u_light3dir"),
+        }
 
-            pos_buf = QBuffer(geom)
-            pos_buf.setData(QByteArray(pos.tobytes()))
-            pos_attr = QAttribute(geom)
-            pos_attr.setName(QAttribute.defaultPositionAttributeName())
-            pos_attr.setVertexBaseType(QAttribute.VertexBaseType.Float)
-            pos_attr.setVertexSize(3)
-            pos_attr.setAttributeType(QAttribute.AttributeType.VertexAttribute)
-            pos_attr.setBuffer(pos_buf)
-            pos_attr.setCount(len(pos))
-            pos_attr.setByteStride(12)
+        f.glEnable(_GL_DEPTH_TEST)
+        # 不启用背面剔除：网格绕向与原版 Qt3D 渲染一致（QPhongMaterial 默认不剔除）
 
-            nrm_buf = QBuffer(geom)
-            nrm_buf.setData(QByteArray(nrm.tobytes()))
-            nrm_attr = QAttribute(geom)
-            nrm_attr.setName(QAttribute.defaultNormalAttributeName())
-            nrm_attr.setVertexBaseType(QAttribute.VertexBaseType.Float)
-            nrm_attr.setVertexSize(3)
-            nrm_attr.setAttributeType(QAttribute.AttributeType.VertexAttribute)
-            nrm_attr.setBuffer(nrm_buf)
-            nrm_attr.setCount(len(nrm))
-            nrm_attr.setByteStride(12)
-
-            # Qt6 去掉了 QBuffer::BufferType：一个 buffer 是索引还是顶点，由绑定它的
-            # QAttribute 类型决定（见下方 IndexAttribute），无需也不能再 setType。
-            idx_buf = QBuffer(geom)
-            idx = np.ascontiguousarray(part.indices, dtype=np.uint32)
-            idx_buf.setData(QByteArray(idx.tobytes()))
-            idx_attr = QAttribute(geom)
-            idx_attr.setVertexBaseType(QAttribute.VertexBaseType.UnsignedInt)
-            idx_attr.setAttributeType(QAttribute.AttributeType.IndexAttribute)
-            idx_attr.setBuffer(idx_buf)
-            idx_attr.setCount(len(idx))
-
-            geom.addAttribute(pos_attr)
-            geom.addAttribute(nrm_attr)
-            geom.addAttribute(idx_attr)
-
-            renderer = QGeometryRenderer()
-            renderer.setGeometry(geom)
-            renderer.setPrimitiveType(QGeometryRenderer.PrimitiveType.Triangles)
-
-            mat = QPhongMaterial(self._root)
-            col = _qcolor(part.color)
-            mat.setAmbient(QColor(int(col.red() * 0.38), int(col.green() * 0.38),
-                                  int(col.blue() * 0.38), 255))
-            mat.setDiffuse(col)
-            mat.setSpecular(QColor(58, 64, 76, 255))
-            mat.setShininess(26.0)
-
-            ent = QEntity(self._root)
-            ent.addComponent(renderer)
-            ent.addComponent(mat)
-            # 刚性部件（只受一根骨头影响）：顶点数据只上传一次，之后每帧只改实体
-            # 变换矩阵 —— 让 GPU 去乘，省掉每帧 300KB 级的缓冲区上传。
-            # 这份资产 21 个部件全是刚性块，所以常规路径下每帧几乎零上传。
-            xf = QTransform()
-            ent.addComponent(xf)
-            self._parts.append(part)
-            self._bufs.append((pos_buf, nrm_buf, xf))
-
-    def _build_lights(self) -> None:
-        """主光 + 冷色补光 + 背后轮廓光：低模在纯黑背景上也能看出体积。"""
-        key = QEntity(self._root)
-        kt = QTransform()
-        kt.setTranslation(QVector3D(1.6, 2.4, 2.6))
-        key.addComponent(kt)
-        kl = QPointLight(key)
-        kl.setColor(QColor(255, 246, 232))
-        kl.setIntensity(1.2)
-        key.addComponent(kl)
-
-        fill = QEntity(self._root)
-        ft = QTransform()
-        ft.setTranslation(QVector3D(-2.2, 1.1, 1.5))
-        fill.addComponent(ft)
-        fl = QPointLight(fill)
-        fl.setColor(QColor(150, 176, 216))
-        fl.setIntensity(0.6)
-        fill.addComponent(fl)
-
-        rim = QEntity(self._root)
-        rt = QTransform()
-        rt.setRotation(QQuaternion.fromEulerAngles(-120.0, 0.0, 0.0))
-        rim.addComponent(rt)
-        rl = QDirectionalLight(rim)
-        rl.setColor(QColor(130, 150, 190))
-        rl.setIntensity(0.9)
-        rim.addComponent(rl)
-
-    def _frame_camera(self) -> None:
-        """按包围盒自动取景：留 12% 边距，视线略高于中心。"""
+        # 相机（与原版 _frame_camera 同一套取景公式）
         lo, hi = self._rig.bounds_min, self._rig.bounds_max
         height = float(hi[2] - lo[2])
         width = float(max(hi[0] - lo[0], hi[1] - lo[1]))
-        fov = 34.0
-        dist = (max(height, width) * 0.5) / math.tan(math.radians(fov) / 2) / 0.78
+        dist = (max(height, width) * 0.5) / math.tan(math.radians(_FOV_DEG) / 2) / 0.78
         cy = float((hi[2] + lo[2]) * 0.5)
-        cam = self._win.camera()
-        cam.lens().setPerspectiveProjection(fov, 1.0, 0.05, 100.0)
-        cam.setPosition(QVector3D(0.0, cy + height * 0.12, dist))
-        cam.setViewCenter(QVector3D(0.0, cy, 0.0))
-        cam.setUpVector(QVector3D(0.0, 1.0, 0.0))
+        self._view = _look_at(np.array([0.0, cy + height * 0.12, dist]),
+                              np.array([0.0, cy, 0.0]),
+                              np.array([0.0, 1.0, 0.0]))
 
-    # ---------- 外部驱动 ----------
-    def set_motion(self, **kwargs) -> None:
-        for name in ("speed", "look_yaw", "look_pitch", "tail_amp", "ear_twitch",
-                     "leg_swing", "hop", "lean", "squash", "body_yaw"):
-            if kwargs.get(name) is not None:
-                setattr(self, "_" + name, float(kwargs[name]))
+        # 部件网格：索引展开为非索引顶点（glDrawElements 本机必崩）
+        for part in self._rig.parts:
+            vao = QOpenGLVertexArrayObject(self)
+            vao.create()
+            vao.bind()
+            vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            vbo.create()
+            vbo.bind()
+            base = np.concatenate([part.pos[:, :3], part.nrm[:, :3]],
+                                  axis=1).astype(np.float32)
+            verts = base[part.indices]
+            vbo.allocate(verts.tobytes(), verts.nbytes)
+            for a in self._attribs:
+                if a >= 0:
+                    f.glEnableVertexAttribArray(a)
+            f.glVertexAttribPointer(self._attribs[0], 3, _GL_FLOAT, False, 24, 0)
+            f.glVertexAttribPointer(self._attribs[1], 3, _GL_FLOAT, False, 24, 12)
+            vbo.release()
+            vao.release()
+            self._meshes.append((vao, len(verts), part))
 
-    def advance(self, dt: float) -> None:
-        """推进一帧：算骨骼矩阵 → 蒙皮 → 上传顶点。dt 单位为秒。"""
-        dt = max(0.0, min(0.1, float(dt)))
-        self._time += dt * max(0.05, self._speed)
-        self._tail_phase += dt * (2.4 + 5.0 * min(1.0, abs(self._tail_amp) / 26.0))
-        # 呼吸起伏：越静止越明显（0.9Hz，幅度约身高的 0.4%），跑动时收小
-        self._breath_phase += dt * 5.7
+        self._mats = np.zeros((len(self._meshes), 4, 4), dtype=np.float64)
+
+    def _frame_gl(self, f) -> None:
+        """清屏（透明/不透明）→ 计算姿态 → 逐部件上传并绘制。"""
+        f.glViewport(0, 0, max(1, self.width()), max(1, self.height()))
+        if self._transparent:
+            f.glClearColor(0.0, 0.0, 0.0, 0.0)
+        else:
+            f.glClearColor(0.082, 0.094, 0.118, 1.0)
+        f.glClear(_GL_COLOR_BUFFER_BIT | _GL_DEPTH_BUFFER_BIT)
+
+        prog = self._prog
+        if prog is None:
+            return
+        prog.bind()
+        u = self._uniforms
+
+        # 灯光（view space，与原版 _build_lights 一致）
+        f.glUniform3f(u["light1"], 1.6, 2.4, 2.6)
+        f.glUniform3f(u["light2"], -2.2, 1.1, 1.5)
+        f.glUniform3f(u["light3"], 0.0, -0.8, -1.2)
+
+        # 根变换：绕 X -90° 立起（Blender Z-up → GL Y-up）+ body_yaw 转朝向 + 挤压
+        # （纯 numpy 构造；QQuaternion 乘法在本机 GL 上下文内必崩）
+        ry = np.deg2rad(self._body_yaw)
+        rx = np.deg2rad(-90.0 + self._lean)
+        cy_, sy_ = math.cos(ry), math.sin(ry)
+        cx_, sx_ = math.cos(rx), math.sin(rx)
+        r = np.eye(4)
+        r[:3, :3] = np.array([[cy_, -sy_, 0.0], [sy_, cy_, 0.0],
+                              [0.0, 0.0, 1.0]]) @ np.array(
+            [[1.0, 0.0, 0.0], [0.0, cx_, -sx_], [0.0, sx_, cx_]])
+        sq = max(0.25, self._squash)
+        r[:, 0] *= 1.0 / sq
+        r[:, 1] *= sq
         calm = 1.0 - 0.6 * min(1.0, self._speed / 2.0)
         breath = math.sin(self._breath_phase) * 0.007 * calm
+        r[0, 3] = 0.0
+        r[1, 3] = self._hop + breath
+        r[2, 3] = 0.0
 
+        mats = self._rig.pose(self._time, self._extra_rot(), self._extra_shift())
+        for i, (vao, count, part) in enumerate(self._meshes):
+            m = mats[int(part.joints[0, 0])]
+            model = r @ m
+            mv = self._view @ model
+            mvp = self._proj @ mv
+            norm = np.linalg.inv(mv[:3, :3])
+            f.glUniformMatrix4fv(u["mvp"], 1, True,
+                                 np.ascontiguousarray(mvp, dtype=np.float32).tobytes())
+            f.glUniformMatrix4fv(u["mv"], 1, True,
+                                 np.ascontiguousarray(mv, dtype=np.float32).tobytes())
+            f.glUniformMatrix3fv(u["norm"], 1, True,
+                                 np.ascontiguousarray(norm, dtype=np.float32).tobytes())
+            col = part.color
+            f.glUniform4f(u["color"], _srgb(col[0]), _srgb(col[1]), _srgb(col[2]), 1.0)
+            vao.bind()
+            f.glDrawArrays(_GL_TRIANGLES, 0, count)
+            vao.release()
+        prog.release()
+
+    def paintGL(self) -> None:
+        if self._prog is None:
+            return
+        self._proj = _perspective(_FOV_DEG, self.width() / max(1, self.height()),
+                                  0.05, 100.0)
+        self._frame_gl(self._f)
+
+    # ---------- 动画 ----------
+    def _extra_rot(self) -> dict:
         extra = {}
         extra["Head"] = _axis_angle("x", self._look_pitch) @ _axis_angle("y", self._look_yaw)
         wag = self._tail_amp
@@ -272,11 +311,13 @@ class Pet3DView(QWidget):
         extra["R_Hindleg"] = _axis_angle("x", sw)
         extra["R_Foreleg"] = _axis_angle("x", -sw * 0.6)
         extra["L_Hindleg"] = _axis_angle("x", -sw * 0.6)
+        return extra
 
-        # 四肢/尾巴用世界空间平移做"看得见的"摆动（旋转是原地打转，见 rig.pose 注释）
+    def _extra_shift(self) -> dict:
+        # 四肢/尾巴用世界空间平移做"看得见的"摆动（旋转是原地打转）
         shift = {}
         if abs(self._tail_amp) > 0.5:
-            amp = 0.004 * self._tail_amp          # 单摆幅度：按尾巴摆幅档位缩放
+            amp = 0.004 * self._tail_amp
             for i, name in enumerate(("Tail_1", "Tail_2", "Tail_3")):
                 ph = self._tail_phase - i * 0.5
                 shift[name] = (math.sin(ph) * amp * (0.8 + 0.35 * i), 0.0,
@@ -287,23 +328,70 @@ class Pet3DView(QWidget):
             shift["R_Hindleg"] = (0.0, 0.0, step)
             shift["R_Foreleg"] = (0.0, 0.0, -step * 0.6)
             shift["L_Hindleg"] = (0.0, 0.0, -step * 0.6)
+        return shift
 
-        mats = self._rig.pose(self._time, extra, shift)
+    def set_motion(self, **kwargs) -> None:
+        for name in ("speed", "look_yaw", "look_pitch", "tail_amp", "ear_twitch",
+                     "leg_swing", "hop", "lean", "squash", "body_yaw"):
+            if kwargs.get(name) is not None:
+                setattr(self, "_" + name, float(kwargs[name]))
 
-        # 先绕 X 把模型立起来（Blender Z-up → Qt Y-up），再绕世界 Y 转身体朝向；
-        # 不做负缩放镜像：那会把法线与三角形绕序一起翻掉，光照和背面剔除都会错。
-        self._root_tf.setRotation(
-            QQuaternion.fromAxisAndAngle(QVector3D(0, 1, 0), self._body_yaw)
-            * QQuaternion.fromAxisAndAngle(QVector3D(1, 0, 0), -90.0 + self._lean))
-        self._root_tf.setTranslation(QVector3D(0.0, self._hop + breath, 0.0))
-        sq = max(0.25, self._squash)
-        self._root_tf.setScale3D(QVector3D(1.0 / sq, sq, 1.0 / sq))
+    def advance(self, dt: float) -> None:
+        """推进一帧动画：只更新状态 + 请求重绘，矩阵/绘制都在 paintGL 里。"""
+        dt = max(0.0, min(0.1, float(dt)))
+        self._time += dt * max(0.05, self._speed)
+        self._tail_phase += dt * (2.4 + 5.0 * min(1.0, abs(self._tail_amp) / 26.0))
+        self._breath_phase += dt * 5.7
+        self.update()
 
-        for part, (pos_buf, nrm_buf, xf) in zip(self._parts, self._bufs):
-            if part.rigid:
-                m = mats[int(part.joints[0, 0])]
-                xf.setMatrix(QMatrix4x4(*m.astype(float).ravel().tolist()))
-                continue
-            pos, nrm = self._rig.skin(part, mats)
-            pos_buf.setData(QByteArray(pos.tobytes()))
-            nrm_buf.setData(QByteArray(nrm.tobytes()))
+    # ---------- 鼠标：QOpenGLWidget 直接收 ----------
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.pressed.emit(e.globalPosition().toPoint())
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if e.buttons() & Qt.MouseButton.LeftButton:
+            self.dragged.emit(e.globalPosition().toPoint())
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self.released.emit(e.globalPosition().toPoint())
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(e)
+
+    def contextMenuEvent(self, e):
+        self.contextRequested.emit(e.globalPos())
+        e.accept()
+
+
+def _look_at(eye, center, up) -> np.ndarray:
+    """视图矩阵（行主序 4×4，上传时 transpose）。"""
+    f = center - eye
+    f = f / np.linalg.norm(f)
+    s = np.cross(f, up)
+    s = s / np.linalg.norm(s)
+    u = np.cross(s, f)
+    m = np.eye(4)
+    m[0, :3] = s
+    m[1, :3] = u
+    m[2, :3] = -f
+    m[0, 3] = -np.dot(s, eye)
+    m[1, 3] = -np.dot(u, eye)
+    m[2, 3] = np.dot(f, eye)
+    return m
+
+
+def _perspective(fov_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
+    f = 1.0 / math.tan(math.radians(fov_deg) / 2)
+    m = np.zeros((4, 4))
+    m[0, 0] = f / aspect
+    m[1, 1] = f
+    m[2, 2] = (far + near) / (near - far)
+    m[2, 3] = 2 * far * near / (near - far)
+    m[3, 2] = -1.0
+    return m

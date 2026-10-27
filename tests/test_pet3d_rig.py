@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""3D 桌宠（kitty_pet.fbx 烘焙资产 + Qt 3D）回归。
+"""3D 桌宠（kitty_pet.fbx 烘焙资产 + QOpenGLWidget 直渲）回归。
 
 守护契约：
   A. 烘焙资产完整、可加载（骨骼 22 根 / 部件绑定正确的骨头）；
   B. 蒙皮真的会算：内置动画 + 附加旋转都要能改变顶点（否则桌宠是块石头）；
   C. 「跟随鼠标」的几何语义：扭头只影响头，不改身体；
   D. 跟随逻辑是纯函数，可测：贴边收进屏幕内、待机回右下角、速度分档正确；
-  E. 缺 Qt3D / 缺资产时必须能优雅回退（GIF 桌宠），不能把主程序拖死。
+  E. 缺 Qt3D / 缺资产时必须能优雅回退（GIF 桌宠），不能把主程序拖死；
+  F. 窗口尺寸与真透明：尺寸单一来源（可配置）、透明帧缓冲必须带 alpha；
+  G. 启动预加载：导入 + 资产解析在后台线程完成，幂等且结果可复用。
 """
 import sys
 from pathlib import Path
@@ -16,7 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 pytest.importorskip("numpy")
-pytest.importorskip("PyQt6.Qt3DCore")
+pytest.importorskip("PyQt6.QtOpenGLWidgets")
 
 from zhuzhu_Copilot.ui.pet3d import rig as rig_mod                     # noqa: E402
 from zhuzhu_Copilot.ui.pet3d import window as pet_window               # noqa: E402
@@ -148,7 +150,61 @@ def test_create_pet_falls_back_to_gif(monkeypatch):
 
 
 def test_transparent_flag_is_opt_in(monkeypatch):
+    """新渲染层（QOpenGLWidget 直渲）默认真透明；设 ZHIZHU_PET3D_TRANSPARENT=0
+    可强制回退到旧的「圆角卡片」观感（排障/特殊需求用）。"""
     monkeypatch.delenv("ZHIZHU_PET3D_TRANSPARENT", raising=False)
-    assert pet_window._want_transparent() is False, "默认是圆角卡片（Windows 上 GL 窗口不吃透明）"
-    monkeypatch.setenv("ZHIZHU_PET3D_TRANSPARENT", "1")
-    assert pet_window._want_transparent() is True
+    assert pet_window._want_transparent() is True, "新渲染层默认透明（DWM 合成可靠）"
+    monkeypatch.setenv("ZHIZHU_PET3D_TRANSPARENT", "0")
+    assert pet_window._want_transparent() is False
+    monkeypatch.setenv("ZHIZHU_PET3D_TRANSPARENT", "off")
+    assert pet_window._want_transparent() is False
+
+
+# ---------- F. 尺寸与透明 ----------
+def test_default_width_is_configurable_and_small(monkeypatch):
+    """桌宠宽度单一来源：默认 112（真透明贴图下尺寸即猫大小），环境变量可覆盖。"""
+    from zhuzhu_Copilot.ui.pet3d import view as pet_view
+
+    monkeypatch.delenv("ZHIZHU_PET3D_WIDTH", raising=False)
+    assert pet_view._default_width() == 112
+    monkeypatch.setenv("ZHIZHU_PET3D_WIDTH", "160")
+    assert pet_view._default_width() == 160
+    monkeypatch.setenv("ZHIZHU_PET3D_WIDTH", "abc")
+    assert pet_view._default_width() == 112, "非法值必须回落到默认"
+    monkeypatch.setenv("ZHIZHU_PET3D_WIDTH", "10")
+    assert pet_view._default_width() == 72, "过小值必须被下限夹住"
+
+
+def test_window_height_follows_view_aspect():
+    """窗口高度按渲染取景比例 300:340 等比，宽高比不允许各写一份。"""
+    assert pet_window.PET_WIDTH == pet_window.DEFAULT_WIDTH, "宽度必须取 view 的单一来源"
+    assert pet_window.PET_HEIGHT == int(pet_window.PET_WIDTH * 340 / 300)
+
+
+def test_pet3d_can_be_disabled_by_env(monkeypatch):
+    """ZHIZHU_PET3D=0 必须能关掉 3D 桌宠（排障 / 省 GPU），回退 GIF。"""
+    from zhuzhu_Copilot.ui import desktop_pet
+
+    monkeypatch.delenv("ZHIZHU_PET3D", raising=False)
+    assert desktop_pet._pet3d_disabled() is False
+    for v in ("0", "off", "false", "no"):
+        monkeypatch.setenv("ZHIZHU_PET3D", v)
+        assert desktop_pet._pet3d_disabled() is True
+
+
+# ---------- G. 启动预加载 ----------
+def test_preload_pet3d_loads_rig_once():
+    """导入 + 资产解析在后台线程完成：完成后 _PRELOAD 就绪，且重复调用不再起线程。"""
+    from zhuzhu_Copilot.ui import desktop_pet
+
+    desktop_pet._PRELOAD.update(thread=None, prefix=None, rig=None,
+                               done=False, ok=False)
+    desktop_pet.preload_pet3d()
+    loader = desktop_pet._PRELOAD["thread"]
+    assert loader is not None, "预加载线程必须启动"
+    desktop_pet.preload_pet3d()                     # 幂等
+    assert desktop_pet._PRELOAD["thread"] is loader
+    assert loader.wait(60_000), "预加载线程未结束"
+    assert desktop_pet._PRELOAD["done"] and desktop_pet._PRELOAD["ok"]
+    assert desktop_pet._PRELOAD["rig"] is not None
+    assert desktop_pet._PRELOAD["prefix"] is not None

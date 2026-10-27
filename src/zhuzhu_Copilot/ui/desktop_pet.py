@@ -1,8 +1,10 @@
-"""桌宠：透明 GIF 常驻桌面右下角（任务栏上方），随主程序启动。
-鼠标悬停期间 → 持续循环播放；离开 → 暂停回到首帧。
-另外每 60 秒会自动播一次完整循环（唤醒宠物）。
+"""桌宠：默认 3D（pet3d：QOpenGLWidget 直渲 + 跟随鼠标），不可用时回退 GIF。
 
-用 PIL 预加载帧，避免 QMovie 加载大 GIF 崩溃。
+3D 桌宠的模块导入与资产解析在后台线程预加载（preload_pet3d），启动动画期间完成，
+面板打开后建窗口几乎零延迟。
+
+GIF 回退：透明 GIF 常驻桌面右下角（任务栏上方），悬停循环播放、离开停回首帧，
+每 60 秒自动播一次。用 PIL 预加载帧，避免 QMovie 加载大 GIF 崩溃。
 """
 import os
 import sys
@@ -11,7 +13,7 @@ from typing import List, Tuple
 
 from zhuzhu_Copilot.core.i18n import ui as _ui
 
-from PyQt6.QtCore import Qt, QPoint, QSize, QTimer
+from PyQt6.QtCore import Qt, QPoint, QSize, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QAction
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu
 
@@ -224,12 +226,12 @@ class DesktopPet(QWidget):
 
 
 def _create_pet(main_window):
-    """建桌宠：**默认 3D**（kitty_pet.fbx 烘焙资产 + Qt 3D + 跟随鼠标互动），
-    3D 不可用（没装 Qt3D / 资产缺失 / 初始化抛错）时回退到原来的 GIF 桌宠。
+    """建桌宠：**默认 3D**（pet3d：QOpenGLWidget 直渲 + 跟随鼠标互动），
+    3D 不可用（缺模块 / 资产缺失 / 初始化抛错）时回退到原来的 GIF 桌宠。
 
     环境变量 ZHIZHU_PET3D=0 可强制回退 GIF（排障/省 GPU 时用）。
     """
-    if str(os.environ.get("ZHIZHU_PET3D", "1")).strip().lower() not in ("0", "false", "off", "no"):
+    if not _pet3d_disabled():
         try:
             from zhuzhu_Copilot.ui.pet3d import Pet3DWindow, asset_prefix, available
             if available():
@@ -242,6 +244,147 @@ def _create_pet(main_window):
     if not gif:
         return None
     return DesktopPet(gif, open_panel_cb=main_window._open_agent_panel)
+
+
+#: 3D 桌宠预加载结果（模块级单例）：
+#:   thread  QThread 引用（必须常驻，run() 期间被 GC 会让线程崩溃）
+#:   prefix  资产前缀 Path；rig 解析好的 PetRig
+#:   done/ok 是否已结束、是否成功
+_PRELOAD = {"thread": None, "prefix": None, "rig": None, "done": False, "ok": False}
+
+#: 面板尚未显示时，桌宠建窗的重试间隔与最大次数（100ms × 50 = 最多等 5 秒）
+_PET_SHOW_RETRY_MS = 100
+_PET_SHOW_RETRY_MAX = 50
+
+
+def _pet3d_disabled() -> bool:
+    """ZHIZHU_PET3D=0 强制关掉 3D 桌宠（排障/省 GPU），走 GIF。"""
+    return str(os.environ.get("ZHIZHU_PET3D", "1")).strip().lower() \
+        in ("0", "false", "off", "no")
+
+
+class _Pet3DPreloader(QThread):
+    """后台预加载 3D 桌宠：导入 GL 渲染模块（实测 ~1.1s）+ 解析烘焙资产（~0.14s）。
+
+    全过程只产生纯 Python / numpy 对象，不碰 QWidget，跨线程安全；主线程拿到
+    结果后才建窗口。结果写入 _PRELOAD，ready 仅作「完成」通知。
+    """
+
+    ready = pyqtSignal(bool)
+
+    def run(self) -> None:
+        ok = False
+        try:
+            if _pet3d_disabled():
+                raise RuntimeError("ZHIZHU_PET3D=0")
+            import numpy  # noqa: F401
+            from PyQt6 import QtOpenGL, QtOpenGLWidgets  # noqa: F401
+            from zhuzhu_Copilot.ui.pet3d import window as _window
+            prefix = _window.asset_prefix()
+            if prefix is None:
+                raise RuntimeError("缺少 pet3d 资产")
+            from zhuzhu_Copilot.ui.pet3d.rig import PetRig
+            _PRELOAD["rig"] = PetRig(prefix)
+            _PRELOAD["prefix"] = prefix
+            ok = True
+        except Exception as e:
+            print(f"[桌宠] 3D 桌宠预加载失败：{e}")
+        finally:
+            _PRELOAD["ok"] = ok
+            _PRELOAD["done"] = True
+            self.ready.emit(ok)
+
+
+def preload_pet3d() -> None:
+    """提前在后台线程预加载 3D 桌宠（幂等）。与启动动画并行，桌宠出现几乎零延迟。"""
+    if _PRELOAD["thread"] is not None or _PRELOAD["done"]:
+        return
+    try:
+        loader = _Pet3DPreloader()
+    except Exception as e:
+        print(f"[桌宠] 预加载线程创建失败：{e}")
+        _PRELOAD["done"] = True
+        return
+    _PRELOAD["thread"] = loader    # 常驻引用：QThread 被 GC 会让 run() 崩溃
+    loader.start()
+
+
+def start_pet_async(main_window, delay_ms: int = 0):
+    """启动桌宠：导入 + 资产解析已在后台线程（见 preload_pet3d），
+    这里只在主线程建窗口，不再有启动同步阻塞。
+
+    - 预加载已完成：直接建窗口；
+    - 仍在进行：等 ready 信号（结果写在 _PRELOAD，信号只作通知）；
+    - 3D 不可用 / 建窗失败：回退 GIF 桌宠。
+    """
+    if getattr(main_window, "_pet", None) is not None:
+        return
+
+    def _spawn():
+        preload_pet3d()
+        loader = _PRELOAD["thread"]
+        fired = False
+
+        def _finish(ok: bool) -> None:
+            nonlocal fired
+            if fired:
+                return
+            fired = True
+            _spawn_pet3d(main_window, ok)
+
+        if loader is not None:
+            loader.ready.connect(_finish)
+        # 预加载可能在我们连上信号之前就已结束：done 由后台线程写，
+        # 连上之后再查一次，保证不漏（fired 防重复建窗）。
+        if _PRELOAD["done"]:
+            _finish(bool(_PRELOAD["ok"]))
+
+    if delay_ms > 0:
+        QTimer.singleShot(delay_ms, _spawn)
+    else:
+        _spawn()
+
+
+def _spawn_pet3d(main_window, ok: bool, attempt: int = 0) -> None:
+    """主线程建 3D 桌宠窗口（rig 是纯 numpy 对象，跨线程安全）。
+
+    主窗口可能还没显示（桌宠在面板 __init__ 里启动，面板随后才 show），
+    此时按 _PET_SHOW_RETRY_MS 重试，最多等 _PET_SHOW_RETRY_MAX 次。
+    """
+    try:
+        if getattr(main_window, "_pet", None) is not None:
+            return
+        if not main_window.isVisible():
+            if attempt < _PET_SHOW_RETRY_MAX:
+                QTimer.singleShot(
+                    _PET_SHOW_RETRY_MS,
+                    lambda: _spawn_pet3d(main_window, ok, attempt + 1))
+            return  # 主窗口已关闭/一直未显示，不弹桌宠
+        prefix, rig = _PRELOAD["prefix"], _PRELOAD["rig"]
+        if not ok or prefix is None or rig is None:
+            # 预加载阶段已打印具体原因（缺模块/缺资产/ZHIZHU_PET3D=0），这里直接回退
+            _spawn_gif(main_window)
+            return
+        from zhuzhu_Copilot.ui.pet3d import Pet3DWindow
+        pet = Pet3DWindow(prefix, open_panel_cb=main_window._open_agent_panel,
+                          rig=rig)
+        main_window._pet = pet
+        pet.show()
+    except Exception as e:
+        print(f"[桌宠] 3D 桌宠初始化失败，回退 GIF：{e}")
+        _spawn_gif(main_window)
+
+
+def _spawn_gif(main_window) -> None:
+    try:
+        gif = _pet_gif_path()
+        if not gif:
+            return
+        pet = DesktopPet(gif, open_panel_cb=main_window._open_agent_panel)
+        main_window._pet = pet
+        pet.show()
+    except Exception:
+        main_window._pet = None
 
 
 def ensure_pet(main_window) -> "DesktopPet | None":

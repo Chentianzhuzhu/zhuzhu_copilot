@@ -1,4 +1,4 @@
-"""3D 桌宠窗口：Qt 3D 渲染 + 跟随鼠标 + 交互动画状态机。
+"""3D 桌宠窗口：QOpenGLWidget 直渲 + 跟随鼠标 + 交互动画状态机。
 
 行为
 ----
@@ -13,6 +13,11 @@
 
 所有 3D 交互都是**程序化**的——烘焙进来的内置骨骼动画提供基础节奏（116 帧摇摆），
 扭头/甩尾/摆腿/跳跃是每帧叠加的附加旋转，因此不需要额外美术资源。
+
+透明：新渲染层（view.Pet3DView）用 QOpenGLWidget 直渲，Windows DWM 对
+QOpenGLWidget 的 alpha 合成是可靠路径（真机验证过），因此**默认就是真透明**，
+不再需要旧的「圆角卡片遮罩」或「离屏回读」。环境变量 ZHIZHU_PET3D_TRANSPARENT=0
+可强制回退到圆角卡片观感（排障/特殊需求时用）。
 """
 from __future__ import annotations
 
@@ -21,14 +26,14 @@ import os
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer
-from PyQt6.QtGui import QAction, QCursor, QGuiApplication, QPainterPath, QRegion
+from PyQt6.QtCore import QPoint, QSize, Qt, QTimer
+from PyQt6.QtGui import QAction, QCursor, QGuiApplication
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
 from zhuzhu_Copilot.core.i18n import ui as _ui
 
 from .rig import PetRig
-from .view import Pet3DView
+from .view import DEFAULT_WIDTH, Pet3DView
 
 #: 追随的判定阈值（像素/秒）：低于 IDLE 认为光标没动；高于 RUN 视为奔跑
 SPEED_IDLE = 24.0
@@ -88,55 +93,54 @@ def asset_prefix() -> Path | None:
 
 
 def available() -> bool:
-    """3D 桌宠是否可用：Qt3D 模块 + numpy + 烘焙资产三样齐全才用。"""
+    """3D 桌宠是否可用：Qt OpenGL widget 模块 + numpy + 烘焙资产三样齐全才用。"""
     try:
         import numpy  # noqa: F401
-        from PyQt6 import Qt3DCore  # noqa: F401
-        from PyQt6 import Qt3DExtras  # noqa: F401
+        from PyQt6 import QtOpenGLWidgets  # noqa: F401
+        from PyQt6 import QtOpenGL  # noqa: F401
     except Exception:
         return False
     return asset_prefix() is not None
 
 
-#: 卡片圆角半径（px）：Qt3D 的原生 GL 子窗口在 Windows 上**不吃窗口透明度**，
-#: 铺满整块会是一块死黑方框。用窗口遮罩做圆角卡片，观感上像一个"宠物舞台"，
-#: 与应用的纯黑/深蓝配色一致。真要透明可设 ZHIZHU_PET3D_TRANSPARENT=1 试。
-CARD_RADIUS = 18
-
-
-def _round_mask(size: QSize, radius: int = CARD_RADIUS) -> QRegion:
-    path = QPainterPath()
-    path.addRoundedRect(QRectF(QRect(0, 0, size.width(), size.height())), radius, radius)
-    return QRegion(path.toFillPolygon().toPolygon())
-
-
 def _want_transparent() -> bool:
-    v = str(os.environ.get("ZHIZHU_PET3D_TRANSPARENT", "0")).strip().lower()
+    """是否真透明背景（默认开）。设 ZHIZHU_PET3D_TRANSPARENT=0 回退圆角卡片观感。"""
+    v = str(os.environ.get("ZHIZHU_PET3D_TRANSPARENT", "1")).strip().lower()
     return v not in ("0", "false", "off", "no", "")
 
 
-class Pet3DWindow(QWidget):
-    """无边框透明置顶窗口，内部是 Qt 3D 视图。"""
+#: 桌宠窗口尺寸（宽，像素）。真透明贴图，所以尺寸就是猫的大小。
+#: 宽高比单一来源在 view（渲染取景 300:340），宽度默认取 view.DEFAULT_WIDTH（112）。
+PET_WIDTH = DEFAULT_WIDTH
+PET_HEIGHT = int(PET_WIDTH * 340 / 300)
 
-    def __init__(self, prefix: Path, open_panel_cb=None, size: QSize | None = None):
+
+class Pet3DWindow(QWidget):
+    """无边框透明置顶窗口，内部是 QOpenGLWidget 直渲视图。"""
+
+    def __init__(self, prefix: Path | None = None, open_panel_cb=None,
+                 size: QSize | None = None, rig: PetRig | None = None):
         super().__init__()
         self._open_panel_cb = open_panel_cb
-        self._rig = PetRig(prefix)
+        # rig 可由后台线程预加载后传入（避免启动时同步解析 NPZ 阻塞主线程）
+        self._rig = rig if rig is not None else PetRig(prefix)
         self._transparent = _want_transparent()
-        self._view = Pet3DView(self._rig, self, size=size or QSize(300, 340),
-                              transparent=self._transparent)
-        self._view.setGeometry(0, 0, size.width() if size else 300,
-                               size.height() if size else 340)
+        self._view = Pet3DView(self._rig, self,
+                               size=size or QSize(PET_WIDTH, PET_HEIGHT),
+                               transparent=self._transparent)
+        self._view.setGeometry(0, 0, self._view.width(), self._view.height())
 
+        # NoDropShadowWindowHint：透明窗口不加系统阴影，否则 DWM 会给整块矩形
+        # 画一圈阴影，看起来仍是个不透明的方框。
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint
-                            | Qt.WindowType.Tool)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, self._transparent)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, self._transparent)
+                            | Qt.WindowType.Tool
+                            | Qt.WindowType.NoDropShadowWindowHint)
+        if self._transparent:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setMouseTracking(True)
         self.resize(self._view.size())
-        if not self._transparent:
-            self.setMask(_round_mask(self.size()))
 
         # ---- 跟随状态 ----
         self._follow = True
@@ -274,8 +278,6 @@ class Pet3DWindow(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if not getattr(self, "_transparent", False):
-            self.setMask(_round_mask(self.size()))
         view = getattr(self, "_view", None)
         if view is not None:
             view.setGeometry(0, 0, self.width(), self.height())
