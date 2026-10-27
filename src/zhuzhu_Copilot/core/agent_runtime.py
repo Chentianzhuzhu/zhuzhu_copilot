@@ -1,10 +1,11 @@
-"""沙盒专属内置运行时（Node.js / Python）
+"""内置运行时（Node.js / Python）——仅用于「以工具身份运行」的进程
 
-- 存放于 ~/.zhuzhu_Copilot/runtime/，与用户层环境完全隔离
-- 首次使用自动下载官方便携版并解压/引导，绝不写入系统 PATH（仅子进程级 PATH 前置）
-- npm/pip 缓存与依赖均落在沙盒目录内，不污染用户环境
-- run_command 透明拦截：把沙盒 bin 前置到子进程 PATH，AI 直接输入
-  node/npm/npx、python/py/pip 即命中沙盒运行时
+- 存放于 ~/.zhuzhu_Copilot/runtime/（安装包内置便携版，首次使用从安装目录本地复制）
+- **不写系统 PATH**：只有工具子进程（MCP server、插件 server.py、应用内部子进程）
+  由 `python_interpreter()` / `ensure_runtime()` 显式使用它
+- 用户的工作任务（run_command：装依赖、跑脚本/服务、构建、测试）一律走**本机**
+  python / node，本模块不参与（见 agent_tools._run_command 的说明）
+- npm/pip 缓存与依赖落在内置目录内，不污染用户环境（仅工具侧安装时才有意义）
 """
 
 from zhuzhu_Copilot import app_identity
@@ -168,9 +169,12 @@ def needed_runtimes(command: str) -> list:
 # 进程级环境注入（绝不写系统 PATH）
 # ------------------------------------------------------------
 def sandbox_env(command: str = "") -> dict:
-    """返回进程级 env：把已安装沙盒 bin 前置到 PATH + 隔离 npm/pip 缓存。
-    仅作用于本次子进程，不修改 os.environ / 系统 PATH。
-    依赖安装命令（pip/npm install 等）不注入沙盒 npm 前缀/pip 缓存，改走用户本机全局环境。"""
+    """（诊断/部署用，run_command 已不再调用）返回把内置运行时前置到 PATH 的 env。
+
+    保留原因：scripts/test_runtime.py 用它自检运行时部署；运行时部署/排障时也可手动
+    构造一个"用内置运行时跑"的环境。**用户工作机制**下命令必须用本机环境，
+    不得经由本函数注入（见 agent_tools._run_command）。
+    """
     env = dict(os.environ)
     if is_dep_install(command):
         return env

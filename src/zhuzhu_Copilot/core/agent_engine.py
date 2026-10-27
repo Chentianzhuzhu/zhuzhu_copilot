@@ -2321,6 +2321,9 @@ class AgentEngine:
         才能让模型真正去调用它。
         """
         prompt = self._system_prompt_base(agent_name)
+        # 运行环境约定对所有 agent 成立（内置人设 / @agent 自定义人格 / 工作流 SYSTEM_PROMPT
+        # 都能命中）：统一在这里追加，避免只在某一分支写而漏掉「整体替换型」提示词。
+        prompt += agent_skills.runtime_env_notice()
         if getattr(self, "efficient_mode", False):
             manual = bool(getattr(self, "_manual_plugins", None))
             if not manual:

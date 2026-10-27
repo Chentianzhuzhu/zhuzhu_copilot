@@ -2590,6 +2590,28 @@ def efficient_manual_notice() -> str:
     return _tp("prompt.block.efficient_manual", _EFFICIENT_MANUAL_NOTICE_ZH)
 
 
+_RUNTIME_ENV_NOTICE_ZH = (
+    "\n\n【运行环境约定（硬性）】\n"
+    "- 执行**工作任务**（装依赖、跑脚本/服务、构建、测试、业务代码）一律使用**本机已安装的 "
+    "Python / Node**：Windows 上就是用户 PATH 里的 python / py / node / npm，"
+    "**不要**改用应用自带的内置运行时（~/.zhuzhu_Copilot/runtime/…）。\n"
+    "- 只有「以工具身份运行内置能力」（MCP server、插件 server.py、应用内部子进程）才使用内置运行时；"
+    "这类子进程由应用自动选择解释器，你**不需要也不得**在命令里硬编码运行时路径。\n"
+    "- 安装依赖用本机包管理器（python -m pip install … / npm install …），装完必须验证"
+    "（python -c \"import X\" / node -e \"require('X')\"）；失败如实告知，不得谎报成功。"
+)
+
+
+def runtime_env_notice() -> str:
+    """运行环境约定（语言随提示词语言）。
+
+    为什么集中成一段、由引擎统一追加：这条规则对**所有 agent**（内置默认人设、
+    @agent 自定义人格、各工作流 SYSTEM_PROMPT）都成立，而自定义人格/工作流提示词会
+    整体替换内置系统提示 —— 只在某一个 prompt 里写会漏掉另一条分支。
+    """
+    return _tp("prompt.block.runtime_env", _RUNTIME_ENV_NOTICE_ZH)
+
+
 def _efficient_prompt(agent: dict, text_only: bool = False,
                       memory_enabled: bool = True, direct: bool = False) -> str:
     """高效模式的系统提示词：身份/纪律骨架 + 最小工具集说明（不注入工具手册/技能）。

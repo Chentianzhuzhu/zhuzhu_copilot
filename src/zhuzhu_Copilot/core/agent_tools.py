@@ -394,10 +394,11 @@ TOOLS = [
         "function": {
             "name": "run_command",
             "description": "在系统终端执行命令（受沙盒约束）。危险命令（删除/格式化/关机等）会被拒绝。"
-                           "内置沙盒 Node.js/Python 运行时（已随安装程序预置，本地直接可用的便携版，"
-                           "与用户环境隔离、不写系统 PATH、不在对话内联网下载）：命令命中 node/npm/npx、"
-                           "python/py/pip 时可直接使用，如 node --version、python script.py、"
-                           "npm install、pip install requests。"
+                           "**命令运行在用户本机环境**：python / py / node / npm 就是用户 PATH 里"
+                           "已安装的那套（工作任务、装依赖、跑脚本/服务一律用它），"
+                           "不会注入应用内置运行时路径；需要第三方包时用本机包管理器安装"
+                           "（python -m pip install … / npm install …）并验证导入。"
+                           "应用内置运行时只用于工具子进程（MCP / 插件 server），由应用自动选择。"
                            "默认等待 wait 秒（默认 5）：期间持续收集输出；若 wait 秒内未完成，"
                            "force_quit=true 则强制结束进程树，false 则转入后台运行，返回命令 ID，"
                            "之后用 check_command 轮询进度。启动 GUI 应用建议 wait=1。"
@@ -1632,8 +1633,8 @@ TOOLS = [
                            "server.py 的 TOOLS 与 _HANDLERS（web 型为页面与 /api 端点）并补齐 SKILL.md，"
                            "最后调 plugin_register 做自检 + 登记 + 热加载。"
                            "四型：mcp（仅工具）/ skill（仅技能）/ combined（技能+工具，默认）/ "
-                           "web（本地 HTTP 页面 + 同名 MCP 工具，共用同一份状态；需要图形化交互时选它，"
-                           "创建后必须调 web_url 拿地址并用 preview_open 在用户浏览器里打开给用户；"
+                           "web 型（可视化面板/仪表盘等需要图形化交互时选它：本地 HTTP 页面 + 同名 MCP 工具，"
+                           "共用同一份状态；登记后必须调 web_url 拿地址并用 preview_open 在用户浏览器里打开给用户；"
                            "操作者必须是用户本人，严禁 AI 自我演示或与脚本互演）。"
                            "**只扩展 Agent 能力**（工具/技能/网页）；要改应用源码（主题/界面/任意模块/"
                            "页面与托盘）用 create_copilot_plugin。",
@@ -3536,29 +3537,20 @@ def _run_command(command: str, wait: int = 5, force_quit: bool = False,
     max_output 限制返回文本长度（默认不限）。
     reader 线程持续排空 stdout/stderr，轮询期间可拿到增量进度。
 
-    沙盒运行时：命令命中 node/npm/npx、python/py/pip 时，运行时已随安装程序预置
-    （便携版），首次使用从安装目录本地复制到 ~/.zhuzhu_Copilot/runtime/ 并前置到
-    **子进程级** PATH（不写系统 PATH、不在对话内联网下载），npm/pip 缓存与依赖
-    落在沙盒内，与用户环境隔离。
-    status_cb：可选状态回调，用于透传运行时部署/安装进度。
+    **运行环境**：命令一律在用户本机环境执行（继承本进程 PATH），python/py/node/npm
+    命中用户自己安装的那套 —— 工作任务、装依赖、跑脚本/服务都用它。应用内置运行时
+    （~/.zhuzhu_Copilot/runtime）只服务工具子进程（MCP / 插件 server），不由本函数注入。
+    status_cb：可选状态回调（保留参数兼容既有调用方）。
     on_output：可选增量输出回调 on_output(str)。命令每产生一行 stdout/stderr 就
         回调一次（解码后的文本），供后台任务把输出**实时**推出；为空时维持旧的
         "跑完再一次性返回"行为。
     cancel_event：可选 threading.Event。置位即强杀进程树并返回"已取消"，
         让用户点「取消」能真正停掉长命令，而不只是 UI 上改个状态。
     """
-    # 沙盒运行时透明拦截：先确保缺失的运行时就绪，再注入进程级环境
+    # 本机环境：不注入内置运行时。此前这里会把沙盒 bin 前置到 PATH，导致 agent 的工作
+    # 任务（装依赖/跑脚本）落在应用运行时里，与用户真实环境不一致；用户要求工作任务
+    # 必须走本机 Python/Node，运行时只在「以工具身份运行」时使用（由 MCP/插件启动器选择）。
     run_env = None
-    try:
-        from zhuzhu_Copilot.core import agent_runtime
-        for rt in agent_runtime.needed_runtimes(command):
-            if not agent_runtime.is_installed(rt):
-                _ok, _msg = agent_runtime.ensure_runtime(rt, status_cb)
-                if _ok and status_cb:
-                    status_cb(_msg)
-        run_env = agent_runtime.sandbox_env(command)
-    except Exception:
-        run_env = None   # 安装异常时回退系统环境（best effort）
     try:
         wait = max(0, int(wait))   # 不做上限：长命令可无限等待，由 stop/转后台机制兜底
         run_cwd = str(_resolve(cwd)) if (cwd or "").strip() else (WORKDIR or None)
