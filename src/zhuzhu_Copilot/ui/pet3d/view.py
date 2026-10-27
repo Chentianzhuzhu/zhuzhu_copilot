@@ -58,6 +58,15 @@ _LOOK_TAU = 0.12
 _TORSO_YAW_RATIO = 0.32
 _TORSO_PITCH_RATIO = 0.24
 
+# ---- 眨眼：每 3 秒一次，真实时间驱动（不受动画播放速度影响） ----
+_BLINK_PERIOD_S = 3.0
+_BLINK_DOWN_S = 0.07      # 闭眼用时
+_BLINK_UP_S = 0.11        # 睁眼用时
+_BLINK_EYE_OPEN_SCALE = 0.06   # 闭眼时眼睛沿竖直方向压到 6%（留一条缝，不显得空洞）
+_BLINK_GLINT_OPEN_SCALE = 0.02  # 高光几乎压没
+_BLINK_EYE_PARTS = ("kitty_eye_l", "kitty_eye_r")
+_BLINK_GLINT_PARTS = ("kitty_glint_l", "kitty_glint_r")
+
 _GL_TRIANGLES = 0x0004
 _GL_FLOAT = 0x1406
 _GL_COLOR_BUFFER_BIT = 0x4000
@@ -150,6 +159,15 @@ class Pet3DView(QOpenGLWidget):
         self._squash = 1.0
         self._body_yaw = 0.0
         self._breath_phase = 0.0
+        # 眨眼状态：clock 用真实 dt 累加（_time 会被速度缩放，不能用来计时）
+        self._blink_clock = 0.0
+        self._blink = 0.0
+        # 眼睛/高光的绑定空间质心：眨眼时绕各自质心沿竖直轴（绑定 Z）压扁
+        self._blink_parts: dict = {}
+        for _p in rig.parts:
+            if _p.name in _BLINK_EYE_PARTS or _p.name in _BLINK_GLINT_PARTS:
+                self._blink_parts[_p.name] = np.asarray(
+                    _p.pos[:, :3], dtype=np.float64).mean(axis=0)
 
         if self._transparent:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -280,9 +298,22 @@ class Pet3DView(QOpenGLWidget):
         r[2, 3] = 0.0
 
         mats = self._rig.pose(self._time, self._extra_rot(), self._extra_shift())
+        blink = self._blink
         for i, (vao, count, part) in enumerate(self._meshes):
             m = mats[int(part.joints[0, 0])]
             model = r @ m
+            # 眨眼：眼睛/高光绕各自质心沿绑定竖直轴压扁（眼睛闭成一条缝，高光几乎消失）。
+            # 变换乘在蒙皮矩阵**右侧**（绑定空间）：压扁沿部件自身的竖直方向，之后才随
+            # 头部骨骼旋转 —— 抬头/转头时闭眼方向也跟着转，不会歪掉。
+            c = self._blink_parts.get(part.name)
+            if blink > 1e-3 and c is not None:
+                k = (_BLINK_EYE_OPEN_SCALE if part.name in _BLINK_EYE_PARTS
+                     else _BLINK_GLINT_OPEN_SCALE)
+                s = 1.0 - (1.0 - k) * blink
+                xf = np.eye(4)
+                xf[2, 2] = s
+                xf[2, 3] = float(c[2]) * (1.0 - s)
+                model = model @ xf
             mv = self._view @ model
             mvp = self._proj @ mv
             norm = np.linalg.inv(mv[:3, :3])
@@ -368,6 +399,19 @@ class Pet3DView(QOpenGLWidget):
         self._look_pitch_s += (self._look_pitch - self._look_pitch_s) * k
         self._torso_yaw_s += (self._look_yaw * _TORSO_YAW_RATIO - self._torso_yaw_s) * k
         self._torso_pitch_s += (self._look_pitch * _TORSO_PITCH_RATIO - self._torso_pitch_s) * k
+        # 眨眼：周期末尾开始，先闭后睁；启动 3 秒后才第一次眨，不会一出现就闭眼
+        self._blink_clock += dt
+        _since = self._blink_clock % _BLINK_PERIOD_S
+        _start = _BLINK_PERIOD_S - (_BLINK_DOWN_S + _BLINK_UP_S)
+        if _since >= _start:
+            _ph = _since - _start
+            if _ph < _BLINK_DOWN_S:
+                p = _ph / _BLINK_DOWN_S
+            else:
+                p = 1.0 - (_ph - _BLINK_DOWN_S) / _BLINK_UP_S
+            self._blink = max(0.0, min(1.0, p)) ** 2 * (3.0 - 2.0 * max(0.0, min(1.0, p)))
+        else:
+            self._blink = 0.0
         self.update()
 
     # ---------- 鼠标：QOpenGLWidget 直接收 ----------

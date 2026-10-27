@@ -5,7 +5,8 @@
 - **默认固定在右下角**（与 GIF 桌宠同一落点，留白 16px）：启动即在那里，**不吸附、
   不追踪鼠标位置**；
 - **看着你**：头部 + 躯干按「猫→光标」的方向平滑转向（叠加骨骼旋转，不改烘焙动画）：
-  光标在头顶上方会抬头、在侧面会转头；
+  光标在头顶就抬头、在左上/右上就抬头朝对应方向看，在下方则低头；
+- **眨眼**：每 3 秒眨一次（真实时间驱动，与动画播放速度无关；眼睛压成一条缝、高光消失）；
 - **互动**：单击 → 跳一下（挤压 + 起跳 + 尾巴大幅摆）；双击 → 打开 AI 主面板；
   右键 → 菜单（回到右下角 / 跟随鼠标 / 退出）；拖动 → 抓着走，四肢垂下；
 - **可选跟随（默认关闭）**：右键菜单「跟随鼠标」开启后窗口才缓动追着光标走，
@@ -53,6 +54,32 @@ def corner_pos(size: QSize, avail) -> QPoint:
     """右下角锚点（纯函数）：桌宠左上角坐标，与 GIF 桌宠的落点一致。"""
     return QPoint(avail.right() - size.width() - PET_CORNER_MARGIN,
                   avail.bottom() - size.height() - PET_CORNER_MARGIN)
+
+
+#: 右侧/上方方向上的视线角度上限（度）：再远的光标按上限饱和
+LOOK_YAW_MAX_DEG = 38.0
+LOOK_PITCH_MAX_DEG = 26.0
+#: 光标偏移 → 角度的参考距离（像素）：越小越灵敏。桌宠只有 112px 宽，
+#: 若按窗口比例算，鼠标稍微一偏就顶到上限，看不出「左上/右上」的区别。
+LOOK_YAW_REF_PX = 520.0
+LOOK_PITCH_REF_PX = 380.0
+
+
+def look_angles(center: QPoint, cursor: QPoint) -> tuple:
+    """光标相对桌宠中心的偏移 → (yaw, pitch) 角度（度，纯函数便于测试）。
+
+    方向约定（已用骨骼实测校准）：
+      - **+yaw = 向屏幕右侧看**（Head 绕 y 轴 +：头转向屏幕右）；
+      - **-pitch = 抬头**：Head 绕 x 轴 +x 会让鼻子往下掉（低头），所以光标在头顶
+        上方（dy < 0）必须输出**负** pitch。这是「鼠标在头顶就抬头」的关键符号。
+    """
+    dx = cursor.x() - center.x()
+    dy = cursor.y() - center.y()
+    yaw = max(-LOOK_YAW_MAX_DEG,
+              min(LOOK_YAW_MAX_DEG, dx / LOOK_YAW_REF_PX * LOOK_YAW_MAX_DEG))
+    pitch = max(-LOOK_PITCH_MAX_DEG,
+                min(LOOK_PITCH_MAX_DEG, dy / LOOK_PITCH_REF_PX * LOOK_PITCH_MAX_DEG))
+    return yaw, pitch
 
 
 def follow_target(cursor: QPoint, size: QSize, avail, idle: bool) -> QPoint:
@@ -228,10 +255,8 @@ class Pet3DWindow(QWidget):
     def _update_pose(self, cursor: QPoint, dt: float, now: float) -> None:
         """把「速度 + 光标方位 + 点击状态」翻译成每帧的动画参数。"""
         center = self.geometry().center()
-        dx = cursor.x() - center.x()
-        dy = cursor.y() - center.y()
-        yaw = max(-32.0, min(32.0, dx / max(60.0, self.width() * 0.5) * 32.0))
-        pitch = max(-18.0, min(18.0, -dy / max(80.0, self.height() * 0.6) * 18.0))
+        # 光标在头顶 → 抬头；左上 → 抬头看左上；右上 → 抬头看右上（符号见 look_angles）
+        yaw, pitch = look_angles(center, cursor)
 
         happy = now < self._happy_until
         # 未开启跟随时窗口不会移动：不能把「光标在动」当成「猫在跑」，否则会原地奔跑。

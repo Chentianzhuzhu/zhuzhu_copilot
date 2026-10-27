@@ -118,6 +118,66 @@ def test_pet_defaults_to_fixed_bottom_right_without_following():
     assert idle == pos
 
 
+def test_look_angles_point_toward_cursor_direction():
+    """鼠标在头顶要抬头、左上/右上要抬头看向对应角落（符号不能反）。
+
+    方向校准依据（骨骼实测）：Head 绕 x 轴 +20° 会让鼻子 z 下降 0.184（低头），
+    所以「上方」必须输出负 pitch；+yaw 表示朝屏幕右侧看。
+    """
+    from PyQt6.QtCore import QPoint
+
+    center = QPoint(1847, 950)          # 右下角的桌宠中心
+    above = pet_window.look_angles(center, QPoint(1847, 300))
+    assert above[1] < -15, f"头顶正上方应明显抬头（负 pitch），实际 {above}"
+    assert abs(above[0]) < 1.0, "正上方不应左右偏"
+
+    upper_left = pet_window.look_angles(center, QPoint(600, 260))
+    assert upper_left[0] < -20 and upper_left[1] < -15, f"左上应抬头向左看：{upper_left}"
+
+    upper_right = pet_window.look_angles(center, QPoint(1920, 260))
+    assert upper_right[0] > 0 and upper_right[1] < -15, f"右上应抬头向右看：{upper_right}"
+
+    below = pet_window.look_angles(center, QPoint(1847, 1400))
+    assert below[1] > 15, "鼠标在下方应低头（正 pitch）"
+
+    # 上限饱和：再远也不超过常量，避免头拧 180°
+    far = pet_window.look_angles(center, QPoint(-5000, -5000))
+    assert far[0] == -pet_window.LOOK_YAW_MAX_DEG
+    assert far[1] == -pet_window.LOOK_PITCH_MAX_DEG
+
+
+def test_blink_every_three_seconds(rig):
+    """眨眼：每 3 秒一次，且眼睛/高光部件都参与（闭眼不留空洞）。"""
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtWidgets import QApplication
+    from zhuzhu_Copilot.ui.pet3d.view import Pet3DView
+
+    app = QApplication.instance() or QApplication([])   # noqa: F841
+    view = Pet3DView(rig, size=QSize(112, 126))
+    try:
+        names = set(view._blink_parts)
+        assert {"kitty_eye_l", "kitty_eye_r",
+                "kitty_glint_l", "kitty_glint_r"} <= names, names
+
+        samples = []
+        t = 0.0
+        for _ in range(300):                 # 10 秒 @30fps
+            view.advance(1 / 30.0)
+            t += 1 / 30.0
+            samples.append((t, view._blink))
+
+        peaks = [tt for i, (tt, v) in enumerate(samples)
+                 if v > 0.8 and 0 < i < len(samples) - 1
+                 and v >= samples[i - 1][1] and v >= samples[i + 1][1]]
+        assert len(peaks) >= 3, f"10 秒内至少眨 3 次，实际 {peaks}"
+        assert 2.7 <= peaks[0] <= 3.15, f"启动后约 3 秒才第一次眨眼，实际 {peaks[0]:.2f}s"
+        gaps = [b - a for a, b in zip(peaks, peaks[1:])]
+        assert all(abs(g - 3.0) < 0.2 for g in gaps), f"眨眼间隔应为 3 秒：{gaps}"
+        assert view._blink < 0.02, "大部分时间眼睛必须是睁开的"
+    finally:
+        view.deleteLater()
+
+
 def test_follow_target_tracks_cursor_and_clamps():
     from PyQt6.QtCore import QPoint, QRect, QSize
     screen = QRect(0, 0, 1920, 1080)
