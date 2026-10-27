@@ -257,14 +257,14 @@ def _scrollbar_handle() -> str:
     直接取会得到「黑透明」滑块（浅色模式下呈纯黑残留）。"""
     c = QColor(_base_color("BORDER"))
     c.setAlphaF(_SCROLLBAR_OPACITY)
-    # 原 return f"rgba(...)" 已移除（回退方案见本函数文档）
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
 
 def _scrollbar_handle_hover() -> str:
     """滚动条滑块悬停色：提亮到 55%，保持可辨又不喧宾夺主（原始色板，见上）。"""
     c = QColor(_base_color("BORDER_SOFT"))
     c.setAlphaF(_SCROLLBAR_HOVER_OPACITY)
-    # 原 QColor 70% 白底托取值已移除，回退方案见本函数文档
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
 
 def _scrollbar_qss() -> str:
@@ -14962,6 +14962,28 @@ class CodePreviewWindow(QWidget):
             b = getattr(self, name, None)
             if b is not None:
                 b.setIcon(_svg_icon(svg, 15, TEXT))
+        # 图标按钮的**底色**也必须重设：`_BTN_ICON` 的填充取自模块级 CARD/BORDER，
+        # 壁纸透明态翻转后旧字符串仍带着实色填充 → 切换背景前构建的按钮会留下
+        # 一坨黑色圆角块（用户反馈的「撤销/重做按钮底色是黑色」）。
+        for name in ("undo_btn", "redo_btn", "media_play", "media_full"):
+            b = getattr(self, name, None)
+            if b is not None:
+                try:
+                    b.setStyleSheet(_BTN_ICON)
+                except RuntimeError:
+                    pass
+        # 「打开…」主按钮：强调色随主题变化，一并重设（构建期在 _apply_surface_qss
+        # 之后才设置，故此处用 getattr 兜底）。
+        ob = getattr(self, "open_btn", None)
+        if ob is not None:
+            try:
+                ob.setStyleSheet(
+                    f"QPushButton {{ background: {ACCENT}; color: #FFFFFF;"
+                    "border: none; border-radius: 6px; padding: 2px 10px;"
+                    "font-size: 12px; font-weight: 600; }"
+                    f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
+            except RuntimeError:
+                pass
 
     def apply_surface_theme(self):
         """按当前表面色就地刷新本面板（主题/壁纸透明态变化时由主面板快路径调用，**不重建**）。
@@ -18373,33 +18395,52 @@ class _TitleBar(QWidget):
         icon.setToolTip(_ui("zhuzhu Copilot"))
         lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        name = QLabel("zhuzhu Copilot", self)
-        # 招 2：字重随主题降档（暗色 600，浅色 700）
-        name.setStyleSheet(
-            f"color: {TEXT}; font-size: 12px; font-weight: {_W_TITLE};"
-            " background: transparent;")
-        lay.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._name = QLabel("zhuzhu Copilot", self)
+        lay.addWidget(self._name, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # Agent 徽章：沿用启动页样式，深浅色自动反色（深色白底黑字 / 浅色黑底白字）。
         # 字体显式用 Segoe UI：默认中文字体的拉丁字形在 12px 下偏扁宽，看起来像被横向
         # 拉伸；尺寸按字形实际宽度 + 对称内边距固定，文字必然水平/垂直居中。
-        if _resolve_theme() == "dark":
-            bg, fg = "#F5F5F5", "#000000"
-        else:
-            bg, fg = "#000000", "#FFFFFF"
         badge_font = QFont("Segoe UI")
         badge_font.setPixelSize(self.BADGE_FONT_PX)
         badge_font.setWeight(QFont.Weight.Bold)
-        badge = QLabel("Agent", self)
-        badge.setFont(badge_font)
-        badge.setFixedSize(
+        self._badge = QLabel("Agent", self)
+        self._badge.setFont(badge_font)
+        self._badge.setFixedSize(
             QFontMetrics(badge_font).horizontalAdvance("Agent") + self.BADGE_PAD_X * 2,
             self.BADGE_H)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        badge.setStyleSheet(
-            f"color: {fg}; background: {bg};"
-            f"border-radius: {round(self.BADGE_H / 2 * 0.63)}px;")
-        lay.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.apply_surface_theme()
+
+    def apply_surface_theme(self) -> None:
+        """就地刷新标题栏配色（主题切换 / 壁纸透明态翻转时由主面板快路径调用）。
+
+        为什么必须单独刷：名称与徽章的 QSS 是构建期用模块级色板拼死的字符串，
+        改常量不会落到已存在的控件上 —— 首次设置自定义背景后徽章会保留
+        「白底/黑底」实色块（用户反馈的「部分组件底色是黑/白而不是透明」）。
+        """
+        try:
+            self._name.setStyleSheet(
+                f"color: {TEXT}; font-size: 12px; font-weight: {_W_TITLE};"
+                " background: transparent;")
+        except (AttributeError, RuntimeError):
+            pass
+        # 徽章：普通模式沿用启动页反色；自定义背景模式不填底（底透明让壁纸透出），
+        # 文字按壁纸实测亮度取黑/白，保证任意壁纸下都可读。
+        if _feedback_boosted():
+            bg = "transparent"
+            fg = "#000000" if _input_fg_dark() else _CURSOR_COLOR_ON_WALLPAPER_INVERTED
+        elif _resolve_theme() == "dark":
+            bg, fg = "#F5F5F5", "#000000"
+        else:
+            bg, fg = "#000000", "#FFFFFF"
+        try:
+            self._badge.setStyleSheet(
+                f"color: {fg}; background: {bg}; border: none;"
+                f"border-radius: {round(self.BADGE_H / 2 * 0.63)}px;")
+        except (AttributeError, RuntimeError):
+            pass
 
     def sync_window_state(self):
         """最大化/还原后更新黄点提示（图标本身保持三枚实心圆）"""
@@ -18667,6 +18708,9 @@ class AgentPanel(QDialog):
         # 后需放宽最小宽，保证聊天/输入内容区不被挤压（_apply_panel_mode 动态切换）
         self.setMinimumSize(1074, 692)
         self.resize(1074, 692)
+        # 普通态几何快照：最大化状态下 normalGeometry() 不可靠（常直接返回最大化
+        # 矩形），还原的目标几何只能自己记（见 _normal_window_rect）。
+        self._last_normal_geometry = QRect(self.geometry())
         self.setFont(QFont("Microsoft YaHei UI", 10))
         # 取原始色板：本规则会级联到面板的各个子弹窗（祖先样式表优先于应用级），
         # 壁纸透出模式下 BG/BG_BOTTOM 被覆写为 transparent —— 子弹窗拿到透明底
@@ -19484,16 +19528,15 @@ class AgentPanel(QDialog):
         self.token_btn.clicked.connect(self.toggle_token_stats)
         top.addWidget(self.token_btn)
 
-        clear_btn = QPushButton(_line_icon("trash", color=TEXT_DIM), "")
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.setAutoDefault(False)
-        clear_btn.setFixedSize(34, 34)
-        clear_btn.setIconSize(QSize(18, 18))
-        clear_btn.setToolTip(_ui("清空上下文并永久删除该对话（二次弹窗确认，不可恢复）"))
-        clear_btn.setAutoDefault(False)
-        clear_btn.setStyleSheet(_BTN_GHOST_FRAMED)   # 删除类入口：固定淡灰描边（见皮肤注释）
-        clear_btn.clicked.connect(self._clear_chat)
-        top.addWidget(clear_btn)
+        self.clear_btn = QPushButton(_line_icon("trash", color=TEXT_DIM), "")
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.setAutoDefault(False)
+        self.clear_btn.setFixedSize(34, 34)
+        self.clear_btn.setIconSize(QSize(18, 18))
+        self.clear_btn.setToolTip(_ui("清空上下文并永久删除该对话（二次弹窗确认，不可恢复）"))
+        self.clear_btn.setStyleSheet(_BTN_GHOST_FRAMED)   # 删除类入口：固定淡灰描边（见皮肤注释）
+        self.clear_btn.clicked.connect(self._clear_chat)
+        top.addWidget(self.clear_btn)
 
         root.addLayout(top)
 
@@ -21625,38 +21668,52 @@ class AgentPanel(QDialog):
     def _toggle_max_restore(self):
         """黄点/双击顶部区域：最大化与还原切换（不进入全屏）。
 
-        走快照尺寸过渡（与最小化同一套浮层机制）：先抓当前画面，最大化/还原的真实
-        重排被浮层遮住，屏幕上是平滑的缩放，不会「瞬间跳变」。
+        **不做快照缩放过渡**。原因：快照是静态位图，最大化/还原只能整图拉伸，
+        内容必然被压扁或拉长（用户反馈「被强制拉伸、十分影响美观」）；而且过渡期间
+        还要在背后同步 showMaximized / 改窗口状态（实测主线程阻塞 200~400ms），
+        「点了不动」的卡顿感正来自这里。改为直接切换，动效交给 Windows 自己的
+        最大化过渡：无失真、无额外阻塞。
 
-        动画进行中的点击**直接忽略**：此时真实窗口状态正被动画接管（最大化动画一开场
-        就调 showMaximized），再插一次原生 showMaximized/showNormal 会和动画收尾互相
-        打架 —— 轻则状态错乱（几何满屏但状态普通，之后按钮全部失灵），重则连点的每
-        一次都各自阻塞主线程数百毫秒并排队叠加，观感就是「应用假死、点什么都没反应」。
+        还原走 `window_fx.unmaximize`（Win32 ShowWindow(SW_RESTORE)），实测 ~106ms；
+        旧的 setWindowState 路径实测 ~430ms、首次 showNormal 可达 1.4s，是「还原卡死、
+        无法交互」的根因。
         """
         try:
             if self._fx.busy():
-                return
-            if self.isMaximized():
-                if self._fx.start_restore_size():
-                    return
-                # 动画不可用时，用 unmaximize 替代 showNormal：
-                # 无边框窗口首次 showNormal() 实测阻塞 ~1400ms（Qt 重建 backing store + DWM 切换），
-                # 而 setWindowState(WindowNoState) 语义等价且实测 ~1ms。
+                return   # 折叠动画在播：等它收尾（见 window_fx 的排队机制）
+            if self.isMaximized() or self.isFullScreen():
                 from .window_fx import unmaximize
-                unmaximize(self, self._fx._pre_max_rect if hasattr(self._fx, '_pre_max_rect') else None)
+                unmaximize(self, self._normal_window_rect())
             else:
-                if self._fx.start_maximize():
-                    return
                 self.showMaximized()
         except Exception:
             try:
-                if self.isMaximized():
+                if self.isMaximized() or self.isFullScreen():
                     from .window_fx import unmaximize
                     unmaximize(self)
                 else:
                     self.showMaximized()
             except Exception:
                 pass
+
+    def _normal_window_rect(self) -> QRect:
+        """普通态窗口矩形（最大化/还原的目标几何）。
+
+        必须自己记：无边框窗口在最大化态下 `normalGeometry()` 常常直接返回最大化
+        矩形（实测如此），拿它做还原目标等于「原地不动」—— 用户看到的就是「点还原
+        没反应」。`_last_normal_geometry` 在每次非最大化/非全屏的 resize/move 时更新。
+        """
+        g = getattr(self, "_last_normal_geometry", None)
+        if isinstance(g, QRect) and not g.isEmpty() \
+                and g.width() >= 200 and g.height() >= 150:
+            return QRect(g)
+        try:
+            ng = QRect(self.normalGeometry())
+            if ng.width() >= 200 and ng.height() >= 150:
+                return ng
+        except Exception:
+            pass
+        return QRect()   # 交给 unmaximize 自行兜底
 
     # ---------- 任务栏折叠动画（最小化 / 恢复） ----------
     def _animate_minimize(self):
@@ -21758,9 +21815,15 @@ class AgentPanel(QDialog):
         并把光标在最大化窗口里的相对位置保留到还原后的窗口上，避免窗口跳走。"""
         self._dragging = True
         if self.isMaximized() or self.isFullScreen():
-            ng = self.normalGeometry()
+            ng = self._normal_window_rect()
+            if ng.isEmpty():
+                ng = QRect(0, 0, self.minimumWidth(), self.minimumHeight())
             ratio = self._drag_local.x() / max(1, self.width())
-            self.showNormal()
+            from .window_fx import unmaximize
+            # 不用 showNormal()：首次实测阻塞 ~1.4s（拖动一开始就假死）。
+            # 传 None：随后本方法会按光标位置 setGeometry，别让 unmaximize 的
+            # 延后几何校正跟拖动抢同一个窗口。
+            unmaximize(self)
             self.setGeometry(int(self._drag_press.x() - ng.width() * ratio),
                              max(0, self._drag_press.y() - self._drag_local.y()),
                              ng.width(), ng.height())
@@ -21819,24 +21882,12 @@ class AgentPanel(QDialog):
         super().mouseDoubleClickEvent(e)
 
     def _sync_window_chrome(self):
-        """最大化/还原后同步自绘窗口饰件：圆角半径、黄点提示、缩放热区。
+        """最大化/还原后同步自绘窗口饰件：黄点提示、缩放热区。
 
-        圆角 QSS 的落地时机分两路（`setStyleSheet` 会重算整棵子树样式，
-        面板级实测 65~135ms，挂在还原的同步路径上就是「点一下先白等 67ms」）：
-        - **变为方角（最大化/全屏）**：立即落地 —— 否则满屏窗口还带着 12px 圆角，
-          四角会露出透明缺口（蒙版此时已被清掉，没人替它裁）。
-        - **变为圆角（还原）**：延后一拍再落地 —— 窗口圆角本来就由 SetWindowRgn
-          蒙版负责（resizeEvent 里已同步套上），QSS 这层只补渐变底的抗锯齿，
-          晚一帧应用肉眼无差别，却把 67ms 移出了点击响应路径。
+        **不再重刷根样式表**：方角/圆角由 `paintEvent` 按 `_is_fullscreen()` 自绘
+        裁剪，QSS 里的 border-radius 只是冗余兜底；而 `setStyleSheet` 会对整棵子树
+        重新 polish（实测 150~330ms），挂在窗口状态切换后就是一次可见的整屏卡顿。
         """
-        r_new = 0 if self._is_fullscreen() else self._WINDOW_RADIUS
-        if r_new <= 0:
-            try:
-                _set_qss_once(self, self._panel_root_qss())
-            except Exception:
-                pass
-        else:
-            self._schedule_root_qss()
         tb = self.__dict__.get("_title_bar")
         if tb is not None:
             try:
@@ -21850,30 +21901,6 @@ class AgentPanel(QDialog):
             except RuntimeError:
                 pass
         self.update()
-
-    def _schedule_root_qss(self):
-        """延后应用根样式表（合并同一轮里的多次请求，见 _sync_window_chrome）。
-
-        延时取「尺寸过渡动画时长 + 余量」：动画期间每 16ms 要出一帧，若把 67ms 的
-        全量重算塞进去，动画本身就会卡一下 —— 那比圆角晚一帧更明显。动画期间窗口
-        圆角由 SetWindowRgn 蒙版负责，QSS 这层等动画结束再补上即可。
-        """
-        t = self.__dict__.get("_root_qss_timer")
-        if t is None:
-            from PyQt6.QtCore import QTimer as _QTimer
-            from . import window_fx as _fx
-            t = _QTimer(self)
-            t.setSingleShot(True)
-            t.setInterval(int(_fx.MORPH_MS) + 80)
-            t.timeout.connect(self._apply_root_qss)
-            self._root_qss_timer = t
-        t.start()
-
-    def _apply_root_qss(self):
-        try:
-            _set_qss_once(self, self._panel_root_qss())
-        except Exception:
-            pass
 
     def _bubble_min_width(self) -> int:
         """聊天气泡最小宽度：全屏时至少覆盖半页宽（不超过最大宽度）"""
@@ -22039,6 +22066,9 @@ class AgentPanel(QDialog):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        # 非最大化/全屏时的几何才是「还原目标」（见 _normal_window_rect）
+        if not (self.isMaximized() or self.isFullScreen()):
+            self._last_normal_geometry = QRect(self.geometry())
         # 无边框模式：窗口本身切圆角；系统标题栏模式不清蒙版（setMask 会破坏
         # 原生标题栏/阴影/缩放，需由系统圆角承载）。
         self._apply_window_round()
@@ -23152,6 +23182,9 @@ class AgentPanel(QDialog):
 
     def moveEvent(self, e):
         super().moveEvent(e)
+        # 非最大化/全屏时的位置同样属于「还原目标」
+        if not (self.isMaximized() or self.isFullScreen()):
+            self._last_normal_geometry = QRect(self.geometry())
         # 自绘拖动（见 mouseMoveEvent）期间每帧都 move()：逐帧同步 4 个子面板会反复
         # move()+raise_() 多个圆角 + 阴影窗口，拖动严重卡顿 → 拖动期间跳过，
         # 松手后由 _end_window_drag 一次性归位。
@@ -25541,8 +25574,21 @@ class AgentPanel(QDialog):
              f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
         _set(getattr(self, "new_btn", None), _BTN_ICON)
         _set(getattr(self, "settings_btn", None), _BTN_ICON)
+        _set(getattr(self, "preview_btn", None), _BTN_GHOST)
         _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
         _set(getattr(self, "token_btn", None), _BTN_GHOST)
+        # 顶栏「清空对话」（删除类 ghost）：漏掉这一步会残留旧主题的实色块
+        # （用户反馈的「设背景后清空按钮底是黑色」）。
+        _set(getattr(self, "clear_btn", None), _BTN_GHOST_FRAMED)
+        _set(getattr(self, "_auth_login_btn", None), _BTN_GHOST)
+        # 自绘标题栏（名称 / Agent 徽章）：构建期写死的实色底，必须就地重刷
+        tb = self.__dict__.get("_title_bar")
+        _tb_fn = getattr(tb, "apply_surface_theme", None)
+        if callable(_tb_fn):
+            try:
+                _tb_fn()
+            except RuntimeError:
+                pass
         _apply_input_style(getattr(self, "input", None))
         # 光标宽度 / 闪烁周期随壁纸状态走：输入框在快路径下不重建，
         # 不在这里补一刀就会残留旧档位（壁纸下光标仍细得看不见）。

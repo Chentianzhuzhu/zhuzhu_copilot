@@ -52,6 +52,11 @@ DEFAULT_WIDTH = _default_width()
 _ASPECT_W, _ASPECT_H = 300.0, 340.0
 #: 相机视场角（度，与原版一致）
 _FOV_DEG = 34.0
+#: 头部/躯干跟随鼠标的平滑时间常数（秒）：一阶低通，光标跳变时仍连续转动
+_LOOK_TAU = 0.12
+#: 躯干跟随比例：躯干只转视线角度的一小部分（头再补足剩余），避免整只猫拧成麻花
+_TORSO_YAW_RATIO = 0.32
+_TORSO_PITCH_RATIO = 0.24
 
 _GL_TRIANGLES = 0x0004
 _GL_FLOAT = 0x1406
@@ -92,13 +97,15 @@ void main(void) {
     vec3 L1 = safe_norm(u_light1 - v_pos);
     vec3 L2 = safe_norm(u_light2 - v_pos);
     vec3 L3 = safe_norm(u_light3dir);
-    float d1 = max(dot(N, L1), 0.0);
-    float d2 = max(dot(N, L2), 0.0);
+    // 半兰伯特（包裹光）：背光面也不落到纯黑，弱化强阴影、整体提亮
+    // （用户要求「亮度调高，无需很强的阴影感」）。
+    float d1 = dot(N, L1) * 0.5 + 0.5;
+    float d2 = dot(N, L2) * 0.5 + 0.5;
     float d3 = max(dot(N, L3), 0.0);
     vec3 albedo = u_color.rgb;
-    vec3 c = albedo * (0.28 + 1.2 * d1 + 0.6 * d2 + 0.35 * d3);
+    vec3 c = albedo * (0.58 + 0.42 * d1 + 0.18 * d2 + 0.10 * d3);
     vec3 H = safe_norm(L1 + V);
-    float spec = pow(max(dot(N, H), 0.0), 26.0) * 0.25;
+    float spec = pow(max(dot(N, H), 0.0), 26.0) * 0.12;
     c += vec3(0.35, 0.38, 0.45) * spec;
     gl_FragColor = vec4(c, u_color.a);
 }
@@ -129,6 +136,11 @@ class Pet3DView(QOpenGLWidget):
         self._speed = 1.0
         self._look_yaw = 0.0
         self._look_pitch = 0.0
+        # 平滑后的实际朝向 / 躯干分量（advance 里逐帧低通，绘制只用这三个）
+        self._look_yaw_s = 0.0
+        self._look_pitch_s = 0.0
+        self._torso_yaw_s = 0.0
+        self._torso_pitch_s = 0.0
         self._tail_amp = 0.0
         self._tail_phase = 0.0
         self._ear_twitch = 0.0
@@ -297,7 +309,14 @@ class Pet3DView(QOpenGLWidget):
     # ---------- 动画 ----------
     def _extra_rot(self) -> dict:
         extra = {}
-        extra["Head"] = _axis_angle("x", self._look_pitch) @ _axis_angle("y", self._look_yaw)
+        # 头部跟随：总朝向 = 躯干分量 + 头部余量（Spine 是 Head 的父级，两层角度会叠加，
+        # 这里把头部角度扣掉躯干那份，保证「看向鼠标」的总角度仍等于 look_yaw/pitch）。
+        ty, tp = self._torso_yaw_s, self._torso_pitch_s
+        extra["Head"] = (_axis_angle("x", self._look_pitch_s - tp)
+                         @ _axis_angle("y", self._look_yaw_s - ty))
+        # 躯干跟随：Spine 转一个小角度（身体/肚皮/项圈都绑在它下面，会一起轻轻转向）
+        if abs(ty) > 0.05 or abs(tp) > 0.05:
+            extra["Spine"] = _axis_angle("x", tp) @ _axis_angle("y", ty)
         wag = self._tail_amp
         for i, name in enumerate(("Tail_1", "Tail_2", "Tail_3")):
             ph = self._tail_phase - i * 0.55
@@ -342,6 +361,13 @@ class Pet3DView(QOpenGLWidget):
         self._time += dt * max(0.05, self._speed)
         self._tail_phase += dt * (2.4 + 5.0 * min(1.0, abs(self._tail_amp) / 26.0))
         self._breath_phase += dt * 5.7
+        # 头/躯干朝向低通：cursor 每帧给的是「目标角」，这里做指数平滑后再参与蒙皮，
+        # 观感是「丝滑转头」而不是逐帧硬切（30fps 下尤其明显）。
+        k = 1.0 - math.exp(-dt / _LOOK_TAU)
+        self._look_yaw_s += (self._look_yaw - self._look_yaw_s) * k
+        self._look_pitch_s += (self._look_pitch - self._look_pitch_s) * k
+        self._torso_yaw_s += (self._look_yaw * _TORSO_YAW_RATIO - self._torso_yaw_s) * k
+        self._torso_pitch_s += (self._look_pitch * _TORSO_PITCH_RATIO - self._torso_pitch_s) * k
         self.update()
 
     # ---------- 鼠标：QOpenGLWidget 直接收 ----------

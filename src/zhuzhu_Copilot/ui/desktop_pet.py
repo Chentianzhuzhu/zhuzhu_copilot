@@ -252,10 +252,6 @@ def _create_pet(main_window):
 #:   done/ok 是否已结束、是否成功
 _PRELOAD = {"thread": None, "prefix": None, "rig": None, "done": False, "ok": False}
 
-#: 面板尚未显示时，桌宠建窗的重试间隔与最大次数（100ms × 50 = 最多等 5 秒）
-_PET_SHOW_RETRY_MS = 100
-_PET_SHOW_RETRY_MAX = 50
-
 
 def _pet3d_disabled() -> bool:
     """ZHIZHU_PET3D=0 强制关掉 3D 桌宠（排障/省 GPU），走 GIF。"""
@@ -345,21 +341,16 @@ def start_pet_async(main_window, delay_ms: int = 0):
         _spawn()
 
 
-def _spawn_pet3d(main_window, ok: bool, attempt: int = 0) -> None:
+def _spawn_pet3d(main_window, ok: bool) -> None:
     """主线程建 3D 桌宠窗口（rig 是纯 numpy 对象，跨线程安全）。
 
-    主窗口可能还没显示（桌宠在面板 __init__ 里启动，面板随后才 show），
-    此时按 _PET_SHOW_RETRY_MS 重试，最多等 _PET_SHOW_RETRY_MAX 次。
+    桌宠是**独立顶层窗口**，不依赖宿主面板是否可见：宿主（CopilotPanel）在启动时
+    只是被预热创建、经常长期保持隐藏，若按宿主可见性门控，桌宠就永远不会出现
+    （用户反馈的「小猫桌宠还是未加载」）。宿主只用来转发「双击打开面板」回调。
     """
     try:
         if getattr(main_window, "_pet", None) is not None:
             return
-        if not main_window.isVisible():
-            if attempt < _PET_SHOW_RETRY_MAX:
-                QTimer.singleShot(
-                    _PET_SHOW_RETRY_MS,
-                    lambda: _spawn_pet3d(main_window, ok, attempt + 1))
-            return  # 主窗口已关闭/一直未显示，不弹桌宠
         prefix, rig = _PRELOAD["prefix"], _PRELOAD["rig"]
         if not ok or prefix is None or rig is None:
             # 预加载阶段已打印具体原因（缺模块/缺资产/ZHIZHU_PET3D=0），这里直接回退

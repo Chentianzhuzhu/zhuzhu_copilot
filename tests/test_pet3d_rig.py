@@ -208,3 +208,40 @@ def test_preload_pet3d_loads_rig_once():
     assert desktop_pet._PRELOAD["done"] and desktop_pet._PRELOAD["ok"]
     assert desktop_pet._PRELOAD["rig"] is not None
     assert desktop_pet._PRELOAD["prefix"] is not None
+
+
+# ---------- H. 头/躯干跟随鼠标 ----------
+def test_head_and_torso_follow_cursor_smoothly(rig):
+    """视线目标要经低通后才参与蒙皮：头转「丝滑」且躯干跟一小部分。
+
+    回归（用户要求）：头部与躯干随鼠标移动平滑转向；旧实现把每帧的目标角直接
+    塞进 Head 骨骼 —— 30fps 下光标一动就是硬切，观感生硬。
+    """
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtWidgets import QApplication
+    from zhuzhu_Copilot.ui.pet3d.view import Pet3DView, _TORSO_YAW_RATIO
+
+    app = QApplication.instance() or QApplication([])   # noqa: F841  QWidget 需要实例
+    view = Pet3DView(rig, size=QSize(112, 126))
+    try:
+        view.set_motion(look_yaw=30.0, look_pitch=12.0, speed=0.5)
+        view.advance(1 / 30.0)
+        # 低通：单帧之后只应走完一小部分，绝不能一步到位（否则就是硬切）
+        assert 0.0 < view._look_yaw_s < 30.0
+        assert 0.0 < view._look_pitch_s < 12.0
+        for _ in range(90):                     # 3s 后应基本追上目标
+            view.advance(1 / 30.0)
+        assert abs(view._look_yaw_s - 30.0) < 0.5
+        assert abs(view._look_pitch_s - 12.0) < 0.5
+        # 躯干只跟一部分（否则整只猫会拧成麻花）
+        assert abs(view._torso_yaw_s - 30.0 * _TORSO_YAW_RATIO) < 0.5
+        # 躯干旋转必须真的进了蒙皮（Spine 是身体/肚皮/项圈的父骨骼）
+        extra = view._extra_rot()
+        assert "Spine" in extra and "Head" in extra
+        # Head 里已扣掉躯干那份，两层叠加后的总朝向才等于目标角
+        import numpy as np
+        expect_head = (_axis_angle("x", view._look_pitch_s - view._torso_pitch_s)
+                       @ _axis_angle("y", view._look_yaw_s - view._torso_yaw_s))
+        assert np.allclose(extra["Head"], expect_head)
+    finally:
+        view.deleteLater()

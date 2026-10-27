@@ -811,6 +811,39 @@ def test_side_panels_translucent_on_wallpaper(tmp_path):
             win.deleteLater()
 
 
+def test_preview_icon_buttons_reskin_to_transparent_on_wallpaper(tmp_path):
+    """首次设背景后，预览面板「撤销/重做」等图标按钮的实色底必须就地刷成透明。
+
+    回归（用户反馈）：第一次设置自定义背景时，部分 UI/UX 组件（预览撤销/重做、
+    顶栏清空、标题栏 Agent 徽章）仍是黑色/白色实色块而不是透明。
+    根因：它们的 QSS 是构建期拼死的字符串，透明态翻转走的是 `_retheme` 快路径
+    （不拆树），只有 `apply_surface_theme` 显式重设才会生效。
+    """
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    w.set_fields(bg_image="", persist=False)
+    ap.refresh_surface_mode()
+    code = ap.CodePreviewWindow()       # 先在「无壁纸」下构建：按钮底是实色
+    try:
+        assert "transparent" not in code.undo_btn.styleSheet()
+
+        w.set_fields(bg_image=_solid_png(tmp_path), persist=False)
+        ap.refresh_surface_mode()
+        code.apply_surface_theme()      # 透明态翻转时就地换肤（不重建控件）
+
+        for name in ("undo_btn", "redo_btn"):
+            qss = getattr(code, name).styleSheet()
+            assert "background: transparent" in qss, f"{name} 未透明化：{qss}"
+        # 根底与模式下拉同样必须让位给壁纸
+        assert "transparent" in code.styleSheet()
+        assert "transparent" in code.mode.styleSheet()
+    finally:
+        code.close()
+        code.deleteLater()
+        w.set_fields(bg_image="", persist=False)
+        ap.refresh_surface_mode()
+
+
 def test_side_panels_fall_back_to_solid_without_wallpaper():
     """非壁纸模式：三个面板回落原始色板实色（本次改动零行为变化）。"""
     from zhuzhu_Copilot.ui import agent_panel as ap
