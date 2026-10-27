@@ -47,22 +47,6 @@ _d3d_datas = [(_d3d_path, '.')] if _os.path.isfile(_d3d_path) else []
 _seed_dir = _os.path.join(_root, 'build/workflows_seed')
 _seed_datas = [(_seed_dir, 'workflows_seed')] if _os.path.isdir(_seed_dir) else []
 
-# 源码快照（_copilot_src/zhuzhu_Copilot/**）：源码级 Copilot 插件在【打包态】的
-# 基准数据。安装目录不含源码，插件做「插入/替换某模块」时需要原版内容作锚点；
-# 覆盖层导入钩子（src/_copilot_overlay_hook.py）也要靠它把 __file__ 指回原版
-# 路径，保证包内资源（locales/skills/config）解析不回退。排除 __pycache__ 与
-# .pyc（约 5.8MB，相对 Qt WebEngine 体积可忽略）。
-_src_snapshot_datas = []
-_snap_pkg = _os.path.join(_root, 'src', 'zhuzhu_Copilot')
-for _dirpath, _dirnames, _filenames in _os.walk(_snap_pkg):
-    _dirnames[:] = [_d for _d in _dirnames if _d != '__pycache__']
-    for _fn in _filenames:
-        if _fn.endswith(('.pyc', '.pyo')):
-            continue
-        _full = _os.path.join(_dirpath, _fn)
-        _rel = _os.path.relpath(_full, _os.path.join(_root, 'src'))
-        _src_snapshot_datas.append((_full, _os.path.join('_copilot_src', _rel)))
-
 a = Analysis(
     [_os.path.join(_root, 'src/main.py')],
     pathex=[_src],
@@ -78,7 +62,7 @@ a = Analysis(
            # 安全引擎数据文件（config/security.json、security_rules.json、yara/ 规则库）：
            # 引擎在打包态按 _MEIPASS/config 解析，缺失则回退内置默认导致规则库/特征库不生效
            (_os.path.join(_root, 'config'), 'config')]
-           + _runtime_datas + _d3d_datas + _seed_datas + _src_snapshot_datas,
+           + _runtime_datas + _d3d_datas + _seed_datas,
     hiddenimports=[
         # agent_tools 通过 importlib 动态导入 core 子模块（agent_find/agent_tts/
         # agent_subagent/agent_deps 等），PyInstaller 静态分析发现不了，
@@ -159,12 +143,11 @@ a = Analysis(
         *collect_submodules('win32com'),
         # 三件套图片依赖：docx/pptx/openpyxl 的 add_picture/add_image 运行时 import PIL，显式声明确保随包
         'PIL',
-        # 3D 桌宠（ui/pet3d）：Qt3D 三件套 + numpy。pet3d 是 PEP 562 懒加载包，
-        # PyInstaller 静态分析看不到 `from . import window` 里的 Qt3D 导入，必须显式声明，
+        # 3D 桌宠（ui/pet3d）：QOpenGLWidget 直渲 + numpy。pet3d 是 PEP 562 懒加载包，
+        # PyInstaller 静态分析看不到 `from . import window` 里的 QtOpenGL 导入，必须显式声明，
         # 否则打包版会静默回退成 GIF 桌宠（用户侧就是「怎么还是那只 gif」）。
-        'PyQt6.Qt3DCore',
-        'PyQt6.Qt3DRender',
-        'PyQt6.Qt3DExtras',
+        'PyQt6.QtOpenGLWidgets',
+        'PyQt6.QtOpenGL',
         'numpy',
         # pet3d 的类是通过模块级 __getattr__ 暴露的（PEP 562 懒加载），
         # 静态分析拿不到 `from ... import Pet3DWindow` 的落点，四个模块显式声明。
@@ -180,13 +163,15 @@ a = Analysis(
     # QtWebEngine 整体移除（约 180MB）：PPT 全屏放映、Office 保真预览、网页预览
     # 均已内置降级分支（QTextBrowser/静态渲染），剔除后包体显著缩小。
     excludes=[
-        'tkinter', 'PyQt6.QtQuick', 'PyQt6.QtQml',
+        'tkinter', 'PyQt6.QtQuick', 'PyQt6.QtQml', 'PyQt6.Qt3DCore', 'PyQt6.Qt3DRender',
         'PyQt6.QtCharts', 'PyQt6.QtDataVisualization', 'PyQt6.QtPdf',
         'PyQt6.QtBluetooth', 'PyQt6.QtNfc', 'PyQt6.QtSerialPort',
         'PyQt6.QtWebSockets', 'PyQt6.QtDesigner', 'PyQt6.QtHelp',
         'PyQt6.QtSql', 'PyQt6.QtXml', 'PyQt6.QtTest', 'PyQt6.QtDBus',
         'PyQt6.QtWebEngineCore', 'PyQt6.QtWebEngineWidgets', 'PyQt6.QtWebEngineQuick',
         'PyQt6.QtWebChannel', 'PyQt6.QtPositioning',
+        # numpy 不能进 excludes：3D 桌宠（ui/pet3d）依赖它，且在 hiddenimports 里显式声明；
+        # 同时列入 excludes 会让 PyInstaller 把它剔除 → 打包版静默回退 GIF 桌宠。
         'pandas', 'scipy', 'matplotlib', 'sklearn', 'torch',
     ],
     win_no_prefer_redirects=False,
