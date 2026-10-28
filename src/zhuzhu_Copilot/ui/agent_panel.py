@@ -2635,7 +2635,7 @@ def _slider_tick_step(top: int) -> int:
 
 class _CapsuleSlider(QSlider):
     """胶囊滑杆（自绘）：深蓝已覆盖区 / 淡白未覆盖区 / 纯白圆形滑块（内含淡灰圆环）/
-    档位圆点；满档时胶囊内上百颗小白点沿各自的不规则路径由左向右流动。
+    档位圆点；满档时胶囊内上百颗小白点从同一左端出发，各自在随机行上水平向右流动。
 
     档位圆点两副面孔：默认「灰点，只画在未覆盖区」（背景页模糊 / 压暗）；
     `tick_style="level"` 为「淡蓝点，每个挡位都画」（思考强度）。
@@ -2652,6 +2652,7 @@ class _CapsuleSlider(QSlider):
     PARTICLE_SPEED = 0.4032        # 0.576 再降 30%（每秒扫过的轨道比例）
     PARTICLE_COUNT = 100
     PARTICLE_R = 1.6               # 小白点半径（px）
+    PARTICLE_FADE = 0.025          # 两端淡入淡出占轨道的比例（越小，左侧遮罩区越小）
 
     def __init__(self, parent=None, *, tick_step: int = 0,
                  particles_on_max: bool = False,
@@ -2660,15 +2661,15 @@ class _CapsuleSlider(QSlider):
         self._tick_step = max(0, int(tick_step))
         self._particles = bool(particles_on_max)
         self._tick_style = tick_style
-        # 每颗粒子的「不规则」参数（固定伪随机，可复现）：
-        # 纵向落点 / 初始相位 / 个体速度差，避免排成整齐行列（禁止排版式流动路径）
-        self._ys = tuple(self._rand(i, 1) for i in range(self.PARTICLE_COUNT))
-        self._offs0 = tuple(self._rand(i, 2) for i in range(self.PARTICLE_COUNT))
-        self._speeds = tuple(0.82 + 0.36 * self._rand(i, 3)
-                             for i in range(self.PARTICLE_COUNT))
-        self._wobble = tuple(1.2 + 1.6 * self._rand(i, 4)
-                             for i in range(self.PARTICLE_COUNT))
-        self._offs = list(self._offs0)              # 运行中的相位（每条独立推进）
+        # 每颗粒子的初始参数（固定伪随机、可复现）：出发点都是左端同一 x，
+        # 纵向落点随机（可在任意一行），各自匀速沿水平直线向右移动。
+        n = self.PARTICLE_COUNT
+        self._offs0 = [self._rand(i, 2) for i in range(n)]
+        self._ys0 = [self._rand(i, 1) for i in range(n)]
+        self._speeds = [0.82 + 0.36 * self._rand(i, 3) for i in range(n)]
+        self._offs = list(self._offs0)              # 运行中的横向进度（0..1）
+        self._ys = list(self._ys0)                  # 当前这趟所在的纵向行
+        self._laps = [0] * n                        # 跑完整条轨道的圈数
         self._cache = None                          # 静态层缓存（轨道 + 覆盖区 + 圆点）
         self._cache_key = None
         self._dot = None                            # 粒子白点贴图缓存
@@ -2688,6 +2689,17 @@ class _CapsuleSlider(QSlider):
         x ^= x >> 15
         x = (x * 2246822519) & 0xFFFFFFFF
         return ((x ^ (x >> 13)) & 0xFFFF) / 65536.0
+
+    def _reset_particles(self):
+        """回到初始状态：同一批出发点与行号，保证每次起播观感一致。"""
+        self._offs = list(self._offs0)
+        self._ys = list(self._ys0)
+        self._laps = [0] * self.PARTICLE_COUNT
+
+    def _reroll_row(self, i: int):
+        """绕回左端重新出发时换一行：生成位置可以是胶囊内的任意行。"""
+        self._laps[i] += 1
+        self._ys[i] = self._rand(i, 1000 + self._laps[i])
 
     def setValue(self, v: int):
         """改值统一入口：即使调用方 blockSignals，粒子动画也随档位即时启停。"""
@@ -2856,38 +2868,39 @@ class _CapsuleSlider(QSlider):
         return pm
 
     def _paint_particles(self, p, cy):
-        """满档粒子：整条胶囊内 100 颗小白点，各自沿不规则路径由左向右流动。
+        """满档粒子：整条胶囊内 100 颗小白点，起点 x 一致、沿水平直线由左向右流。
 
-        每颗的纵向落点、初始相位、个体速度、上下摆动幅度都由固定伪随机决定，
-        因此不会排成行列（禁止排版式流动路径）；整体裁进胶囊，
-        并从胶囊左端一直铺到右端（覆盖全部滑动条）。
+        每颗的纵向行号随机（可以是胶囊内任意一行，不排成行），速度略有差异；
+        绕回左端重新出发时换一行。整体裁进胶囊，最左/最右只在很窄的一段淡入淡出。
         """
         cx0, cx1 = self._capsule_span()
         r = self.PARTICLE_R
         sx0, sx1 = cx0 + r, cx1 - r              # 覆盖整条胶囊
         span = max(1.0, sx1 - sx0)
         spread = max(0.0, self.TRACK_H / 2.0 - r)
+        fade = max(0.001, self.PARTICLE_FADE)
         sprite = self._dot_sprite()
         p.save()
         p.setClipPath(self._capsule(cx0, cx1, cy, float(self.TRACK_H)))
         for i in range(self.PARTICLE_COUNT):
             u = self._offs[i]
-            # 只在最两端 8% 内淡入淡出：中间全程满亮，保证整条滑杆都有粒子覆盖
-            alpha = 235 * min(1.0, u / 0.08, (1.0 - u) / 0.08)
+            alpha = 235 * min(1.0, u / fade, (1.0 - u) / fade)
             if alpha < 8:
                 continue
-            y = cy + (self._ys[i] * 2.0 - 1.0) * spread + \
-                self._wobble[i] * math.sin(2.0 * math.pi * (u + self._offs0[i]))
+            y = cy + (self._ys[i] * 2.0 - 1.0) * spread     # 直线：纵向位置不变
             p.setOpacity(alpha / 255.0)
             p.drawPixmap(QPointF(sx0 + span * u - r - 1.0, y - r - 1.0), sprite)
         p.restore()
 
     # ---- 粒子动画 ----
     def _on_tick(self):
-        dt = self._anim.interval() / 1000.0
-        step = self.PARTICLE_SPEED * dt
-        self._offs = [(u + step * s) % 1.0
-                      for u, s in zip(self._offs, self._speeds)]
+        step = self.PARTICLE_SPEED * self._anim.interval() / 1000.0
+        for i, u in enumerate(self._offs):
+            u += step * self._speeds[i]
+            if u >= 1.0:                         # 跑完整条：回左端、换一行重来
+                u -= 1.0
+                self._reroll_row(i)
+            self._offs[i] = u
         self.update()
 
     def _sync_anim(self, *_):
@@ -2896,7 +2909,7 @@ class _CapsuleSlider(QSlider):
               and self.maximum() > self.minimum()
               and self.value() >= self.maximum())
         if on and not self._anim.isActive():
-            self._offs = list(self._offs0)          # 每次起播都从同一初始相位开始
+            self._reset_particles()                 # 每次起播都从同一初始状态开始
             self._anim.start()
         elif not on and self._anim.isActive():
             self._anim.stop()
