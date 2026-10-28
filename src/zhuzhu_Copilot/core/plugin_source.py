@@ -41,6 +41,7 @@ src/_copilot_overlay_hook.py 的导入钩子让 zhuzhu_Copilot.* 的导入优先
 
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -124,7 +125,7 @@ def _pkg_meta(pkg_dir: Path) -> dict:
     if not mf.is_file():
         return {}
     try:
-        data = json.loads(mf.read_text(encoding="utf-8"))
+        data = json.loads(mf.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的元数据
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -162,7 +163,12 @@ def load_source_ops_from(pkg_dir) -> list:
 # ------------------------------------------------------------
 
 def _resolve_target(root: Path, rel) -> Path:
-    """把 op 里的 path 解析为源码树内的绝对路径（拒绝绝对路径/穿越/受保护文件）。"""
+    """把 op 里的 path 解析为源码树内的绝对路径（拒绝绝对路径/穿越/受保护文件）。
+
+    不用 `Path.resolve()`：它会触发 getfinalpathname + 多次 stat（Windows 上每个 op
+    约 1ms，50 个 op 就是几十毫秒）。合法性由「相对路径 + 无 .. 段 + 归一化后仍在
+    根目录内」三重字符串判断保证，与 resolve 的效果一致。
+    """
     rel = str(rel or "").replace("\\", "/").strip()
     if not rel:
         raise ValueError("op 缺少 path")
@@ -170,9 +176,9 @@ def _resolve_target(root: Path, rel) -> Path:
         raise ValueError(f"path 必须是相对路径：{rel}")
     if ".." in rel.split("/"):
         raise ValueError(f"path 不允许上级目录穿越：{rel}")
-    p = (root / rel).resolve()
-    root_r = root.resolve()
-    if p != root_r and root_r not in p.parents:
+    root_s = os.path.normpath(str(root))
+    p = Path(os.path.normpath(os.path.join(root_s, rel)))
+    if p != Path(root_s) and not str(p).startswith(root_s + os.sep):
         raise ValueError(f"path 越出源码根目录：{rel}")
     if plugin_guard.is_protected_path(rel):
         raise ValueError(f"path 指向受保护的核心程序，禁止改动：{rel}")
@@ -245,18 +251,38 @@ def _check_op(op: dict, idx: int = 0) -> tuple:
     return True, ""
 
 
-def _write_keep_eol(target: Path, text: str, before: str) -> None:
-    """按原文件的换行风格写回（CRLF 文件不被整篇改成 LF，避免全文件 diff）。"""
+def _ensure_dir(d: Path, made: set | None) -> None:
+    """建目录（同一轮内已建过的直接跳过，避免每个 op 都 mkdir + stat）。"""
+    if made is not None:
+        key = str(d)
+        if key in made:
+            return
+        d.mkdir(parents=True, exist_ok=True)
+        made.add(key)
+        return
+    d.mkdir(parents=True, exist_ok=True)
+
+
+def _write_keep_eol(target: Path, text: str, before: str) -> str:
+    """按原文件的换行风格写回，返回**实际落盘文本**（供调用方免读校验/哈希）。
+
+    用二进制写（等价 write_text(newline="")）：text 模式的通用换行会把 CRLF 吞成
+    LF，EOL 判定与备份都会失真；同时让返回的文本与实际字节完全一致。
+    """
     eol = "\r\n" if "\r\n" in before else "\n"
     if eol != "\n":
         text = text.replace("\r\n", "\n").replace("\n", eol)
     if before.endswith(("\n", "\r\n")) and not text.endswith(("\n", "\r\n")):
         text += eol
-    target.write_text(text, encoding="utf-8", newline="")
+    target.write_bytes(text.encode("utf-8"))
+    return text
 
 
-def _apply_op(root: Path, op: dict, orig_root=None) -> dict:
-    """应用单条 op，返回 {path, action, before}。before = 原文本（新建为 None）。
+def _apply_op(root: Path, op: dict, orig_root=None, made_dirs: set | None = None) -> dict:
+    """应用单条 op，返回 {path, action, before, after}。
+
+    before = 原文本（新建为 None）；after = **实际落盘文本**（编译检查与
+    sha_after 都直接用它，不再把大文件读第二遍）。
 
     寻址支持两种（行号优先，其次文本锚点）：
       · 行号：line / start_line..end_line（1 起，含边界）—— 插件作者拿得到完整源码
@@ -281,9 +307,11 @@ def _apply_op(root: Path, op: dict, orig_root=None) -> dict:
         if target.exists():
             raise ValueError(f"文件已存在，create_file 拒绝覆盖：{op.get('path')}"
                              "（如需整体替换请用 replace_file）")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return {"path": rel, "action": "created", "before": None}
+        _ensure_dir(target.parent, made_dirs)
+        # 固定写 LF：与写入字节一致，sha_after 免读；插件新建的模块统一 LF 更干净
+        data = content.replace("\r\n", "\n")
+        target.write_bytes(data.encode("utf-8"))
+        return {"path": rel, "action": "created", "before": None, "after": data}
 
     if not target.is_file():
         # 覆盖层模式：把原版复制进覆盖层，再在副本上做变更
@@ -296,7 +324,7 @@ def _apply_op(root: Path, op: dict, orig_root=None) -> dict:
             orig = _packaged_file(rel)
         if orig is None:
             raise ValueError(f"目标文件不存在：{op.get('path')}")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(target.parent, made_dirs)
         # 用字节读写：text 模式的通用换行会把 CRLF 吞成 LF，EOL 判定与备份都会失真
         target.write_bytes(orig.read_bytes())
     before = target.read_bytes().decode("utf-8", errors="replace")
@@ -358,22 +386,46 @@ def _apply_op(root: Path, op: dict, orig_root=None) -> dict:
                 raise ValueError(f"模块结束锚点在起始锚点之前：{op.get('path')}")
         after = "\n".join(lines[:s0] + content.splitlines() + lines[e0 + 1:])
 
-    _write_keep_eol(target, after, before)
-    return {"path": rel, "action": "modified", "before": before}
+    _written = _write_keep_eol(target, after, before)
+    return {"path": rel, "action": "modified", "before": before, "after": _written}
 
 
-def _py_compile_ok(path: Path) -> tuple:
-    """编译单个 .py 文件；非 .py 直接通过。返回 (ok, 错误信息)。"""
-    if path.suffix.lower() != ".py":
-        return True, ""
-    import py_compile
+def _overlay_module_name(rel) -> str:
+    """转译层相对路径 → 模块名（只认 zhuzhu_Copilot.*，其他模块不预热缓存）。"""
+    rel = str(rel).replace("\\", "/")
+    if not rel.endswith(".py"):
+        return ""
+    name = rel[:-3].replace("/", ".")
+    if name == "zhuzhu_Copilot" or name.startswith("zhuzhu_Copilot."):
+        return name
+    return ""
+
+
+def _compile_targets(root: Path, texts: dict) -> tuple:
+    """就地编译检查（内存 compile，不落 .pyc）+ 预热热加载代码缓存。
+
+    texts = {相对路径: 实际落盘文本}（写入时已拿到，无需再读文件）。
+    原实现用 py_compile：大插件 50 个文件约 1.2s（光写 .pyc），而热加载随后还要把
+    同一份源码再编译一次。改为内存 compile，并把 code 对象按「模块名 + 源码哈希」
+    预热进 hot_reload 的代码缓存——热加载直接命中缓存 exec，插入耗时因此减半。
+    返回 (ok, 错误信息)。
+    """
     try:
-        py_compile.compile(str(path), doraise=True)
-        return True, ""
-    except py_compile.PyCompileError as e:
-        return False, str(e)[:500]
-    except Exception as e:
-        return False, str(e)[:500]
+        from zhuzhu_Copilot.core import hot_reload
+    except Exception:
+        hot_reload = None
+    for rel, text in texts.items():
+        if not rel.lower().endswith(".py"):
+            continue
+        try:
+            code = compile(text, str(root / rel), "exec")
+        except (SyntaxError, ValueError) as e:
+            return False, f"{rel}\n{str(e)[:500]}"
+        name = _overlay_module_name(rel)
+        if name and hot_reload is not None:
+            # persist=False：插入链路上不落磁盘 marshal（每个文件几毫秒 × 几十个文件）
+            hot_reload.prime_code(name, text.encode("utf-8"), root / rel, code, persist=False)
+    return True, ""
 
 
 def _backup_path(pkg_dir, rel: str) -> Path:
@@ -398,17 +450,22 @@ def validate_source_ops(ops: list) -> tuple:
 # 通用：应用 / 回滚 / 状态（包目录级，Agent 与 Copilot 插件共用）
 # ------------------------------------------------------------
 
+#: 最近一次应用的分阶段耗时（毫秒）与规模，供诊断/性能回归（LAST_APPLY）
+LAST_APPLY = {}
+
+
 def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
     """把源码变更清单应用到插件源码层（包目录级通用入口）。
 
-    流程：结构校验 → **插件校验系统**（危险即整体删除插件包并提示）→ 逐文件
-    备份 → 逐条应用 → 全部 py_compile（任一失败整体回滚）→ 写 applied.json
-    清单。返回 (ok, message)。
+    流程：结构校验 → **插件校验系统**（静态规则同步；LLM 深审在后台线程与
+    写入/编译并行，判危即回滚并删除插件包）→ 逐文件备份 → 逐条应用 → 全部
+    编译检查（去重路径 + 预热热加载代码缓存，任一失败整体回滚）→ 写 applied.json。
 
     写入目标固定为转译层（用户数据目录下的源码覆盖层）：打包版与源码版一致，
     都不直接改写应用源码文件；导入钩子优先加载覆盖层，写入后由热加载引擎
     （core/hot_reload.py）即时装载，无需重启应用。
     """
+    t0 = time.perf_counter()
     root, mode = apply_root()
     orig_root = app_source_root()   # 打包态为 None → _apply_op 回落打包内源码快照
     d = Path(pkg_dir)
@@ -423,48 +480,64 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
     if not ok:
         return False, why
 
-    # 1. 插件校验系统（内置唯一、不可替换）：危险即整体删除插件包并提示
-    gok, gmsg = plugin_guard.guard_source_package(d, name)
-    if not gok:
-        return False, gmsg
+    # 1. 插件校验：静态规则同步（危险立即处置、源码一行未动），
+    #    LLM 深审后台并行（网络往返与下一步的写入/编译重叠）
+    review = plugin_guard.SourceReview(d, name)
+    blocked = review.blocked()
+    if blocked:
+        return False, blocked
+    t_static = time.perf_counter()
 
     # 2. 逐条应用（内存中保留原文，失败可整体回滚）
-    done = []          # [{path, action, before, backup}]
+    done = []          # [{path, action, before, backup, after}]
+    made_dirs = set()  # 本轮已创建的目录（省掉重复 mkdir/stat）
     try:
         for op in ops:
-            rec = _apply_op(root, op, orig_root=orig_root)
+            rec = _apply_op(root, op, orig_root=orig_root, made_dirs=made_dirs)
             rel = rec["path"]
             bak = _backup_path(d, rel)
             # 备份必须是**应用前的原始内容**：同一文件被多条 op 改时，
             # 只有第一次（before=原文）写盘，后续 op 不覆盖（否则 revert
             # 只能还原到中间态）。进程内整体回滚用各自 before，不受影响。
             if rec["action"] == "modified" and not bak.exists():
-                bak.parent.mkdir(parents=True, exist_ok=True)
+                _ensure_dir(bak.parent, made_dirs)
                 bak.write_bytes(rec["before"].encode("utf-8"))
             done.append({**rec, "backup": str(bak)})
     except (ValueError, OSError) as e:
         _rollback(root, done)
-        return False, f"应用源码变更失败（已整体回滚，源码未被修改）：{e}"
+        gok, gmsg = review.finish()
+        msg = f"应用源码变更失败（已整体回滚，源码未被修改）：{e}"
+        return False, msg if gok else msg + "\n" + gmsg
+    t_write = time.perf_counter()
 
-    # 3. 全部应用后编译检查：任一 .py 编译失败 → 整体回滚
-    for rec in done:
-        target = root / rec["path"]
-        cok, cerr = _py_compile_ok(target)
-        if not cok:
-            _rollback(root, done)
-            return False, (f"编译检查未通过（已整体回滚）：{rec['path']}\n{cerr}")
+    # 3. 全部应用后编译检查（同一文件被多条 op 改时只编译一次）：任一失败 → 整体回滚
+    texts = {r["path"]: r["after"] for r in done}     # 落盘文本（后写覆盖前写）
+    cok, cerr = _compile_targets(root, texts)
+    if not cok:
+        _rollback(root, done)
+        gok, gmsg = review.finish()
+        msg = f"编译检查未通过（已整体回滚）：{cerr}"
+        return False, msg if gok else msg + "\n" + gmsg
+    t_compile = time.perf_counter()
 
-    # 4. 记录已应用清单（供 revert 卸载回滚）。
+    # 4. 等 LLM 结论：危险 → 回滚磁盘 + 删除整个插件包（危险代码从未被执行）
+    gok, gmsg = review.finish()
+    if not gok:
+        _rollback(root, done)
+        return False, gmsg
+    t_guard = time.perf_counter()
+
+    # 5. 记录已应用清单（供 revert 卸载回滚）。
     # sha_after = 应用后的文件哈希：revert 时据此判断文件在应用后是否被用户
-    # 手动改过（改了就不还原/不删除，不覆盖用户劳动成果）。
+    # 手动改过（改了就不还原/不删除，不覆盖用户劳动成果）。哈希直接取内存里的
+    # 落盘文本（写入时已确保 EOL 一致），不再把每个文件读一遍。
+    sha_final = {p: hashlib.sha256(t.encode("utf-8")).hexdigest()
+                 for p, t in texts.items()}
     files_mf = []
     for r in done:
-        try:
-            sha_after = hashlib.sha256((root / r["path"]).read_bytes()).hexdigest()
-        except OSError:
-            sha_after = ""
         files_mf.append({"path": r["path"], "action": r["action"],
-                         "backup": r["backup"], "sha_after": sha_after})
+                         "backup": r["backup"],
+                         "sha_after": sha_final.get(r["path"], "")})
     manifest = {"applied_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "plugin": name, "ops": len(ops), "files": files_mf,
                 "mode": mode}
@@ -480,9 +553,21 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
         _rollback(root, done)
         return False, f"记录应用清单失败（已整体回滚）：{e}"
 
+    # 6. 分阶段耗时（毫秒）：诊断与性能回归用（大型插件插入目标 ≤3s）
+    def _ms(a, b):
+        return int((b - a) * 1000)
+
+    LAST_APPLY.clear()
+    LAST_APPLY.update({"plugin": name, "ops": len(ops), "files": len(done),
+                       "static_ms": _ms(t0, t_static), "write_ms": _ms(t_static, t_write),
+                       "compile_ms": _ms(t_write, t_compile), "llm_wait_ms": _ms(t_compile, t_guard),
+                       "total_ms": _ms(t0, t_guard)})
     lines = [f"源码插件「{name}」已应用：{len(ops)} 条变更、{len(done)} 个文件。"]
     lines += [f"  · {r['action']} {r['path']}" for r in done]
     lines.append(f"变更已写入转译层：{root}")
+    lines.append(f"耗时 {LAST_APPLY['total_ms'] / 1000:.2f}s（静态校验 "
+                 f"{LAST_APPLY['static_ms']}ms / 写入 {LAST_APPLY['write_ms']}ms / 编译 "
+                 f"{LAST_APPLY['compile_ms']}ms / LLM 等待 {LAST_APPLY['llm_wait_ms']}ms）。")
     lines.append("变更已写入转译层；由热加载引擎（core/hot_reload.py）即时装载，"
                  "无需重启应用（应用源码文件保持不变）。")
     return True, "\n".join(lines)

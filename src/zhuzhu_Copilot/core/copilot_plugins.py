@@ -100,7 +100,7 @@ def _read_meta(name: str) -> dict:
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的元数据
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -286,7 +286,7 @@ def load_copilot_manifest(pkg_dir) -> dict:
     if not f.is_file():
         return {}
     try:
-        man = json.loads(f.read_text(encoding="utf-8"))
+        man = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的清单
     except (OSError, ValueError):
         return {}
     ok, _why = validate_copilot_manifest(man)
@@ -310,7 +310,7 @@ def get_plugin_config(name: str) -> dict:
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的配置
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
@@ -671,7 +671,7 @@ def import_plugin_zip(zip_path: str) -> tuple:
             if top is None:
                 return False, "插件包缺少 plugin.json"
             meta = json.loads(zf.read((top + "/plugin.json") if top
-                                      else "plugin.json").decode("utf-8"))
+                                      else "plugin.json").decode("utf-8-sig"))
             if not isinstance(meta, dict):
                 return False, "plugin.json 格式错误"
     except (OSError, ValueError, zipfile.BadZipFile) as e:
