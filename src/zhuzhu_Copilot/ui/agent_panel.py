@@ -51,6 +51,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAbstractTextDocumentLayout,
+    QBrush,
     QColor,
     QCursor,
     QDragEnterEvent,
@@ -2650,10 +2651,12 @@ class _CapsuleSlider(QSlider):
     TICK_STYLE_MUTED = "muted"   # 灰点 + 只画未覆盖区
     TICK_STYLE_LEVEL = "level"   # 淡蓝点 + 每个挡位都画
     PARTICLE_SPEED = 0.4032        # 0.576 再降 30%（每秒扫过的轨道比例）
-    PARTICLE_COUNT = 200
+    PARTICLE_COUNT = 100
     PARTICLE_R = 1.6               # 小白点半径（px）
     PARTICLE_FADE = 0.025          # 两端淡入淡出占轨道的比例（越小，左侧遮罩区越小）
     ALPHA_LEVELS = 8               # 粒子亮度分级（预渲染贴图档数，避免逐颗改 opacity）
+    GRADIENT_FROM = "#93C5FD"      # 特效态覆盖色渐变起点：淡蓝
+    GRADIENT_TO = "#7C5CFF"        # 特效态覆盖色渐变终点：蓝紫
 
     def __init__(self, parent=None, *, tick_step: int = 0,
                  particles_on_max: bool = False,
@@ -2763,8 +2766,8 @@ class _CapsuleSlider(QSlider):
         animating = self._particles and self._anim.isActive()
 
         if animating:
-            # 动画帧只重绘滑块与粒子：轨道/覆盖区走缓存（特效出现时连档位点一并隐去）
-            p.drawPixmap(0, 0, self._static_layer(hide_ticks=True))
+            # 特效帧只重绘滑块与粒子：轨道/覆盖区走缓存（渐变底色 + 隐去档位点）
+            p.drawPixmap(0, 0, self._static_layer(effect_on=True))
         else:
             self._paint_static(p, x0, x1, cy, colors)
 
@@ -2789,8 +2792,12 @@ class _CapsuleSlider(QSlider):
         span_v = max(1, self.maximum() - self.minimum())
         return x0 + (x1 - x0) * ((self.value() - self.minimum()) / span_v)
 
-    def _paint_static(self, p, x0, x1, cy, colors=None, hide_ticks: bool = False):
-        """轨道（两端含外延）+ 覆盖区 + 档位圆点（hide_ticks 时跳过圆点）。"""
+    def _paint_static(self, p, x0, x1, cy, colors=None, effect_on: bool = False):
+        """轨道（两端含外延）+ 覆盖区 + 档位圆点。
+
+        effect_on（满档粒子特效态）：覆盖区改用「淡蓝 → 蓝紫」横向渐变并把整条胶囊铺满，
+        同时不画档位圆点。
+        """
         colors = colors or self._colors()
         fill, track = colors[0], colors[1]
         tick = colors[4] if self._tick_style == self.TICK_STYLE_LEVEL else colors[3]
@@ -2803,11 +2810,17 @@ class _CapsuleSlider(QSlider):
         p.drawPath(capsule)
 
         tx = self._thumb_x()
-        if self.value() > self.minimum():
+        if effect_on:
+            grad = QLinearGradient(cx0, cy, cx1, cy)
+            grad.setColorAt(0.0, QColor(self.GRADIENT_FROM))
+            grad.setColorAt(1.0, QColor(self.GRADIENT_TO))
+            p.setBrush(QBrush(grad))               # 特效态：整条胶囊铺渐变
+            p.drawPath(capsule)
+        elif self.value() > self.minimum():
             p.setBrush(fill)                       # 覆盖区：深蓝胶囊
             p.drawPath(self._capsule(cx0, tx, cy, h))
 
-        if self._tick_step > 0 and not hide_ticks:
+        if self._tick_step > 0 and not effect_on:
             p.save()
             p.setClipPath(capsule)                 # 圆点一律不越出胶囊
             p.setBrush(tick)
@@ -2820,10 +2833,10 @@ class _CapsuleSlider(QSlider):
                 p.drawEllipse(QPointF(dx, cy), self.TICK_R, self.TICK_R)
             p.restore()
 
-    def _static_layer(self, hide_ticks: bool = False) -> QPixmap:
+    def _static_layer(self, effect_on: bool = False) -> QPixmap:
         """缓存「轨道 + 覆盖区 + 圆点」：键含尺寸/数值/档位/主题，任一变化自动重建。"""
         key = (self.width(), self.height(), self.value(), self.minimum(),
-               self.maximum(), self._tick_step, self._tick_style, hide_ticks,
+               self.maximum(), self._tick_step, self._tick_style, effect_on,
                _resolve_theme(), round(self.devicePixelRatioF(), 2))
         if self._cache is not None and self._cache_key == key:
             return self._cache
@@ -2835,7 +2848,7 @@ class _CapsuleSlider(QSlider):
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         x0, x1 = self._track_span()
-        self._paint_static(p, x0, x1, self.height() / 2.0, hide_ticks=hide_ticks)
+        self._paint_static(p, x0, x1, self.height() / 2.0, effect_on=effect_on)
         p.end()
         self._cache, self._cache_key = pm, key
         return pm
