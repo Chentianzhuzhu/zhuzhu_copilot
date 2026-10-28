@@ -2644,7 +2644,8 @@ class _CapsuleSlider(QSlider):
     """
 
     TRACK_H = 16         # 轨道胶囊高度（px）
-    TRACK_END_PAD = 7.0  # 胶囊两端比数值端点外延的长度：给端点圆点留冗余空间
+    VALUE_PAD = 7.0      # 数值端点（圆点 / 滑块）距胶囊端点的余量：固定不动
+    CAPSULE_EXTEND = 7.0  # 胶囊两端再各延长的长度（圆点位置不受影响）
     THUMB_R = 12.8       # 滑块圆半径（px）：比轨道高一档缩小 20%，收进胶囊里
     TICK_R = 3.0         # 档位圆点半径（px）
     RING_RATIO = 0.55    # 滑块内淡灰圆环的半径占比（与外圆同心）
@@ -2655,8 +2656,8 @@ class _CapsuleSlider(QSlider):
     PARTICLE_R = 1.6               # 小白点半径（px）
     PARTICLE_FADE = 0.025          # 两端淡入淡出占轨道的比例（越小，左侧遮罩区越小）
     ALPHA_LEVELS = 8               # 粒子亮度分级（预渲染贴图档数，避免逐颗改 opacity）
-    GRADIENT_FROM = "#93C5FD"      # 特效态覆盖色渐变起点：淡蓝
-    GRADIENT_TO = "#7C5CFF"        # 特效态覆盖色渐变终点：蓝紫
+    GRADIENT_FROM = "#4C1D95"      # 满档特效态：深紫渐变起点
+    GRADIENT_TO = "#6D28D9"        # 满档特效态：深紫渐变终点
 
     def __init__(self, parent=None, *, tick_step: int = 0,
                  particles_on_max: bool = False,
@@ -2717,25 +2718,27 @@ class _CapsuleSlider(QSlider):
     # ---- 配色（深色：淡白轨道；浅色：淡灰白轨道，否则白底上不可见）----
     @staticmethod
     def _colors():
-        """(覆盖区深蓝, 未覆盖淡白, 滑块纯白, 灰点, 淡蓝点, 滑块描边, 圆环淡灰)"""
+        """(覆盖区蓝色, 未覆盖淡白, 滑块纯白, 灰点, 淡蓝点, 滑块描边, 圆环淡灰)"""
         ring = QColor(203, 213, 225)                # 淡灰圆环：白圆上仍可辨认
+        fill = QColor(ACCENT).lighter(112)          # 覆盖区：比主题深蓝更淡一点
         if _resolve_theme() == "dark":
-            return (QColor(ACCENT), QColor(255, 255, 255, 44), QColor("#FFFFFF"),
+            return (fill, QColor(255, 255, 255, 44), QColor("#FFFFFF"),
                     QColor(154, 163, 175, 205), QColor(147, 197, 253),
                     QColor(0, 0, 0, 70), ring)
-        return (QColor(ACCENT), QColor(27, 36, 51, 42), QColor("#FFFFFF"),
+        return (fill, QColor(27, 36, 51, 42), QColor("#FFFFFF"),
                 QColor(140, 148, 160, 190), QColor(147, 197, 253),
                 QColor(27, 36, 51, 45), ring)
 
     def _track_span(self):
-        """数值端点（滑块圆心可达范围）：留出滑块半径与外延空间。"""
-        m = self.THUMB_R + 1 + self.TRACK_END_PAD
+        """数值端点（滑块圆心可达范围）：留出滑块半径与端点余量，与胶囊长度解耦。"""
+        m = self.THUMB_R + 1 + self.VALUE_PAD
         return m, max(m, self.width() - m)
 
     def _capsule_span(self):
-        """胶囊两端：比数值端点外延 TRACK_END_PAD，端点圆点因此有冗余空间。"""
+        """胶囊两端：比数值端点再各外延 VALUE_PAD + CAPSULE_EXTEND（圆点位置不受影响）。"""
         x0, x1 = self._track_span()
-        return x0 - self.TRACK_END_PAD, x1 + self.TRACK_END_PAD
+        pad = self.VALUE_PAD + self.CAPSULE_EXTEND
+        return x0 - pad, x1 + pad
 
     def _value_at(self, x: float) -> int:
         x0, x1 = self._track_span()
