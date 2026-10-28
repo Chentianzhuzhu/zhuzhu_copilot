@@ -141,7 +141,7 @@ def test_effort_slider_is_capsule_with_level_dots_and_particles():
         assert sl.tick_step == 1, "8 个档位应每档一个圆点"
         assert sl.tick_style == ap._CapsuleSlider.TICK_STYLE_LEVEL, "档位点应为淡蓝点"
         assert sl.maximum() == len(agent_llm.EFFORTS) - 1
-        assert sl.PARTICLE_COUNT == 50 and sl.PARTICLE_LANES > 1
+        assert sl.PARTICLE_COUNT == 100 and sl.PARTICLE_R > 0
         # 隐藏状态下不空转动画；显示 + 满档才跑，离开满档立刻停
         sl.setValue(sl.maximum())
         assert not sl._anim.isActive()
