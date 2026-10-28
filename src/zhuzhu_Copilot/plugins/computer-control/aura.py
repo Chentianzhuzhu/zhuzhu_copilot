@@ -10,10 +10,10 @@
 
 三条硬性约束
 ------------
-* **绝不进截图**：两个窗口都调 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`，
-  让 `BitBlt` / `PrintWindow` / 图形捕获 API 一律看不到它们 —— AI 截到的画面
-  永远是"用户会看到的桌面"，不含任何提示层。系统不支持时退化为
-  `capture_guard()` 里临时 `ShowWindow(SW_HIDE)`（见 `_EXCLUDE_ALL`）。
+* **不进 AI 截图**：默认**不**做永久排除（远程桌面 / 投屏 / 录屏也走同一套捕获接口，
+  永久排除会连用户自己都看不到提示层），改由 `capture_guard()` 在截图瞬间临时
+  `ShowWindow(SW_HIDE)`；需要永久排除时把 `AURA_CAPTURE_EXCLUDE` 设为 True
+  （那时走 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`）。
 * **绝不吃用户的点击**：分层窗口 + `WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`，
   鼠标键盘全部穿透到下面的真实窗口。
 * **性能优先**：见下面的渲染策略。
@@ -113,6 +113,13 @@ SW_HIDE = 0
 SW_SHOWNOACTIVATE = 4
 # 截图排除（Windows 10 2004+）：窗口照常显示在屏幕上，但捕获 API 里完全不存在
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+#: 是否永久把提示层从**所有**截图中抹掉（WDA_EXCLUDEFROMCAPTURE）。
+#: 默认 False：远程桌面 / 投屏 / OBS 一类工具也走同一套捕获接口，永久排除会让
+#: 用户在自己的**远程画面/录像**里完全看不到光带与胶囊（用户反馈「操控时还是不
+#: 会显示」）。关掉后由 `capture_guard()` 在 AI 截图的瞬间临时隐藏窗口（几十 ms），
+#: 既保证 AI 图干净，又保证人眼/录屏任何时刻都看得见。
+AURA_CAPTURE_EXCLUDE = False
 
 # GDI 文本常量
 TRANSPARENT_BK = 1
@@ -329,7 +336,7 @@ def _screen_size() -> tuple:
 # 当前所有活跃的分层窗口：截图排除与显隐兜底都靠这张表
 _LAYERS = []
 _CAPTURE_LOCK = threading.Lock()
-_EXCLUDE_ALL = True        # 全部窗口都成功设了 WDA_EXCLUDEFROMCAPTURE 才为 True
+_EXCLUDE_ALL = bool(AURA_CAPTURE_EXCLUDE)   # 全部窗口都成功永久排除才为 True
 
 
 class _LayeredWindow:
@@ -413,12 +420,16 @@ class _LayeredWindow:
         ctypes.memset(self._addr, 0, w * h * 4)
         self._size = wintypes.SIZE(w, h)
         self._dst = wintypes.POINT(self._x, self._y)
-        # 截图排除：让所有捕获 API 都看不见这扇窗（做不到就记下来，改用临时隐藏）
-        try:
-            self._excluded = bool(user32.SetWindowDisplayAffinity(
-                self._hwnd, WDA_EXCLUDEFROMCAPTURE))
-        except Exception:
-            self._excluded = False
+        # 截图排除（默认关闭，见 AURA_CAPTURE_EXCLUDE 的说明）：
+        # 开启时让捕获 API 从此看不见这扇窗；关闭时什么都不做，
+        # 由 capture_guard 在真正截图的那一刻临时隐藏（人眼/录屏始终可见）。
+        self._excluded = False
+        if AURA_CAPTURE_EXCLUDE:
+            try:
+                self._excluded = bool(user32.SetWindowDisplayAffinity(
+                    self._hwnd, WDA_EXCLUDEFROMCAPTURE))
+            except Exception:
+                self._excluded = False
         if not self._excluded:
             with _CAPTURE_LOCK:
                 _EXCLUDE_ALL = False

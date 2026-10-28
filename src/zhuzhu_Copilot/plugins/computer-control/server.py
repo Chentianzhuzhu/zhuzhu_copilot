@@ -67,6 +67,9 @@ SESSION_TTL_S = 45.0         # 操控会话滑动有效期：期内真人输入�
                               # 鼠标就会被判接管 → 任务直接卡死（用户看到的是「MCP
                               # 超时、5 分钟没完成」）。45s 足够覆盖「下一次工具
                               # 调用」的间隔，又不会误伤。
+ACTION_SETTLE_S = 1.0         # 操作后**截图前**的最短等待（秒）：点击/输入刚落完就抓，
+                              # 很容易抓到过渡帧（菜单还没弹出、列表还没滚动、文字重绘到一半）→
+                              # 模型按旧画面判断，随后乱点。默认 1s，界面稳定后再出图。
 MOVE_TAKEOVER_PX = 160        # 鼠标移动累计位移阈值：低于它不算「用户接管」。
                               # 40 太敏感 —— 用户正常挪一下鼠标就超了，AI 会被踢下线、
                               # 任务直接卡住（实测：用户在旁边用电脑时必现）。按键/点击
@@ -610,8 +613,9 @@ def _no_overlay():
 
     提示层是**给用户看的**，绝不能被截进给模型的图里 —— 光带糊在屏幕边缘会污染
     「任务栏 / 窗口边框」这类贴边目标的像素分析，胶囊窗更是直接压住顶部内容。
-    正常情况走 `WDA_EXCLUDEFROMCAPTURE`（窗口照常显示，捕获 API 里没有它），
-    这是零开销的空操作；系统不支持时才退化成"截前隐藏、截后恢复"。
+    默认策略是**截前临时隐藏、截后恢复**（几十 ms）：不永久把窗口从所有捕获接口中
+    抹掉，远程桌面/录屏/投屏里用户始终看得见提示层；把 `aura.AURA_CAPTURE_EXCLUDE`
+    设为 True 时才改走 `WDA_EXCLUDEFROMCAPTURE`（零开销，但所有人/所有录屏都看不到）。
     """
     if aura is None:
         return contextlib.nullcontext()
@@ -4505,6 +4509,29 @@ _STATE = {
 _LOG: list = []
 _LOG_LOCK = threading.Lock()
 
+#: 最近一次操控动作（点击/输入/滚动…）完成的时间。截图工具据此等界面稳定再抓图。
+_LAST_ACTION_TS = 0.0
+
+
+def _mark_action_done():
+    """记录一次操控动作完成（供「操作后 1s 再截图」使用）。"""
+    global _LAST_ACTION_TS
+    _LAST_ACTION_TS = time.time()
+
+
+def _settle_after_action():
+    """如果刚操作过，截图前先等到界面稳定（最多 ACTION_SETTLE_S 秒）。
+
+    为什么需要：点击/输入刚落下就立即抓图，很容易抓到过渡帧 —— 菜单还没弹出、
+    列表还没滚动、输入法候选还没消失、文字重绘到一半。模型按这种画面判断，
+    很容易得出「没生效」并继续乱点。等 1s 后界面落定，截图与判断才可靠。
+    """
+    if _LAST_ACTION_TS <= 0:
+        return
+    left = ACTION_SETTLE_S - (time.time() - _LAST_ACTION_TS)
+    if left > 0:
+        time.sleep(min(left, ACTION_SETTLE_S))
+
 
 def _log(who: str, text: str):
     """写操作日志（环形，供 Web UI 展示）。who ∈ ai/user/sys。"""
@@ -5030,6 +5057,8 @@ def _shot_meta(desc: str, grid: bool = False) -> str:
 
 
 def tool_screen_shot(args: dict) -> list:
+    # 操作后至少等 1s 再截图：界面落定前抓图会把模型带进「没生效→继续乱点」的坑
+    _settle_after_action()
     mode = str(args.get("mode") or "full").strip().lower()
     grid = _bool(args.get("grid"), False)      # 默认纯净截图：坐标轴不画，直接发图给模型
     hwnd = _num(args.get("hwnd"), 0)
@@ -5082,6 +5111,7 @@ def tool_screen_shot(args: dict) -> list:
 
 
 def tool_zoom_in(args: dict) -> list:
+    _settle_after_action()
     x, y = _resolve_point(args)
     size = _num(args.get("size"), 400)
     factor = _num(args.get("factor"), 3)
@@ -5346,15 +5376,15 @@ def _click_verify(x: int, y: int, before, hwnd: int = 0) -> str:
 
 def _alt_snap_point(est_x: int, est_y: int, used_x: int, used_y: int,
                     reach: int) -> tuple:
-    """吸附点没点中时，取「次优候选」的几何中心再试一次。
+    """吸附点没点中时，取「次优候选」再试一次 —— 但**只能在原目标附近**。
 
     为什么值得做：吸附偶尔会挑到隔壁那个连通域（密排列表里最常见 —— 估计点压在
-    两个条目之间，谁近谁被选中）。此时用户看到的现象是「点了没反应」，而这
-    恰好是**同一个目标、只差十几像素**，无需劳烦模型重新截图重新估坐标：
-    插件自己换第二候选再点一次，绝大多数情况一次就中。
+    两个条目之间，谁近谁被选中）。此时现象是「点了没反应」，而换第二候选一次多半就中。
 
-    约束：候选必须离已经点过的点至少 4px（同一块就别重复点）、且不超过 160px
-    （再远就说明不是同一个目标了，换候选只会点到无关的地方）。
+    为什么必须限制纵向位移（用户反馈「胡乱点击聊天列表」）：候选菜单里既有「行」
+    也有「块」，不加限制时第二候选可能是**另一行**（聊天列表另一条会话）——点击就
+    变成「乱点别人」。这里要求纵向差 ≤ 14px、曼哈顿距离 ≤ 80px：只换同一目标附近
+    的候选，绝不跨行。
     """
     cands = []
     try:
@@ -5371,7 +5401,9 @@ def _alt_snap_point(est_x: int, est_y: int, used_x: int, used_y: int,
         dx, dy = abs(cx - used_x), abs(cy - used_y)
         if dx <= 3 and dy <= 3:
             continue                       # 就是刚点的那个点，跳过
-        if dx + dy > 160:
+        if dy > ALT_RETRY_DY_MAX:
+            continue                       # 换行/换条目 = 点到别人，宁可不重试
+        if dx + dy > 80:
             continue                       # 离得太远，不是同一个目标
         return (cx, cy)
     return None
@@ -5449,6 +5481,7 @@ def tool_refine_point(args: dict) -> list:
     `click(x=…, y=…, space="screen", snap=false)` 点击（**带 snap=false**，
     否则 click 会再吸附一次，可能又挪到隔壁那个去）。
     """
+    _settle_after_action()
     x, y = _resolve_point(args)
     reach = _num(args.get("reach"), SNAP_REACH_DEFAULT)
     cands = []
@@ -5536,6 +5569,10 @@ _CLICK_ACTIONS = {
     "long": "long_press", "long_press": "long_press",
     "drag": "drag", "swipe": "swipe", "select": "select",
 }
+
+#: 换候选重试时允许的最大纵向位移（px）：超过它就是"另一行/另一个条目"，
+#: 重试会变成乱点聊天列表里的人，宁可放弃重试。
+ALT_RETRY_DY_MAX = 14
 
 
 def _click_action(args: dict) -> str:
@@ -6930,6 +6967,10 @@ def _handle(msg: dict):
         except Exception as e:
             result = {"content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
                       "isError": True}
+        finally:
+            # 操控动作完成后记时间：截图工具据此等 1s 再抓图（见 _settle_after_action）
+            if name in _CONTROL_TOOLS:
+                _mark_action_done()
         return {"jsonrpc": "2.0", "id": rid, "result": result}
     return {"jsonrpc": "2.0", "id": rid,
             "error": {"code": -32601, "message": f"未知方法: {method}"}}

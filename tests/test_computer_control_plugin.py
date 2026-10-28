@@ -981,6 +981,66 @@ def test_hint_capsule_renders_text_and_eight_same_size_dots():
         h.destroy()
 
 
+def test_alt_retry_never_jumps_to_another_list_row(monkeypatch):
+    """自动换候选重试**不能跨行**：否则就是「乱点聊天列表里的另一个人」。"""
+    mod = _load_module()
+    monkeypatch.setattr(
+        mod, "_snap_core",
+        lambda x, y, reach, max_shift=None, cands=None: (
+            cands.extend([{"x": 1000, "y": 2035}, {"x": 1010, "y": 2004}]) or
+            (1000, 2000, "", [])))
+    # 第一候选在另一行（纵向差 35 > 14）必须被跳过，取同一行附近的第二个
+    assert mod._alt_snap_point(1000, 2000, 1000, 2000, 88) == (1010, 2004)
+
+
+def test_screenshot_waits_a_second_after_an_action(monkeypatch):
+    """操作后截图前必须等界面落定（默认 1s，最多等 1s）。"""
+    mod = _load_module()
+    slept = []
+    monkeypatch.setattr(mod.time, "time", lambda: 100.4)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: slept.append(round(s, 3)))
+    mod._LAST_ACTION_TS = 100.0          # 0.4s 前刚操作过
+    mod._settle_after_action()
+    assert slept == [0.6], slept
+    slept.clear()
+    mod._LAST_ACTION_TS = 99.0           # 早已超过 1s：不再等待
+    mod._settle_after_action()
+    assert slept == [], slept
+    mod._LAST_ACTION_TS = 0.0            # 从没操作过：不等待
+    mod._settle_after_action()
+    assert slept == [], slept
+
+
+def test_control_tool_marks_last_action_time(monkeypatch):
+    """真正执行过操控工具后必须记下时间（截图等待以此为准）。"""
+    mod = _load_module()
+    mod._LAST_ACTION_TS = 0.0
+    monkeypatch.setattr(mod, "_touch_session", lambda: None)
+    monkeypatch.setattr(mod, "_aura_on", lambda: None)
+    monkeypatch.setitem(mod._HANDLERS, "click", lambda a: "ok")
+    mod._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                 "params": {"name": "click", "arguments": {}}})
+    assert mod._LAST_ACTION_TS > 0, "操控工具执行后必须标记动作时间"
+
+
+def test_capture_exclusion_is_opt_in_so_overlay_stays_visible(monkeypatch):
+    """默认不做永久截图排除：远程桌面/录屏里也能看到光带与胶囊。"""
+    aura = _load_sibling("cc_aura_cap2", "aura.py")
+    assert aura.AURA_CAPTURE_EXCLUDE is False
+    assert aura.capture_exclude_supported() is False, "默认应走 capture_guard 临时隐藏"
+    # 显式开启时才走 WDA_EXCLUDEFROMCAPTURE（系统不支持则退化为隐藏兜底）
+    monkeypatch.setattr(aura, "AURA_CAPTURE_EXCLUDE", True)
+    monkeypatch.setattr(aura, "_EXCLUDE_ALL", True)   # 聚合标志按"开启排除"重启
+    w = aura._LayeredWindow("zhuzhu-aura-optin")
+    if not w.create(0, 0, 64, 32):
+        pytest.skip("当前会话无法创建分层窗口（无桌面）")
+    try:
+        if w._excluded:
+            assert aura.capture_exclude_supported() is True
+    finally:
+        w.destroy()
+
+
 def test_click_does_not_retry_when_the_window_changed_at_all(monkeypatch):
     """整窗只要有**任何**采样点变化，就不许再点一次。
 
