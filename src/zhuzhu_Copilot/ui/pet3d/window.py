@@ -4,8 +4,9 @@
 ----
 - **默认固定在右下角**（与 GIF 桌宠同一落点，留白 16px）：启动即在那里，**不吸附、
   不追踪鼠标位置**；
-- **看着你**：头部 + 躯干按「猫→光标」的方向平滑转向（叠加骨骼旋转，不改烘焙动画）：
-  光标在头顶就抬头、在左上/右上就抬头朝对应方向看，在下方则低头；
+- **靠近才看你**：光标离小猫近（窗口边缘 70px 内）时，头部 + 躯干按「猫→光标」
+  的方向平滑转向（叠加骨骼旋转，不改烘焙动画）：在头顶就抬头、在左上/右上就抬头朝
+  对应方向看、在下方则低头；光标离开到 260px 以外平滑收回正视前方（远处不理会）；
 - **眨眼**：每 3 秒眨一次（真实时间驱动，与动画播放速度无关；眼睛压成一条缝、高光消失）；
 - **互动**：单击 → 跳一下（挤压 + 起跳 + 尾巴大幅摆）；双击 → 打开 AI 主面板；
   右键 → 菜单（回到右下角 / 跟随鼠标 / 退出）；拖动 → 抓着走，四肢垂下；
@@ -59,10 +60,33 @@ def corner_pos(size: QSize, avail) -> QPoint:
 #: 右侧/上方方向上的视线角度上限（度）：再远的光标按上限饱和
 LOOK_YAW_MAX_DEG = 38.0
 LOOK_PITCH_MAX_DEG = 26.0
-#: 光标偏移 → 角度的参考距离（像素）：越小越灵敏。桌宠只有 112px 宽，
-#: 若按窗口比例算，鼠标稍微一偏就顶到上限，看不出「左上/右上」的区别。
-LOOK_YAW_REF_PX = 520.0
-LOOK_PITCH_REF_PX = 380.0
+#: 光标偏移 → 角度的参考距离（像素）：越小越灵敏。
+#: 只有光标靠近桌宠时才跟随，所以这里按「近身范围」标定（150/130），
+#: 光标在 50px 外就能看到明显的转头，而不是要横跨半个屏幕才有效果。
+LOOK_YAW_REF_PX = 150.0
+LOOK_PITCH_REF_PX = 130.0
+#: 视线跟随的触发距离（像素，相对桌宠窗口边缘）：
+#: 窗口内/NEAR 以内 → 完全跟随；超过 FAR → 平滑回到正视前方（鼠标离得远就不理）
+LOOK_NEAR_PX = 70.0
+LOOK_FAR_PX = 260.0
+
+
+def look_weight(pet_rect, cursor: QPoint) -> float:
+    """光标离桌宠的远近 → 跟随权重（窗口内=1，远处=0，中间 smoothstep 过渡）。
+
+    用户要求「鼠标靠近小猫时，头部和躯干才跟随」：远处光标不应该让猫一直歪着头
+    盯屏幕另一侧；用窗口边缘距离（而不是中心点）判断，贴着猫身边挪动也算「靠近」。
+    """
+    dx = max(pet_rect.left() - cursor.x(), 0, cursor.x() - pet_rect.right())
+    dy = max(pet_rect.top() - cursor.y(), 0, cursor.y() - pet_rect.bottom())
+    dist = math.hypot(dx, dy)
+    if dist <= LOOK_NEAR_PX:
+        return 1.0
+    if dist >= LOOK_FAR_PX:
+        return 0.0
+    t = (dist - LOOK_NEAR_PX) / (LOOK_FAR_PX - LOOK_NEAR_PX)
+    t = t * t * (3.0 - 2.0 * t)          # smoothstep：进出都不会突跳
+    return 1.0 - t
 
 
 def look_angles(center: QPoint, cursor: QPoint) -> tuple:
@@ -255,8 +279,12 @@ class Pet3DWindow(QWidget):
     def _update_pose(self, cursor: QPoint, dt: float, now: float) -> None:
         """把「速度 + 光标方位 + 点击状态」翻译成每帧的动画参数。"""
         center = self.geometry().center()
-        # 光标在头顶 → 抬头；左上 → 抬头看左上；右上 → 抬头看右上（符号见 look_angles）
+        # 光标在头顶 → 抬头；左上 → 抬头看左上；右上 → 抬头看右上（符号见 look_angles）。
+        # 但**只有靠近小猫时**才跟随：远处权重为 0，目标角回 0，低通会平滑转回正视前方。
         yaw, pitch = look_angles(center, cursor)
+        w = look_weight(self.geometry(), cursor)
+        yaw *= w
+        pitch *= w
 
         happy = now < self._happy_until
         # 未开启跟随时窗口不会移动：不能把「光标在动」当成「猫在跑」，否则会原地奔跑。

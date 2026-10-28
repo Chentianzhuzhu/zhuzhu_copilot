@@ -118,6 +118,20 @@ def test_pet_defaults_to_fixed_bottom_right_without_following():
     assert idle == pos
 
 
+def test_look_weight_only_follows_when_cursor_is_near():
+    """只有光标靠近桌宠（窗口边缘 70px 内）才跟随；远处权重 0 → 回到正视前方。"""
+    from PyQt6.QtCore import QPoint, QRect
+
+    rect = QRect(1791, 889, 112, 126)          # 右下角实际位置
+    assert pet_window.look_weight(rect, QPoint(1847, 950)) == 1.0, "光标在猫身上必须完全跟随"
+    assert pet_window.look_weight(rect, QPoint(1791 - 40, 950)) == 1.0, "贴着左侧 40px 也算靠近"
+    assert pet_window.look_weight(rect, QPoint(1791 - 2000, 100)) == 0.0, "隔着半个屏幕不该转头"
+
+    mid = pet_window.look_weight(rect, QPoint(1791 - 160, 889 - 160))
+    assert 0.0 < mid < 1.0, "中间距离应有平滑过渡，而不是硬切换"
+    assert pet_window.LOOK_NEAR_PX < pet_window.LOOK_FAR_PX
+
+
 def test_look_angles_point_toward_cursor_direction():
     """鼠标在头顶要抬头、左上/右上要抬头看向对应角落（符号不能反）。
 
