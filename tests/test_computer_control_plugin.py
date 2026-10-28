@@ -143,6 +143,27 @@ def test_skill_prefers_click_or_swipe_over_wheel_for_row_lists():
     assert "优先用它把目标滑进视野，然后直接 click 那一行" in src
     assert "聊天/联系人/会话这类行式列表不要用滚轮" in src
     assert "滚动窗口内容建议改用 scroll" not in src, "滑动结果不得再把模型引向滚轮"
+    # 逐条点开列表试探 = 乱点（用户反馈：坐标很准，却一条条点开会话）
+    assert "禁止「逐条点开列表试探」" in skill
+    assert "一条条点开会话" in skill
+    assert "连续点开列表里的不同条目" in src
+
+
+def test_repeated_row_clicks_trigger_list_scan_warning():
+    """连续点开 3 条不同列表行 → 当次点击结果里必须出现一次性告警。"""
+    mod = _load_module()
+    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False})
+    assert mod._list_scan_note(1, 200, True) == ""
+    assert mod._list_scan_note(1, 240, True) == ""
+    warn = mod._list_scan_note(1, 280, True)
+    assert "连续点开列表里的不同条目" in warn
+    # 同一行反复点（例如重试）不算"换一条"
+    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False})
+    for _ in range(5):
+        assert mod._list_scan_note(1, 200, True) == ""
+    # 非「行」点击（普通按钮/图标）不参与统计
+    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False})
+    assert mod._list_scan_note(1, 200, False) == ""
 
 
 def test_skill_md_prefers_full_screen_capture():

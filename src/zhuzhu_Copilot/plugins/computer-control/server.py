@@ -4512,6 +4512,38 @@ _LOG_LOCK = threading.Lock()
 #: 最近一次操控动作（点击/输入/滚动…）完成的时间。截图工具据此等界面稳定再抓图。
 _LAST_ACTION_TS = 0.0
 
+#: 列表行点击轨迹：用于识别「一条一条点开会话试探」这种乱点行为
+_LIST_SCAN_WIN_S = 25.0       # 统计窗口
+_LIST_SCAN_ROWS = 3           # 同一窗口内点开 ≥3 条不同行即告警（只提示一次）
+_ROW_SCAN = {"ts": 0.0, "ys": [], "warned": False}
+
+
+def _list_scan_note(hwnd: int, y: int, is_row: bool) -> str:
+    """识别「逐条点开列表试探」并给出一次性警告（不阻断，只纠正行为）。
+
+    为什么需要：用户反馈 Agent 点聊天列表**坐标很准**，但会一条一条点开会话"看看是哪个"。
+    这不是定位问题，而是把「点开看看」当成搜索手段 —— 会打开错误会话，发消息场景还可能
+    发错人。坐标再准也救不了这种策略，必须直接告诉模型换手段（看标题 / 用搜索框 / 问用户）。
+    """
+    if not is_row:
+        return ""
+    now = time.time()
+    if now - float(_ROW_SCAN.get("ts") or 0.0) > _LIST_SCAN_WIN_S:
+        _ROW_SCAN.update({"ts": now, "ys": [], "warned": False})
+    ys = _ROW_SCAN["ys"]
+    if not ys:
+        _ROW_SCAN["ts"] = now
+    if not ys or abs(ys[-1] - y) >= 8:      # 同一行重复点不算"换一条"
+        ys.append(int(y))
+    distinct = sorted(ys)
+    rows = 1 + sum(1 for a, b in zip(distinct, distinct[1:]) if b - a >= 12)
+    if rows >= _LIST_SCAN_ROWS and not _ROW_SCAN.get("warned"):
+        _ROW_SCAN["warned"] = True
+        return ("\n⚠ **检测到你在连续点开列表里的不同条目**（同一窗口内第 3 条）。"
+                "找目标请先看截图上的标题/名字确认那一行，或点搜索框输入名字后点唯一结果；"
+                "**不要逐条点开试探** —— 这会打开错误会话，发消息场景还会发错人。")
+    return ""
+
 
 def _mark_action_done():
     """记录一次操控动作完成（供「操作后 1s 再截图」使用）。"""
@@ -5679,9 +5711,10 @@ def tool_click(args: dict) -> str:
     label = {"right": "右键", "double": "双击"}.get(action, "点击")
     _log("ai", f"{label} {x},{y}（{button}×{clicks}，鼠标注入），落点 ({ax},{ay})")
     _refresh_env()
+    scan = _list_scan_note(hwnd, y, "行" in (snap_note or ""))
     return (f"已{label} ({x},{y}) {button}×{clicks}（屏幕物理坐标，鼠标注入）。"
             + _join_notes(snap_note, pre, land, vtext + retry_note, _take_coord_note())
-            + "请重新 screen_shot 验证结果。")
+            + "请重新 screen_shot 验证结果。" + scan)
 
 
 def _inject_lost_note(x: int, y: int) -> str:
