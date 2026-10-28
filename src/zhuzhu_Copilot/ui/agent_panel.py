@@ -2662,14 +2662,12 @@ class _CapsuleSlider(QSlider):
         self._particles = bool(particles_on_max)
         self._tick_style = tick_style
         # 每颗粒子的初始参数（固定伪随机、可复现）：出发点都是左端同一 x，
-        # 纵向落点随机（可在任意一行），各自匀速沿水平直线向右移动。
+        # 初始 y 随机（胶囊内任意一行），之后**永不改变** —— 全程水平直线运动。
         n = self.PARTICLE_COUNT
         self._offs0 = [self._rand(i, 2) for i in range(n)]
-        self._ys0 = [self._rand(i, 1) for i in range(n)]
+        self._ys = [self._rand(i, 1) for i in range(n)]      # 固定行号，不再变动
         self._speeds = [0.82 + 0.36 * self._rand(i, 3) for i in range(n)]
         self._offs = list(self._offs0)              # 运行中的横向进度（0..1）
-        self._ys = list(self._ys0)                  # 当前这趟所在的纵向行
-        self._laps = [0] * n                        # 跑完整条轨道的圈数
         self._cache = None                          # 静态层缓存（轨道 + 覆盖区 + 圆点）
         self._cache_key = None
         self._dot = None                            # 粒子白点贴图缓存
@@ -2691,15 +2689,8 @@ class _CapsuleSlider(QSlider):
         return ((x ^ (x >> 13)) & 0xFFFF) / 65536.0
 
     def _reset_particles(self):
-        """回到初始状态：同一批出发点与行号，保证每次起播观感一致。"""
+        """回到初始状态：同一批天然分散的出发点，保证每次起播观感一致。"""
         self._offs = list(self._offs0)
-        self._ys = list(self._ys0)
-        self._laps = [0] * self.PARTICLE_COUNT
-
-    def _reroll_row(self, i: int):
-        """绕回左端重新出发时换一行：生成位置可以是胶囊内的任意行。"""
-        self._laps[i] += 1
-        self._ys[i] = self._rand(i, 1000 + self._laps[i])
 
     def setValue(self, v: int):
         """改值统一入口：即使调用方 blockSignals，粒子动画也随档位即时启停。"""
@@ -2868,10 +2859,10 @@ class _CapsuleSlider(QSlider):
         return pm
 
     def _paint_particles(self, p, cy):
-        """满档粒子：整条胶囊内 100 颗小白点，起点 x 一致、沿水平直线由左向右流。
+        """满档粒子：整条胶囊内 100 颗小白点，起点 x 一致、全程水平直线向右。
 
-        每颗的纵向行号随机（可以是胶囊内任意一行，不排成行），速度略有差异；
-        绕回左端重新出发时换一行。整体裁进胶囊，最左/最右只在很窄的一段淡入淡出。
+        每颗的初始 y 随机（胶囊内任意一行）且此后恒定不变，因此画面上
+        只有左右位移、没有任何上下晃动；整体裁进胶囊，两端仅极窄一段淡入淡出。
         """
         cx0, cx1 = self._capsule_span()
         r = self.PARTICLE_R
@@ -2887,7 +2878,7 @@ class _CapsuleSlider(QSlider):
             alpha = 235 * min(1.0, u / fade, (1.0 - u) / fade)
             if alpha < 8:
                 continue
-            y = cy + (self._ys[i] * 2.0 - 1.0) * spread     # 直线：纵向位置不变
+            y = cy + (self._ys[i] * 2.0 - 1.0) * spread     # 行号固定：纯水平直线
             p.setOpacity(alpha / 255.0)
             p.drawPixmap(QPointF(sx0 + span * u - r - 1.0, y - r - 1.0), sprite)
         p.restore()
@@ -2897,9 +2888,8 @@ class _CapsuleSlider(QSlider):
         step = self.PARTICLE_SPEED * self._anim.interval() / 1000.0
         for i, u in enumerate(self._offs):
             u += step * self._speeds[i]
-            if u >= 1.0:                         # 跑完整条：回左端、换一行重来
+            if u >= 1.0:                         # 跑完整条：回左端同一行继续向右
                 u -= 1.0
-                self._reroll_row(i)
             self._offs[i] = u
         self.update()
 
