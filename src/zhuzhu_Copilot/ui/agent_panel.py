@@ -2641,11 +2641,11 @@ class _CapsuleSlider(QSlider):
     只用于「思考强度」与背景页的模糊 / 压暗，其他滑杆保持原样。
     """
 
-    TRACK_H = 8          # 轨道胶囊高度（px）
-    THUMB_R = 8          # 滑块圆半径（px）
-    TICK_R = 1.5         # 档位圆点半径（px）
-    PARTICLE_SPEED = 0.8   # 粒子每秒扫过的轨道比例（越大越快）
-    PARTICLE_COUNT = 7
+    TRACK_H = 16         # 轨道胶囊高度（px）
+    THUMB_R = 16         # 滑块圆半径（px）
+    TICK_R = 3.0         # 档位圆点半径（px）
+    PARTICLE_SPEED = 0.64   # 粒子每秒扫过的轨道比例（越大越快）
+    PARTICLE_COUNT = 9
 
     def __init__(self, parent=None, *, tick_step: int = 0,
                  particles_on_max: bool = False):
@@ -2656,7 +2656,7 @@ class _CapsuleSlider(QSlider):
         self._anim = QTimer(self)
         self._anim.setInterval(16)                  # ≈60fps
         self._anim.timeout.connect(self._on_tick)
-        self.setFixedHeight(24)
+        self.setFixedHeight(48)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setTracking(True)                      # 拖动中持续发 valueChanged
@@ -2700,6 +2700,17 @@ class _CapsuleSlider(QSlider):
         return self.minimum() + round(frac * (self.maximum() - self.minimum()))
 
     # ---- 绘制 ----
+    @staticmethod
+    def _capsule(x0: float, x1: float, cy: float, height: float) -> QPainterPath:
+        """真胶囊路径：两端用「半径 = 高度一半」的圆头。
+
+        不要用 Qt.SizeMode.RelativeSize 传 50%：相对模式下 x 半径按**宽度**算，
+        会画出横跨半条轨道的超扁椭圆角（锥形），必须用等半径的绝对圆角。"""
+        r = height / 2.0
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(x0, cy - r, max(0.0, x1 - x0), height), r, r)
+        return path
+
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -2707,23 +2718,29 @@ class _CapsuleSlider(QSlider):
         cy = self.height() / 2.0
         x0, x1 = self._track_span()
         span_v = max(1, self.maximum() - self.minimum())
-        r = self.TRACK_H / 2.0
+        h = float(self.TRACK_H)
+        capsule = self._capsule(x0, x1, cy, h)
 
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(track)                          # 未覆盖区：淡白胶囊
-        p.drawRoundedRect(QRectF(x0, cy - r, x1 - x0, self.TRACK_H), r, r)
+        p.drawPath(capsule)
 
         frac = (self.value() - self.minimum()) / span_v
         tx = x0 + (x1 - x0) * frac
         if tx - x0 > 0.5:
             p.setBrush(fill)                       # 覆盖区：浅蓝胶囊
-            p.drawRoundedRect(QRectF(x0, cy - r, tx - x0, self.TRACK_H), r, r)
+            p.drawPath(self._capsule(x0, tx, cy, h))
 
         if self._tick_step > 0:                    # 每个档位一个灰色圆点
+            p.save()
+            p.setClipPath(capsule)                 # 圆点一律不越出胶囊
             p.setBrush(tick)
+            inset = self.TICK_R + 1                # 端点圆点内收，避免被圆头裁成尖月牙
             for v in range(self.minimum(), self.maximum() + 1, self._tick_step):
-                p.drawEllipse(QPointF(x0 + (x1 - x0) * ((v - self.minimum()) / span_v),
-                                      cy), self.TICK_R, self.TICK_R)
+                dx = x0 + (x1 - x0) * ((v - self.minimum()) / span_v)
+                dx = min(max(dx, x0 + inset), x1 - inset)
+                p.drawEllipse(QPointF(dx, cy), self.TICK_R, self.TICK_R)
+            p.restore()
 
         if self._particles and self._anim.isActive():
             self._paint_particles(p, x0, x1, cy, particle)
@@ -2745,8 +2762,8 @@ class _CapsuleSlider(QSlider):
             c = QColor(color)
             c.setAlpha(alpha)
             p.setBrush(c)
-            rr = 1.9 if i % 2 == 0 else 1.3
-            p.drawEllipse(QPointF(x0 + span * u, cy + ((i % 3) - 1) * 1.2), rr, rr)
+            rr = 3.6 if i % 2 == 0 else 2.4
+            p.drawEllipse(QPointF(x0 + span * u, cy + ((i % 3) - 1) * 2.4), rr, rr)
 
     # ---- 粒子动画 ----
     def _on_tick(self):
@@ -2819,13 +2836,13 @@ class _BgAdjustStrip(QWidget):
         self._unit = ""
         self._src = None
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(22, 13, 22, 13)
-        lay.setSpacing(16)
+        lay.setContentsMargins(26, 16, 26, 16)
+        lay.setSpacing(18)
         self.title = QLabel("")
         self.title.setStyleSheet("background: transparent;")
         lay.addWidget(self.title)
         self.slider = _CapsuleSlider(tick_step=0)
-        self.slider.setFixedWidth(300)
+        self.slider.setFixedWidth(600)
         lay.addWidget(self.slider, 1)
         self.value = QLabel("")
         self.value.setFixedWidth(56)
@@ -2839,7 +2856,7 @@ class _BgAdjustStrip(QWidget):
         dark = _resolve_theme() == "dark"
         p.setPen(QPen(QColor(255, 255, 255, 36) if dark else QColor(0, 0, 0, 24), 1))
         p.setBrush(QColor(10, 12, 16, 226) if dark else QColor(255, 255, 255, 236))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 18, 18)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 24, 24)
         p.end()
 
     def show_for(self, title: str, unit: str, slider, tick_step: int):
@@ -5945,7 +5962,7 @@ class _AgentSettingsDialog(QDialog):
         # 胶囊滑杆：每档一个灰色圆点；拖到最高档时轨道上有白色粒子由左向右流动
         self.effort_slider = _CapsuleSlider(tick_step=1, particles_on_max=True)
         self.effort_slider.setRange(0, len(agent_llm.EFFORTS) - 1)
-        self.effort_slider.setFixedWidth(180)
+        self.effort_slider.setFixedWidth(360)
         self.effort_slider.setPageStep(1)
         _eff_lv = [_ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS]
         self.effort_slider.setToolTip(
