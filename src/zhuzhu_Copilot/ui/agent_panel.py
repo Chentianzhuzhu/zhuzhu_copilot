@@ -2635,17 +2635,17 @@ def _slider_tick_step(top: int) -> int:
 
 class _CapsuleSlider(QSlider):
     """胶囊滑杆（自绘）：浅蓝已覆盖区 / 淡白未覆盖区 / 纯白圆形滑块 /
-    灰色档位圆点；满档时可开启白色粒子从左到右依次平滑流动的动画。
+    灰色档位圆点（只画在未覆盖区）；满档时可开启白色粒子由左向右流动的动画。
 
     自绘而非 QSS：档位圆点与满档粒子需要逐帧绘制，样式表无法表达。
     只用于「思考强度」与背景页的模糊 / 压暗，其他滑杆保持原样。
     """
 
     TRACK_H = 16         # 轨道胶囊高度（px）
-    THUMB_R = 16         # 滑块圆半径（px）
+    THUMB_R = 12.8       # 滑块圆半径（px）：比轨道高一档缩小 20%，收进胶囊里
     TICK_R = 3.0         # 档位圆点半径（px）
     PARTICLE_SPEED = 0.64   # 粒子每秒扫过的轨道比例（越大越快）
-    PARTICLE_COUNT = 9
+    PARTICLE_COUNT = 20
 
     def __init__(self, parent=None, *, tick_step: int = 0,
                  particles_on_max: bool = False):
@@ -2653,6 +2653,10 @@ class _CapsuleSlider(QSlider):
         self._tick_step = max(0, int(tick_step))
         self._particles = bool(particles_on_max)
         self._phase = 0.0
+        self._fracs = tuple(i / self.PARTICLE_COUNT
+                            for i in range(self.PARTICLE_COUNT))
+        self._cache = None                          # 静态层缓存（轨道 + 覆盖区 + 圆点）
+        self._cache_key = None
         self._anim = QTimer(self)
         self._anim.setInterval(16)                  # ≈60fps
         self._anim.timeout.connect(self._on_tick)
@@ -2714,10 +2718,32 @@ class _CapsuleSlider(QSlider):
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        fill, track, thumb, tick, particle, outline = self._colors()
+        colors = self._colors()
         cy = self.height() / 2.0
         x0, x1 = self._track_span()
+        tx = self._thumb_x()
+        animating = self._particles and self._anim.isActive()
+
+        if animating:
+            # 动画帧只重绘粒子与滑块：轨道/覆盖区/圆点走缓存，60fps 下开销恒定
+            p.drawPixmap(0, 0, self._static_layer())
+            self._paint_particles(p, x0, x1, cy, colors[4])
+        else:
+            self._paint_static(p, x0, x1, cy, colors)
+
+        p.setPen(QPen(colors[5], 1))                # 覆盖区右端：纯白圆滑块
+        p.setBrush(colors[2])
+        p.drawEllipse(QPointF(tx, cy), self.THUMB_R, self.THUMB_R)
+        p.end()
+
+    def _thumb_x(self) -> float:
+        x0, x1 = self._track_span()
         span_v = max(1, self.maximum() - self.minimum())
+        return x0 + (x1 - x0) * ((self.value() - self.minimum()) / span_v)
+
+    def _paint_static(self, p, x0, x1, cy, colors=None):
+        """轨道 + 覆盖区 + 档位圆点（圆点只画在未覆盖区）。"""
+        fill, track, _thumb, tick = (colors or self._colors())[:4]
         h = float(self.TRACK_H)
         capsule = self._capsule(x0, x1, cy, h)
 
@@ -2725,43 +2751,57 @@ class _CapsuleSlider(QSlider):
         p.setBrush(track)                          # 未覆盖区：淡白胶囊
         p.drawPath(capsule)
 
-        frac = (self.value() - self.minimum()) / span_v
-        tx = x0 + (x1 - x0) * frac
+        tx = self._thumb_x()
         if tx - x0 > 0.5:
             p.setBrush(fill)                       # 覆盖区：浅蓝胶囊
             p.drawPath(self._capsule(x0, tx, cy, h))
 
-        if self._tick_step > 0:                    # 每个档位一个灰色圆点
+        if self._tick_step > 0:
             p.save()
             p.setClipPath(capsule)                 # 圆点一律不越出胶囊
             p.setBrush(tick)
+            span_v = max(1, self.maximum() - self.minimum())
             inset = self.TICK_R + 1                # 端点圆点内收，避免被圆头裁成尖月牙
             for v in range(self.minimum(), self.maximum() + 1, self._tick_step):
                 dx = x0 + (x1 - x0) * ((v - self.minimum()) / span_v)
-                dx = min(max(dx, x0 + inset), x1 - inset)
+                if dx <= tx:                       # 已覆盖区域不画圆点
+                    continue
+                dx = min(dx, x1 - inset)
                 p.drawEllipse(QPointF(dx, cy), self.TICK_R, self.TICK_R)
             p.restore()
 
-        if self._particles and self._anim.isActive():
-            self._paint_particles(p, x0, x1, cy, particle)
-
-        p.setPen(QPen(outline, 1))                 # 覆盖区右端：纯白圆滑块
-        p.setBrush(thumb)
-        p.drawEllipse(QPointF(tx, cy), self.THUMB_R, self.THUMB_R)
+    def _static_layer(self) -> QPixmap:
+        """缓存「轨道 + 覆盖区 + 圆点」：键含尺寸/数值/档位/主题，任一变化自动重建。"""
+        key = (self.width(), self.height(), self.value(), self.minimum(),
+               self.maximum(), self._tick_step, _resolve_theme(),
+               round(self.devicePixelRatioF(), 2))
+        if self._cache is not None and self._cache_key == key:
+            return self._cache
+        dpr = max(1.0, self.devicePixelRatioF())
+        pm = QPixmap(max(1, round(self.width() * dpr)),
+                     max(1, round(self.height() * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        x0, x1 = self._track_span()
+        self._paint_static(p, x0, x1, self.height() / 2.0)
         p.end()
+        self._cache, self._cache_key = pm, key
+        return pm
 
     def _paint_particles(self, p, x0, x1, cy, color):
         """满档粒子：等距白点同速左→右，首尾按 sin² 淡入淡出，纵向微错位。"""
         p.setPen(Qt.PenStyle.NoPen)
         span = x1 - x0
-        for i in range(self.PARTICLE_COUNT):
-            u = (i / self.PARTICLE_COUNT + self._phase) % 1.0
+        brush = QColor(color)                      # 复用一份 QColor：每帧只改 alpha
+        for i, base in enumerate(self._fracs):
+            u = (base + self._phase) % 1.0
             alpha = int(255 * (math.sin(math.pi * u) ** 2))
             if alpha < 6:
                 continue
-            c = QColor(color)
-            c.setAlpha(alpha)
-            p.setBrush(c)
+            brush.setAlpha(alpha)
+            p.setBrush(brush)
             rr = 3.6 if i % 2 == 0 else 2.4
             p.drawEllipse(QPointF(x0 + span * u, cy + ((i % 3) - 1) * 2.4), rr, rr)
 
