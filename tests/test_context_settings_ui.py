@@ -131,6 +131,27 @@ def test_effort_slider_eight_levels_chinese_labels():
         dlg.close()
 
 
+def test_effort_slider_is_capsule_with_level_dots_and_particles():
+    """思考强度滑杆：胶囊自绘、每档一个灰色圆点；拖到最高档才出现白色粒子流动动画。"""
+    dlg = _model_page_dlg()
+    try:
+        sl = dlg.effort_slider
+        assert isinstance(sl, ap._CapsuleSlider), "思考强度滑杆必须是胶囊滑杆"
+        assert sl.tick_step == 1, "8 个档位应每档一个圆点"
+        assert sl.maximum() == len(agent_llm.EFFORTS) - 1
+        # 隐藏状态下不空转动画；显示 + 满档才跑，离开满档立刻停
+        sl.setValue(sl.maximum())
+        assert not sl._anim.isActive()
+        dlg._stash_page.show()
+        _app.processEvents()
+        assert sl._anim.isActive()
+        sl.setValue(agent_llm.EFFORTS.index("high"))
+        assert not sl._anim.isActive()
+    finally:
+        dlg._stash_page.close()
+        dlg.close()
+
+
 def test_effort_slider_auto_maps_upstream_declared_levels():
     """上游声明力度级别 → 自动映射滑块挡位：提示声明档位，并把当前力度就近收敛"""
     dlg = _model_page_dlg()

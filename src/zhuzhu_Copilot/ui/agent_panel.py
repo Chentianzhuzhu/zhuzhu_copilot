@@ -2621,6 +2621,261 @@ def _hot_apply_plugins() -> None:
         pass
 
 
+def _slider_tick_step(top: int) -> int:
+    """胶囊滑杆的档位圆点间隔：小量程一档一点，量程越大间隔越疏。
+
+    圆点按「每一档」铺满会在 0-100 的压暗滑杆上糊成一条虚线，
+    故按量程分三档：≤10 每档一个点、≤40 每 5、其余每 10。"""
+    if top <= 10:
+        return 1
+    if top <= 40:
+        return 5
+    return 10
+
+
+class _CapsuleSlider(QSlider):
+    """胶囊滑杆（自绘）：浅蓝已覆盖区 / 淡白未覆盖区 / 纯白圆形滑块 /
+    灰色档位圆点；满档时可开启白色粒子从左到右依次平滑流动的动画。
+
+    自绘而非 QSS：档位圆点与满档粒子需要逐帧绘制，样式表无法表达。
+    只用于「思考强度」与背景页的模糊 / 压暗，其他滑杆保持原样。
+    """
+
+    TRACK_H = 8          # 轨道胶囊高度（px）
+    THUMB_R = 8          # 滑块圆半径（px）
+    TICK_R = 1.5         # 档位圆点半径（px）
+    PARTICLE_SPEED = 0.8   # 粒子每秒扫过的轨道比例（越大越快）
+    PARTICLE_COUNT = 7
+
+    def __init__(self, parent=None, *, tick_step: int = 0,
+                 particles_on_max: bool = False):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._tick_step = max(0, int(tick_step))
+        self._particles = bool(particles_on_max)
+        self._phase = 0.0
+        self._anim = QTimer(self)
+        self._anim.setInterval(16)                  # ≈60fps
+        self._anim.timeout.connect(self._on_tick)
+        self.setFixedHeight(24)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setTracking(True)                      # 拖动中持续发 valueChanged
+
+    def setValue(self, v: int):
+        """改值统一入口：即使调用方 blockSignals，粒子动画也随档位即时启停。"""
+        super().setValue(v)
+        self._sync_anim()
+
+    # ---- 档位圆点 ----
+    @property
+    def tick_step(self) -> int:
+        return self._tick_step
+
+    def set_tick_step(self, step: int):
+        self._tick_step = max(0, int(step))
+        self.update()
+
+    # ---- 配色（深色：淡白轨道；浅色：淡灰白轨道，否则白底上不可见）----
+    @staticmethod
+    def _colors():
+        """(已覆盖浅蓝, 未覆盖淡白, 滑块纯白, 档位灰点, 粒子白, 滑块描边)"""
+        if _resolve_theme() == "dark":
+            return (QColor("#8AB4F8"), QColor(255, 255, 255, 44), QColor("#FFFFFF"),
+                    QColor(154, 163, 175, 205), QColor(255, 255, 255),
+                    QColor(0, 0, 0, 70))
+        return (QColor("#7FA9F2"), QColor(27, 36, 51, 42), QColor("#FFFFFF"),
+                QColor(140, 148, 160, 190), QColor(255, 255, 255),
+                QColor(27, 36, 51, 45))
+
+    def _track_span(self):
+        """轨道左右端点：留出滑块半径，保证两端滑块圆完整可见。"""
+        m = self.THUMB_R + 1
+        return m, max(m, self.width() - m)
+
+    def _value_at(self, x: float) -> int:
+        x0, x1 = self._track_span()
+        if x1 <= x0:
+            return self.minimum()
+        frac = min(1.0, max(0.0, (x - x0) / (x1 - x0)))
+        return self.minimum() + round(frac * (self.maximum() - self.minimum()))
+
+    # ---- 绘制 ----
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        fill, track, thumb, tick, particle, outline = self._colors()
+        cy = self.height() / 2.0
+        x0, x1 = self._track_span()
+        span_v = max(1, self.maximum() - self.minimum())
+        r = self.TRACK_H / 2.0
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track)                          # 未覆盖区：淡白胶囊
+        p.drawRoundedRect(QRectF(x0, cy - r, x1 - x0, self.TRACK_H), r, r)
+
+        frac = (self.value() - self.minimum()) / span_v
+        tx = x0 + (x1 - x0) * frac
+        if tx - x0 > 0.5:
+            p.setBrush(fill)                       # 覆盖区：浅蓝胶囊
+            p.drawRoundedRect(QRectF(x0, cy - r, tx - x0, self.TRACK_H), r, r)
+
+        if self._tick_step > 0:                    # 每个档位一个灰色圆点
+            p.setBrush(tick)
+            for v in range(self.minimum(), self.maximum() + 1, self._tick_step):
+                p.drawEllipse(QPointF(x0 + (x1 - x0) * ((v - self.minimum()) / span_v),
+                                      cy), self.TICK_R, self.TICK_R)
+
+        if self._particles and self._anim.isActive():
+            self._paint_particles(p, x0, x1, cy, particle)
+
+        p.setPen(QPen(outline, 1))                 # 覆盖区右端：纯白圆滑块
+        p.setBrush(thumb)
+        p.drawEllipse(QPointF(tx, cy), self.THUMB_R, self.THUMB_R)
+        p.end()
+
+    def _paint_particles(self, p, x0, x1, cy, color):
+        """满档粒子：等距白点同速左→右，首尾按 sin² 淡入淡出，纵向微错位。"""
+        p.setPen(Qt.PenStyle.NoPen)
+        span = x1 - x0
+        for i in range(self.PARTICLE_COUNT):
+            u = (i / self.PARTICLE_COUNT + self._phase) % 1.0
+            alpha = int(255 * (math.sin(math.pi * u) ** 2))
+            if alpha < 6:
+                continue
+            c = QColor(color)
+            c.setAlpha(alpha)
+            p.setBrush(c)
+            rr = 1.9 if i % 2 == 0 else 1.3
+            p.drawEllipse(QPointF(x0 + span * u, cy + ((i % 3) - 1) * 1.2), rr, rr)
+
+    # ---- 粒子动画 ----
+    def _on_tick(self):
+        self._phase = (self._phase
+                       + self.PARTICLE_SPEED * self._anim.interval() / 1000.0) % 1.0
+        self.update()
+
+    def _sync_anim(self, *_):
+        """仅「满档 + 可见 + 启用」时跑动画，其余情况停表省 CPU。"""
+        on = (self._particles and self.isVisible() and self.isEnabled()
+              and self.maximum() > self.minimum()
+              and self.value() >= self.maximum())
+        if on and not self._anim.isActive():
+            self._phase = 0.0
+            self._anim.start()
+        elif not on and self._anim.isActive():
+            self._anim.stop()
+        self.update()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._sync_anim()
+
+    def hideEvent(self, ev):
+        self._anim.stop()
+        super().hideEvent(ev)
+
+    # ---- 鼠标：点哪跳哪，按住跟手（拖动语义仍由 sliderPressed/Released 标记）----
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            self.setSliderDown(True)               # 先发 sliderPressed，再改值
+            self.setValue(self._value_at(ev.position().x()))
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self.isSliderDown():
+            self.setValue(self._value_at(ev.position().x()))
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            self.setValue(self._value_at(ev.position().x()))
+            self.setSliderDown(False)              # 发 sliderReleased → 提交 / 收尾
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+
+class _BgAdjustStrip(QWidget):
+    """背景调节浮条：拖动模糊 / 压暗时，设置对话框整体隐去，屏幕上只留这一条
+    「项名 + 胶囊滑杆 + 调节参数」，让用户直接观察壁纸变化。
+
+    浮条不接收鼠标（WindowTransparentForInput）：按住的那根滑杆仍在（不可见的）
+    对话框里继续跟手，浮条只做数值镜像，不会抢走拖动。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowTransparentForInput
+            | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._unit = ""
+        self._src = None
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(22, 13, 22, 13)
+        lay.setSpacing(16)
+        self.title = QLabel("")
+        self.title.setStyleSheet("background: transparent;")
+        lay.addWidget(self.title)
+        self.slider = _CapsuleSlider(tick_step=0)
+        self.slider.setFixedWidth(300)
+        lay.addWidget(self.slider, 1)
+        self.value = QLabel("")
+        self.value.setFixedWidth(56)
+        self.value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value.setStyleSheet("background: transparent;")
+        lay.addWidget(self.value)
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        dark = _resolve_theme() == "dark"
+        p.setPen(QPen(QColor(255, 255, 255, 36) if dark else QColor(0, 0, 0, 24), 1))
+        p.setBrush(QColor(10, 12, 16, 226) if dark else QColor(255, 255, 255, 236))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 18, 18)
+        p.end()
+
+    def show_for(self, title: str, unit: str, slider, tick_step: int):
+        """绑定到某根背景滑杆：显示项名 / 单位，并把其改值镜像到浮条。"""
+        dark = _resolve_theme() == "dark"
+        text = "#F3F5F9" if dark else "#1B2433"
+        accent = "#8AB4F8" if dark else "#1E40AF"
+        self.title.setText(title)
+        self.title.setStyleSheet(
+            f"background: transparent; color: {text};"
+            " font-size: 13px; font-weight: 700;")
+        self.value.setStyleSheet(
+            f"background: transparent; color: {accent};"
+            " font-size: 14px; font-weight: 800;")
+        self._unit = unit
+        self.slider.set_tick_step(tick_step)
+        self.slider.blockSignals(True)
+        self.slider.setRange(slider.minimum(), slider.maximum())
+        self.slider.setValue(slider.value())
+        self.slider.blockSignals(False)
+        self.value.setText(f"{slider.value()}{unit}")
+        if self._src is not None:
+            try:
+                self._src.valueChanged.disconnect(self._mirror)
+            except TypeError:
+                pass
+        self._src = slider
+        slider.valueChanged.connect(self._mirror)
+
+    def _mirror(self, v):
+        self.slider.blockSignals(True)
+        self.slider.setValue(int(v))
+        self.slider.blockSignals(False)
+        self.value.setText(f"{int(v)}{self._unit}")
+
+
 class _TypingDots(QWidget):
     """任务执行中 AI 气泡下方的打字指示器动画（iMessage 风格：三点依次弹起，
     相位错开 1/3 循环，随消息流滚动，无 emoji）"""
@@ -4558,6 +4813,16 @@ class _AgentSettingsDialog(QDialog):
         self._pbar = None
         self._pbar_timer = None
         self._pbar_val = 0
+        # 背景页拖动调节：浮条（项名 + 滑杆 + 数值）与「对话框隐去」的兜底计时器
+        self._bg_strip = None
+        self._bg_adjust_meta = None
+        self._bg_hide_timer = QTimer(self)      # 按住片刻才隐去：单纯点一下不闪
+        self._bg_hide_timer.setSingleShot(True)
+        self._bg_hide_timer.setInterval(150)
+        self._bg_hide_timer.timeout.connect(self._bg_hide_now)
+        self._bg_adjust_guard = QTimer(self)
+        self._bg_adjust_guard.setInterval(200)
+        self._bg_adjust_guard.timeout.connect(self._bg_adjust_watch)
         self.setWindowTitle(_ui("AI 设置"))
         # objectName 用于限定透明背景规则只作用于设置对话框自身，不级联到其子弹窗
         # （QMessageBox/QInputDialog 等也是 QDialog 子类，若规则用裸 QDialog 选择器，
@@ -4717,6 +4982,12 @@ class _AgentSettingsDialog(QDialog):
                 "padding: 8px 24px; font-size: 13px; font-weight: 600;")
 
     def done(self, code: int):
+        # 拖动中被关闭时对话框可能仍是透明的：先恢复并收起浮条，避免下次打开不可见
+        self._bg_adjust_end()
+        strip = getattr(self, "_bg_strip", None)
+        if strip is not None:
+            strip.deleteLater()
+            self._bg_strip = None
         super().done(code)
 
     # ---------- 各分组页面 ----------
@@ -5671,7 +5942,8 @@ class _AgentSettingsDialog(QDialog):
         eff_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         eff_lbl.setFixedWidth(self._label_col_w())
         eff_row.addWidget(eff_lbl)
-        self.effort_slider = QSlider(Qt.Orientation.Horizontal)
+        # 胶囊滑杆：每档一个灰色圆点；拖到最高档时轨道上有白色粒子由左向右流动
+        self.effort_slider = _CapsuleSlider(tick_step=1, particles_on_max=True)
         self.effort_slider.setRange(0, len(agent_llm.EFFORTS) - 1)
         self.effort_slider.setFixedWidth(180)
         self.effort_slider.setPageStep(1)
@@ -5679,13 +5951,6 @@ class _AgentSettingsDialog(QDialog):
         self.effort_slider.setToolTip(
             _ui("思考强度（工作力度）：决定思考档位与所用模型，")
             + " / ".join(_eff_lv))
-        self.effort_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
-            "border-radius: 2px; }}"
-            f"QSlider::sub-page:horizontal {{ background: {self._ACCENT}; border-radius: 2px; }}"
-            f"QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;"
-            f"background: {self._ACCENT}; border: 2px solid {self._BG}; border-radius: 7px; }}"
-            f"QSlider::handle:horizontal:hover {{ background: {self._ACCENT_HOVER}; }}")
         self.effort_slider.valueChanged.connect(self._on_effort_slider)
         eff_row.addWidget(self.effort_slider)
         self.effort_label = QLabel(_ui(agent_llm.effort_label(self._effort)))
@@ -8973,20 +9238,13 @@ class _AgentSettingsDialog(QDialog):
         lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         lbl.setFixedWidth(70)
         row.addWidget(lbl)
-        sl = QSlider(Qt.Orientation.Horizontal)
-        sl.setRange(0, int(top))
-        sl.setValue(int(round(cur)))
+        _top = int(top)
+        sl = _CapsuleSlider(tick_step=_slider_tick_step(_top))
+        sl.setRange(0, _top)
+        sl.setValue(round(cur))
         sl.setPageStep(1)
         sl.setToolTip(tip)
-        sl.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
-            "border-radius: 2px; }}"
-            f"QSlider::sub-page:horizontal {{ background: {self._ACCENT}; border-radius: 2px; }}"
-            f"QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;"
-            f"background: {self._ACCENT}; border: 2px solid {self._BG};"
-            "border-radius: 7px; }}"
-            f"QSlider::handle:horizontal:hover {{ background: {self._ACCENT_HOVER}; }}")
-        val = QLabel(f"{int(round(cur))}{unit}")
+        val = QLabel(f"{round(cur)}{unit}")
         val.setStyleSheet(f"color: {self._ACCENT}; font-size: 14px; font-weight: 800;")
         val.setAlignment(Qt.AlignmentFlag.AlignCenter)
         val.setFixedWidth(56)
@@ -9000,10 +9258,14 @@ class _AgentSettingsDialog(QDialog):
 
         def _on_release():
             sl._dragging = False
-            commit(sl.value())
+            commit(sl.value())                        # 松手才提交一次重算
+            self._bg_adjust_end()                     # 恢复设置对话框、收起浮条
 
         sl._dragging = False
         sl.sliderPressed.connect(lambda: setattr(sl, "_dragging", True))
+        # 按住：隐去对话框，屏幕上只留「项名 + 滑杆 + 数值」，直接看壁纸效果
+        sl.sliderPressed.connect(
+            lambda: self._bg_adjust_begin(title, unit, sl, sl.tick_step))
         sl.valueChanged.connect(_on_value)
         sl.sliderReleased.connect(_on_release)
         return (row, sl, val)
@@ -9025,6 +9287,56 @@ class _AgentSettingsDialog(QDialog):
 
     def _wallpaper_dim_changed(self, value):
         app_wallpaper.set_fields(bg_dim=float(value))
+
+    # ---------- 背景页：拖动模糊 / 压暗时隐去对话框，只留浮条 ----------
+    def _bg_adjust_begin(self, title: str, unit: str, slider, tick_step: int):
+        """按住模糊 / 压暗滑杆：稍后隐去设置对话框，屏幕上只留「项名 + 滑杆 + 数值」。
+
+        隐去用**窗口透明度 0** 而不是 hide()：正在按住拖动的那根滑杆仍要接收鼠标，
+        hide() 会中断 Qt 的鼠标抓取，拖动会当场断掉。延时 150ms 再隐去，
+        让「只点一下滑杆」不闪一下白屏。
+        """
+        if slider is None or not self.isVisible():
+            return
+        self._bg_adjust_meta = (title, unit, slider, tick_step)
+        self._bg_hide_timer.start()
+
+    def _bg_hide_now(self):
+        """真正隐去对话框并把浮条摆到屏幕下方中间。"""
+        meta = self._bg_adjust_meta
+        if meta is None or not self.isVisible():
+            return
+        title, unit, slider, tick_step = meta
+        strip = self._bg_strip
+        if strip is None:
+            strip = _BgAdjustStrip(self)
+            self._bg_strip = strip
+        strip.show_for(title, unit, slider, tick_step)
+        strip.adjustSize()
+        screen = self.screen() or QApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        strip.move(geo.center().x() - strip.width() // 2,
+                   geo.bottom() - strip.height() - 96)
+        strip.show()
+        strip.raise_()
+        self.setWindowOpacity(0.0)
+        self._bg_adjust_guard.start()
+
+    def _bg_adjust_end(self, *_):
+        """松手：恢复对话框，收起浮条。"""
+        self._bg_hide_timer.stop()
+        self._bg_adjust_guard.stop()
+        self._bg_adjust_meta = None
+        strip = getattr(self, "_bg_strip", None)
+        if strip is not None:
+            strip.hide()
+        if self.windowOpacity() < 1.0:
+            self.setWindowOpacity(1.0)
+
+    def _bg_adjust_watch(self):
+        """兜底：拖动被系统打断（收不到 sliderReleased）时，鼠标键已松开就恢复。"""
+        if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+            self._bg_adjust_end()
 
     def _wallpaper_pick(self, *_):
         path, _ = QFileDialog.getOpenFileName(

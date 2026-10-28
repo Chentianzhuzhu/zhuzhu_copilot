@@ -560,6 +560,39 @@ def test_wallpaper_page_exposes_blur_and_dim_controls():
         dlg.deleteLater()
 
 
+def test_wallpaper_sliders_are_capsule_with_step_dots():
+    """背景页模糊 / 压暗滑杆：胶囊自绘样式 + 按量程铺灰色档位圆点。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+    dlg = ap._AgentSettingsDialog()
+    try:
+        dlg._stash_page = dlg._build_wallpaper_page()
+        blur, dim = dlg.wallpaper_blur, dlg.wallpaper_dim
+        assert isinstance(blur, ap._CapsuleSlider), "模糊滑杆必须是胶囊滑杆"
+        assert isinstance(dim, ap._CapsuleSlider), "压暗滑杆必须是胶囊滑杆"
+        assert blur.tick_step == ap._slider_tick_step(int(w.BLUR_MAX)) == 5
+        assert dim.tick_step == ap._slider_tick_step(int(w.DIM_MAX)) == 10
+    finally:
+        dlg.deleteLater()
+
+
+def test_bg_adjust_strip_mirrors_slider_value():
+    """拖动浮条：项名 / 数值 / 滑杆都跟真滑杆同步（对话框隐去后用户只看这条）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+    dlg = ap._AgentSettingsDialog()
+    try:
+        dlg._stash_page = dlg._build_wallpaper_page()
+        src = dlg.wallpaper_blur
+        strip = ap._BgAdjustStrip(dlg)
+        strip.show_for("模糊程度", " px", src, src.tick_step)
+        assert strip.title.text() == "模糊程度"
+        src._dragging = True          # 只验证镜像，不触发落地提交（不改全局背景参数）
+        src.setValue(23)
+        assert strip.value.text() == "23 px" and strip.slider.value() == 23
+        assert strip.slider.tick_step == src.tick_step
+    finally:
+        dlg.deleteLater()
+
+
 def test_slider_commit_only_on_release():
     """拖动中不得提交：每一格都重算一次高斯模糊会明显掉帧。
 
