@@ -2634,29 +2634,38 @@ def _slider_tick_step(top: int) -> int:
 
 
 class _CapsuleSlider(QSlider):
-    """胶囊滑杆（自绘）：浅蓝已覆盖区 / 淡白未覆盖区 / 纯白圆形滑块 /
-    灰色档位圆点（只画在未覆盖区）；满档时可开启白色粒子由左向右流动的动画。
+    """胶囊滑杆（自绘）：深蓝已覆盖区 / 淡白未覆盖区 / 纯白圆形滑块（内含淡灰圆环）/
+    档位圆点；满档时胶囊内多行小白点由左向右流动。
 
-    自绘而非 QSS：档位圆点与满档粒子需要逐帧绘制，样式表无法表达。
-    只用于「思考强度」与背景页的模糊 / 压暗，其他滑杆保持原样。
+    档位圆点两副面孔：默认「灰点，只画在未覆盖区」（背景页模糊 / 压暗）；
+    `tick_style="level"` 为「淡蓝点，每个挡位都画」（思考强度）。
+    自绘而非 QSS：圆点、圆环与粒子需要逐帧绘制，样式表无法表达。
     """
 
     TRACK_H = 16         # 轨道胶囊高度（px）
+    TRACK_END_PAD = 7.0  # 胶囊两端比数值端点外延的长度：给端点圆点留冗余空间
     THUMB_R = 12.8       # 滑块圆半径（px）：比轨道高一档缩小 20%，收进胶囊里
     TICK_R = 3.0         # 档位圆点半径（px）
-    PARTICLE_SPEED = 0.64   # 粒子每秒扫过的轨道比例（越大越快）
-    PARTICLE_COUNT = 20
+    RING_RATIO = 0.55    # 滑块内淡灰圆环的半径占比（与外圆同心）
+    TICK_STYLE_MUTED = "muted"   # 灰点 + 只画未覆盖区
+    TICK_STYLE_LEVEL = "level"   # 淡蓝点 + 每个挡位都画
+    PARTICLE_SPEED = 0.576         # 0.64 再放慢 10%（每秒扫过的轨道比例）
+    PARTICLE_COUNT = 50
+    PARTICLE_LANES = 5             # 粒子分行：胶囊内每行都有小白点
+    PARTICLE_R = 1.6               # 小白点半径（px）
 
     def __init__(self, parent=None, *, tick_step: int = 0,
-                 particles_on_max: bool = False):
+                 particles_on_max: bool = False,
+                 tick_style: str = TICK_STYLE_MUTED):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self._tick_step = max(0, int(tick_step))
         self._particles = bool(particles_on_max)
+        self._tick_style = tick_style
         self._phase = 0.0
-        self._fracs = tuple(i / self.PARTICLE_COUNT
-                            for i in range(self.PARTICLE_COUNT))
         self._cache = None                          # 静态层缓存（轨道 + 覆盖区 + 圆点）
         self._cache_key = None
+        self._dot = None                            # 粒子白点贴图缓存
+        self._dot_key = None
         self._anim = QTimer(self)
         self._anim.setInterval(16)                  # ≈60fps
         self._anim.timeout.connect(self._on_tick)
@@ -2675,6 +2684,10 @@ class _CapsuleSlider(QSlider):
     def tick_step(self) -> int:
         return self._tick_step
 
+    @property
+    def tick_style(self) -> str:
+        return self._tick_style
+
     def set_tick_step(self, step: int):
         self._tick_step = max(0, int(step))
         self.update()
@@ -2682,19 +2695,25 @@ class _CapsuleSlider(QSlider):
     # ---- 配色（深色：淡白轨道；浅色：淡灰白轨道，否则白底上不可见）----
     @staticmethod
     def _colors():
-        """(已覆盖浅蓝, 未覆盖淡白, 滑块纯白, 档位灰点, 粒子白, 滑块描边)"""
+        """(覆盖区深蓝, 未覆盖淡白, 滑块纯白, 灰点, 淡蓝点, 滑块描边, 圆环淡灰)"""
+        ring = QColor(203, 213, 225)                # 淡灰圆环：白圆上仍可辨认
         if _resolve_theme() == "dark":
-            return (QColor("#8AB4F8"), QColor(255, 255, 255, 44), QColor("#FFFFFF"),
-                    QColor(154, 163, 175, 205), QColor(255, 255, 255),
-                    QColor(0, 0, 0, 70))
-        return (QColor("#7FA9F2"), QColor(27, 36, 51, 42), QColor("#FFFFFF"),
-                QColor(140, 148, 160, 190), QColor(255, 255, 255),
-                QColor(27, 36, 51, 45))
+            return (QColor(ACCENT), QColor(255, 255, 255, 44), QColor("#FFFFFF"),
+                    QColor(154, 163, 175, 205), QColor(147, 197, 253),
+                    QColor(0, 0, 0, 70), ring)
+        return (QColor(ACCENT), QColor(27, 36, 51, 42), QColor("#FFFFFF"),
+                QColor(140, 148, 160, 190), QColor(147, 197, 253),
+                QColor(27, 36, 51, 45), ring)
 
     def _track_span(self):
-        """轨道左右端点：留出滑块半径，保证两端滑块圆完整可见。"""
-        m = self.THUMB_R + 1
+        """数值端点（滑块圆心可达范围）：留出滑块半径与外延空间。"""
+        m = self.THUMB_R + 1 + self.TRACK_END_PAD
         return m, max(m, self.width() - m)
+
+    def _capsule_span(self):
+        """胶囊两端：比数值端点外延 TRACK_END_PAD，端点圆点因此有冗余空间。"""
+        x0, x1 = self._track_span()
+        return x0 - self.TRACK_END_PAD, x1 + self.TRACK_END_PAD
 
     def _value_at(self, x: float) -> int:
         x0, x1 = self._track_span()
@@ -2727,13 +2746,17 @@ class _CapsuleSlider(QSlider):
         if animating:
             # 动画帧只重绘粒子与滑块：轨道/覆盖区/圆点走缓存，60fps 下开销恒定
             p.drawPixmap(0, 0, self._static_layer())
-            self._paint_particles(p, x0, x1, cy, colors[4])
+            self._paint_particles(p, x0, x1, cy)
         else:
             self._paint_static(p, x0, x1, cy, colors)
 
         p.setPen(QPen(colors[5], 1))                # 覆盖区右端：纯白圆滑块
         p.setBrush(colors[2])
         p.drawEllipse(QPointF(tx, cy), self.THUMB_R, self.THUMB_R)
+        p.setBrush(Qt.BrushStyle.NoBrush)           # 圆内淡灰圆环：与外圆同心
+        p.setPen(QPen(colors[6], 2))
+        ring_r = self.THUMB_R * self.RING_RATIO
+        p.drawEllipse(QPointF(tx, cy), ring_r, ring_r)
         p.end()
 
     def _thumb_x(self) -> float:
@@ -2742,38 +2765,40 @@ class _CapsuleSlider(QSlider):
         return x0 + (x1 - x0) * ((self.value() - self.minimum()) / span_v)
 
     def _paint_static(self, p, x0, x1, cy, colors=None):
-        """轨道 + 覆盖区 + 档位圆点（圆点只画在未覆盖区）。"""
-        fill, track, _thumb, tick = (colors or self._colors())[:4]
+        """轨道（两端含外延）+ 覆盖区 + 档位圆点。"""
+        colors = colors or self._colors()
+        fill, track, _thumb = colors[0], colors[1], colors[2]
+        tick = colors[4] if self._tick_style == self.TICK_STYLE_LEVEL else colors[3]
         h = float(self.TRACK_H)
-        capsule = self._capsule(x0, x1, cy, h)
+        cx0, cx1 = self._capsule_span()             # 胶囊比数值端点更长
+        capsule = self._capsule(cx0, cx1, cy, h)
 
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(track)                          # 未覆盖区：淡白胶囊
         p.drawPath(capsule)
 
         tx = self._thumb_x()
-        if tx - x0 > 0.5:
-            p.setBrush(fill)                       # 覆盖区：浅蓝胶囊
-            p.drawPath(self._capsule(x0, tx, cy, h))
+        if self.value() > self.minimum():
+            p.setBrush(fill)                       # 覆盖区：深蓝胶囊
+            p.drawPath(self._capsule(cx0, tx, cy, h))
 
         if self._tick_step > 0:
             p.save()
             p.setClipPath(capsule)                 # 圆点一律不越出胶囊
             p.setBrush(tick)
             span_v = max(1, self.maximum() - self.minimum())
-            inset = self.TICK_R + 1                # 端点圆点内收，避免被圆头裁成尖月牙
+            all_levels = self._tick_style == self.TICK_STYLE_LEVEL
             for v in range(self.minimum(), self.maximum() + 1, self._tick_step):
                 dx = x0 + (x1 - x0) * ((v - self.minimum()) / span_v)
-                if dx <= tx:                       # 已覆盖区域不画圆点
+                if dx <= tx and not all_levels:    # 灰点样式：已覆盖区域不画
                     continue
-                dx = min(dx, x1 - inset)
                 p.drawEllipse(QPointF(dx, cy), self.TICK_R, self.TICK_R)
             p.restore()
 
     def _static_layer(self) -> QPixmap:
         """缓存「轨道 + 覆盖区 + 圆点」：键含尺寸/数值/档位/主题，任一变化自动重建。"""
         key = (self.width(), self.height(), self.value(), self.minimum(),
-               self.maximum(), self._tick_step, _resolve_theme(),
+               self.maximum(), self._tick_step, self._tick_style, _resolve_theme(),
                round(self.devicePixelRatioF(), 2))
         if self._cache is not None and self._cache_key == key:
             return self._cache
@@ -2790,20 +2815,52 @@ class _CapsuleSlider(QSlider):
         self._cache, self._cache_key = pm, key
         return pm
 
-    def _paint_particles(self, p, x0, x1, cy, color):
-        """满档粒子：等距白点同速左→右，首尾按 sin² 淡入淡出，纵向微错位。"""
-        p.setPen(Qt.PenStyle.NoPen)
+    def _dot_sprite(self) -> QPixmap:
+        """预渲染的小白点贴图：50 颗/帧时比逐颗画抗锯齿圆快约 3 倍。"""
+        dpr = max(1.0, self.devicePixelRatioF())
+        key = (self.PARTICLE_R, round(dpr, 2))
+        if self._dot is not None and self._dot_key == key:
+            return self._dot
+        side = (self.PARTICLE_R + 1.0) * 2
+        pm = QPixmap(max(1, round(side * dpr)), max(1, round(side * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        qp = QPainter(pm)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        qp.setPen(Qt.PenStyle.NoPen)
+        qp.setBrush(QColor("#FFFFFF"))
+        qp.drawEllipse(QPointF(side / 2, side / 2), self.PARTICLE_R, self.PARTICLE_R)
+        qp.end()
+        self._dot, self._dot_key = pm, key
+        return pm
+
+    def _paint_particles(self, p, x0, x1, cy):
+        """满档粒子：胶囊内分多行的小白点，同速由左向右平滑流动。
+
+        行内首尾按 sin² 淡入淡出（滚出右端时不会突然闪现）；整体裁进胶囊，
+        靠近圆头处也不会溢出。
+        """
+        lanes = max(1, self.PARTICLE_LANES)
+        per = max(1, self.PARTICLE_COUNT // lanes)
         span = x1 - x0
-        brush = QColor(color)                      # 复用一份 QColor：每帧只改 alpha
-        for i, base in enumerate(self._fracs):
-            u = (base + self._phase) % 1.0
-            alpha = int(255 * (math.sin(math.pi * u) ** 2))
-            if alpha < 6:
-                continue
-            brush.setAlpha(alpha)
-            p.setBrush(brush)
-            rr = 3.6 if i % 2 == 0 else 2.4
-            p.drawEllipse(QPointF(x0 + span * u, cy + ((i % 3) - 1) * 2.4), rr, rr)
+        # 行距取 2R：多行小白点刚好相切、互不重叠，纵向铺满胶囊高度
+        spread = max(0.0, self.TRACK_H / 2.0 - self.PARTICLE_R)
+        cx0, cx1 = self._capsule_span()
+        r = self.PARTICLE_R
+        sprite = self._dot_sprite()
+        p.save()
+        p.setClipPath(self._capsule(cx0, cx1, cy, float(self.TRACK_H)))
+        for lane in range(lanes):
+            y = cy - spread + (2 * spread * lane / (lanes - 1) if lanes > 1 else 0.0)
+            offset = lane * (0.5 / per)            # 行间错开半格，避免竖条状
+            for i in range(per):
+                u = (i / per + offset + self._phase) % 1.0
+                alpha = 235 * (math.sin(math.pi * u) ** 2)
+                if alpha < 8:
+                    continue
+                p.setOpacity(alpha / 255.0)
+                p.drawPixmap(QPointF(x0 + span * u - r - 1.0, y - r - 1.0), sprite)
+        p.restore()
 
     # ---- 粒子动画 ----
     def _on_tick(self):
@@ -5999,8 +6056,10 @@ class _AgentSettingsDialog(QDialog):
         eff_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         eff_lbl.setFixedWidth(self._label_col_w())
         eff_row.addWidget(eff_lbl)
-        # 胶囊滑杆：每档一个灰色圆点；拖到最高档时轨道上有白色粒子由左向右流动
-        self.effort_slider = _CapsuleSlider(tick_step=1, particles_on_max=True)
+        # 胶囊滑杆：每个挡位一颗淡蓝小圆点（覆盖区内也显示）；满档时多行小白点流动
+        self.effort_slider = _CapsuleSlider(
+            tick_step=1, particles_on_max=True,
+            tick_style=_CapsuleSlider.TICK_STYLE_LEVEL)
         self.effort_slider.setRange(0, len(agent_llm.EFFORTS) - 1)
         self.effort_slider.setFixedWidth(360)
         self.effort_slider.setPageStep(1)

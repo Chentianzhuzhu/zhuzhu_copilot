@@ -561,7 +561,10 @@ def test_wallpaper_page_exposes_blur_and_dim_controls():
 
 
 def test_wallpaper_sliders_are_capsule_with_step_dots():
-    """背景页模糊 / 压暗滑杆：胶囊自绘样式 + 按量程铺灰色档位圆点。"""
+    """背景页模糊 / 压暗滑杆：胶囊自绘样式 + 按量程铺灰色档位圆点。
+
+    灰点样式只画未覆盖区；胶囊两端比数值端点外延，端点圆点才有冗余空间。
+    """
     from zhuzhu_Copilot.ui import agent_panel as ap
     dlg = ap._AgentSettingsDialog()
     try:
@@ -571,6 +574,12 @@ def test_wallpaper_sliders_are_capsule_with_step_dots():
         assert isinstance(dim, ap._CapsuleSlider), "压暗滑杆必须是胶囊滑杆"
         assert blur.tick_step == ap._slider_tick_step(int(w.BLUR_MAX)) == 5
         assert dim.tick_step == ap._slider_tick_step(int(w.DIM_MAX)) == 10
+        assert blur.tick_style == ap._CapsuleSlider.TICK_STYLE_MUTED
+        # 胶囊两端比数值端点外延：端点灰点才有冗余空间
+        blur.resize(400, 48)
+        x0, x1 = blur._track_span()
+        cx0, cx1 = blur._capsule_span()
+        assert cx0 < x0 and cx1 > x1, "胶囊两端应比数值端点外延"
     finally:
         dlg.deleteLater()
 

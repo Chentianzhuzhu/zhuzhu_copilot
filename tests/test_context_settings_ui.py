@@ -132,13 +132,16 @@ def test_effort_slider_eight_levels_chinese_labels():
 
 
 def test_effort_slider_is_capsule_with_level_dots_and_particles():
-    """思考强度滑杆：胶囊自绘、每档一个灰色圆点；拖到最高档才出现白色粒子流动动画。"""
+    """思考强度滑杆：胶囊自绘、每个挡位一颗淡蓝小圆点（覆盖区内也显示）；
+    拖到最高档才出现多行白色粒子流动动画。"""
     dlg = _model_page_dlg()
     try:
         sl = dlg.effort_slider
         assert isinstance(sl, ap._CapsuleSlider), "思考强度滑杆必须是胶囊滑杆"
         assert sl.tick_step == 1, "8 个档位应每档一个圆点"
+        assert sl.tick_style == ap._CapsuleSlider.TICK_STYLE_LEVEL, "档位点应为淡蓝点"
         assert sl.maximum() == len(agent_llm.EFFORTS) - 1
+        assert sl.PARTICLE_COUNT == 50 and sl.PARTICLE_LANES > 1
         # 隐藏状态下不空转动画；显示 + 满档才跑，离开满档立刻停
         sl.setValue(sl.maximum())
         assert not sl._anim.isActive()
