@@ -130,6 +130,20 @@ def test_skill_md_mandates_open_app_before_hunting_windows():
         assert key in text, f"SKILL.md 缺少复杂任务剧本要素: {key}"
 
 
+def test_skill_md_prefers_full_screen_capture():
+    """回归用户反馈：「Agent 有时只截窗口不用整屏，窗口被遮挡时就点偏」。
+
+    截图策略必须写明**默认整屏**，并且不得再出现「优先截窗口」这类反向引导 ——
+    模型完全按技能文档行动，文档写错方向，代码再准也救不回来。
+    """
+    text = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "优先截窗口" not in text, "不得再引导模型优先截窗口（会被遮挡物误导）"
+    assert "默认截整屏" in text, "必须明确默认整屏"
+    assert 'screen_shot(mode="full")' in text
+    # 窗口截图只允许出现在「大窗口 / GPU 自绘需要 1:1」这两个受限场景
+    assert "远大于屏幕" in text and "GPU 自绘界面" in text
+
+
 # ---------- MCP 协议 ----------
 
 def test_server_compiles():
@@ -529,6 +543,7 @@ def test_mouse_move_needs_a_real_displacement_to_take_over(monkeypatch):
     monkeypatch.setattr(mod, "_cursor_pos", lambda: (pos["x"], pos["y"]))
     # 别让上一次注入的余波把事件判成 AI 自己发的
     monkeypatch.setattr(mod, "_injecting", lambda: False)
+    monkeypatch.setattr(mod, "_notify_user_takeover", lambda reason: None)   # 不弹真窗口
     w = mod.InputWatcher()      # 构造时也要读到假坐标（否则 _last_xy 差几百像素）
     # 每次移动 3px，累计不到阈值 → 不接管
     for _ in range(5):
@@ -540,6 +555,51 @@ def test_mouse_move_needs_a_real_displacement_to_take_over(monkeypatch):
     w._hit(0, mod.WM_MOUSEMOVE)
     assert mod._STATE["interrupted"] is True
     assert "鼠标移动" in (mod._STATE.get("interrupt_reason") or "")
+
+
+def test_mouse_drift_across_a_long_window_does_not_take_over(monkeypatch):
+    """零星手抖/触控板噪声跨几分钟累加，不得把用户误判成「正在操控电脑」。"""
+    mod = _load_module()
+    mod._STATE.update({"interrupted": False, "active_until": time.time() + 60})
+    pos = {"x": 100, "y": 100}
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (pos["x"], pos["y"]))
+    monkeypatch.setattr(mod, "_injecting", lambda: False)
+    monkeypatch.setattr(mod, "_notify_user_takeover", lambda reason: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    w = mod.InputWatcher()
+    for _ in range(20):                   # 每次 40px，但每次之间都隔了远超时间窗
+        pos["x"] += 40
+        w._last_move_ts = time.time() - mod.MOVE_ACC_WINDOW_S - 1
+        w._hit(0, mod.WM_MOUSEMOVE)
+    assert mod._STATE["interrupted"] is False, "跨时间窗的零星位移不应累计成接管"
+
+
+def test_stale_takeover_flag_auto_clears_for_a_new_task(monkeypatch):
+    """跨任务残留的「已接管」必须自动失效：否则新任务每个工具都回「用户已接管」。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    now = time.time()
+    mod._STATE.update({"interrupted": True,
+                       "interrupt_reason": "检测到真人鼠标移动",
+                       "interrupt_ts": now - mod.INTERRUPT_STALE_S - 5,
+                       "active_until": now - 10})
+    mod._touch_session()
+    assert mod._STATE["interrupted"] is False, "上一个任务的接管标记不得污染新任务"
+    assert mod._STATE["interrupt_reason"] == ""
+    # 同一任务内的接管照旧有效（会话仍在有效期 / 接管刚发生）
+    mod._STATE.update({"interrupted": True, "interrupt_reason": "检测到真人键盘输入",
+                       "interrupt_ts": now, "active_until": now + 30})
+    mod._touch_session()
+    assert mod._STATE["interrupted"] is True
+
+
+def test_aura_notify_is_available_and_rejects_empty_text():
+    """接管提示窗的入口必须存在；空文本不得建窗（钩子线程里不该做无意义的事）。"""
+    aura = _load_sibling("cc_aura_notify", "aura.py")
+    a = aura.Aura()
+    assert hasattr(a, "notify") and hasattr(aura, "notify")
+    assert a.notify("") is False
+    assert a.notify("   ") is False
 
 
 def test_aura_pixels_cover_all_four_edges():
@@ -1190,6 +1250,36 @@ def test_grab_window_falls_back_to_screen_when_printwindow_blank(monkeypatch):
     assert png == b"PNG-SCREEN"
     assert mod._GRAB_INFO["strategy"] == "屏幕抓取"
     assert (w, h) == (100, 80)
+
+
+def test_grab_window_falls_back_to_full_screen_when_occluded(monkeypatch):
+    """窗口被遮挡（屏幕抓取会截到遮挡窗口）→ 自动改用整屏，且基准切成整屏。
+
+    用户反馈：明明点的是目标窗口，点下去却打到遮挡窗口上 —— 因为窗口截图给出的是
+    遮挡窗口的画面，坐标却按目标窗口换算。整屏兜底保证「图 = 用户眼前的画面」。
+    """
+    mod = _load_module()
+
+    class _R:
+        left, top, right, bottom = 10, 20, 110, 100
+
+    def _occluded_screen(*a, **k):
+        mod._GRAB_INFO["occluded"] = "别的窗口"
+        return None, ""
+
+    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
+    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
+    monkeypatch.setattr(mod, "_grab_window_printwindow",
+                        lambda *a, **k: (None, "PrintWindow 抓到的是空白画面"))
+    monkeypatch.setattr(mod, "_grab_window_screen", _occluded_screen)
+    monkeypatch.setattr(mod, "grab_screen",
+                        lambda **k: (b"PNG-FULL", 1280, 720, -1920, 0, 3840, 2160))
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    png, iw, ih, x, y, w, h = mod.grab_window(123)
+    assert png == b"PNG-FULL"
+    assert mod._GRAB_INFO["full"] is True
+    assert (x, y, w, h) == (-1920, 0, 3840, 2160), "整屏兜底时坐标基准必须是整屏"
+    assert mod._GRAB_INFO["occluded"] == "别的窗口"
 
 
 def test_grab_window_prefers_printwindow_when_usable(monkeypatch):
@@ -3261,7 +3351,8 @@ def test_click_tool_tells_the_model_it_did_not_click(monkeypatch):
     monkeypatch.setattr(mod, "_log", lambda who, text: None)
     monkeypatch.setattr(mod, "_refresh_env", lambda: None)
     out = mod._HANDLERS["click"]({"x": 500, "y": 400})
-    assert "没有完成点击" in out and "真实鼠标" in out
+    assert ("没有完成" in out or "动作没有执行" in out)
+    assert "真实鼠标" in out, "必须告诉模型『可能是真实鼠标』这类可执行线索"
     assert "不要重复重试" in out, "必须劝阻盲目重试，否则就是新一轮死循环"
 
 

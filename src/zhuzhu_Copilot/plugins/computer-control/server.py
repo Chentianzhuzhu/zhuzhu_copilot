@@ -71,6 +71,14 @@ MOVE_TAKEOVER_PX = 160        # 鼠标移动累计位移阈值：低于它不算
                               # 40 太敏感 —— 用户正常挪一下鼠标就超了，AI 会被踢下线、
                               # 任务直接卡住（实测：用户在旁边用电脑时必现）。按键/点击
                               # 仍然立即判定接管（那是明确的抢回意图）。
+MOVE_ACC_WINDOW_S = 1.5       # 累计位移的**时间窗**：只在连续操作的一小段时间内累加。
+                              # 没有时间窗时，触控板噪声/手抖/桌面震动会跨几分钟慢慢
+                              # 累到阈值，用户什么都没做却被判「正在操控电脑」（实测误报）。
+INTERRUPT_STALE_S = SESSION_TTL_S   # 接管标记的陈腐时间：与操控会话有效期一致。
+                              # MCP 子进程跨任务常驻，上个任务遗留的「已接管」会污染新任务
+                              # （每个工具都回「用户已接管」，用户其实不在操作），故过期自动失效。
+READBACK_SETTLE_S = 0.02      # 注入绝对移动后、回读光标前的等待：SendInput 返回≠光标
+                              # 已就位，立刻读会读到旧位置，被误判成「被真实鼠标覆盖」。
 WM_MOUSEMOVE = 0x0200        # 低级鼠标钩子里的「移动」事件
 INJECT_SIGNATURE = 0x5A5A5A5A       # SendInput dwExtraInfo 签名：标记 AI 自身注入
 INJECT_GRACE_S = 0.35       # 注入后抑制窗口：钩子在此窗口内不把事件判为真人输入
@@ -678,10 +686,13 @@ def grab_window(hwnd: int, max_w: int = MODEL_MAX_W, grid: bool = False,
     或走独占/硬件叠加层）会返回全黑或空白。此时若直接把黑图喂给模型，模型会「看不见
     界面」，所有点击都成了盲点。这里检测到空图就换成屏幕抓取，并在返回值里如实说明。
 
-    注意：screen 路径要求窗口真的在最上层（会被其他窗口遮挡），所以会先激活并置顶它。
+    注意：screen 路径要求窗口真的在最上层（会被其他窗口遮挡），所以会先激活并置顶它；
+    激活后仍被遮挡（前台锁被拒 / 置顶窗口压着）时**不返回窗口区域图**，改用整屏截图 ——
+    否则截到的是遮挡窗口的画面，坐标却按目标窗口换算，图和落点对不上，必然点偏。
     """
     note = _ensure_window_capturable(hwnd)
-    _GRAB_INFO["note"] = note
+    _GRAB_INFO.update({"note": note, "full": False, "occluded": "",
+                       "offset": None, "strategy": ""})
     rect = window_rect(hwnd)
     w, h = rect.right - rect.left, rect.bottom - rect.top
     if w <= 0 or h <= 0:
@@ -696,13 +707,43 @@ def grab_window(hwnd: int, max_w: int = MODEL_MAX_W, grid: bool = False,
     if png is None and strategy in ("auto", "screen"):
         png, used = _grab_window_screen(hwnd, rect, w, h, max_w, grid, cursor)
     if png is None:
-        raise RuntimeError("窗口抓图失败：PrintWindow 与屏幕抓取都没能取到画面")
+        # 整屏兜底：窗口图不可用（PrintWindow 空白 + 屏幕抓取被遮挡）时，整屏图
+        # 永远与用户所见一致。基准换成整屏，坐标换算才不会整体错位。
+        png, iw, ih, ox, oy, vw, vh = grab_screen(max_w=max_w, grid=grid, cursor=cursor)
+        _GRAB_INFO.update({"strategy": "整屏兜底", "full": True,
+                           "img_w": iw, "img_h": ih})
+        _log("sys", "窗口「{}」抓图不可用，已改用整屏截图".format(window_title(hwnd) or hwnd))
+        return png, iw, ih, ox, oy, vw, vh
     _GRAB_INFO["strategy"] = used
     return png, _GRAB_INFO["img_w"], _GRAB_INFO["img_h"], rect.left, rect.top, w, h
 
 
 # 记录最近一次窗口抓图的元信息（供工具文案如实说明用了哪条路径、有没有踩到空图）
-_GRAB_INFO = {"strategy": "", "blank": False, "note": ""}
+_GRAB_INFO = {"strategy": "", "blank": False, "note": "",
+              "full": False, "occluded": "", "offset": None}
+
+
+def _window_occluded(hwnd: int, rect) -> str:
+    """目标窗口矩形是否被**别的顶层窗口**盖住；返回遮挡窗口标题（空 = 没被盖）。
+
+    只在**屏幕抓取**路径用（PrintWindow 不受遮挡影响，不走这里）：屏幕抓取截的是
+    屏幕像素，一旦被别的窗口盖住，截到的就是遮挡窗口的画面，而坐标仍按目标窗口
+    矩形换算 —— 图和落点对不上，必然点偏。采样 5 个点，任一被占即视为被遮挡。
+    本进程自己的提示层（光带/胶囊）不算遮挡，它们是鼠标穿透的浮层。
+    """
+    hwnd = int(hwnd or 0)
+    w, h = rect.right - rect.left, rect.bottom - rect.top
+    if not hwnd or w <= 8 or h <= 8:
+        return ""
+    for fx, fy in ((0.5, 0.5), (0.2, 0.2), (0.8, 0.2), (0.2, 0.8), (0.8, 0.8)):
+        x, y = rect.left + int(w * fx), rect.top + int(h * fy)
+        under = window_at(x, y)
+        if not under or under == hwnd:
+            continue
+        if is_own_window(under) or _root_owner(under) == hwnd:
+            continue
+        return window_title(under) or f"hwnd={under}"
+    return ""
 
 
 def _grab_window_printwindow(hwnd, w, h, max_w, grid, cursor, rect):
@@ -738,6 +779,11 @@ def _grab_window_screen(hwnd, rect, w, h, max_w, grid, cursor):
     """
     activate_window(hwnd)
     time.sleep(0.25)
+    cover = _window_occluded(hwnd, rect)
+    if cover:
+        # 激活后仍被遮挡：继续截窗口区域只会截到遮挡窗口，必须放弃（调用方改整屏）
+        _GRAB_INFO["occluded"] = cover
+        return None, ""
     vx, vy, vw, vh = _virtual_screen()
     sx, sy = max(vx, rect.left), max(vy, rect.top)
     ex, ey = min(vx + vw, rect.right), min(vy + vh, rect.bottom)
@@ -2726,11 +2772,23 @@ class _Injecting:
         return False
 
 
+_last_send_ok = True        # 最近一次 SendInput 是否被系统接受（0 = 被 UIPI/安全策略拦截）
+
+
 def _send_mouse(flags: int, dx: int = 0, dy: int = 0, data: int = 0):
+    """发送一次鼠标事件，返回是否被系统接受。
+
+    为什么要看返回值：SendInput 返回实际插入的事件数，**0 表示被系统拒绝**
+    （目标应用权限更高 / UIPI 拦截 / 安全策略）。以前完全忽略它，注入被拒时
+    光标自然「停不到目标点」，却被归因成「用户正在用真实鼠标」——用户一脸懵。
+    """
+    global _last_send_ok
     inp = INPUT()
     inp.type = INPUT_MOUSE
     inp.u.mi = MOUSEINPUT(dx, dy, data, flags, 0, INJECT_SIGNATURE)
-    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    n = int(user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) or 0)
+    _last_send_ok = n > 0
+    return _last_send_ok
 
 
 def _send_key(vk: int, up: bool = False, scan: int = 0, unicode: bool = False):
@@ -2982,6 +3040,9 @@ def _settle_at(x: int, y: int, tries: int = 3) -> bool:
     """
     for _ in range(max(1, int(tries))):
         _move_absolute(x, y)
+        # SendInput 返回只代表「事件已插入队列」，光标未必立刻到位；立刻回读会读到
+        # 旧位置，被误判成「被真实鼠标覆盖」——用户根本没碰鼠标却被告知「你在操作」。
+        time.sleep(READBACK_SETTLE_S)
         if _cursor_pos() == (int(x), int(y)):
             return True
         time.sleep(0.012)
@@ -4280,25 +4341,50 @@ class InputWatcher:
         self._key_hook = None
         self._mouse_cb = self.HOOKPROC(self._on_mouse)
         self._key_cb = self.HOOKPROC(self._on_key)
-        self._move_acc = 0          # 鼠标移动累计位移
+        self._move_acc = 0          # 鼠标移动累计位移（仅在 MOVE_ACC_WINDOW_S 时间窗内累加）
+        self._last_move_ts = 0.0    # 上一次移动事件的时间（时间窗起点）
         try:
             self._last_xy = _cursor_pos()
         except Exception:
             self._last_xy = (0, 0)    # 读不到光标不能拖垮整个打断检测
 
     # ---- 回调（钩子线程执行，必须轻量、绝不抛异常） ----
+    def _follow_cursor(self):
+        """把「参考位置」同步到当前光标，并清掉累计位移。
+
+        为什么每个**被忽略**的事件也要同步：累计位移是「相邻两个事件之差」，
+        参考点若停在会话开启之前（用户/注入早已把光标挪走几百像素），会话一开，
+        第一个移动事件的差值就是**那次旧位移** —— 用户明明没动，却立刻被判接管。
+        这正是「工具总报用户在操控电脑」的一个真凶。
+        """
+        try:
+            self._last_xy = _cursor_pos()
+        except Exception:
+            pass
+        self._move_acc = 0
+        self._last_move_ts = 0.0
+
     def _hit(self, extra: int, wparam: int = 0):
         try:
             if int(extra or 0) == INJECT_SIGNATURE or _injecting():
-                return                      # AI 自身注入 → 不算真人输入
+                self._follow_cursor()       # AI 自身注入 → 视为「参考点已跟上」
+                return
             if time.time() > _STATE["active_until"]:
-                return                      # 非操控会话期 → 不打扰（用户正常用电脑）
+                self._follow_cursor()       # 非操控会话期 → 不打扰（用户正常用电脑）
+                return
             if time.time() < (_STATE.get("ignore_input_until") or 0):
-                return                      # 用户已授权「这期间别理我的鼠标」
+                self._follow_cursor()       # 用户已授权「这期间别理我的鼠标」
+                return
             if wparam == WM_MOUSEMOVE:
                 # 鼠标**移动**不立即算接管：手抖、鼠标被桌宠蹭到、用户只是挪开
                 # 一下 —— 这些都不该把 AI 踢下线（踢了任务就卡住不动）。
-                # 改成「累计位移超过阈值」才算接管；点击/按键/滚轮照旧立即算。
+                # 改成「**短时间窗内**累计位移超过阈值」才算接管；点击/按键/滚轮照旧立即算。
+                # 时间窗是必须的：触控板噪声/手抖是零星的，若跨几分钟一直累加，
+                # 用户什么都没做也会突然被判「正在操控电脑」（实测误报）。
+                now = time.time()
+                if now - self._last_move_ts > MOVE_ACC_WINDOW_S:
+                    self._move_acc = 0          # 隔太久 → 上一次的位移不算数，重新开窗
+                self._last_move_ts = now
                 x, y = _cursor_pos()
                 self._move_acc += abs(x - self._last_xy[0]) + abs(y - self._last_xy[1])
                 self._last_xy = (x, y)
@@ -4366,6 +4452,7 @@ _STATE = {
     "container": "foreground",  # 操控容器：foreground=用户前台桌面 / virtual_desktop=独立虚拟桌面
     "active_until": 0.0,        # 操控会话滑动有效期
     "session_started": 0.0,
+    "interrupt_ts": 0.0,        # 最近一次被接管的时间（用于让过期标记自动失效）
     "view": "full",             # 当前视觉基准描述（full/window/zoom）
     "input": "mouse",           # 实际输入方式：touch/mouse
     "screen": [0, 0],
@@ -4393,8 +4480,21 @@ def _log(who: str, text: str):
 
 
 def _touch_session():
-    """刷新操控会话有效期：每个工具调用都延长，期内真人输入才算接管。"""
+    """刷新操控会话有效期：每个工具调用都延长，期内真人输入才算接管。
+
+    同时清理**跨任务残留**的接管标记：MCP 子进程跨任务常驻，上个任务被接管后
+    若没人说「继续」，标记会一直粘着 —— 新任务的每个工具都被拒绝并回
+    「用户已接管/检测到真人鼠标键盘输入」，而用户此刻什么都没做（真实误报）。
+    只在「距上次操控调用已超过会话有效期」且「接管也已过去同样久」时才清，
+    同一任务内的接管照旧有效，不会被无意放行。
+    """
     now = time.time()
+    if (_STATE["interrupted"] and now > _STATE["active_until"]
+            and now - float(_STATE.get("interrupt_ts") or 0.0) > INTERRUPT_STALE_S):
+        _STATE["interrupted"] = False
+        _STATE["interrupt_reason"] = ""
+        _STATE["interrupt_ts"] = 0.0
+        _log("sys", "清除过期的接管标记（距上次接管已超时，按新任务处理）")
     if not _STATE["session_started"]:
         _STATE["session_started"] = now
     _STATE["active_until"] = now + SESSION_TTL_S
@@ -4402,13 +4502,32 @@ def _touch_session():
 
 def mark_interrupted(reason: str):
     """置「用户已接管」：后续操控工具一律拒绝，把控制权交还用户。"""
+    first = not _STATE["interrupted"]
     _STATE["interrupt_reason"] = reason
-    if not _STATE["interrupted"]:
-        _STATE["interrupted"] = True
+    _STATE["interrupted"] = True
+    if first:
+        _STATE["interrupt_ts"] = time.time()
         _log("user", f"接管操控（{reason}）")
-    else:
-        _STATE["interrupted"] = True
     _aura_off("用户接管")
+    if first:
+        _notify_user_takeover(reason)
+
+
+def _notify_user_takeover(reason: str):
+    """在屏幕上直接告诉用户「已暂停」——不依赖模型转述。
+
+    用户反馈：明明没碰鼠标键盘，工具却说「用户在操控电脑」，而且 Agent 也不提醒。
+    除了修误报源，这里再补一条**屏幕可见**的通知：接管发生时胶囊窗立刻弹出，
+    用户至少能从屏幕上看到发生了什么、以及怎么让 AI 继续。
+
+    只在「操控会话仍然有效」时弹（自检/纯查询阶段没有会话，不该打扰用户）。
+    """
+    if aura is None or time.time() > _STATE["active_until"]:
+        return
+    try:
+        aura.notify(f"已暂停操控（{reason}）· 如需 AI 继续，请对它说「继续」", 5.0)
+    except Exception as e:
+        _STATE["aura_error"] = f"接管提示窗失败：{type(e).__name__}: {e}"
 
 
 def _aura_on():
@@ -4453,13 +4572,17 @@ def _guard(action: str) -> str:
     if _STATE["paused"]:
         _log("sys", f"拒绝 {action}：用户已暂停操控")
         return ("[已被用户暂停] 用户在可视化界面上暂停了 AI 操控，本次操作未执行。"
-                "请立即停止操控，等待用户在界面点「恢复」或明确对你说「继续」后再调用 "
+                "**请立刻用一句话告诉用户这一点**（例如「你暂停了操控，我先停下」），"
+                "等待用户在界面点「恢复」或明确说「继续」后再调用 "
                 "control(action=\"resume\") 恢复。")
     if _STATE["interrupted"]:
         _log("sys", f"拒绝 {action}：用户已接管")
         return ("[用户已接管] 检测到真人鼠标/键盘输入（或用户点击了接管），控制权已交还用户，"
-                "本次操作未执行。请立即停止一切操控并向用户汇报当前进度与界面状态；"
-                "只有用户明确说「继续」后才可调用 control(action=\"resume\") 恢复。")
+                "本次操作未执行。\n"
+                "**必须先用一句话明确告知用户**，例如：「检测到你有鼠标/键盘操作，"
+                "我已暂停，当前停在第 N 步；如果是误触，回复『继续』我就接着做」。"
+                "然后停止一切操控，只有用户明确说「继续」后才可调用 "
+                "control(action=\"resume\") 恢复。")
     return ""
 
 
@@ -4855,20 +4978,31 @@ def tool_screen_shot(args: dict) -> list:
         if not target:
             raise ValueError(_window_not_found_hint(title, hwnd))
         png, iw, ih, x, y, w, h = grab_window(target, grid=grid, capture=capture)
-        _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
-        # 屏幕抓取路径可能因窗口部分在屏外而裁剪，落点基准要跟着调整，否则会整体偏移
-        off = _GRAB_INFO.get("offset")
-        if off and (off[0] or off[1]):
-            x, y = x + off[0], y + off[1]
+        if _GRAB_INFO.get("full"):
+            # 窗口图不可用（被遮挡 / GPU 表面抓不到）→ 整屏兜底，基准必须切到整屏，
+            # 否则坐标会按窗口矩形换算，全错。
+            _set_view(x, y, w, h, iw, ih, "full")
+            why = (f"被「{_GRAB_INFO.get('occluded')}」遮挡" if _GRAB_INFO.get("occluded")
+                   else "抓不到画面")
+            desc = (f"目标窗口「{window_title(target)}」{why}，"
+                    f"已自动改用**整屏截图**（{w}×{h}，原点 {x},{y}），图像 {iw}×{ih}"
+                    + (_GRAB_INFO.get("note") or ""))
+            _log("ai", f"截屏：整屏（窗口「{window_title(target)}」不可用兜底）")
+        else:
             _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
-        desc = (f"已截取窗口「{window_title(target)}」（区域 {w}×{h}），图像 {iw}×{ih}"
-                f"（窗口左上角对应屏幕 {x},{y}；抓取方式：{_GRAB_INFO['strategy'] or 'PrintWindow'}）"
-                + (_GRAB_INFO.get("note") or ""))
-        if _GRAB_INFO["strategy"] == "屏幕抓取":
-            desc += ("。注意：该窗口的 PrintWindow 抓到的是空白（常见于 GPU 渲染/独占表面的"
-                     "界面，如 Blender 一类 3D 软件），已改用屏幕抓取 —— 它会先激活并置顶"
-                     "该窗口，操作期间请勿让其他窗口盖住它")
-        _log("ai", f"截屏：窗口「{window_title(target)}」")
+            # 屏幕抓取路径可能因窗口部分在屏外而裁剪，落点基准要跟着调整，否则会整体偏移
+            off = _GRAB_INFO.get("offset")
+            if off and (off[0] or off[1]):
+                x, y = x + off[0], y + off[1]
+                _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
+            desc = (f"已截取窗口「{window_title(target)}」（区域 {w}×{h}），图像 {iw}×{ih}"
+                    f"（窗口左上角对应屏幕 {x},{y}；抓取方式：{_GRAB_INFO['strategy'] or 'PrintWindow'}）"
+                    + (_GRAB_INFO.get("note") or ""))
+            if _GRAB_INFO["strategy"] == "屏幕抓取":
+                desc += ("。注意：该窗口的 PrintWindow 抓到的是空白（常见于 GPU 渲染/独占表面的"
+                         "界面，如 Blender 一类 3D 软件），已改用屏幕抓取 —— 它会先激活并置顶"
+                         "该窗口，操作期间请勿让其他窗口盖住它")
+            _log("ai", f"截屏：窗口「{window_title(target)}」")
     else:
         png, iw, ih, ox, oy, vw, vh = grab_screen(grid=grid)
         _set_view(ox, oy, vw, vh, iw, ih, "full")
@@ -4879,16 +5013,6 @@ def tool_screen_shot(args: dict) -> list:
             desc += ("。注意：图像被缩小了，图上 1px 误差在屏幕上会被放大 "
                      f"{scale:.2f} 倍；点小目标（工具栏按钮/菜单项）请先 zoom_in 放大到"
                      "接近 1:1 再读数。")
-            # 缩放是点击误差的最大来源。若前台窗口比整屏小，直接引导改截窗口
-            # （缩放比更小、图更小更省 token）——比让模型在缩略图上硬估小目标高效得多。
-            fg = foreground_window()
-            if fg and not user32.IsIconic(int(fg)):
-                r = window_rect(fg)
-                fw, fh = r.right - r.left, r.bottom - r.top
-                if 0 < fw < vw and 0 < fh <= vh:
-                    desc += (f"\n更准更快的做法：screen_shot(mode=\"window\", hwnd={fg}) "
-                             f"只截前台窗口「{window_title(fg) or fg}」（{fw}×{fh}，"
-                             f"缩放比更小、误差放大更少，图也更小更省）")
         _log("ai", "截屏：整个桌面")
     _refresh_env()
     return [{"type": "text", "text": _shot_meta(desc, grid=grid)},
@@ -5415,11 +5539,7 @@ def tool_click(args: dict) -> str:
     before = _pre_click_probe(x, y, hwnd) if verify else ()
     if not do_click(x, y, button, clicks, mode=_input_mode(args)):
         _refresh_env()
-        return (f"⚠ **没有完成点击**：光标无法稳定停在 ({x},{y})（连续回读不一致，"
-                f"当前在 {_cursor_pos()}）。这通常说明**用户正在用真实鼠标**，"
-                f"注入被实时覆盖了 —— 此时硬点会落到别的位置（可能误触删除/发送）。\n"
-                f"请先请用户停手，或 control(action=\"status\") 查看接管状态；"
-                f"**不要重复重试同一坐标**。")
+        return _inject_lost_note(x, y)
     # 落点回读：click 以前只报「请求的坐标」，一旦注入链路有偏差（多屏归一化/DPI 缩放）
     # 就是**静默点空**，模型还以为点对了。回读 GetCursorPos 让每一次点击都自证落点，
     # 偏差不再是猜出来的。
@@ -5466,10 +5586,22 @@ def tool_click(args: dict) -> str:
 
 
 def _inject_lost_note(x: int, y: int) -> str:
-    """注入动作（拖拽/滑动/长按/拖选）被真实鼠标覆盖时的统一告警文案。"""
-    return (f"⚠ **动作没有执行**：光标无法稳定停在 ({x},{y})（当前在 {_cursor_pos()}），"
-            f"通常说明**用户正在用真实鼠标**，注入被实时覆盖了。"
-            f"请先请用户停手，或 control(action=\"status\") 查看接管状态；"
+    """注入动作（点击/拖拽/滑动/长按/拖选）没有完成时的统一告警文案。
+
+    **必须区分两类原因**（以前一律说成「用户正在用真实鼠标」，把系统拦截和坐标
+    偏差都甩锅给用户，制造了大量「我明明没碰鼠标」的困惑）：
+      * SendInput 返回 0 → 系统拒绝注入（权限/安全策略），与用户无关；
+      * 其余 → 光标被别的东西移走了（真实鼠标 / 其他注入源）或坐标链路偏差。
+    """
+    if not _last_send_ok:
+        return (f"⚠ **没有完成操作**：系统拒绝了模拟输入（SendInput 返回 0）。"
+                f"常见原因：目标应用以管理员权限运行、或安全软件拦截了模拟输入 —— "
+                f"**不是用户在操作鼠标，也不是坐标算错**。\n"
+                f"请如实告诉用户这个原因，并建议以同等权限运行本程序或让用户手动完成；"
+                f"**不要重复重试同一坐标**。")
+    return (f"⚠ **动作没有执行**：光标无法稳定停在 ({x},{y})（当前在 {_cursor_pos()}）。"
+            f"可能是真实鼠标/其他程序在移动光标，也可能是坐标链路（DPI/多屏）偏差。\n"
+            f"请先 control(action=\"status\") 查看接管状态，再用 verify_point 自检坐标链路；"
             f"**不要重复重试同一坐标**。")
 
 
@@ -6052,8 +6184,11 @@ TOOLS = [
     {"name": "screen_shot", "description":
         "截屏并返回**纯净原图**给你查看（不叠加坐标网格/刻度/准星），直接看图判断目标位置。"
         "坐标基准=图像像素（左上角 0,0），点击/拖拽等工具的 x/y 直接填你在图上读到的像素值即可"
-        "（插件自动换算为屏幕物理坐标）。mode=full 整屏（默认）；mode=window 只截某个窗口"
-        "（配合 list_windows 的 title/hwnd）。每次行动前后都应截屏：先看准目标，行动后再验证结果。",
+        "（插件自动换算为屏幕物理坐标）。**默认整屏（mode=full）**：整屏图始终等于用户眼前的"
+        "真实画面，弹窗/遮挡/任务栏都在图里，点错的风险最低。mode=window 只截某个窗口，"
+        "仅在「目标窗口远大于屏幕」或「GPU 自绘界面需要 1:1 读数」时使用；窗口被遮挡时"
+        "插件会自动改回整屏截图并在返回文字里说明。每次行动前后都应截屏：先看准目标，"
+        "行动后再验证结果。",
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "description": "full=整屏（默认），window=指定窗口"},
          "title": {"type": "string", "description": "窗口标题片段（mode=window 时用）"},

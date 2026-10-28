@@ -606,6 +606,49 @@ class Aura:
     def active(self) -> bool:
         return self._active
 
+    def notify(self, text: str, seconds: float = 4.0) -> bool:
+        """在屏幕顶部短暂弹出一条提示（给**用户**看，不依赖模型转述）。
+
+        为什么需要：AI 操控被真人输入打断时，以前只是把光带/胶囊淡出 —— 用户看不到
+        任何文字，Agent 也不一定会说。这里补一条独立的胶囊通知（不影响光带/胶囊的
+        生命周期），内容如「已暂停操控（检测到真人鼠标移动）」。
+
+        建窗与渲染放在后台线程：调用方可能是**全局键鼠钩子线程**，绝不能在那里阻塞。
+        """
+        text = str(text or "").strip()
+        if not text:
+            return False
+        th = threading.Thread(target=self._run_notice, args=(text, max(1.0, float(seconds))),
+                              daemon=True, name="zhuzhu-aura-notice")
+        th.start()
+        return True
+
+    def _run_notice(self, text: str, seconds: float):
+        cap = HintCapsule()
+        try:
+            if not cap.build(text):
+                return
+            t0 = time.time()
+            cap.draw_dots(t0)               # 画一次即可：这是一条静态状态提示，不做转圈动画
+            fade_in, fade_out = 0.18, 0.25
+            while True:
+                el = time.time() - t0
+                if el < fade_in:
+                    a = el / fade_in
+                elif el < fade_in + seconds:
+                    a = 1.0
+                elif el < fade_in + seconds + fade_out:
+                    a = 1.0 - (el - fade_in - seconds) / fade_out
+                else:
+                    break
+                cap.push(int(255 * max(0.0, min(1.0, a))))
+                time.sleep(1.0 / max(1, AURA_HINT_FPS))
+            cap.push(0)
+        except Exception as e:
+            self._hint_error = f"通知窗异常：{type(e).__name__}: {e}"
+        finally:
+            cap.destroy()
+
     def capability(self) -> str:
         if self._failed:
             return f"屏幕提示层不可用（{self._error}）"
@@ -1209,6 +1252,11 @@ def stop_aura():
 
 def set_aura_active(flag: bool):
     _aura.set_active(flag)
+
+
+def notify(text: str, seconds: float = 4.0) -> bool:
+    """在屏幕顶部短暂提示一条文字（用户可见，不需要模型转述）。"""
+    return _aura.notify(text, seconds)
 
 
 def aura_state() -> dict:
