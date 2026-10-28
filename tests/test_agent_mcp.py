@@ -189,3 +189,23 @@ def test_tool_schemas_for_filters_by_server(fake_transports):
     assert names_b == ["b_tool"]
     assert mgr.tool_schemas_for(set()) == []
     mgr.close_all()
+
+
+def test_reload_if_stale_reconnects_only_after_script_changes(monkeypatch):
+    """插件脚本被改写 → tool_schemas 前自动增量重连；未变化时一次 stat 都不多连。"""
+    mgr = McpManager()
+    cfg = {"name": "srv", "type": "stdio", "command": "python", "args": ["server.py"]}
+    mgr._configs["srv"] = cfg
+    mgr._last_servers = [cfg]
+    mgr._stamps["srv"] = mgr._script_stamp(cfg)      # 不存在文件 → (None, None)
+    calls = []
+    monkeypatch.setattr(mgr, "reload",
+                        lambda servers: calls.append(list(servers)) or [])
+    assert mgr.reload_if_stale() is False, "指纹未变时不得重连"
+    mgr._stamps["srv"] = ("older", 1, 1)             # 模拟脚本被改写
+    assert mgr.reload_if_stale() is True
+    assert calls == [[cfg]]
+    # 并发保护：自动重连进行中时直接跳过，不重复拉起子进程
+    mgr._reloading = True
+    assert mgr.reload_if_stale() is False
+    mgr._reloading = False

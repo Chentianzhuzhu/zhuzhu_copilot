@@ -420,6 +420,7 @@ class McpManager:
         self._tools: list = []
         self._last_servers: list = []   # 最近一次成功/尝试的服务器配置（自愈用）
         self._healing = False           # 自愈进行中：避免并发重复重连
+        self._reloading = False         # 自动热加载进行中：避免并发重复重连
         self.errors: list = []   # 各服务器连接失败信息
         # 最近一次 reload 的动作摘要（热加载后回填进工具结果文案，让模型知道新增了什么）
         self.last_reload: dict = {"added": [], "updated": [], "removed": []}
@@ -549,7 +550,34 @@ class McpManager:
             self._last_servers = [want[k] for k in want]
             return self._rebuild_aggregate()
 
+    def reload_if_stale(self) -> bool:
+        """脚本指纹变化时**自动**增量重连（插件代码更新后不用重启应用、也不用手动热加载）。
+
+        为什么放在每轮取工具清单时做：模型每一轮都要 `tool_schemas()`；这里只对已连接的
+        服务器做几次 `stat`（微秒级），发现 server.py / deploy.py 被改写才真正重连。
+        用户侧效果：升级插件（随包同步/手动改文件）→ 下一轮对话立即用上新代码。
+
+        并发保护 `_reloading`：重连要起子进程（秒级），避免多个调用同时触发重复重连。
+        """
+        with self._lock:
+            if self._reloading:
+                return False
+            stale = [n for n, cfg in self._configs.items()
+                     if self._stamps.get(n) != self._script_stamp(cfg)]
+            if not stale:
+                return False
+            self._reloading = True
+        try:
+            servers = list(self._last_servers) or list(self._configs.values())
+            self.reload(servers)
+            return True
+        finally:
+            with self._lock:
+                self._reloading = False
+
     def tool_schemas(self) -> list:
+        # 插件文件被改写 → 自动重连后再返回工具表（否则会一直调旧进程里的旧工具）
+        self.reload_if_stale()
         with self._lock:
             return list(self._tools)
 
@@ -557,6 +585,7 @@ class McpManager:
         """按允许的服务器名过滤聚合工具（工作流 MCP 隔离：未绑定服务器的工具不暴露）"""
         if not allowed_servers:
             return []
+        self.reload_if_stale()
         with self._lock:
             return [t for t in self._tools
                     if self._name_to_server.get(t["function"]["name"]) in allowed_servers]

@@ -102,6 +102,36 @@ def test_mcp_config_sse_missing_url(iso):
 
 # ---------- 市场插件 zip 导入 ----------
 
+def test_update_shipped_plugin_refreshes_mtime_for_hot_reload(tmp_path):
+    """随包插件同步后必须刷新 mtime：MCP 热加载按「脚本指纹(mtime,size)」判断变更。
+
+    copy2 会保留源文件旧 mtime —— 若目标 mtime 仍是旧的，运行中的 server 进程
+    永远不被判定为"变了"，用户只能重启应用才能用上新代码（实测就是「改了没生效」）。
+    """
+    import os
+    import time
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "plugin.json").write_text(
+        json.dumps({"name": "demo", "revision": 2}), encoding="utf-8")
+    (dst / "plugin.json").write_text(
+        json.dumps({"name": "demo", "revision": 1}), encoding="utf-8")
+    (src / "server.py").write_text("print('new code')\n", encoding="utf-8")
+    (dst / "server.py").write_text("print('old code')\n", encoding="utf-8")
+    (dst / "config.json").write_text('{"token": "keep"}', encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(src / "server.py", (old, old))        # 模拟"源文件是旧 mtime"
+
+    assert agent_plugins._update_shipped_plugin(src, dst) is True
+    assert (dst / "server.py").read_text(encoding="utf-8") == "print('new code')\n"
+    assert (dst / "server.py").stat().st_mtime > time.time() - 60, "必须刷新为当前时间"
+    assert (dst / "config.json").read_text(encoding="utf-8") == '{"token": "keep"}', \
+        "config.json 是用户数据，同步时不得覆盖"
+
+
 def test_import_zip_sse_registers_skill_and_mcp(iso):
     pkg = iso / "market.zip"
     _make_zip(pkg, {

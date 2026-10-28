@@ -148,6 +148,9 @@ def _update_shipped_plugin(src: Path, dst: Path) -> bool:
             continue
         try:
             shutil.copy2(f, dst / f.name)
+            # copy2 会保留**源文件旧 mtime**；MCP 热加载按「脚本指纹(mtime,size)」判断
+            # 代码是否变化，mtime 不变就会漏检 → 同步完必须把目标 mtime 刷新成当前时间。
+            os.utime(dst / f.name, None)
             changed = True
         except OSError:
             continue
