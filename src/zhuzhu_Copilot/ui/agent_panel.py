@@ -25989,7 +25989,9 @@ class AgentPanel(QDialog):
             except Exception as e:
                 self._notify_blocked(f"控制子 Agent 失败: {e}")
             return
-        url = _html.unescape(url)
+        # 注意：本模块的 `_html` 是 i18n 文案函数（from core.i18n import html），
+        # 不是标准库 html 模块；标准库在这里的别名是 `_htmlmod`（见文件头 import）。
+        url = _htmlmod.unescape(url)
         try:
             if url.startswith(("http://", "https://")):
                 webbrowser.open(url)
