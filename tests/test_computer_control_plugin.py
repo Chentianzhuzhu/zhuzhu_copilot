@@ -130,6 +130,21 @@ def test_skill_md_mandates_open_app_before_hunting_windows():
         assert key in text, f"SKILL.md 缺少复杂任务剧本要素: {key}"
 
 
+def test_skill_prefers_click_or_swipe_over_wheel_for_row_lists():
+    """行式列表（聊天/联系人）应「直接点」或「滑动后点」，不要用滚轮反复滚。
+
+    用户反馈：目标明明在眼前，Agent 却先滚聊天列表，把目标滚出视野后再找。
+    """
+    skill = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "列表里移动视野：滑动后点击，不要滚轮" in skill
+    assert "不要先滚动" in skill, "已可见的目标必须直接点，不得先滚动"
+    assert "行式列表一律用 swipe" in skill
+    src = SERVER.read_text(encoding="utf-8")
+    assert "优先用它把目标滑进视野，然后直接 click 那一行" in src
+    assert "聊天/联系人/会话这类行式列表不要用滚轮" in src
+    assert "滚动窗口内容建议改用 scroll" not in src, "滑动结果不得再把模型引向滚轮"
+
+
 def test_skill_md_prefers_full_screen_capture():
     """回归用户反馈：「Agent 有时只截窗口不用整屏，窗口被遮挡时就点偏」。
 

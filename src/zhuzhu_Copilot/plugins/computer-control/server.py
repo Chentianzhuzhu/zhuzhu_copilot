@@ -5794,10 +5794,11 @@ def tool_swipe(args: dict) -> str:
     if _touch_allowed(_input_mode(args)):
         return (f"已从 ({x1},{y1}) 滑动到 ({x2},{y2})（触控滑动，系统会带惯性）。"
                 + _join_notes(n1, n2, pre)
-                + "请重新 screen_shot 看滚动结果；滚动窗口内容也可直接用 scroll。")
+                + "停稳后 screen_shot 确认目标行是否进入视野，然后**直接 click 那一行**"
+                  "（聊天/联系人这类行式列表不要再用滚轮 scroll）。")
     return (f"已从 ({x1},{y1}) 滑动到 ({x2},{y2})（鼠标拖动）。"
             + _join_notes(n1, n2, pre, _take_coord_note())
-            + "滚动窗口内容建议改用 scroll(strength=…, direction=…)。")
+            + "停稳后 screen_shot 确认目标行，再直接 click 它；行式列表优先继续用 swipe。")
 
 
 def tool_select(args: dict) -> str:
@@ -6438,7 +6439,9 @@ TOOLS = [
          "required": ["x1", "y1", "x2", "y2"]}},
     {"name": "swipe", "description":
         "滑动：从 (x1,y1) 快速滑到 (x2,y2)。触控设备带系统惯性，适合滚动列表/翻页/下拉；"
-        "无触控设备退化为鼠标拖动（滚动内容建议改用 scroll）。**默认不做元素吸附**"
+        "**行式列表（聊天/联系人/会话）优先用它把目标滑进视野，然后直接 click 那一行**"
+        "（不要用滚轮 scroll 反复滚：容易滚过头、目标跑出视野）。"
+        "无触控设备退化为鼠标拖动。**默认不做元素吸附**"
         "（手势是划过一片内容，两端没有「元素中心」可言）。",
      "inputSchema": {"type": "object", "properties": {
          "x1": {"type": "integer", "description": "起点 x（截图基准）"},
@@ -6468,7 +6471,9 @@ TOOLS = [
         "1 很轻、5 大约半屏、10 约一屏多；"
         "② delta（正上负下，120=一格）—— 需要精确格数时用。"
         "滚动量会**按格分段发送**（一次甩大 delta 会被很多应用 clamp 成一格）。"
-        "可传 x/y 先把指针移到该处再滚（指针下的滚动区才会响应）。",
+        "可传 x/y 先把指针移到该处再滚（指针下的滚动区才会响应）。"
+        "**聊天/联系人/会话这类行式列表不要用滚轮**（容易滚过头、目标跑出视野）："
+        "改用 swipe 把目标滑进视野，停稳后直接 click 那一行。",
      "inputSchema": {"type": "object", "properties": {
          "strength": {"type": "integer", "description": "力度 1~10（5≈半屏，10≈一屏多）；与 delta 二选一"},
          "direction": {"type": "string", "description": "up / down（配合 strength；默认 up）"},
