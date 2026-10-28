@@ -1084,16 +1084,18 @@ def _skill_structure_warning(instruction: str) -> list:
 def _shipped_skills_dir() -> Path:
     """随应用分发的内置技能资源目录：
     - 开发模式：src/zhuzhu_Copilot/skills
-    - 打包（onedir/onefile）：依次尝试 _MEIPASS/skills、<exe>/_internal/skills、<exe>/skills"""
+    - 打包（onedir/onefile）：优先 skills_seed（scripts/prepare_assets_seed.py 在
+      构建期生成的「仓库内置 + 用户现有技能」快照），其次仓库内置 skills；
+      基目录依次尝试 _MEIPASS、<exe>/_internal、<exe>"""
     if getattr(sys, "frozen", False):
-        for base in (getattr(sys, "_MEIPASS", None),
-                     str(Path(sys.executable).parent / "_internal"),
-                     str(Path(sys.executable).parent)):
-            if not base:
-                continue
-            cand = Path(base) / "skills"
-            if cand.is_dir():
-                return cand
+        bases = [b for b in (getattr(sys, "_MEIPASS", None),
+                             str(Path(sys.executable).parent / "_internal"),
+                             str(Path(sys.executable).parent)) if b]
+        for name in ("skills_seed", "skills"):
+            for base in bases:
+                cand = Path(base) / name
+                if cand.is_dir():
+                    return cand
         return Path()
     return Path(__file__).resolve().parent.parent / "skills"
 

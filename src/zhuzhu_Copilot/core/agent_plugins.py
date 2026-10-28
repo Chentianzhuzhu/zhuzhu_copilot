@@ -68,16 +68,18 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
 def _shipped_plugins_dir() -> Path:
     """随应用分发的内置插件资源目录：
     - 开发模式：src/zhuzhu_Copilot/plugins
-    - 打包（onedir/onefile）：依次尝试 _MEIPASS/plugins、<exe>/_internal/plugins、<exe>/plugins"""
+    - 打包（onedir/onefile）：优先 plugins_seed（scripts/prepare_assets_seed.py 在
+      构建期生成的「仓库内置 + 用户现有插件」快照），其次仓库内置 plugins；
+      基目录依次尝试 _MEIPASS、<exe>/_internal、<exe>"""
     if getattr(sys, "frozen", False):
-        for base in (getattr(sys, "_MEIPASS", None),
-                     str(Path(sys.executable).parent / "_internal"),
-                     str(Path(sys.executable).parent)):
-            if not base:
-                continue
-            cand = Path(base) / "plugins"
-            if cand.is_dir():
-                return cand
+        bases = [b for b in (getattr(sys, "_MEIPASS", None),
+                             str(Path(sys.executable).parent / "_internal"),
+                             str(Path(sys.executable).parent)) if b]
+        for name in ("plugins_seed", "plugins"):
+            for base in bases:
+                cand = Path(base) / name
+                if cand.is_dir():
+                    return cand
         return Path()
     return Path(__file__).resolve().parent.parent / "plugins"
 
@@ -110,7 +112,9 @@ def ensure_shipped_plugins() -> None:
 def _plugin_meta(d: Path) -> dict:
     """读插件目录的 plugin.json（缺失/损坏返回空 dict）。"""
     try:
-        data = json.loads((d / "plugin.json").read_text(encoding="utf-8"))
+        # utf-8-sig：带 BOM 的 plugin.json（Windows 记事本/PowerShell 写出的）用 utf-8
+        # 解码会在开头留 \ufeff 导致 json 解析失败，插件被静默判为「无元数据」。
+        data = json.loads((d / "plugin.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -227,7 +231,7 @@ def _read_meta(name: str) -> dict:
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的文件
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -582,7 +586,7 @@ def get_plugin_config(name: str) -> dict:
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的配置
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>音频分析器</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; min-height: 100vh; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  h1 { text-align: center; margin-bottom: 30px; color: #fff; font-size: 24px; }
+  .upload-area { border: 2px dashed #444; border-radius: 12px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; margin-bottom: 20px; }
+  .upload-area:hover, .upload-area.dragover { border-color: #4CAF50; background: rgba(76, 175, 80, 0.1); }
+  .upload-area input { display: none; }
+  .upload-icon { font-size: 48px; margin-bottom: 10px; }
+  .file-list { background: #1a1a1a; border-radius: 8px; padding: 15px; margin-bottom: 20px; }
+  .file-item { display: flex; align-items: center; padding: 10px; background: #252525; border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: background 0.2s; }
+  .file-item:hover { background: #333; }
+  .file-item.active { background: #1a3a1a; border: 1px solid #4CAF50; }
+  .file-name { flex: 1; font-size: 14px; }
+  .file-meta { font-size: 12px; color: #888; margin-left: 15px; }
+  .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+  button { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+  .btn-primary { background: #4CAF50; color: white; }
+  .btn-primary:hover { background: #45a049; }
+  .btn-secondary { background: #333; color: white; }
+  .btn-secondary:hover { background: #444; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .results { background: #1a1a1a; border-radius: 8px; padding: 20px; }
+  .result-section { margin-bottom: 25px; }
+  .result-section h3 { color: #4CAF50; margin-bottom: 15px; font-size: 16px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; }
+  .metric { background: #252525; padding: 15px; border-radius: 8px; text-align: center; }
+  .metric-value { font-size: 24px; font-weight: bold; color: #4CAF50; }
+  .metric-label { font-size: 12px; color: #888; margin-top: 5px; }
+  canvas { width: 100%; height: 200px; background: #0a0a0a; border-radius: 8px; margin-top: 10px; }
+  .status { padding: 15px; background: #252525; border-radius: 6px; margin-bottom: 15px; font-size: 14px; }
+  .status.success { border-left: 3px solid #4CAF50; }
+  .status.error { border-left: 3px solid #f44336; }
+  .status.info { border-left: 3px solid #2196F3; }
+  .beat-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+  .beat-tag { background: #333; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+  .loading { display: inline-block; width: 16px; height: 16px; border: 2px solid #444; border-top-color: #4CAF50; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎵 音频分析器</h1>
+  
+  <div class="upload-area" id="uploadArea">
+    <div class="upload-icon">📁</div>
+    <div>点击或拖拽音频文件到此处</div>
+    <div style="font-size: 12px; color: #666; margin-top: 8px;">支持 MP3 / WAV / FLAC</div>
+    <input type="file" id="fileInput" accept="audio/*">
+  </div>
+
+  <div class="file-list" id="fileList">
+    <div style="color: #666; text-align: center;">暂无音频文件</div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button class="btn btn-primary" id="btnAnalyze" disabled>🔍 分析音频</button>
+    <button class="btn btn-secondary" id="btnSpectrum" disabled>📊 频谱图</button>
+    <button class="btn btn-secondary" id="btnPitch" disabled>🎵 音高检测</button>
+    <button class="btn btn-secondary" id="btnBeat" disabled>🥁 节拍检测</button>
+  </div>
+
+  <div class="results" id="results">
+    <div class="status info">请上传音频文件开始分析</div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/api';
+let currentFileId = null;
+let files = {};
+
+// 上传区域
+const uploadArea = document.getElementById('uploadArea');
+const fileInput = document.getElementById('fileInput');
+
+uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', (e) => { e.preventDefault(); uploadArea.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
+fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+async function handleFiles(fileList) {
+  for (const file of fileList) {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target.result.split(',')[1];
+      try {
+        const res = await fetch(API_BASE + '/upload', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({file_data: base64, filename: file.name})
+        });
+        const data = await res.json();
+        if (data.success) {
+          files[data.file_id] = {name: file.name, ...data};
+          updateFileList();
+          selectFile(data.file_id);
+        }
+      } catch (err) {
+        showStatus('上传失败: ' + err.message, 'error');
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+function updateFileList() {
+  const list = document.getElementById('fileList');
+  const ids = Object.keys(files);
+  if (ids.length === 0) {
+    list.innerHTML = '<div style="color: #666; text-align: center;">暂无音频文件</div>';
+    return;
+  }
+  list.innerHTML = ids.map(id => `
+    <div class="file-item ${id === currentFileId ? 'active' : ''}" data-id="${id}">
+      <div class="file-name">${files[id].name}</div>
+      <div class="file-meta">${(files[id].duration || 0).toFixed(1)}s · ${files[id].sample_rate || 0}Hz</div>
+    </div>
+  `).join('');
+  list.querySelectorAll('.file-item').forEach(el => {
+    el.addEventListener('click', () => selectFile(el.dataset.id));
+  });
+}
+
+function selectFile(id) {
+  currentFileId = id;
+  updateFileList();
+  const btns = ['btnAnalyze', 'btnSpectrum', 'btnPitch', 'btnBeat'];
+  btns.forEach(b => document.getElementById(b).disabled = false);
+  showStatus('已选择: ' + (files[id]?.name || id), 'info');
+}
+
+function showStatus(msg, type = 'info') {
+  document.getElementById('results').innerHTML = `<div class="status ${type}">${msg}</div>`;
+}
+
+// 分析按钮
+document.getElementById('btnAnalyze').addEventListener('click', async () => {
+  if (!currentFileId) return;
+  showStatus('<span class="loading"></span>正在分析...');
+  try {
+    const res = await fetch(API_BASE + '/analyze/' + currentFileId, {method: 'POST'});
+    const data = await res.json();
+    if (data.success) {
+      renderResults(data);
+    } else {
+      showStatus('分析失败: ' + (data.error || '未知错误'), 'error');
+    }
+  } catch (err) {
+    showStatus('请求失败: ' + err.message, 'error');
+  }
+});
+
+// 频谱图
+document.getElementById('btnSpectrum').addEventListener('click', async () => {
+  if (!currentFileId) return;
+  showStatus('<span class="loading"></span>生成频谱图...');
+  try {
+    const res = await fetch(API_BASE + '/spectrum/' + currentFileId, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({window_size: 2048, hop_length: 512})
+    });
+    const data = await res.json();
+    if (data.success) {
+      drawSpectrum(data.spectrum);
+    } else {
+      showStatus('频谱生成失败: ' + (data.error || ''), 'error');
+    }
+  } catch (err) {
+    showStatus('请求失败: ' + err.message, 'error');
+  }
+});
+
+// 音高检测
+document.getElementById('btnPitch').addEventListener('click', async () => {
+  if (!currentFileId) return;
+  showStatus('<span class="loading"></span>检测音高...');
+  try {
+    const res = await fetch(API_BASE + '/pitch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file_id: currentFileId, start_time: 0, duration: 5})
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('results').innerHTML += `
+        <div class="result-section">
+          <h3>🎵 音高检测结果</h3>
+          <div class="metric-grid">
+            <div class="metric"><div class="metric-value">${data.pitch_hz.toFixed(1)} Hz</div><div class="metric-label">频率</div></div>
+            <div class="metric"><div class="metric-value">${data.notes?.[0] || '-'}</div><div class="metric-label">音符</div></div>
+          </div>
+        </div>`;
+    } else {
+      showStatus('音高检测失败: ' + (data.error || ''), 'error');
+    }
+  } catch (err) {
+    showStatus('请求失败: ' + err.message, 'error');
+  }
+});
+
+// 节拍检测
+document.getElementById('btnBeat').addEventListener('click', async () => {
+  if (!currentFileId) return;
+  showStatus('<span class="loading"></span>检测节拍...');
+  try {
+    const res = await fetch(API_BASE + '/beat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file_id: currentFileId})
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('results').innerHTML += `
+        <div class="result-section">
+          <h3>🥁 节拍检测结果</h3>
+          <div class="metric-grid">
+            <div class="metric"><div class="metric-value">${data.tempo.toFixed(1)}</div><div class="metric-label">BPM</div></div>
+          </div>
+          <div class="beat-list">${data.beats?.slice(0, 10).map(t => `<span class="beat-tag">${t.toFixed(2)}s</span>`).join('') || '无节拍'}${data.beats?.length > 10 ? `<span class="beat-tag">+${data.beats.length - 10}更多</span>` : ''}</div>
+        </div>`;
+    } else {
+      showStatus('节拍检测失败: ' + (data.error || ''), 'error');
+    }
+  } catch (err) {
+    showStatus('请求失败: ' + err.message, 'error');
+  }
+});
+
+function renderResults(data) {
+  document.getElementById('results').innerHTML = `
+    <div class="status success">✅ 分析完成</div>
+    <div class="result-section">
+      <h3>📊 音频基本信息</h3>
+      <div class="metric-grid">
+        <div class="metric"><div class="metric-value">${data.filename}</div><div class="metric-label">文件名</div></div>
+        <div class="metric"><div class="metric-value">${data.duration.toFixed(2)}s</div><div class="metric-label">时长</div></div>
+        <div class="metric"><div class="metric-value">${data.sample_rate}</div><div class="metric-label">采样率 (Hz)</div></div>
+        <div class="metric"><div class="metric-value">${data.channels}</div><div class="metric-label">声道数</div></div>
+      </div>
+    </div>
+    <canvas id="waveform"></canvas>
+  `;
+  drawWaveform();
+}
+
+function drawWaveform() {
+  const canvas = document.getElementById('waveform');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth;
+  canvas.height = 200;
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#4CAF50';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const steps = canvas.width;
+  for (let i = 0; i < steps; i++) {
+    const y = canvas.height / 2 + Math.sin(i * 0.1) * 50 * Math.sin(i * 0.02);
+    if (i === 0) ctx.moveTo(i, y);
+    else ctx.lineTo(i, y);
+  }
+  ctx.stroke();
+}
+
+function drawSpectrum(data) {
+  const canvas = document.getElementById('results');
+  canvas.innerHTML = `
+    <div class="status success">✅ 频谱图已生成</div>
+    <div class="result-section">
+      <h3>📊 频谱图</h3>
+      <canvas id="spectrumCanvas"></canvas>
+    </div>
+  `;
+  const c = document.getElementById('spectrumCanvas');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  c.width = c.offsetWidth;
+  c.height = 200;
+  const cols = data.length;
+  const barW = c.width / cols;
+  for (let i = 0; i < cols; i++) {
+    const val = (data[i][0] + 100) / 100;
+    const h = val * c.height;
+    ctx.fillStyle = `hsl(${120 + val * 60}, 70%, 50%)`;
+    ctx.fillRect(i * barW, c.height - h, barW, h);
+  }
+}
+</script>
+</body>
+</html>

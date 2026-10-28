@@ -7,6 +7,8 @@ r"""发布产物自检：确认打包出来的 exe 里「确实含有」关键�
 
 做法：PyInstaller onedir 的 exe 内嵌 PYZ 归档，归档目录（TOC）里以明文保存模块全名，
 因此直接在 exe 字节流中检索 `模块点分名` 即可判定该模块是否随包分发。
+另外核对 exe 同级目录的技能 / 插件资源（skills_seed 或 skills、plugins_seed 或 plugins），
+漏带时程序照常启动但技能与插件全空。
 
 用法：
     python scripts/verify_release_artifact.py "dist\zhuzhu Copilot\zhuzhu Copilot.exe"
@@ -38,6 +40,29 @@ DEFAULT_REQUIRED = [
     "zhuzhu_Copilot.office.xlsx_builder",
     "zhuzhu_Copilot.update_check",        # 自动更新（版本号所在模块）
 ]
+
+# 随包资源目录自检：漏带时程序照常启动，但技能/插件全空（静默失效，用户只看到「什么都没有」）
+_RESOURCE_FALLBACKS = (("技能", ("skills_seed", "skills"), "SKILL.md"),
+                       ("插件", ("plugins_seed", "plugins"), "plugin.json"))
+
+
+def _check_resources(exe_dir: str) -> list:
+    """检查技能 / 插件资源目录：任一来源存在且至少含一个有效资产即通过。返回问题清单。"""
+    problems = []
+    for label, names, marker in _RESOURCE_FALLBACKS:
+        found = next((os.path.join(exe_dir, n) for n in names
+                      if os.path.isdir(os.path.join(exe_dir, n))), "")
+        if not found:
+            problems.append("%s目录缺失（%s 均不存在）" % (label, " / ".join(names)))
+            continue
+        try:
+            items = [e.path for e in os.scandir(found) if e.is_dir()]
+        except OSError as e:
+            problems.append("%s目录不可读: %s（%s）" % (label, found, e))
+            continue
+        if not any(os.path.isfile(os.path.join(p, marker)) for p in items):
+            problems.append("%s目录为空: %s" % (label, found))
+    return problems
 
 
 def main() -> int:
@@ -81,7 +106,18 @@ def main() -> int:
               "ui 子模块由 *_ui_modules 自动枚举，见 scripts/generate_spec.py）。")
         return 1
 
-    print("[OK] 产物自检通过：%d 个关键模块全部随包" % len(required))
+    # 随包技能 / 插件资源（漏带 = 装完技能与插件全空）
+    problems = _check_resources(os.path.dirname(exe))
+    if problems:
+        for p in problems:
+            print("   缺失 -> %s" % p)
+        print("[FAIL] 随包资源不完整（请检查 build/zhuzhu_Copilot.spec 的 datas 与 "
+              "scripts/prepare_assets_seed.py 是否已执行）")
+        return 1
+    if not args.quiet:
+        print("资源目录: 技能 / 插件均随包")
+
+    print("[OK] 产物自检通过：%d 个关键模块 + 技能/插件资源全部随包" % len(required))
     return 0
 
 
