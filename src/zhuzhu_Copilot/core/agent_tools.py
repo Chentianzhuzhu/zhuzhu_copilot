@@ -394,11 +394,13 @@ TOOLS = [
         "function": {
             "name": "run_command",
             "description": "在系统终端执行命令（受沙盒约束）。危险命令（删除/格式化/关机等）会被拒绝。"
-                           "**命令运行在用户本机环境**：python / py / node / npm 就是用户 PATH 里"
-                           "已安装的那套（工作任务、装依赖、跑脚本/服务一律用它），"
-                           "不会注入应用内置运行时路径；需要第三方包时用本机包管理器安装"
-                           "（python -m pip install … / npm install …）并验证导入。"
-                           "应用内置运行时只用于工具子进程（MCP / 插件 server），由应用自动选择。"
+                           "**执行环境**：python / py / node / npm / npx 开头的命令默认使用应用"
+                           "**内置运行时**（已预置工具/插件依赖，如 blender/bpy、librosa；"
+                           "装依赖也装进它：python -m pip install … / npm install …），"
+                           "调用内置能力不依赖用户系统环境；其它命令与**显式路径**"
+                           "（.venv\\Scripts\\python.exe、C:\\...\\node.exe 等）走用户本机环境。"
+                           "装完依赖必须验证（python -c \"import X\" / node -e \"require('X')\"），"
+                           "失败如实报告。"
                            "默认等待 wait 秒（默认 5）：期间持续收集输出；若 wait 秒内未完成，"
                            "force_quit=true 则强制结束进程树，false 则转入后台运行，返回命令 ID，"
                            "之后用 check_command 轮询进度。启动 GUI 应用建议 wait=1。"
@@ -3537,9 +3539,10 @@ def _run_command(command: str, wait: int = 5, force_quit: bool = False,
     max_output 限制返回文本长度（默认不限）。
     reader 线程持续排空 stdout/stderr，轮询期间可拿到增量进度。
 
-    **运行环境**：命令一律在用户本机环境执行（继承本进程 PATH），python/py/node/npm
-    命中用户自己安装的那套 —— 工作任务、装依赖、跑脚本/服务都用它。应用内置运行时
-    （~/.zhuzhu_Copilot/runtime）只服务工具子进程（MCP / 插件 server），不由本函数注入。
+    **运行环境**：python / py / node / npm / npx 开头的命令默认使用应用**内置运行时**
+    （~/.zhuzhu_Copilot/runtime，已预置工具/插件依赖，如 blender/bpy、librosa）；
+    其它命令（系统命令、显式路径的工程工具链）继承本机环境。内置运行时有 → 前置进
+    子进程 PATH（不改系统 PATH），缺失 → 回退本机环境并在结果里如实说明。
     status_cb：可选状态回调（保留参数兼容既有调用方）。
     on_output：可选增量输出回调 on_output(str)。命令每产生一行 stdout/stderr 就
         回调一次（解码后的文本），供后台任务把输出**实时**推出；为空时维持旧的
@@ -3547,10 +3550,15 @@ def _run_command(command: str, wait: int = 5, force_quit: bool = False,
     cancel_event：可选 threading.Event。置位即强杀进程树并返回"已取消"，
         让用户点「取消」能真正停掉长命令，而不只是 UI 上改个状态。
     """
-    # 本机环境：不注入内置运行时。此前这里会把沙盒 bin 前置到 PATH，导致 agent 的工作
-    # 任务（装依赖/跑脚本）落在应用运行时里，与用户真实环境不一致；用户要求工作任务
-    # 必须走本机 Python/Node，运行时只在「以工具身份运行」时使用（由 MCP/插件启动器选择）。
+    # 运行环境：脚本/包管理类命令用内置运行时（依赖已随包装好），其余走本机环境。
+    # 只前置进子进程 env，绝不改系统 PATH；显式路径（.venv\Scripts\python.exe）不命中。
     run_env = None
+    env_note = ""
+    try:
+        from zhuzhu_Copilot.core import agent_runtime
+        run_env, env_note = agent_runtime.command_env(command)
+    except Exception:
+        run_env = None
     try:
         wait = max(0, int(wait))   # 不做上限：长命令可无限等待，由 stop/转后台机制兜底
         run_cwd = str(_resolve(cwd)) if (cwd or "").strip() else (WORKDIR or None)
@@ -3637,6 +3645,8 @@ def _run_command(command: str, wait: int = 5, force_quit: bool = False,
             text = f"（命令完成，退出码 {code}）"
         if max_output and max_output > 0 and len(text) > max_output:
             text = text[:max_output] + f"\n…（输出过长，已截断至 {max_output} 字符）"
+        if env_note:
+            text = (text + "\n" + env_note) if text else env_note
         return text
 
     if cancelled:

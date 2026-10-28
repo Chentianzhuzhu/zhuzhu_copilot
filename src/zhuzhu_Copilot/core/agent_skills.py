@@ -2594,13 +2594,15 @@ def efficient_manual_notice() -> str:
 
 _RUNTIME_ENV_NOTICE_ZH = (
     "\n\n【运行环境约定（硬性）】\n"
-    "- 执行**工作任务**（装依赖、跑脚本/服务、构建、测试、业务代码）一律使用**本机已安装的 "
-    "Python / Node**：Windows 上就是用户 PATH 里的 python / py / node / npm，"
-    "**不要**改用应用自带的内置运行时（~/.zhuzhu_Copilot/runtime/…）。\n"
-    "- 只有「以工具身份运行内置能力」（MCP server、插件 server.py、应用内部子进程）才使用内置运行时；"
-    "这类子进程由应用自动选择解释器，你**不需要也不得**在命令里硬编码运行时路径。\n"
-    "- 安装依赖用本机包管理器（python -m pip install … / npm install …），装完必须验证"
-    "（python -c \"import X\" / node -e \"require('X')\"）；失败如实告知，不得谎报成功。"
+    "- 应用自带**内置 Python / Node 运行时**（~/.zhuzhu_Copilot/runtime），它是内置 MCP / "
+    "工具 / 插件 server 的依赖运行环境，也是 python / node 命令的默认解释器：run_command 里 "
+    "python / py / node / npm / npx 开头的命令都用它 —— 调用内置工具与 MCP **完全不依赖用户系统环境**。\n"
+    "- 内置运行时已预置随包工具与插件依赖（如 blender/bpy、librosa 等）：简单脚本、以及依赖已满足的脚本"
+    "直接运行即可；需要新依赖时装进内置运行时（python -m pip install … / npm install …），"
+    "装完必须验证（python -c \"import X\" / node -e \"require('X')\"），失败如实告知。\n"
+    "- 不要用内置运行时承担与它无关的复杂工程/系统级安装：需要项目自带 venv、整套构建工具链、"
+    "系统服务时，在命令里写**显式解释器/工具路径**（如 .venv\\Scripts\\python.exe、C:\\...\\node.exe），"
+    "这类命令走用户本机环境。内置运行时路径不要硬编码，由应用自动选择。"
 )
 
 

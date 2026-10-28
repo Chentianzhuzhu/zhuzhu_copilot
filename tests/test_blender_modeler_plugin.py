@@ -24,7 +24,8 @@ PRESETS = PLUGIN_DIR / "presets"
 EXPECTED_TOOLS = {
     "blender_status", "blender_start", "blender_stop",
     "preview_start", "preview_stop",
-    "scene_new", "scene_info", "scene_save", "scene_open",
+    "scene_new", "scene_info", "scene_save", "scene_open", "scene_import",
+    "blend_list",
     "object_add", "object_transform", "object_duplicate", "object_delete",
     "object_join", "object_shade", "object_modifier", "object_boolean",
     "material_create", "material_assign", "text_add",
