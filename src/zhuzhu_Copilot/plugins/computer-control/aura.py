@@ -65,10 +65,11 @@ AURA_BREATH_DEPTH = 0.24      # 呼吸深度：整体亮度在 1.00 ↔ 0.76 之
                               # （原 0.34 → 最暗 0.66，浅色壁纸上几乎看不见）
 AURA_FLICKER_DEPTH = 0.055    # 轻微闪烁幅度（约 Hz 级的微弱抖动）
 AURA_FADE_S = 0.35            # 启动/停止淡入淡出时长
+AURA_TOP_REFRESH_S = 0.5      # 重申置顶的间隔（任务栏是 topmost band，会抢到前面）
 
 # ---- 胶囊提示窗参数 ----
 HINT_TEXT = "Agent正在操控您的电脑，移动鼠标/按任意键打断"
-AURA_HINT_TOP = 60            # 距屏幕顶部的距离（"略靠下"）
+AURA_HINT_TOP = 60            # 距屏幕顶部（任务栏在顶部时以任务栏下沿为基准）的距离
 AURA_HINT_FPS = 24            # 转圈动画帧率
 AURA_HINT_FONT_PX = 13
 AURA_HINT_PAD_X = 18
@@ -78,9 +79,15 @@ AURA_HINT_DOTS = 8
 AURA_HINT_SPIN_S = 1.15       # 转一圈的时间
 AURA_HINT_DOT_R = 1.75        # 圆点半径
 AURA_HINT_ORBIT_R = 8.4       # 圆点绕行半径（留够间距，相邻两点不会糊成一团）
-HINT_BG = (30, 24, 20)        # 胶囊底色 BGRA（近黑，微冷）
-HINT_BG_ALPHA = 208
-HINT_RIM = 0.55               # 贴边亮边的强度（让胶囊在浅色壁纸上也有轮廓）
+# 白色胶囊（用户要求）＋ 边缘高光：底色近白、贴边一圈纯白高光、外侧再带一圈淡蓝白泛光
+HINT_BG = (250, 250, 251)     # 胶囊底色 BGRA（近白，微冷）
+HINT_BG_ALPHA = 238
+HINT_RIM = 1.0                # 贴边高光强度（纯白，饱和到 255）
+HINT_HALO = (236, 229, 222)   # 外侧泛光 BGRA（淡蓝白，靠外的环）
+HINT_HALO_ALPHA = 70          # 泛光起始 alpha（向外渐隐到 0）
+HINT_HALO_W = 3.0             # 泛光宽度（px）
+HINT_TEXT_BGR = (44, 39, 33)  # 文字颜色（深灰蓝，白底上清晰）
+HINT_DOT_BGR = (214, 108, 43)  # 转圈圆点颜色（蓝色强调色，白底上醒目）
 
 # 分层窗口常量
 WS_EX_LAYERED = 0x00080000
@@ -237,17 +244,29 @@ def _primary_monitor() -> int:
         return 0
 
 
+def _monitor_rect() -> tuple:
+    """主屏**物理整屏**区域 (x, y, w, h)：rcMonitor（含任务栏所占区域）。
+
+    光带必须框住整屏。早先围的是 rcWork（可用桌面区域），底部/侧边在任务栏处
+    直接缺一段 —— 用户看到的就是「光带只框住任务栏上方」。整屏绘制后，任务栏
+    区域的可见性由「周期性重申 topmost」保证（见 raise_top / AURA_TOP_REFRESH_S）。
+    """
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if user32.GetMonitorInfoW(_primary_monitor(), ctypes.byref(mi)):
+        r = mi.rcMonitor
+        w, h = int(r.right - r.left), int(r.bottom - r.top)
+        if w > 0 and h > 0:
+            return (int(r.left), int(r.top), w, h)
+    w, h = _screen_size()
+    return (0, 0, w, h)
+
+
 def _work_area() -> tuple:
-    """主屏**可用桌面区域** (x, y, w, h)：rcWork，已排除任务栏。
+    """主屏**可用桌面区域** (x, y, w, h)：rcWork（已排除任务栏）。
 
-    为什么光带围 rcWork 而不是 rcMonitor（**别改回去，这是实测结论**）：
-    任务栏（Shell_TrayWnd）属于 Windows 的置顶系统 band，任何应用窗口都盖不住它 ——
-    实测把自己设成 HWND_TOPMOST、并每 1.2s 重申一次，EnumWindows 里任务栏依然排在
-    我们前面（z 索引 10 vs 我们的 32）。按整屏画的结果就是：屏幕底部那一条被任务栏
-    整条吞掉，用户看到「光带没有包围全屏、底部缺一块」。
-
-    围 rcWork 之后：任务栏上沿正好是光带的底边，四边完整闭合；任务栏自动隐藏时
-    rcWork 等于整屏，光带自然贴到物理边 —— 两种设置下都不会缺角。
+    只用于**胶囊窗的落点**（避免压住顶部任务栏），光带绘制一律用 `_monitor_rect()`
+    —— 光带要求四边贴物理屏边、完整闭合。
     """
     mi = MONITORINFO()
     mi.cbSize = ctypes.sizeof(MONITORINFO)
@@ -256,8 +275,7 @@ def _work_area() -> tuple:
         w, h = int(r.right - r.left), int(r.bottom - r.top)
         if w > 0 and h > 0:
             return (int(r.left), int(r.top), w, h)
-    w, h = _screen_size()
-    return (0, 0, w, h)
+    return _monitor_rect()
 
 
 def _screen_size() -> tuple:
@@ -743,7 +761,7 @@ class Aura:
                 self._hint.push(int(255 * fade))
                 # 置顶重申由**本线程**完成：胶囊窗口属于本线程，跨线程同步
                 # SetWindowPos 会永久阻塞（见 raise_top 的注释）。
-                if now - last_top >= 2.0:
+                if now - last_top >= AURA_TOP_REFRESH_S:
                     last_top = now
                     self._hint.raise_top()
                 if fade <= 0.004 and not self._active:
@@ -773,9 +791,9 @@ class Aura:
         四条边条的总内存是 368KB（1/20），每帧像素 7 万（1/28），且任一条边建窗失败
         都能精确定位是哪条。
         """
-        wx, wy, width, height = _work_area()
+        wx, wy, width, height = _monitor_rect()
         if width <= 0 or height <= 0:
-            self._failed, self._error = True, "无法获取可用桌面区域"
+            self._failed, self._error = True, "无法获取屏幕区域"
             return False
         thick = max(2, self.core + self.glow)
         specs = [
@@ -795,7 +813,7 @@ class Aura:
                 return False
             bands.append(lw)
         self._bands = bands
-        # 记住工作区尺寸：_build_pixels 的「全屏坐标」要用它（不能读某条边的小尺寸）
+        # 记住整屏尺寸：_build_pixels 的「全屏坐标」要用它（不能读某条边的小尺寸）
         self._width, self._height = width, height
         self._ring = bands[0]        # 兼容旧字段（自检/日志用）
         self._build_luts()
@@ -843,7 +861,7 @@ class Aura:
         """
         core, glow = self.core, self.glow
         total = core + glow
-        # 全屏（工作区）尺寸：优先用建窗时记下的，其次才是测试里手填的
+        # 整屏尺寸：优先用建窗时记下的，其次才是测试里手填的
         w = int(getattr(self, "_width", 0) or 0)
         h = int(getattr(self, "_height", 0) or 0)
         if not w or not h:
@@ -950,11 +968,11 @@ class Aura:
                 lw.push(0)
             self._stop.set()      # 淡出完成 → 线程收尾并清理
             return
-        # 周期性重申置顶（2s 一次）：任务栏是 topmost，会在我们之后抢到更前的位置，
-        # 把底部光带整条盖掉。四条边都要重申。
+        # 周期性重申置顶（AURA_TOP_REFRESH_S）：任务栏是 topmost band，会在我们之后
+        # 抢到更前的位置，把底部光带整条盖掉。四条边都要重申。
         # **只重申本线程自己的窗口**：胶囊窗属于胶囊线程，跨线程 SetWindowPos 即使
         # 加了异步标志也没必要，交给胶囊线程自己重申（它在 _run_hint 里做）。
-        if now - self._last_top_ts >= 2.0:
+        if now - self._last_top_ts >= AURA_TOP_REFRESH_S:
             self._last_top_ts = now
             for lw in getattr(self, "_bands", None) or []:
                 lw.raise_top()
@@ -978,6 +996,7 @@ class Aura:
         hint = HintCapsule()
         if not hint.build(HINT_TEXT):
             return False
+        hint.raise_top()          # 建窗后立刻进 topmost 最前（不等首个 0.5s 节拍）
         self._hint = hint
         return True
 
@@ -1014,12 +1033,16 @@ class HintCapsule:
         self._angle0 = 0.0
         self._w = 0
         self._h = 0
+        self._pad = 0               # 窗口四周的透明边距（外侧高光晕用）
 
     # ---- 建窗 ----
     def build(self, text: str) -> bool:
         self._text = text
-        wx, wy, sw, sh = _work_area()      # 与光带同一坐标系：可用桌面区域
-        if sw <= 0 or sh <= 0:
+        # 水平居中按**整屏**算（光带框整屏，胶囊也跟着居中对齐）；
+        # 纵向避开顶部任务栏（任务栏在上时用 rcWork.top，否则就是屏幕顶）。
+        mx, my, mw, mh = _monitor_rect()
+        wx, wy, _sw, _sh = _work_area()
+        if mw <= 0 or mh <= 0:
             return False
         # 先量文字：建一个临时 DC 量完就扔，正式位图按量出来的宽度开
         sdc = user32.GetDC(0)
@@ -1039,12 +1062,17 @@ class HintCapsule:
         box = int(AURA_HINT_ORBIT_R * 2 + AURA_HINT_DOT_R * 2 + 4)     # 转圈占位（留 2px 余量给抗锯齿）
         w = AURA_HINT_PAD_X * 2 + text_w + AURA_HINT_GAP + box
         h = max(text_h + AURA_HINT_PAD_Y * 2, box + AURA_HINT_PAD_Y * 2)
-        x = wx + max(0, (sw - w) // 2)
-        y = wy + int(AURA_HINT_TOP)
-        self._w, self._h = w, h
+        # 窗口比胶囊四周各留 pad 像素的**透明边距**：外侧那圈淡蓝白高光晕画在这里，
+        # 否则胶囊贴满窗口、边缘高光没地方落笔（只会剩下四个圆角处的一点点）。
+        pad = int(math.ceil(HINT_HALO_W))
+        W, H = w + pad * 2, h + pad * 2
+        x = mx + max(0, (mw - W) // 2)
+        y = max(my, wy) + int(AURA_HINT_TOP) - pad
+        self._w, self._h = W, H
+        self._pad = pad
 
         win = _LayeredWindow("zhuzhu-aura-hint")
-        if not win.create(x, y, w, h):
+        if not win.create(x, y, W, H):
             return False
         self._win = win
         mv = win._mv
@@ -1055,16 +1083,16 @@ class HintCapsule:
         font = _create_font(AURA_HINT_FONT_PX)
         old = gdi32.SelectObject(win._mem_dc, font)
         try:
-            gdi32.TextOutW(win._mem_dc, AURA_HINT_PAD_X, (h - text_h) // 2,
+            gdi32.TextOutW(win._mem_dc, pad + AURA_HINT_PAD_X, pad + (h - text_h) // 2,
                            text, len(text))
         finally:
             gdi32.SelectObject(win._mem_dc, old)
             gdi32.DeleteObject(font)
 
         # 2) 亮度当 alpha：GDI 只写 RGB，不写 alpha，直接推上去是"完全透明"的，
-        #    所以逐像素取最亮通道作为文字覆盖率，再把颜色统一成白色。
-        text_alpha = bytearray(w * h)
-        for p in range(w * h):
+        #    所以逐像素取最亮通道作为文字覆盖率，再按 HINT_TEXT_BGR 上色。
+        text_alpha = bytearray(W * H)
+        for p in range(W * H):
             q = p * 4
             lum = mv[q]
             if mv[q + 1] > lum:
@@ -1073,46 +1101,61 @@ class HintCapsule:
                 lum = mv[q + 2]
             text_alpha[p] = lum
 
-        # 3) 合成：胶囊底（圆角 + 1px 亮边）在下，文字在上
+        # 3) 合成：白色胶囊底（贴边纯白高光 + 外侧淡蓝白泛光）在下，深色文字在上
         #    全部按 0..1 归一化算「over」，最后再乘回 255 —— 早先这里把归一化分子
-        #    除以了字节尺度的分母，白字被压成黑色（t=1 时算出 1 而不是 255）。
+        #    除以了字节尺度的分母，文字被压成黑色（t=1 时算出 1 而不是 255）。
         br, bg_, bb = HINT_BG[0], HINT_BG[1], HINT_BG[2]
         c0, c1, c2 = bb / 255.0, bg_ / 255.0, br / 255.0     # 归一化底色（BGR）
         ba01 = HINT_BG_ALPHA / 255.0
+        tb, tg, tr = (v / 255.0 for v in HINT_TEXT_BGR)      # 文字色（BGR）
+        hb, hg, hr = (v / 255.0 for v in HINT_HALO)          # 外侧泛光色（BGR）
+        ha01 = HINT_HALO_ALPHA / 255.0
         radius = h / 2.0
-        cx, cy = w / 2.0, h / 2.0
-        half_w = cx - radius
-        half_h = cy - radius
-        rim_w = 1.2
-        for py in range(h):
+        cx, cy = pad + w / 2.0, pad + h / 2.0               # 胶囊中心（窗口坐标）
+        half_w = w / 2.0 - radius
+        half_h = h / 2.0 - radius
+        rim_w = 1.4
+
+        def u8(v) -> int:
+            """0..1 归一化色值 → 0..255 字节（钳位，浮点越界会让 memoryview 抛错）。"""
+            return int(min(255.0, max(0.0, v * 255.0)))
+
+        for py in range(H):
             dy = abs(py + 0.5 - cy) - half_h
-            row_base = py * w
-            for px in range(w):
+            row_base = py * W
+            for px in range(W):
                 dx = abs(px + 0.5 - cx) - half_w
                 mx, my = (dx if dx > 0 else 0.0), (dy if dy > 0 else 0.0)
                 dist = math.sqrt(mx * mx + my * my) + min(max(dx, dy), 0.0) - radius
                 cov = 0.5 - dist
+                o = (row_base + px) * 4
                 if cov <= 0.0:
-                    continue                        # 胶囊外：保持全透明
+                    # 胶囊外：贴边的一圈淡蓝白泛光（高光晕），向外渐隐；再远保持全透明
+                    if dist < HINT_HALO_W:
+                        ha = ha01 * (1.0 - dist / HINT_HALO_W)
+                        mv[o] = u8(hb)
+                        mv[o + 1] = u8(hg)
+                        mv[o + 2] = u8(hr)
+                        mv[o + 3] = u8(max(0.0, ha))
+                    continue
                 if cov > 1.0:
                     cov = 1.0
                 a_bg = ba01 * cov
-                # 贴边 1.2px 的亮边：把底色朝浅灰提亮，让胶囊在浅色壁纸上也有轮廓
+                # 贴边 1.4px 的纯白高光：白色胶囊靠"更白的边"产生镜面高光感
                 rim = 0.0
                 if dist > -rim_w:
-                    rim = (1.0 + dist / rim_w) * HINT_RIM
+                    rim = min(1.0, max(0.0, (1.0 + dist / rim_w) * HINT_RIM))
                 cb, cg, cr = c0, c1, c2
                 if rim > 0.0:
-                    cb += (0.72 - cb) * rim
-                    cg += (0.74 - cg) * rim
-                    cr += (0.80 - cr) * rim
+                    cb += (1.0 - cb) * rim
+                    cg += (1.0 - cg) * rim
+                    cr += (1.0 - cr) * rim
                 t = text_alpha[row_base + px] / 255.0
-                o = (row_base + px) * 4
                 if t <= 0.0:
-                    mv[o] = int(cb * 255.0)
-                    mv[o + 1] = int(cg * 255.0)
-                    mv[o + 2] = int(cr * 255.0)
-                    mv[o + 3] = int(a_bg * 255.0)
+                    mv[o] = u8(cb)
+                    mv[o + 1] = u8(cg)
+                    mv[o + 2] = u8(cr)
+                    mv[o + 3] = u8(a_bg)
                     continue
                 a_out = t + a_bg * (1.0 - t)
                 if a_out <= 0.0:
@@ -1120,23 +1163,23 @@ class HintCapsule:
                     continue
                 k = a_bg * (1.0 - t) / a_out
                 s = t / a_out
-                mv[o] = int(min(255.0, (cb * k + s) * 255.0))
-                mv[o + 1] = int(min(255.0, (cg * k + s) * 255.0))
-                mv[o + 2] = int(min(255.0, (cr * k + s) * 255.0))
-                mv[o + 3] = int(a_out * 255.0)
+                mv[o] = u8(cb * k + tb * s)
+                mv[o + 1] = u8(cg * k + tg * s)
+                mv[o + 2] = u8(cr * k + tr * s)
+                mv[o + 3] = u8(a_out)
 
         # 4) 转圈区域：位置、清场行、圆点合成表
-        self._ring_cx = w - AURA_HINT_PAD_X - box / 2.0
-        self._ring_cy = h / 2.0
+        self._ring_cx = pad + w - AURA_HINT_PAD_X - box / 2.0
+        self._ring_cy = pad + h / 2.0
         x0 = int(self._ring_cx - box / 2.0) - 1
         y0 = int(self._ring_cy - box / 2.0) - 1
         x1 = x0 + box + 2
         y1 = y0 + box + 2
         x0, y0 = max(0, x0), max(0, y0)
-        x1, y1 = min(w, x1), min(h, y1)
+        x1, y1 = min(W, x1), min(H, y1)
         self._box = (x0, y0, x1, y1)
         self._bg_row = bytes((bb, bg_, br, HINT_BG_ALPHA)) * (x1 - x0)
-        self._dot_lut = _compose_lut(bb, bg_, br, HINT_BG_ALPHA)
+        self._dot_lut = _compose_lut(bb, bg_, br, HINT_BG_ALPHA, HINT_DOT_BGR)
         self._angle0 = time.time()
         win.push(0)
         return True
@@ -1211,15 +1254,17 @@ def _create_font(px: int) -> int:
                              "Microsoft YaHei UI")
 
 
-def _compose_lut(b, g, r, a_bg: int) -> list:
-    """白点以 alpha=i 盖在固定底色 (b,g,r,a_bg) 上 → 256 个预合成 BGRA。
+def _compose_lut(b, g, r, a_bg: int, dot=(255, 255, 255)) -> list:
+    """圆点以 alpha=i 盖在固定底色 (b,g,r,a_bg) 上 → 256 个预合成 BGRA。
 
+    dot：圆点颜色（BGR；白胶囊上用深色强调色，白底胶囊上用白色看不清）。
     转圈区域每帧要写几百个像素，把合成算术挪到建窗时算一次，动画帧只查表。
     合成按 0..1 归一化算「over」（归一化分子除以归一化分母），最后乘回 255。
     """
     out = []
     ab = a_bg / 255.0
     c0, c1, c2 = b / 255.0, g / 255.0, r / 255.0
+    d0, d1, d2 = dot[0] / 255.0, dot[1] / 255.0, dot[2] / 255.0
     for i in range(256):
         t = i / 255.0
         a_out = t + ab * (1.0 - t)
@@ -1228,9 +1273,9 @@ def _compose_lut(b, g, r, a_bg: int) -> list:
             continue
         k = ab * (1.0 - t) / a_out
         s = t / a_out
-        out.append((int(min(255.0, (c0 * k + s) * 255.0)),
-                    int(min(255.0, (c1 * k + s) * 255.0)),
-                    int(min(255.0, (c2 * k + s) * 255.0)),
+        out.append((int(min(255.0, (c0 * k + d0 * s) * 255.0)),
+                    int(min(255.0, (c1 * k + d1 * s) * 255.0)),
+                    int(min(255.0, (c2 * k + d2 * s) * 255.0)),
                     int(a_out * 255.0)))
     return out
 

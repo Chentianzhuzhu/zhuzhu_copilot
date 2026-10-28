@@ -816,8 +816,60 @@ def test_overlay_windows_are_hidden_from_window_list():
     assert not leaked, f"提示层泄漏进窗口清单: {leaked}"
 
 
+def test_aura_ring_wraps_the_whole_monitor_not_the_work_area(monkeypatch):
+    """光带必须贴**物理整屏**（rcMonitor）四边。
+
+    回归：旧实现围的是 rcWork（可用桌面区域），底部/侧边在任务栏处直接缺一段，
+    用户看到的是「光带只框住任务栏上方，框不住整个屏幕」。
+    """
+    aura = _load_sibling("cc_aura_geom", "aura.py")
+    monkeypatch.setattr(aura, "_monitor_rect", lambda: (0, 0, 1920, 1080))
+    monkeypatch.setattr(aura, "_work_area", lambda: (0, 0, 1920, 1040))
+
+    class _FakeLayer:
+        def __init__(self, name):
+            self.name = name
+            self._x = self._y = self._w = self._h = 0
+            self._mv = None
+
+        def create(self, x, y, w, h):
+            self._x, self._y, self._w, self._h = x, y, w, h
+            return True
+
+        def push(self, sca: int = 0):
+            pass
+
+        def destroy(self):
+            pass
+
+    frames = []
+
+    def _mk(name):
+        frames.append(_FakeLayer(name))
+        return frames[-1]
+
+    monkeypatch.setattr(aura, "_LayeredWindow", _mk)
+    a = aura.Aura()
+    assert a._create_ring(), a._error
+    by_side = {f.name.rsplit("-", 1)[-1]: f for f in frames}
+    assert by_side["top"]._y == 0
+    assert by_side["top"]._h == a.thickness
+    # 关键：底边贴到屏幕物理下沿（1080，而不是工作区 1040）
+    assert by_side["bottom"]._y + by_side["bottom"]._h == 1080
+    assert by_side["right"]._x + by_side["right"]._w == 1920
+    assert by_side["left"]._x == 0
+
+
+def test_hint_capsule_is_topmost_and_reasserted_frequently():
+    """胶囊与光带都必须周期性重申置顶（任务栏是 topmost band，会抢到前面）。"""
+    aura = _load_sibling("cc_aura_top", "aura.py")
+    assert 0 < aura.AURA_TOP_REFRESH_S <= 1.0, "置顶重申间隔过大，任务栏会长时间盖住底边"
+    src = AURA.read_text(encoding="utf-8")
+    assert src.count("AURA_TOP_REFRESH_S") >= 3, "光带/胶囊两条渲染循环都要按该间隔重申置顶"
+
+
 def test_hint_capsule_renders_text_and_eight_same_size_dots():
-    """胶囊提示窗：胶囊底 + 白色文字 + 8 个等大圆点组成的转圈环。"""
+    """胶囊提示窗：白色胶囊底 + 深色文字 + 8 个等大圆点组成的转圈环。"""
     aura = _load_sibling("cc_aura", "aura.py")
     assert aura.HINT_TEXT == "Agent正在操控您的电脑，移动鼠标/按任意键打断"
     assert aura.AURA_HINT_DOTS == 8
@@ -827,15 +879,30 @@ def test_hint_capsule_renders_text_and_eight_same_size_dots():
     try:
         mv = h._win._mv
         w = h._w
-        # 文字区必须出现接近纯白的像素（GDI 画字 → 亮度当 alpha → 合成成白字）
+        pad = h._pad
+        # 胶囊底必须接近白色（用户要求），不再是无障碍涂黑的旧底色
+        mid = (h._h // 2) * w + pad + 4
+        assert mv[mid * 4] > 235 and mv[mid * 4 + 1] > 235 and mv[mid * 4 + 2] > 235, \
+            f"胶囊底不是白色：{tuple(mv[mid * 4:mid * 4 + 4])}"
+        # 贴边高光：最上沿内侧一圈必须比底色更白（纯白 255）
+        rim_y = pad + 1
+        rim_o = (rim_y * w + w // 2) * 4
+        assert min(mv[rim_o], mv[rim_o + 1], mv[rim_o + 2]) >= 250, \
+            f"边缘没有高光：{tuple(mv[rim_o:rim_o + 4])}"
+        # 胶囊外侧还要有一圈淡蓝白高光晕（透明边距里，alpha>0 且偏亮）
+        halo_o = (pad - 1) * w * 4 + (w // 2) * 4
+        assert mv[halo_o + 3] > 20, "胶囊外侧没有高光晕"
+        assert min(mv[halo_o], mv[halo_o + 1], mv[halo_o + 2]) >= 215, \
+            f"高光晕颜色不亮：{tuple(mv[halo_o:halo_o + 4])}"
+        # 文字区必须出现**深色**像素（白底胶囊上的深灰蓝文字）
         x0, y0, x1, y1 = h._box
-        text_white = 0
+        text_dark = 0
         for py in range(h._h):
             for px in range(0, x0):
                 o = (py * w + px) * 4
-                if mv[o + 3] > 200 and mv[o] > 200 and mv[o + 1] > 200:
-                    text_white += 1
-        assert text_white > 200, f"文字没渲染成白色（白像素 {text_white}）"
+                if mv[o + 3] > 200 and mv[o] < 150 and mv[o + 1] < 150 and mv[o + 2] < 150:
+                    text_dark += 1
+        assert text_dark > 200, f"文字没渲染成深色（深色像素 {text_dark}）"
         # 转圈区域：圆点必须是 8 个互不相连的连通块，且尺寸一致。
         # 角度用相对 _angle0 的固定偏移，避免"跑测试的时刻"让相位随机化。
         bg = (aura.HINT_BG[2], aura.HINT_BG[1], aura.HINT_BG[0])
