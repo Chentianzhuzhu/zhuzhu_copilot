@@ -4556,6 +4556,32 @@ def _aura_status_line() -> str:
         return f"提示层状态读取失败：{type(e).__name__}: {e}"
 
 
+AURA_IDLE_GRACE_S = 3.0     # 操控会话过期后多久淡出提示层（给最后一次操作留收尾时间）
+
+
+def _aura_should_fade(now: float) -> bool:
+    """提示层是否该淡出：操控会话已过期。
+
+    为什么需要看门狗：光带只在**操控工具调用时**点亮，但以前没有任何地方在任务结束后
+    关掉它 —— 实测任务早已结束、会话过期很久，屏幕四边仍在呼吸闪烁，用户会以为
+    AI 还在操作而不敢动电脑。这里按会话有效期收尾。
+    """
+    return bool(_STATE["aura"] and _STATE["active_until"]
+                and now > _STATE["active_until"] + AURA_IDLE_GRACE_S)
+
+
+def _aura_watchdog():
+    """每秒检查一次：会话过期就淡出提示层（daemon 线程，异常不得中断循环）。"""
+    while True:
+        time.sleep(1.0)
+        try:
+            if _aura_should_fade(time.time()):
+                _log("sys", "操控会话已超时，提示层淡出")
+                _aura_off("会话超时")
+        except Exception:
+            pass
+
+
 def _aura_off(reason: str = ""):
     """操控结束/被接管：光带与胶囊窗一起淡出。"""
     if aura is None:
@@ -6878,6 +6904,8 @@ def main():
     # 不启动本地可视化服务：AI 操控期间由屏幕光带 + 顶部胶囊提示窗直接提示用户，
     # 不再往用户浏览器里塞一个预览页（那是多余的一层，还容易被当成"AI 打开了网页"）。
     _watcher.start()       # 真人输入打断检测
+    threading.Thread(target=_aura_watchdog, daemon=True,
+                     name="cc-aura-watchdog").start()   # 会话过期 → 提示层淡出
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     for line in stdin:     # stdin 关闭（客户端断开）→ 循环退出，进程自然结束
         if not line.strip():

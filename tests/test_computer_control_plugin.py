@@ -602,6 +602,29 @@ def test_aura_notify_is_available_and_rejects_empty_text():
     assert a.notify("   ") is False
 
 
+def test_aura_fades_after_the_control_session_expires():
+    """提示层必须随会话过期淡出。
+
+    实测发现：任务结束后没有任何地方关掉光带，会话过期很久屏幕四边还在闪，
+    用户会误以为 AI 还在操作。这里固化成「过期 + 宽限 3s 就该淡出」。
+    """
+    mod = _load_module()
+    now = time.time()
+    try:
+        mod._STATE["aura"] = True
+        mod._STATE["active_until"] = now + 30
+        assert mod._aura_should_fade(now) is False, "会话有效期内不能淡出"
+        assert mod._aura_should_fade(now + 30 + mod.AURA_IDLE_GRACE_S + 1) is True
+        mod._STATE["aura"] = False
+        assert mod._aura_should_fade(now + 9999) is False, "未点亮时无需淡出"
+        mod._STATE["aura"] = True
+        mod._STATE["active_until"] = 0.0
+        assert mod._aura_should_fade(now) is False, "从未开启会话时不能误判"
+    finally:
+        mod._STATE["aura"] = False
+        mod._STATE["active_until"] = 0.0
+
+
 def test_aura_pixels_cover_all_four_edges():
     """光带像素必须覆盖完整四边（早先实现漏掉左右竖边，导致屏幕两侧无光带）"""
     aura = _load_sibling("cc_aura", "aura.py")
