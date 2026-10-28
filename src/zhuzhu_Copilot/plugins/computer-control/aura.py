@@ -181,6 +181,9 @@ def _bind():
     user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
     user32.SetWindowDisplayAffinity.argtypes = (wintypes.HWND, wintypes.DWORD)
     user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    # DPI 感知（Win10+）：本模块可能被非 server 入口加载，必须自己保证物理像素坐标
+    user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+    user32.SetProcessDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
     gdi32.TextOutW.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
                                wintypes.LPCWSTR, ctypes.c_int]
     gdi32.TextOutW.restype = wintypes.BOOL
@@ -202,6 +205,37 @@ def _bind():
 
 
 _bind()
+
+
+def _ensure_dpi_awareness():
+    """进程级 DPI 感知：保证 rcMonitor / 窗口坐标就是**物理像素**。
+
+    本模块可能被 MCP server 之外的入口（自检脚本、Web 预览、旧版客户端）直接
+    import；那些进程未必调用 server.py 的 `_init_dpi_awareness()`。缩放 125%/150%
+    下未感知进程拿到的屏幕矩形是缩小的，光带只覆盖屏幕一部分 —— 用户看到的就是
+    「光带没显示 / 只框住一块」。幂等：已设置过时这些 API 直接返回成功。
+    """
+    try:
+        for ctx in (-4, -3):        # PER_MONITOR_AWARE_V2 / PER_MONITOR_AWARE
+            if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(ctx)):
+                return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+try:
+    _ensure_dpi_awareness()
+except Exception:
+    pass
 
 
 def _hsl_to_rgb(h, s, l):
@@ -611,12 +645,29 @@ class Aura:
             self._hint_thread = None
 
     def set_active(self, flag: bool):
-        """True=操控中显示提示层，False=淡出并隐藏。"""
+        """True=操控中显示提示层，False=淡出并隐藏。
+
+        **自愈**：线程活着但窗口没建出来（`_failed` 或边条/胶囊为空）时，仅靠
+        `start()` 不会重建（它只补死掉的线程）。这里先收掉这两条线程再重拉，
+        对应「光带/胶囊莫名不再出现」的现场 —— 以前只能重启应用。
+        """
         flag = bool(flag)
         with self._lock:
             self._active = flag
-            need = flag and not (self._thread and self._thread.is_alive()
-                                 and self._hint_thread and self._hint_thread.is_alive())
+            ring_alive = bool(self._thread and self._thread.is_alive())
+            hint_alive = bool(self._hint_thread and self._hint_thread.is_alive())
+            # 只有「上次建窗失败」才需要强拆重拉；线程死掉由 start() 正常补拉。
+            # 不能把「边条列表为空」当判据：纯逻辑测试（不建窗的桩线程）下它恒为空，
+            # 会把仍然健康的线程反复杀掉重建。
+            broken = bool(self._failed)
+            need = flag and (not (ring_alive and hint_alive) or broken)
+            restart = flag and broken and (ring_alive or hint_alive)
+        if restart:
+            # 线程可能卡在建窗前的等待循环里：先发停止信号让它们尽快收尾
+            self._stop.set()
+            for th in (self._thread, self._hint_thread):
+                if th and th.is_alive():
+                    th.join(0.4)
         if need:
             self.start()
 
@@ -672,9 +723,16 @@ class Aura:
             return f"屏幕提示层不可用（{self._error}）"
         cap = (f"屏幕四边彩色光带（{self.core}px 核心 + {self.glow}px 泛光 / "
                f"{int(round(1 / self.interval))}fps / 呼吸+闪烁 / 鼠标穿透）")
+        try:
+            mx, my, mw, mh = _monitor_rect()
+            cap += f" / 覆盖整屏 {mw}×{mh} @({mx},{my})"
+        except Exception:
+            pass
         hint = f"顶部胶囊提示窗（{AURA_HINT_DOTS} 点转圈）"
         if self._hint_error:
             hint = f"顶部胶囊提示窗异常（{self._hint_error}）"
+        if self._active and not self._bands:
+            cap += "（边条未建出，正在自愈重建）"
         tail = "" if _EXCLUDE_ALL else "；截图排除走隐藏兜底"
         return f"{cap} + {hint}{tail}"
 

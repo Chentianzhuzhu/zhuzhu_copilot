@@ -868,6 +868,44 @@ def test_hint_capsule_is_topmost_and_reasserted_frequently():
     assert src.count("AURA_TOP_REFRESH_S") >= 3, "光带/胶囊两条渲染循环都要按该间隔重申置顶"
 
 
+def test_aura_dpi_aware_and_self_heals_missing_windows(monkeypatch):
+    """提示层：进程自带 DPI 感知；窗口丢失/上次失败时必须自愈重建。
+
+    回归：光带/胶囊「莫名不再出现」只发生在**线程还活着但窗口没建出来**的情形
+    （create 偶发失败、显示器切换）—— 旧实现只补死掉的线程，于是永远不再重建。
+    """
+    aura = _load_sibling("cc_aura_heal", "aura.py")
+    src = AURA.read_text(encoding="utf-8")
+    assert "def _ensure_dpi_awareness" in src
+    assert "SetProcessDpiAwarenessContext" in src
+    # DPI 感知生效：监视器矩形必须等于物理分辨率（缩放屏上未感知进程这里会变小）
+    assert aura._monitor_rect()[2:] == aura._screen_size()
+
+    class _Alive:
+        def is_alive(self):
+            return True
+
+        def join(self, _t=None):
+            pass
+
+    a = aura.Aura(fps=2)
+    calls = []
+    a.start = lambda: calls.append(1) or True
+    a._failed = True
+    a._bands = []
+    a._hint = None
+    a._thread, a._hint_thread = _Alive(), _Alive()
+    a.set_active(True)
+    assert calls == [1], "窗口丢失时必须自愈重建（不能只依靠补死线程）"
+
+    calls.clear()
+    a._failed = False
+    a._bands = [object()]
+    a._hint = type("_H", (), {"_win": object()})()
+    a.set_active(True)
+    assert calls == [], "健康状态不应反复重建（避免闪屏）"
+
+
 def test_hint_capsule_renders_text_and_eight_same_size_dots():
     """胶囊提示窗：白色胶囊底 + 深色文字 + 8 个等大圆点组成的转圈环。"""
     aura = _load_sibling("cc_aura", "aura.py")
@@ -2039,6 +2077,38 @@ def test_snap_handles_low_contrast_professional_ui(monkeypatch):
     sx, sy, note = mod._snap_to_element(1000, 2000)
     assert (sx, sy) == (997, 2002), f"低对比按钮应能识别，实得 {(sx, sy)}"
     assert "吸附" in note
+
+
+def test_snap_prefers_small_control_inside_a_list_row(monkeypatch):
+    """列表行里的小控件（复选框/开关）优先：不能被整行中心拽走。
+
+    实测反馈「点任意元素都不精准」的典型现场：模型按行内小控件估坐标，旧实现走
+    行/带模式把 y 对齐到**整行中心**，小控件又不在行正中 → 点下去变成选中整行或
+    完全落空。现在估计点落在哪个连通域里，就直接吸到那个控件自己的落点。
+    """
+    mod = _load_module()
+    buf, w, h = _synth_region()
+    _paint_rect(buf, w, 4, 34, 36, 62, (72, 72, 72))     # 行内左侧文字块
+    _paint_rect(buf, w, 64, 34, 92, 62, (72, 72, 72))    # 行内右侧文字块
+    _paint_rect(buf, w, 44, 36, 56, 46, (120, 120, 120))  # 行内小控件（中心 50,41）
+    _use_region_at(mod, monkeypatch, buf, w, h, 48, 41)   # 估计点落在小控件内
+    # 整行中心在 y=48（控件之外）；新实现必须留在控件自己的落点
+    sx, sy, note = mod._snap_to_element(1000, 1993)
+    assert (sx, sy) == (1002, 1993), f"应吸到小控件中心 (1002,1993)，实得 {(sx, sy)}"
+    assert "控件落点" in note and "13×11" in note, note
+
+
+def test_band_mode_pulls_x_into_row_content_when_estimate_is_beside_it(monkeypatch):
+    """行模式下估计点 x 落在内容之外（空白/滚动条）→ 把 x 收进该行内容范围。"""
+    mod = _load_module()
+    buf, w, h = _synth_region()
+    _paint_rect(buf, w, 4, 34, 62, 62, (72, 72, 72))     # 行内容横跨 59px（≥60% 区域宽）
+    _use_region_at(mod, monkeypatch, buf, w, h, 90, 48)   # local x=90 在内容右侧之外
+    sx, sy, note = mod._snap_to_element(1090, 2000)
+    # 区域原点 x0 = 1090-90 = 1000；内容右沿 62，留 2px → local 60 → 1060
+    assert sx == 1060, f"x 应收进内容右沿内 2px（local 60 → 1060），实得 {sx}"
+    assert sy == 2000
+    assert "收进" in note, note
 
 
 def test_enum_top_hwnds_actually_enumerates(monkeypatch):

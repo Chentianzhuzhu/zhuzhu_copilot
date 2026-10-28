@@ -1767,6 +1767,33 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
     if cands is not None:
         _fill_candidates(cands, comps, bands, _usable, x, y, lx, ly, x0, y0, w, h, mask)
 
+    # 0) 「小而具体」优先：估计点已经落在某个可用连通域里 → 直接吸到它的落点。
+    #    为什么要抢在行/带模式前面：列表行内常有复选框/开关/小按钮，带模式会把 y
+    #    拉到整行中心（往往正好落在这个小控件之外），点下去变成「选中整行 /没反应」。
+    hits = [c for c in comps
+            if _usable(c) and c["minx"] <= lx <= c["maxx"]
+            and c["miny"] <= ly <= c["maxy"]]
+    band_h = (band["ymax"] - band["ymin"] + 1) if band else 0
+    if hits:
+        # 取面积最小的那个：它就是估计点所在的最具体控件（大背景块只是容器）
+        small = min(hits, key=lambda c: (c["area"], c["miny"], c["minx"]))
+        small_h = small["maxy"] - small["miny"] + 1
+        # 只在它是「行内的小控件」时才抢先：若这个块本身就撑满整行（列表里的文字/
+        # 头像），按行中心对齐仍是更稳的行为（垂直容差 = 半行高，而不是半个字高）。
+        if band_h > 0 and small_h > 0.6 * band_h:
+            small = None
+        if small is not None:
+            px, py = _landing_point(small, mask, w, h)
+            sx, sy = x0 + px, y0 + py
+            shift = ((sx - int(x)) ** 2 + (sy - int(y)) ** 2) ** 0.5
+            if shift <= shift_cap and (sx, sy) != (int(x), int(y)):
+                return sx, sy, (
+                    f"已吸附到估计点所在的控件落点：{small['maxx'] - small['minx'] + 1}×"
+                    f"{small['maxy'] - small['miny'] + 1}px 连通域（落点已校验在元素上），"
+                    f"由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。"), ruler
+            if (sx, sy) == (int(x), int(y)):
+                return sx, sy, "", ruler
+
     if band is not None:
         # ---- 行/带模式：y 对齐到这一条带的中心 ----
         sy = y0 + (band["ymin"] + band["ymax"] + 1) // 2
@@ -1787,7 +1814,14 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
             px, _py = _landing_point(c, mask, w, h)
             sx = x0 + px
         else:
-            sx = int(x)
+            # x 落在该行内容之外（常见：模型把整行中点估到了右侧空白/滚动条/隔壁面板）。
+            # 只有**内容足够宽、像列表行**（内容横向跨度 ≥ 60% 区域）才把 x 收进内容范围；
+            # 窄工具条保持原 x —— 那里收紧反而会点到隔壁按钮。
+            bx0, bx1 = int(band.get("xmin", 0)), int(band.get("xmax", w - 1))
+            if (bx1 - bx0) >= 0.6 * w and not (bx0 + 2 <= lx <= bx1 - 2):
+                sx = x0 + min(max(lx, bx0 + 2), bx1 - 2)
+            else:
+                sx = int(x)
         shift = ((sx - int(x)) ** 2 + (sy - int(y)) ** 2) ** 0.5
         if shift > shift_cap:
             return x, y, "", ruler
@@ -1800,7 +1834,9 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
             how += (f"；x 取同行最近的 {c['maxx'] - c['minx'] + 1}×"
                     f"{c['maxy'] - c['miny'] + 1}px 连通域落点（质心，已校验落在元素上）")
         else:
-            how += "；该行内容离估计点较远，x 保持你给的位置（整行都可点，这是安全的）"
+            how += ("；该行内容离估计点较远，x 保持你给的位置（整行都可点，这是安全的）"
+                    if sx == int(x) else
+                    "；估计点落在该行内容之外，x 已收进该行内容范围（避免点到空白/滚动条）")
         return sx, sy, f"{how}。由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。", ruler
 
     # ---- 连通域模式：没有像样的「行」时（按钮、图标、视口内元素）按可信度吸附 ----
