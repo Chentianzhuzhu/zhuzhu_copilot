@@ -74,6 +74,8 @@ SESSION_TTL_S = 45.0         # 操控会话滑动有效期：期内真人输入�
 ACTION_SETTLE_S = 1.0         # 操作后**截图前**的最短等待（秒）：点击/输入刚落完就抓，
                               # 很容易抓到过渡帧（菜单还没弹出、列表还没滚动、文字重绘到一半）→
                               # 模型按旧画面判断，随后乱点。默认 1s，界面稳定后再出图。
+SHOT_WAIT_MAX_MS = 60000      # screen_shot(wait_ms) 上限：长任务一次等待后截图，避免轮询烧 token
+WINDOW_SWITCH_SETTLE_S = 0.25 # Alt+Tab / Alt+Esc 后等前台切换落定的时长
 MOVE_TAKEOVER_PX = 160        # 鼠标移动累计位移阈值：低于它不算「用户接管」。
                               # 40 太敏感 —— 用户正常挪一下鼠标就超了，AI 会被踢下线、
                               # 任务直接卡住（实测：用户在旁边用电脑时必现）。按键/点击
@@ -105,6 +107,7 @@ WHEEL_TICK_MAX = 12         # 一次滚轮调用最多拆成几个 tick（防止
 DRAG_SETTLE_S = 0.12        # 拖拽落点后等待时间：让目标控件完成响应再截图验证
 DRAG_MIN_STEPS = 12         # 拖拽最少分步数：步数太少会被系统判定为瞬移（非拖拽）
 LONG_PRESS_MAX_S = 5.0      # 长按时长上限（秒），防止模型传入过大值卡住流程
+TYPE_TEXT_MAX_CHARS = 2000  # 单次文字注入上限；超限明确拒绝，绝不静默截断只发半段
 SETTLE_AFTER_CLICK_S = 0.06  # 点击后最小稳定时间：先等界面响应再返回，减少无效重试
 FUZZY_MIN_SCORE = 0.62      # 控件名近似匹配的最低相似度：低于此值宁可报「找不到」，也别点错控件
 CLICK_INSET_RATIO = 0.22    # 元素落点内缩比例（仅在中心被遮挡时用于采样，避开边框/圆角）
@@ -4846,7 +4849,8 @@ def _interrupted() -> bool:
 
 
 # ---- 视觉基准：AI 所见图 ↔ 屏幕物理坐标 ----
-_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0, "ts": 0.0}
+_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0,
+         "ts": 0.0, "target_rect": None}
 
 # 截图基准的有效期（秒）：坐标点击必须建立在**刚看过的画面**上。
 # 界面是活的（窗口会移动、列表会滚动、弹窗会冒出来），拿几分钟前的截图算出来的
@@ -4857,11 +4861,18 @@ SHOT_MAX_AGE_S = 300.0
 
 def _set_view(x0, y0, w, h, img_w, img_h, kind: str, target_hwnd: int = 0):
     _VIEW.update({"x0": float(x0), "y0": float(y0), "w": float(w), "h": float(h),
-                  "img_w": float(img_w), "img_h": float(img_h), "ts": time.time()})
+                  "img_w": float(img_w), "img_h": float(img_h), "ts": time.time(),
+                  "target_rect": None})
     _STATE["view"] = kind
     # 记住「这张截图是哪个窗口的」：坐标点击前据此把目标窗口提到最前，
     # 避免「照着截图点」却点到盖在上面的别的窗口（见 _ensure_click_target）。
     _STATE["view_target"] = int(target_hwnd or 0)
+    if kind == "window" and target_hwnd:
+        try:
+            r = window_rect(target_hwnd)
+            _VIEW["target_rect"] = (r.left, r.top, r.right, r.bottom)
+        except Exception:
+            _VIEW["target_rect"] = None
 
 
 def _ex_style(hwnd: int) -> int:
@@ -4972,8 +4983,8 @@ def _ensure_click_target(x: int, y: int, args: dict = None) -> str:
     if not (r.left <= x <= r.right and r.top <= y <= r.bottom):
         return ""                      # 落点不在目标窗口内 → 不擅自换窗口
     under = window_at(x, y)
-    if under == target:
-        return ""
+    if under == target or (under and _root_owner(under) == target):
+        return ""                      # 目标本身或其可见自有对话框：直接点，不预先切窗口
     cover = window_title(under) or under
     name = window_title(target) or target
     activate_window(target)
@@ -5009,19 +5020,30 @@ def to_physical(x, y) -> tuple:
             int(round(_VIEW["y0"] + y * _VIEW.get("h", 0.0) / ih)))
 
 
-def _screen_bounds_note(x, y) -> str:
+def _screen_bounds_note(x, y, action: str = "点击") -> str:
     """落点是否在虚拟屏幕内；屏外必然点不到，且几乎总是「坐标基准不对」。
 
     典型场景（用户反馈「有时偏离大的离谱」）：照着窗口截图里**屏幕外**的那一块估算坐标，
     系统会把注入坐标钳到屏幕边缘 → 点击落在完全无关的地方。这里直接拒绝并指回正确流程。
     """
     vx, vy, vw, vh = _virtual_screen()
-    if vx <= int(x) <= vx + vw and vy <= int(y) <= vy + vh:
+    if vx <= int(x) < vx + vw and vy <= int(y) < vy + vh:
         return ""
-    return (f"⚠ **已拒绝本次点击**：落点 ({x},{y}) 不在屏幕范围（虚拟桌面 {vx},{vy} "
+    return (f"⚠ **已拒绝本次{action}**：落点 ({x},{y}) 不在屏幕范围（虚拟桌面 {vx},{vy} "
             f"{vw}×{vh}）。这说明坐标基准不对（窗口被拖出屏幕 / 截图后又换了基准图）。"
             "请先 screen_shot(mode=\"full\") 重新看图；窗口显示不全就先 "
             "manage_window(action=\"fit\") 让它完整显示，再重新截图。")
+
+
+def _path_guard(x1: int, y1: int, x2: int, y2: int, action: str) -> str:
+    """拖拽/滑动/拖选的统一防呆：零距离无意义，任一端点出屏都拒绝注入。"""
+    if (int(x1), int(y1)) == (int(x2), int(y2)):
+        raise ValueError(f"{action}起点和终点相同，无法形成路径；请给出不同的终点坐标。")
+    for x, y in ((x1, y1), (x2, y2)):
+        note = _screen_bounds_note(x, y, action)
+        if note:
+            return note
+    return ""
 
 
 def _require_fresh_shot(what: str = "点击") -> None:
@@ -5036,6 +5058,18 @@ def _require_fresh_shot(what: str = "点击") -> None:
         ts = float(_VIEW.get("ts") or 0.0)
         age = (time.time() - ts) if ts > 0 else 0.0   # 无时间戳=外部注入的基准，按新鲜处理
         if age <= SHOT_MAX_AGE_S:
+            target = int(_STATE.get("view_target") or 0)
+            saved = _VIEW.get("target_rect")
+            if _STATE.get("view") == "window" and target and saved:
+                try:
+                    r = window_rect(target)
+                    current = (r.left, r.top, r.right, r.bottom)
+                except Exception:
+                    current = None
+                if current != saved:
+                    raise ValueError(
+                        f"已拒绝{what}：窗口在截图后已移动或缩放（截图时 {saved}，现在 {current}）。"
+                        "旧图坐标已经失效，请重新 screen_shot 再操作，不要手工补偿偏移。")
             return
         raise ValueError(
             f"已拒绝{what}：当前截图基准是 {age:.0f}s 前的（有效期 {SHOT_MAX_AGE_S:.0f}s），"
@@ -5240,6 +5274,12 @@ def _shot_meta(desc: str, grid: bool = False) -> str:
 def tool_screen_shot(args: dict) -> list:
     # 操作后至少等 1s 再截图：界面落定前抓图会把模型带进「没生效→继续乱点」的坑
     _settle_after_action()
+    # 长任务只等待一次、截图一次，不要让模型反复轮询多张图浪费 token。
+    wait_ms = max(0, min(_num(args.get("wait_ms"), 0), SHOT_WAIT_MAX_MS))
+    wait_note = ""
+    if wait_ms:
+        time.sleep(wait_ms / 1000.0)
+        wait_note = f"。已额外等待 {wait_ms / 1000.0:.1f}s 后截图"
     mode = str(args.get("mode") or "full").strip().lower()
     grid = _bool(args.get("grid"), False)      # 默认纯净截图：坐标轴不画，直接发图给模型
     hwnd = _num(args.get("hwnd"), 0)
@@ -5291,7 +5331,7 @@ def tool_screen_shot(args: dict) -> list:
         if fg:
             desc += _window_fit_note(fg)
     _refresh_env()
-    return [{"type": "text", "text": _shot_meta(desc, grid=grid)},
+    return [{"type": "text", "text": _shot_meta(desc + wait_note, grid=grid)},
             {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}]
 
 
@@ -5747,6 +5787,27 @@ def _apply_snap(args: dict, x: int, y: int, default_on: bool = True) -> tuple:
     return _snap_to_element(x, y, reach)
 
 
+def _guard_snap_target(args: dict, est, x: int, y: int, note: str) -> tuple:
+    """估计点在目标窗口内时，吸附点不得跨出该窗口（防止 QQ → Trae 的邻近误吸）。"""
+    if est is None or (int(x), int(y)) == (int(est[0]), int(est[1])):
+        return x, y, note
+    try:
+        target = _input_target_hwnd(args)
+        if not target:
+            return x, y, note
+        r = window_rect(target)
+        ex, ey = int(est[0]), int(est[1])
+        est_inside = r.left <= ex <= r.right and r.top <= ey <= r.bottom
+        snap_inside = r.left <= int(x) <= r.right and r.top <= int(y) <= r.bottom
+        if est_inside and not snap_inside:
+            extra = (f"吸附点 ({x},{y}) 跨出目标窗口，已保留原估计点 ({ex},{ey})，"
+                     "避免点到旁边应用的控件。")
+            return ex, ey, _join_notes(note, extra)
+    except Exception:
+        pass
+    return x, y, note
+
+
 _CLICK_ACTIONS = {
     "": "click", "click": "click", "tap": "click", "left": "click",
     "double": "double", "double_click": "double", "dblclick": "double",
@@ -5808,6 +5869,7 @@ def tool_click(args: dict) -> str:
         x, y = _resolve_point(args)
         est = (x, y)          # 吸附前的估计点：换候选重试要靠它重新枚举候选
         x, y, snap_note = _apply_snap(args, x, y)
+        x, y, snap_note = _guard_snap_target(args, est, x, y, snap_note)
     button = str(args.get("button") or "left").strip().lower()
     clicks = max(1, min(_num(args.get("clicks"), 1), 3))
     if action == "right":
@@ -5915,6 +5977,9 @@ def tool_long_press(args: dict) -> str:
         x, y = _resolve_point(args)
         x, y, snap_note = _apply_snap(args, x, y)
     dur = max(0.2, float(_num(args.get("duration"), int(DEFAULT_LONG_PRESS_S * 1000)) / 1000.0))
+    bounds = _screen_bounds_note(x, y, "长按")
+    if bounds:
+        return bounds
     pre = _ensure_click_target(x, y, args)
     ok = do_long_press(x, y, dur, mode=_input_mode(args))
     if not ok:
@@ -5951,6 +6016,9 @@ def tool_drag(args: dict) -> str:
     steps = _num(args.get("steps"), DRAG_FILE_STEPS if file_mode else 0)
     overshoot = _num(args.get("overshoot"), DRAG_FILE_OVERSHOOT if file_mode else 0)
     dur = max(0.1, dur_ms / 1000.0)
+    path_note = _path_guard(x1, y1, x2, y2, "拖拽")
+    if path_note:
+        return path_note
     pre = _ensure_click_target(x1, y1, args)
     if not do_drag(x1, y1, x2, y2, dur, hold=max(0.02, hold_ms / 1000.0),
                    mode=_input_mode(args), steps=int(steps),
@@ -5983,6 +6051,9 @@ def tool_swipe(args: dict) -> str:
     x1, y1, n1 = _apply_snap(args, x1, y1, default_on=False)
     x2, y2, n2 = _apply_snap(args, x2, y2, default_on=False)
     dur = max(0.08, _num(args.get("duration"), 260) / 1000.0)
+    path_note = _path_guard(x1, y1, x2, y2, "滑动")
+    if path_note:
+        return path_note
     pre = _ensure_click_target(x1, y1, args)
     if not do_swipe(x1, y1, x2, y2, dur, mode=_input_mode(args)):
         _refresh_env()
@@ -6008,6 +6079,9 @@ def tool_select(args: dict) -> str:
     # 选择默认**不**吸附：选区两端通常落在文字/内容的任意位置，吸附到「元素中心」反而错
     x1, y1, n1 = _apply_snap(args, x1, y1, default_on=False)
     x2, y2, n2 = _apply_snap(args, x2, y2, default_on=False)
+    path_note = _path_guard(x1, y1, x2, y2, "拖选")
+    if path_note:
+        return path_note
     pre = _ensure_click_target(x1, y1, args)
     if not do_drag(x1, y1, x2, y2, max(0.2, _num(args.get("duration"), 420) / 1000.0), hold=0.05):
         _refresh_env()
@@ -6058,8 +6132,9 @@ def tool_type_text(args: dict) -> str:
     text = str(args.get("text") if args.get("text") is not None else "")
     if not text:
         raise ValueError("text 为空，无可输入内容")
-    if len(text) > 2000:
-        text = text[:2000]
+    if len(text) > TYPE_TEXT_MAX_CHARS:
+        raise ValueError(f"文本长度 {len(text)} 超过单次输入上限 {TYPE_TEXT_MAX_CHARS}；"
+                         "请拆成多段输入，或改用 copy/paste，不会静默截断。")
     note = _ensure_input_target(args, "输入文本")
     tgt = _input_target_hwnd(args)
     fg = foreground_window()
@@ -6071,6 +6146,16 @@ def tool_type_text(args: dict) -> str:
     # 先停一下让输入法/输入框把上屏处理完，否则回车可能被当成输入法候选上屏。
     submit = _bool(args.get("submit"), False)
     if submit:
+        # 长文本注入期间前台可能被弹窗/用户操作换掉；回车前必须再确认一次。
+        # 这里比较输入前后的**实际前台**，不擅自抢回目标：没有显式 hwnd 时也同样安全。
+        current_fg = foreground_window()
+        if fg and current_fg != fg:
+            raise RuntimeError(
+                f"已拒绝回车发送：输入期间前台窗口从「{window_title(fg) or fg}」变为"
+                f"「{window_title(current_fg) or current_fg}」。Enter 会发进错误的应用，"
+                "所以没有执行。请重新截图确认焦点，不要重复输入。")
+        if not fg:
+            _ensure_input_target(args, "回车发送")
         time.sleep(max(0.08, _num(args.get("submit_delay"), 120) / 1000.0))
         do_key("enter")
     _log("ai", f"输入文本（{len(text)} 字符）" + ("并回车发送" if submit else "") + f"：{text[:60]}")
@@ -6095,14 +6180,30 @@ def tool_key_press(args: dict) -> str:
     key = str(args.get("key") or "").strip()
     if not key:
         raise ValueError("key 为空（如 enter / ctrl+c / win+ctrl+d）")
-    # win 开头的组合键是系统级快捷键（如 win+ctrl+d 切虚拟桌面），不绑定窗口；
-    # 其余按键只对前台窗口生效，必须先把目标窗口切到前台，否则会打进别的应用。
-    note = "" if key.lower().startswith("win") else _ensure_input_target(args, f"发送按键 {key}")
-    fg = foreground_window()
+    normalized = re.sub(r"[\s_]+", "", key.lower())
+    window_nav = normalized in {"alt+tab", "alt+shift+tab", "shift+alt+tab",
+                                "alt+esc", "alt+shift+esc", "shift+alt+esc"}
+    # win 组合键与 Alt+Tab/Alt+Esc 是系统级导航，不绑定应用窗口；尤其不能在 Alt+Tab
+    # 前把旧目标重新激活，否则会把刚要切走的窗口又抢回来。
+    system_key = normalized.startswith("win") or window_nav
+    note = "" if system_key else _ensure_input_target(args, f"发送按键 {key}")
+    before = foreground_window()
     do_key(key)
+    if window_nav:
+        time.sleep(WINDOW_SWITCH_SETTLE_S)
+        # 后续键盘输入不能再沿用切换前的窗口目标，否则下一次输入又会切回去；
+        # 旧截图也只描述切换前的窗口，必须强制重新截图。
+        _STATE["view_target"] = 0
+        _VIEW["img_w"] = _VIEW["img_h"] = 0.0
+        _VIEW["target_rect"] = None
+    fg = foreground_window()
     _log("ai", f"按键 {key}")
     _refresh_env()
-    return (f"已发送按键 {key}（发往窗口：{window_title(fg) or fg}）。" + _join_notes(note)
+    if window_nav:
+        return (f"已发送按键 {key}。切换后前台窗口：「{window_title(fg) or fg}」"
+                f"（切换前是「{window_title(before) or before}」）。"
+                "请重新 screen_shot 确认目标窗口后再操作。")
+    return (f"已发送按键 {key}（当前前台窗口：{window_title(fg) or fg}）。" + _join_notes(note)
             + "请重新 screen_shot 验证结果。")
 
 
@@ -6485,16 +6586,17 @@ TOOLS = [
         "截屏并返回**纯净原图**给你查看（不叠加坐标网格/刻度/准星），直接看图判断目标位置。"
         "坐标基准=图像像素（左上角 0,0），点击/拖拽等工具的 x/y 直接填你在图上读到的像素值即可"
         "（插件自动换算为屏幕物理坐标）。**默认整屏（mode=full）**：整屏图始终等于用户眼前的"
-        "真实画面，弹窗/遮挡/任务栏都在图里，点错的风险最低。mode=window 只截某个窗口，"
-        "仅在「目标窗口远大于屏幕」或「GPU 自绘界面需要 1:1 读数」时使用；窗口被遮挡时"
+        "真实画面，弹窗/遮挡/任务栏都在图里，点错的风险最低。mode=window 只截**完整可见**的窗口，"
+        "主要用于 GPU 自绘界面的 1:1 原生像素读数；窗口被遮挡或未完整显示时"
         "插件会自动改回整屏截图并在返回文字里说明。每次行动前后都应截屏：先看准目标，"
-        "行动后再验证结果。",
+        "行动后再验证结果。长任务传 wait_ms=5000 等参数，一次等待后只截一张，别轮询烧 token。",
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "description": "full=整屏（默认），window=指定窗口"},
          "title": {"type": "string", "description": "窗口标题片段（mode=window 时用）"},
          "hwnd": {"type": "integer", "description": "窗口句柄（mode=window 时用，来自 list_windows）"},
          "grid": {"type": "boolean", "description": "是否叠加坐标网格刻度（默认 false；仅人工读数/调试时开启）"},
-         "capture": {"type": "string", "description": "抓图方式：auto（默认，PrintWindow 抓到空白时自动改用屏幕抓取）；printwindow=不受遮挡；screen=屏幕区域（GPU 自绘/独占表面界面如 Blender 用这个）"}}}},
+         "capture": {"type": "string", "description": "抓图方式：auto（默认，PrintWindow 抓到空白时自动改用屏幕抓取）；printwindow=不受遮挡；screen=屏幕区域（GPU 自绘/独占表面界面如 Blender 用这个）"},
+         "wait_ms": {"type": "integer", "description": "长任务等待多少毫秒后再截图（0~60000）：一次等待+一次截图，避免连续轮询浪费 token"}}}},
     {"name": "zoom_in", "description":
         "放大屏幕局部以精确定位（两步定位第二步）：x/y 为当前截图基准坐标，"
         "size 为放大区域边长（默认 400），factor 为放大倍数（默认 3）。"
@@ -6581,6 +6683,8 @@ TOOLS = [
         "**默认会自动做元素吸附**：把坐标修正到附近那个控件的几何中心（纯像素连通域判定，"
         "不依赖控件树，对 Blender 等自绘界面同样有效），返回值里会说明有没有吸附、位移多少。"
         "想点一个精确像素（如三维视口里的某点）传 snap=false。"
+        "多窗口下**可见区域直接点**，只有落点被其他窗口遮挡时才激活目标窗口；"
+        "窗口移动或缩放后必须重新截图，旧坐标会被拒绝。"
         "拖拽与滑动动作顺带支持 duration（毫秒）与 input=touch。",
      "inputSchema": {"type": "object", "properties": {
          "x": {"type": "integer", "description": "x 坐标（截图基准）；action=drag/swipe/select 时为起点；用 cand 时可省略"},
@@ -6598,7 +6702,7 @@ TOOLS = [
          "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false；用 cand 时自动关闭）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"},
-         "title": {"type": "string", "description": "目标窗口标题片段（可选；填了就在该窗口内点击，并自动把它激活置顶）"},
+         "title": {"type": "string", "description": "目标窗口标题片段（可选；可见区域直接点，仅落点被遮挡时才激活置顶）"},
          "allow_list_click": {"type": "boolean", "description": "已确认要点的就是列表这一行时才传 true：连续点开 3 条不同列表行后会被临时拒绝点行（防逐条试探）"},
          "hwnd": {"type": "integer", "description": "目标窗口句柄（可选，来自 list_windows）"}},
          "required": []}},
@@ -6686,7 +6790,8 @@ TOOLS = [
         "输入文本（Unicode 注入，支持中文/符号）。"
         "**焦点自动识别**：如果键盘焦点已经在输入框里（类名/文本插入点判定），"
         "就直接输入，**不要再点击输入框**；返回里会说明当前焦点是不是可输入控件。"
-        "**发消息别再去点发送按钮**：传 submit=true 会在输入完成后自动按 Enter 发送。"
+        "**发消息别再去点发送按钮**：传 submit=true 会在输入完成后自动按 Enter 发送，"
+        "并在**回车前**再次核对前台窗口，焦点变了就拒绝发送。"
         "**注入前会确保目标窗口在最前**：抢不到焦点就拒绝执行，避免文字打进别的应用"
         "（例如 AI 助手自己的输入框）。",
      "inputSchema": {"type": "object", "properties": {
@@ -6698,7 +6803,8 @@ TOOLS = [
          "required": ["text"]}},
     {"name": "key_press", "description":
         "按键/组合键：enter、tab、esc、backspace、f5、ctrl+c、ctrl+shift+s、win+ctrl+d 等。"
-        "除 win 开头的系统级快捷键外，注入前会确保目标窗口在最前（抢不到就拒绝），"
+        "alt+tab / alt+shift+tab / alt+esc 是系统窗口导航，不会先抢回旧目标，返回真实新前台。"
+        "其他非 win 开头的应用内按键，注入前会确保目标窗口在最前（抢不到就拒绝），"
         "避免按键（尤其 enter）打进别的应用。",
      "inputSchema": {"type": "object", "properties": {
          "title": {"type": "string", "description": "目标窗口标题片段（可选；注入前会确保它在最前，避免文字打进别的应用）"},

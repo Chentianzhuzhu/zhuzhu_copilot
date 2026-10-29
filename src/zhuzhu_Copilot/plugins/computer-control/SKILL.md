@@ -292,6 +292,27 @@ taskbar_open(where="panel", chevron=7) # 自动认错「↑」时，用编号指
      操作三维视口/画布/时间轴这类内容区时传 `snap=false`；
 7. **行动后必须重新 `screen_shot` 验证**（对话框是否弹出、内容是否输入正确），再进行下一步。
 
+## 多窗口遮挡：可见区域直接点，输入前再确认前台
+
+- QQ 被 Trae 部分遮挡、但目标按钮/输入框仍可见时，**可见区域直接点**。不要先激活窗口、
+  不要先 Alt+Tab，也不要移动窗口；插件只在落点确实被其他窗口覆盖时才激活/置顶目标窗口。
+- 点击背景窗口的可见区域后，Windows 通常会自然把它带到前台。随后要输入文字或应用内
+  组合键时仍必须确认焦点；`type_text(submit=true)` 会在**回车前**再次核对前台窗口，
+  焦点不对就拒绝发送，不要把消息打进 Trae。
+- 要在最近两个窗口间切换：`key_press(key="alt+tab")`（反向用 `alt+shift+tab`）。它是系统
+  导航键，不会先抢回旧目标；返回文字会说明**切换后的真实前台**。切完重新截图再点。
+  要切到某个确定窗口则用 `manage_window(action="activate", title="QQ")`，不要连按 Alt+Tab 猜。
+- **窗口移动或缩放后，旧窗口截图的坐标立即作废**：插件会拒绝继续使用，必须重新截图；
+  不要自己心算“往左/往上补多少像素”。
+- 吸附结果若跨出指定目标窗口会自动回退到原估计点，避免从 QQ 吸到旁边的 Trae 控件。
+
+## 长任务：等待后只截一张图，不要轮询烧 token
+
+构建、安装、启动大型应用、渲染、批量处理等长任务，使用
+`screen_shot(wait_ms=5000)`（可按阶段调到 10000~30000，最大 60000）一次完成“等待 → 截图”。
+插件本身还会在操作后自动等界面稳定；`wait_ms` 是额外的任务等待。没有看到失败迹象时不要
+每隔一秒截一张图；先按任务阶段等待一次，未完成的再逐步增加等待，而不是连续发送图片。
+
 **坐标约定**：`click`/`drag`/`screen_shot`/`zoom_in`/`verify_point`/`refine_point` 的 x/y
 都使用**当前截图基准的图像像素**（图像左上角为 0,0），插件自动换算为屏幕物理坐标 ——
 不要把截图坐标再手动乘以缩放比例。若你手里已经是**物理坐标**，传 `space="screen"` 跳过换算。
@@ -744,7 +765,7 @@ AI 真正操控桌面（点击/输入/滚动/拖拽/拖窗口等）时，插件�
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
 | `screen_info` | 环境信息（屏幕/虚拟桌面/输入/吸附能力/换算公式/前台窗口/接管状态） | 无 |
-| `screen_shot` | 截屏返回给 AI（**纯净原图**，无网格/刻度/准星）—— 一切坐标的来源 | `mode=full\|window`、`title`/`hwnd`、`grid`、`capture` |
+| `screen_shot` | 截屏返回给 AI（**纯净原图**，无网格/刻度/准星）—— 一切坐标的来源；长任务用 `wait_ms` 等待后只截一张 | `mode=full\|window`、`title`/`hwnd`、`grid`、`capture`、`wait_ms` |
 | `zoom_in` | 局部放大精确定位（小目标必用；最近邻放大，可直接按像素读数） | `x`、`y`、`size`、`factor`、`smooth`、`space` |
 | `refine_point` | **坐标精修**：把估计坐标吸附到最近控件落点（质心）（列表场景再给**行标尺**），并把这一片所有候选**编号列出**（中心/尺寸/距离）＋放大对照图（青框=候选、黄=估计、洋红=选中、绿=目标） | `x`、`y`、`reach`、`pick`、`space` |
 | `verify_point` | **坐标链路自检**（换算物理坐标 + 移动光标 + 回读真实落点与偏差；不做吸附） | `x`、`y`、`move`、`space` |
@@ -753,15 +774,15 @@ AI 真正操控桌面（点击/输入/滚动/拖拽/拖窗口等）时，插件�
 **坐标级操作（唯一一类操作方式）**
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
-| `click` | 点击（默认鼠标注入；**默认吸附到控件落点**；自动把目标窗口置顶避免点到遮挡窗口；`verify=true` 时**点不中会自动换次优候选再点一次**） | `x`、`y`、`button`、`clicks`、`input`、`verify`、`retry`、`snap`、`snap_reach`、`space`、`title`/`hwnd` |
+| `click` | 点击（默认鼠标注入；**默认吸附到控件落点**；可见区域直接点，仅落点被遮挡时才置顶；`verify=true` 时点不中会自动换次优候选再点一次） | `x`、`y`、`button`、`clicks`、`input`、`verify`、`retry`、`snap`、`snap_reach`、`space`、`title`/`hwnd` |
 | `click_window` | **窗口截图坐标点击**（窗口会移动时用；rel 坐标取自窗口截图；同样默认吸附） | `hwnd`、`rel_x`/`rel_y`、`button`、`verify`、`snap` |
 | `long_press` | 长按（鼠标按住不动；默认吸附） | `x`、`y`、`duration`、`snap`、`space`、`input` |
 | `drag` | 拖拽（**两端默认吸附**；拖视口/画布内容传 `snap=false`）。**拖文件到别的应用传 `profile="file"`** —— 慢速+按下停顿+落点悬停+越界回位，自动关吸附 | `x1`、`y1`、`x2`、`y2`、`profile`、`duration`、`hold`、`hover`、`steps`、`overshoot`、`snap`、`space`、`input` |
 | `swipe` | 滑动（**默认不吸附**） | `x1`、`y1`、`x2`、`y2`、`snap`、`space`、`input` |
 | `select` | 拖选文本/区域（**默认不吸附**） | `x1`、`y1`、`x2`、`y2`、`snap`、`space`、`input` |
 | `scroll` | 滚动页面。**优先用力度语义** `strength=1~10`（5≈半屏、10≈一屏多）+ `direction`；需要精确格数才用 `delta`（120=一格）。滚动量按格分段发送 | `strength`、`direction`、`delta`、`x`、`y` |
-| `type_text` | 输入文本（支持中文；注入前确保目标窗口在前台） | `text`、`title`/`hwnd` |
-| `key_press` | 按键/组合键（注入前确保目标窗口在前台） | `key`、`title`/`hwnd` |
+| `type_text` | 输入文本（支持中文；注入前确保目标窗口在前台；`submit=true` 回车前再次核对焦点） | `text`、`submit`、`title`/`hwnd` |
+| `key_press` | 按键/组合键（应用内按键先确保目标前台；`alt+tab`/`alt+shift+tab` 为系统窗口导航） | `key`、`title`/`hwnd` |
 | `copy` / `paste` | 复制 / 粘贴（注入前确保目标窗口在前台） | `text`、`title`/`hwnd` |
 
 **窗口与容器**

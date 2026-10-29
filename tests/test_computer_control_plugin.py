@@ -4019,3 +4019,256 @@ def test_shipped_plugin_update_replaces_old_version_and_drops_obsolete_files(
     assert (dst / "user_notes.txt").read_text(encoding="utf-8") == "keep", \
         "用户自己加的文件不能被覆盖删除"
     assert json.loads((dst / "plugin.json").read_text(encoding="utf-8"))["revision"] == 2
+
+
+def test_alt_tab_switches_without_reactivating_old_target(monkeypatch):
+    """Alt+Tab 是系统窗口导航：不得先抢回旧目标，返回真实新前台并清除旧输入目标。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    mod._STATE["view_target"] = 42
+    mod._VIEW.update({"img_w": 1280.0, "img_h": 720.0, "ts": time.time()})
+    state = {"fg": 42}
+
+    monkeypatch.setattr(mod, "_ensure_input_target",
+                        lambda *a: (_ for _ in ()).throw(
+                            AssertionError("Alt+Tab 前不得激活旧目标窗口")))
+    monkeypatch.setattr(mod, "foreground_window", lambda: state["fg"])
+    monkeypatch.setattr(mod, "window_title",
+                        lambda h: {42: "Trae", 99: "QQ"}.get(h, str(h)))
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+
+    def _key(key):
+        assert key == "alt+tab"
+        state["fg"] = 99
+
+    monkeypatch.setattr(mod, "do_key", _key)
+    out = mod._HANDLERS["key_press"]({"key": "alt+tab"})
+    assert "QQ" in out, "必须报告切换后的真实前台，而不是旧窗口"
+    assert mod._STATE["view_target"] == 0, "切换后不得保留旧窗口输入目标"
+    assert mod._VIEW["img_w"] == 0, "切换窗口后旧截图基准必须失效"
+
+
+def test_screen_shot_wait_ms_waits_once_before_capture(monkeypatch):
+    """长任务用一次 wait_ms 延迟截图，避免连续轮询浪费 token。"""
+    mod = _load_module()
+    slept = []
+    monkeypatch.setattr(mod, "_settle_after_action", lambda: None)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(mod, "grab_screen",
+                        lambda grid=False: (b"\x89PNG", 1280, 720, 0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_set_view", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "foreground_window", lambda: 0)
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_shot_meta", lambda desc, grid=False: desc)
+    out = mod._HANDLERS["screen_shot"]({"wait_ms": 2500})
+    assert slept == [2.5], slept
+    text = "\n".join(c.get("text", "") for c in out if c.get("type") == "text")
+    assert "2.5" in text and "等待" in text
+    shot = next(t for t in mod.TOOLS if t["name"] == "screen_shot")
+    assert "wait_ms" in shot["inputSchema"]["properties"]
+
+
+def test_window_screenshot_baseline_rejects_moved_window(monkeypatch):
+    """窗口截图后窗口移动/缩放，旧图像坐标必须失效，不能继续按旧位置点击。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_VIEW", {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0,
+                                       "img_w": 0.0, "img_h": 0.0, "ts": 0.0})
+    monkeypatch.setattr(mod, "_STATE", dict(mod._STATE))
+    rect = {"v": (100, 100, 600, 500)}
+    monkeypatch.setattr(mod, "window_rect", lambda h: _Rect(*rect["v"]))
+    mod._set_view(100, 100, 500, 400, 500, 400, "window", 42)
+    rect["v"] = (160, 100, 660, 500)       # 截图后窗口向右移动 60px
+    with pytest.raises(ValueError, match="移动或缩放"):
+        mod._require_fresh_shot()
+
+
+def test_click_does_not_snap_outside_explicit_target_window(monkeypatch):
+    """吸附不得从指定 QQ 窗口跳到旁边的 Trae 控件；跨出目标窗口就保留原估计点。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (500, 400))
+    monkeypatch.setattr(mod, "_apply_snap",
+                        lambda a, x, y, default_on=True: (700, 400, "已吸附到邻近元素"))
+    monkeypatch.setattr(mod, "find_window", lambda title="", hwnd=0: 42)
+    monkeypatch.setattr(mod, "user32", type("_U", (), {
+        "IsWindow": staticmethod(lambda h: True)}))
+    monkeypatch.setattr(mod, "window_rect", lambda h: _Rect(100, 100, 600, 500))
+    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    pos = {"x": 700, "y": 400}
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (pos["x"], pos["y"]))
+    clicked = []
+
+    def _click(x, y, b, c, mode="auto"):
+        clicked.append((x, y))
+        pos.update(x=x, y=y)
+        return True
+
+    monkeypatch.setattr(mod, "do_click", _click)
+    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "hwnd": 42})
+    assert clicked == [(500, 400)], "跨窗口吸附必须回退到原估计点"
+    assert "跨出目标窗口" in out
+
+
+def test_drag_rejects_offscreen_endpoint(monkeypatch):
+    """拖拽任一端点在屏幕外都不得注入，避免被系统钳到屏幕边缘。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_resolve_point",
+                        lambda a, *k: (100, 100) if k == ("x1", "y1") else (2500, 500))
+    monkeypatch.setattr(mod, "_apply_snap",
+                        lambda a, x, y, default_on=True: (x, y, ""))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    dragged = []
+    monkeypatch.setattr(mod, "do_drag", lambda *a, **k: dragged.append(1) or True)
+    out = mod._HANDLERS["drag"]({"x1": 100, "y1": 100, "x2": 2500, "y2": 500})
+    assert dragged == []
+    assert "已拒绝" in out and "屏幕范围" in out
+
+
+def test_swipe_rejects_zero_length(monkeypatch):
+    """起点终点相同的滑动没有意义，明确报错而不是伪装成一次拖拽。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (300, 300))
+    monkeypatch.setattr(mod, "_apply_snap",
+                        lambda a, x, y, default_on=True: (x, y, ""))
+    swiped = []
+    monkeypatch.setattr(mod, "do_swipe", lambda *a, **k: swiped.append(1) or True)
+    with pytest.raises(ValueError, match="起点和终点相同"):
+        mod._HANDLERS["swipe"]({"x1": 300, "y1": 300, "x2": 300, "y2": 300})
+    assert swiped == []
+
+
+def test_select_rejects_zero_length(monkeypatch):
+    """拖选与拖拽/滑动共用路径护栏，零长度不得注入。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (300, 300))
+    monkeypatch.setattr(mod, "_apply_snap",
+                        lambda a, x, y, default_on=True: (x, y, ""))
+    dragged = []
+    monkeypatch.setattr(mod, "do_drag", lambda *a, **k: dragged.append(1) or True)
+    with pytest.raises(ValueError, match="起点和终点相同"):
+        mod._HANDLERS["select"]({"x1": 300, "y1": 300, "x2": 300, "y2": 300})
+    assert dragged == []
+
+
+def test_type_text_rejects_over_limit_without_silent_truncation(monkeypatch):
+    """超过输入上限必须明确报错，不能静默截断后只发送半段内容。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_ensure_input_target", lambda args, action: "")
+    typed = []
+    monkeypatch.setattr(mod, "do_type_text", lambda text: typed.append(text))
+    with pytest.raises(ValueError, match="2000"):
+        mod._HANDLERS["type_text"]({"text": "x" * 2001})
+    assert typed == []
+
+
+def test_submit_rechecks_foreground_before_enter(monkeypatch):
+    """输入期间焦点被别的窗口抢走后，submit 不得把 Enter 发进新前台。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    mod._STATE["view_target"] = 42
+    state = {"fg": 42}
+    monkeypatch.setattr(mod, "user32", type("_U", (), {
+        "IsWindow": staticmethod(lambda h: True)}))
+    monkeypatch.setattr(mod, "window_kind", lambda h: "main")
+    monkeypatch.setattr(mod, "window_title",
+                        lambda h: {42: "QQ", 99: "Trae"}.get(h, str(h)))
+    monkeypatch.setattr(mod, "foreground_window", lambda: state["fg"])
+    monkeypatch.setattr(mod, "activate_window", lambda h: True)
+    monkeypatch.setattr(mod, "_raise_topmost", lambda h: True)
+    monkeypatch.setattr(mod, "focus_state", lambda h: {"note": ""})
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+
+    def _type(text):
+        state["fg"] = 99
+
+    keys = []
+    monkeypatch.setattr(mod, "do_type_text", _type)
+    monkeypatch.setattr(mod, "do_key", lambda key: keys.append(key))
+    with pytest.raises(RuntimeError, match="回车"):
+        mod._HANDLERS["type_text"]({"text": "hello", "submit": True})
+    assert keys == [], "焦点已变化时不得发送 Enter"
+
+
+def test_submit_rechecks_foreground_even_without_target(monkeypatch):
+    """全屏截图后没有显式 hwnd 时，也要比较输入前后的前台，不能放行错误回车。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    mod._STATE["view_target"] = 0
+    state = {"fg": 42}
+    monkeypatch.setattr(mod, "foreground_window", lambda: state["fg"])
+    monkeypatch.setattr(mod, "window_title",
+                        lambda h: {42: "QQ", 99: "Trae"}.get(h, str(h)))
+    monkeypatch.setattr(mod, "focus_state", lambda h: {"note": ""})
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+
+    def _type(text):
+        state["fg"] = 99
+
+    keys = []
+    monkeypatch.setattr(mod, "do_type_text", _type)
+    monkeypatch.setattr(mod, "do_key", lambda key: keys.append(key))
+    with pytest.raises(RuntimeError, match="前台窗口"):
+        mod._HANDLERS["type_text"]({"text": "hello", "submit": True})
+    assert keys == []
+
+
+def test_skill_covers_multiwindow_and_delayed_verification():
+    """SKILL 必须明确可见直点、系统切换键、窗口移动重截与长任务延迟截图。"""
+    text = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "可见区域直接点" in text
+    assert 'key_press(key="alt+tab")' in text
+    assert "窗口移动或缩放" in text
+    assert "wait_ms" in text
+    assert "回车前" in text
+
+
+def test_visible_owned_dialog_is_clicked_without_activating_main_window(monkeypatch):
+    """QQ 的可见自有对话框虽不是主窗口句柄，也应直接点，不得多切一次主窗口。"""
+    mod = _load_module()
+    activated = []
+    monkeypatch.setattr(mod, "_STATE", dict(mod._STATE, view_target=42))
+    monkeypatch.setattr(mod, "user32", type("_U", (), {
+        "IsWindow": staticmethod(lambda h: True)}))
+    monkeypatch.setattr(mod, "window_rect", lambda h: _Rect(100, 100, 600, 500))
+    monkeypatch.setattr(mod, "window_at", lambda x, y: 99)
+    monkeypatch.setattr(mod, "_root_owner", lambda h: 42 if h == 99 else h)
+    monkeypatch.setattr(mod, "activate_window",
+                        lambda h: activated.append(h) or True)
+    assert mod._ensure_click_target(300, 300, {}) == ""
+    assert activated == []
+
+
+def test_tool_schemas_explain_fault_tolerant_usage():
+    """低质量模型只看工具 schema 时，也能得到多窗口、延迟截图和发送安全提示。"""
+    mod = _load_module()
+    tools = {t["name"]: t for t in mod.TOOLS}
+    assert "wait_ms" in tools["screen_shot"]["description"]
+    assert "完整可见" in tools["screen_shot"]["description"]
+    assert "远大于屏幕" not in tools["screen_shot"]["description"]
+    assert "可见" in tools["click"]["description"]
+    assert "遮挡" in tools["click"]["description"]
+    assert "alt+tab" in tools["key_press"]["description"].lower()
+    assert "回车前" in tools["type_text"]["description"]
+
+
+def test_screen_bounds_uses_exclusive_right_bottom_edges(monkeypatch):
+    """1920×1080 屏幕的最大合法像素是 (1919,1079)，右/下边界本身在屏外。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
+    assert mod._screen_bounds_note(1919, 1079) == ""
+    assert "不在屏幕范围" in mod._screen_bounds_note(1920, 1079)
+    assert "不在屏幕范围" in mod._screen_bounds_note(1919, 1080)
