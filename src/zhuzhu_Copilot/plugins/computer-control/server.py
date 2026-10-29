@@ -62,6 +62,10 @@ MODEL_MAX_W = 1280          # 返回给视觉模型的截图最大宽度（与�
 PREVIEW_MAX_W = 960         # Web UI 预览截图最大宽度（性能优先：预览不需要全分辨率）
 PREVIEW_MIN_INTERVAL = 0.25  # Web 预览两次抓图的最小间隔（秒）：页面高频轮询时复用缓存
 GRID_CELLS = 16             # 按需叠加的网格数量（N×N），刻度数字即图像像素值；默认不叠加（AI 看图不需要坐标轴）
+WINDOW_VISIBLE_TOL = 24      # 窗口超出虚拟屏幕多少像素内仍可按「窗口截图」出坐标基准
+                             # （最大化窗口的隐形边框会超出屏幕 ~8px，必须放行；超出更多
+                             #  说明窗口被拖出屏幕，窗口图里的像素有一部分根本点不到 →
+                             #  一律改用整屏截图，否则「图像坐标 → 屏幕坐标」必然偏）
 SESSION_TTL_S = 45.0         # 操控会话滑动有效期：期内真人输入才算「接管」
                               # 原 300s 太长：AI 思考/慢启动的那几十秒里用户挪一下
                               # 鼠标就会被判接管 → 任务直接卡死（用户看到的是「MCP
@@ -693,14 +697,28 @@ def grab_window(hwnd: int, max_w: int = MODEL_MAX_W, grid: bool = False,
     注意：screen 路径要求窗口真的在最上层（会被其他窗口遮挡），所以会先激活并置顶它；
     激活后仍被遮挡（前台锁被拒 / 置顶窗口压着）时**不返回窗口区域图**，改用整屏截图 ——
     否则截到的是遮挡窗口的画面，坐标却按目标窗口换算，图和落点对不上，必然点偏。
+
+    **窗口未完整显示时同样一律整屏兜底**（用户反馈：Agent 截的是程序窗口、没截全屏，
+    点击偏离得离谱）：窗口被拖出屏幕时，窗口图里有一块像素在屏幕上根本不存在，
+    照着它算出的坐标会被系统钳到屏幕边缘 —— 表现就是「点偏一大截且毫无规律」。
+    整屏图永远是「用户眼前的画面」，坐标基准不会错，同时提示模型先 fit 窗口。
     """
     note = _ensure_window_capturable(hwnd)
-    _GRAB_INFO.update({"note": note, "full": False, "occluded": "",
-                       "offset": None, "strategy": ""})
+    _GRAB_INFO.update({"note": note, "full": False, "occluded": "", "why": "",
+                       "offset": None, "region": None, "strategy": ""})
     rect = window_rect(hwnd)
     w, h = rect.right - rect.left, rect.bottom - rect.top
     if w <= 0 or h <= 0:
         raise RuntimeError("窗口尺寸无效")
+    vx, vy, vw, vh = _virtual_screen()
+    if not _fits_screen(rect, vx, vy, vw, vh):
+        parts = _offscreen_parts(rect, vx, vy, vw, vh)
+        png, iw, ih, ox, oy, sw, sh = grab_screen(max_w=max_w, grid=grid, cursor=cursor)
+        _GRAB_INFO.update({"strategy": "整屏兜底", "full": True,
+                           "img_w": iw, "img_h": ih,
+                           "why": "没有完整显示（" + "、".join(parts) + "）"})
+        _log("sys", f"窗口「{window_title(hwnd) or hwnd}」未完整显示，已改用整屏截图")
+        return png, iw, ih, ox, oy, sw, sh
     strategy = str(capture or "auto").strip().lower()
     if strategy not in ("auto", "printwindow", "screen"):
         strategy = "auto"
@@ -719,12 +737,21 @@ def grab_window(hwnd: int, max_w: int = MODEL_MAX_W, grid: bool = False,
         _log("sys", "窗口「{}」抓图不可用，已改用整屏截图".format(window_title(hwnd) or hwnd))
         return png, iw, ih, ox, oy, vw, vh
     _GRAB_INFO["strategy"] = used
-    return png, _GRAB_INFO["img_w"], _GRAB_INFO["img_h"], rect.left, rect.top, w, h
+    reg = _GRAB_INFO.get("region") or (rect.left, rect.top, w, h)
+    return png, _GRAB_INFO["img_w"], _GRAB_INFO["img_h"], reg[0], reg[1], reg[2], reg[3]
+
+
+def _fits_screen(r, vx: int, vy: int, vw: int, vh: int) -> bool:
+    """窗口是否完整落在虚拟屏幕内（容差 WINDOW_VISIBLE_TOL，放行最大化窗口的隐形边框）。"""
+    tol = WINDOW_VISIBLE_TOL
+    return (r.left >= vx - tol and r.top >= vy - tol
+            and r.right <= vx + vw + tol and r.bottom <= vy + vh + tol)
 
 
 # 记录最近一次窗口抓图的元信息（供工具文案如实说明用了哪条路径、有没有踩到空图）
 _GRAB_INFO = {"strategy": "", "blank": False, "note": "",
-              "full": False, "occluded": "", "offset": None}
+              "full": False, "occluded": "", "why": "",
+              "offset": None, "region": None}
 
 
 def _window_occluded(hwnd: int, rect) -> str:
@@ -807,6 +834,7 @@ def _grab_window_screen(hwnd, rect, w, h, max_w, grid, cursor):
                                       GRID_CELLS if grid else 0,
                                       (cx - sx, cy - sy) if cursor else None)
         _GRAB_INFO.update({"img_w": iw, "img_h": ih, "blank": False,
+                           "region": (sx, sy, cw, ch),
                            "offset": (sx - rect.left, sy - rect.top)})
         return png, "屏幕抓取"
     finally:
@@ -3992,15 +4020,8 @@ def _fits_work_area(r, wx: int, wy: int, ww: int, wh: int) -> bool:
             and r.right <= wx + ww + 4 and r.bottom <= wy + wh + 4)
 
 
-def _window_fit_note(hwnd: int) -> str:
-    """窗口未完整显示时的提示（给模型：先 fit，再滚动，别点看不见的部分）。"""
-    try:
-        r = window_rect(hwnd)
-        wx, wy, ww, wh = aura._work_area()
-    except Exception:
-        return ""
-    if _fits_work_area(r, wx, wy, ww, wh):
-        return ""
+def _offscreen_parts(r, wx: int, wy: int, ww: int, wh: int) -> list:
+    """窗口相对屏幕可用区超出的部分（返回中文片段列表；空表示完整可见）。"""
     parts = []
     if r.left < wx:
         parts.append(f"左侧超出 {wx - r.left}px")
@@ -4014,6 +4035,19 @@ def _window_fit_note(hwnd: int) -> str:
         parts.append(f"宽度比屏幕可用区大 {r.right - r.left - ww}px")
     if (r.bottom - r.top) > wh:
         parts.append(f"高度比屏幕可用区大 {r.bottom - r.top - wh}px")
+    return parts
+
+
+def _window_fit_note(hwnd: int) -> str:
+    """窗口未完整显示时的提示（给模型：先 fit，再滚动，别点看不见的部分）。"""
+    try:
+        r = window_rect(hwnd)
+        wx, wy, ww, wh = aura._work_area()
+    except Exception:
+        return ""
+    if _fits_work_area(r, wx, wy, ww, wh):
+        return ""
+    parts = _offscreen_parts(r, wx, wy, ww, wh)
     return ("。⚠ 该窗口**没有完整显示**（" + "、".join(parts) +
             "）：先用 manage_window(action=\"fit\", hwnd=…) 最大化或移进屏幕；"
             "内容仍超出可视区就在窗口内 scroll/swipe，**不要点击看不见的部分**")
@@ -4975,6 +5009,21 @@ def to_physical(x, y) -> tuple:
             int(round(_VIEW["y0"] + y * _VIEW.get("h", 0.0) / ih)))
 
 
+def _screen_bounds_note(x, y) -> str:
+    """落点是否在虚拟屏幕内；屏外必然点不到，且几乎总是「坐标基准不对」。
+
+    典型场景（用户反馈「有时偏离大的离谱」）：照着窗口截图里**屏幕外**的那一块估算坐标，
+    系统会把注入坐标钳到屏幕边缘 → 点击落在完全无关的地方。这里直接拒绝并指回正确流程。
+    """
+    vx, vy, vw, vh = _virtual_screen()
+    if vx <= int(x) <= vx + vw and vy <= int(y) <= vy + vh:
+        return ""
+    return (f"⚠ **已拒绝本次点击**：落点 ({x},{y}) 不在屏幕范围（虚拟桌面 {vx},{vy} "
+            f"{vw}×{vh}）。这说明坐标基准不对（窗口被拖出屏幕 / 截图后又换了基准图）。"
+            "请先 screen_shot(mode=\"full\") 重新看图；窗口显示不全就先 "
+            "manage_window(action=\"fit\") 让它完整显示，再重新截图。")
+
+
 def _require_fresh_shot(what: str = "点击") -> None:
     """坐标动作的前置门槛：必须先有一张**新鲜**截图作为视觉基准。
 
@@ -5202,22 +5251,20 @@ def tool_screen_shot(args: dict) -> list:
             raise ValueError(_window_not_found_hint(title, hwnd))
         png, iw, ih, x, y, w, h = grab_window(target, grid=grid, capture=capture)
         if _GRAB_INFO.get("full"):
-            # 窗口图不可用（被遮挡 / GPU 表面抓不到）→ 整屏兜底，基准必须切到整屏，
-            # 否则坐标会按窗口矩形换算，全错。
+            # 窗口图不可用（被遮挡 / GPU 表面抓不到 / 窗口未完整显示）→ 整屏兜底，
+            # 基准必须切到整屏，否则坐标会按窗口矩形换算，全错。
             _set_view(x, y, w, h, iw, ih, "full")
-            why = (f"被「{_GRAB_INFO.get('occluded')}」遮挡" if _GRAB_INFO.get("occluded")
-                   else "抓不到画面")
+            why = (_GRAB_INFO.get("why")
+                   or (f"被「{_GRAB_INFO.get('occluded')}」遮挡" if _GRAB_INFO.get("occluded")
+                       else "抓不到画面"))
             desc = (f"目标窗口「{window_title(target)}」{why}，"
                     f"已自动改用**整屏截图**（{w}×{h}，原点 {x},{y}），图像 {iw}×{ih}"
                     + (_GRAB_INFO.get("note") or ""))
             _log("ai", f"截屏：整屏（窗口「{window_title(target)}」不可用兜底）")
         else:
+            # x/y/w/h 是**实际抓到的区域**（屏幕抓取会裁到屏内），图像像素与它严格对应；
+            # 不能再拿窗口矩形二次换算，否则被裁剪时缩放比错，落点越靠右/下偏得越多。
             _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
-            # 屏幕抓取路径可能因窗口部分在屏外而裁剪，落点基准要跟着调整，否则会整体偏移
-            off = _GRAB_INFO.get("offset")
-            if off and (off[0] or off[1]):
-                x, y = x + off[0], y + off[1]
-                _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
             desc = (f"已截取窗口「{window_title(target)}」（区域 {w}×{h}），图像 {iw}×{ih}"
                     f"（窗口左上角对应屏幕 {x},{y}；抓取方式：{_GRAB_INFO['strategy'] or 'PrintWindow'}）"
                     + (_GRAB_INFO.get("note") or ""))
@@ -5769,6 +5816,11 @@ def tool_click(args: dict) -> str:
     elif action == "double":
         button = "left"
         clicks = 2
+    # 落点在屏幕外 → 坐标基准不对（窗口被拖出屏幕/基准过期），点了也只会落到屏幕边缘
+    bounds = _screen_bounds_note(x, y)
+    if bounds:
+        _log("ai", f"拒绝点击 ({x},{y})：落点不在屏幕范围内")
+        return bounds
     verify = _bool(args.get("verify"), False)
     # 生效校验要拿目标窗口做「整窗指纹」：显式 hwnd 优先，其次最近一次窗口截图的那个
     hwnd = _num(args.get("hwnd"), 0) or int(_STATE.get("view_target") or 0)

@@ -1684,6 +1684,79 @@ def test_grab_window_prefers_printwindow_when_usable(monkeypatch):
     assert (x, y) == (5, 6)
 
 
+def test_grab_window_refuses_window_baseline_when_partially_offscreen(monkeypatch):
+    """窗口被拖出屏幕 → 绝不拿窗口图出坐标基准，改用整屏（否则点击偏离得离谱）。
+
+    用户反馈：Agent 截的是程序窗口而不是全屏，窗口又没完整显示，点击偏得大。
+    窗口图里屏幕外的那块像素在屏幕上不存在，照它算出的物理坐标会被系统钳到屏幕边缘。
+    """
+    mod = _load_module()
+
+    class _R:
+        left, top, right, bottom = -900, 0, 1020, 900
+
+    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
+    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
+    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
+    called = []
+    monkeypatch.setattr(mod, "_grab_window_printwindow",
+                        lambda *a, **k: called.append(1) or (b"PNG-PW", "PrintWindow"))
+    monkeypatch.setattr(mod, "grab_screen",
+                        lambda **k: (b"PNG-FULL", 1280, 720, 0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    png, iw, ih, x, y, w, h = mod.grab_window(123)
+    assert png == b"PNG-FULL", "未完整显示的窗口必须整屏兜底"
+    assert called == [], "不得再走窗口抓图"
+    assert mod._GRAB_INFO["full"] is True
+    assert "没有完整显示" in mod._GRAB_INFO["why"]
+    assert (x, y, w, h) == (0, 0, 1920, 1080), "坐标基准必须切成整屏"
+
+
+def test_grab_window_baseline_uses_cropped_region_not_full_window_rect(monkeypatch):
+    """屏幕抓取被裁到屏内时，坐标基准必须是**实际抓取区域**（不是窗口矩形）。
+
+    否则缩放比按窗口宽度算、图却只有裁剪后那么大 → 越靠右/下偏得越多。
+    """
+    mod = _load_module()
+
+    class _R:
+        left, top, right, bottom = -8, -8, 1928, 1088   # 最大化窗口的隐形边框
+
+    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
+    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
+    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_grab_window_printwindow", lambda *a, **k: (None, "空白"))
+
+    def _screen(*a, **k):
+        mod._GRAB_INFO.update({"img_w": 1280, "img_h": 720, "blank": False,
+                               "region": (0, 0, 1920, 1080)})
+        return b"PNG-SCREEN", "屏幕抓取"
+
+    monkeypatch.setattr(mod, "_grab_window_screen", _screen)
+    monkeypatch.setattr(mod, "_GRAB_INFO", {"strategy": "", "blank": False,
+                                           "img_w": 0, "img_h": 0})
+    png, iw, ih, x, y, w, h = mod.grab_window(123)
+    assert png == b"PNG-SCREEN"
+    assert (x, y, w, h) == (0, 0, 1920, 1080), "必须按裁剪后的实际抓取区域出基准"
+
+
+def test_click_rejects_offscreen_point_instead_of_clamping(monkeypatch):
+    """落点在屏幕外 → 拒绝执行并提示重截/先 fit，不能交给系统钳到屏幕边缘。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (2600, 500))
+    monkeypatch.setattr(mod, "_apply_snap", lambda a, x, y, default_on=True: (2600, 500, ""))
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    clicked = []
+    monkeypatch.setattr(mod, "do_click",
+                        lambda *a, **k: clicked.append(1) or True)
+    out = mod._HANDLERS["click"]({"x": 2600, "y": 500})
+    assert clicked == [], "屏幕外的点必须拒绝，不得注入"
+    assert "已拒绝本次点击" in out and "不在屏幕范围" in out
+    assert 'screen_shot(mode="full")' in out and "fit" in out
+
+
 def test_verify_point_reports_zero_deviation(monkeypatch):
     """精度自检：光标实际落点与目标一致时明确报告「完全一致」"""
     mod = _load_module()
