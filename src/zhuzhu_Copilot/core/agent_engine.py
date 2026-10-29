@@ -531,17 +531,35 @@ def _context_image(data_url: str) -> str:
     - 已在硬上限内的图零开销直通（治理后的历史帧/小截图不重复编码，性能优先）；
     - http(s) 网络图片无法本地重编码，原样返回。
     """
+    return _context_image_ex(data_url)[0]
+
+
+def _context_image_ex(data_url: str) -> tuple:
+    """治理图片并返回 `(data_url, note)`；note 只在**发生缩宽**时非空。
+
+    为什么要随图带一句提示：服务商/网关一旦拿到缩宽后的图，模型读到的像素就与
+    插件声明的截图尺寸不一致，绝对坐标会整体偏移（越靠右下越偏）。此前只有插件端
+    的「所见尺寸自校准」，上下文这一侧没有任何提示，模型根本不知道自己看的是压缩图。
+    """
     if not isinstance(data_url, str) or not data_url.startswith("data:image"):
-        return data_url
+        return data_url, ""
     if len(data_url) <= _CTX_IMAGE_MAX_B64:
-        return data_url
+        return data_url, ""
     import base64 as _b64
     try:
         _, _, b64 = data_url.partition(",")
         src = QImage.fromData(_b64.b64decode(b64))
         if src.isNull():
-            return data_url
-        last = data_url
+            return data_url, ""
+        def _note(img) -> str:
+            if img.width() >= src.width():
+                return ""
+            return (f"⚠ 本图已被压缩为 {img.width()}×{img.height()}（原始 "
+                    f"{src.width()}×{src.height()}）：你读到的是压缩后像素，坐标请改用 "
+                    f"nx/ny（0~1）或同时传 seen_w={img.width()}、seen_h={img.height()}，"
+                    "否则会整体偏移。")
+
+        last, last_img = data_url, None
         for quality, max_w in _CTX_IMAGE_LADDER:
             if max_w <= 0 or src.width() <= max_w:
                 img = src
@@ -553,12 +571,13 @@ def _context_image(data_url: str) -> str:
             if not img.save(buf, "JPEG", quality):
                 continue
             out = "data:image/jpeg;base64," + _b64.b64encode(bytes(ba)).decode()
-            last = out
+            last, last_img = out, img
             if len(out) <= _CTX_IMAGE_MAX_B64:
-                return out
-        return last   # 最小档兜底（噪声帧实测 ~87K，必入上限）
+                return out, _note(img)
+        # 最小档兜底（噪声帧实测 ~87K，必入上限）
+        return last, (_note(last_img) if last_img is not None else "")
     except Exception:
-        return data_url
+        return data_url, ""
 
 
 # ══════════════ 内置工具的「等待上限」 ══════════════
@@ -3301,7 +3320,13 @@ class AgentEngine:
                     # 入库前统一体积治理（MCP 电脑操控/浏览器截图等所有图片来源）：
                     # 原始 PNG 一帧 base64 可达数十~上百万字符，兼容网关按文本粗计时
                     # 几步即冲破窗口；治理为有界 JPEG 后 tool 消息与轮末视觉消息共用同一份。
-                    imgs = [_context_image(u) for u in imgs]
+                    # 缩宽治理会改变图片像素尺寸 → 把提示拼进同一 tool 文本，模型先读
+                    # 提示再看图，才会改用 nx/ny 或 seen_w/seen_h（否则整体偏移）。
+                    slim = [_context_image_ex(u) for u in imgs]
+                    imgs = [u for u, _ in slim]
+                    _img_notes = [n for _, n in slim if n]
+                    if _img_notes:
+                        text += "\n" + "\n".join(_img_notes)
                     # 工作团监督：主 Agent 工具轨迹写入 ContextLedger（look_context 数据源）
                     if self._control is not None:
                         try:

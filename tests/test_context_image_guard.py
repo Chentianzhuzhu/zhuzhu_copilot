@@ -118,6 +118,29 @@ def test_context_image_survives_garbage_base64():
     assert agent_engine._context_image(bad) == bad
 
 
+def test_context_image_ex_no_note_when_not_shrunk():
+    """未缩宽（含非图片/小图）时提示为空，避免每张图都多一条噪声文本"""
+    assert agent_engine._context_image_ex("data:text/plain;base64,AA") == (
+        "data:text/plain;base64,AA", "")
+    assert agent_engine._context_image_ex("") == ("", "")
+
+
+def test_context_image_ex_warns_when_width_shrunk():
+    """发生缩宽时随图给出 nx/ny / seen_w 校准提示（防服务商压缩导致整体偏移）"""
+    if not _jpeg_supported():
+        import pytest
+        pytest.skip("运行环境缺少 JPEG 编码器")
+    raw = _noisy_png(1600, 900)
+    slim, note = agent_engine._context_image_ex(raw)
+    assert slim.startswith("data:image/jpeg;base64,")
+    assert note, "缩宽后必须给出提示"
+    assert "nx/ny" in note and "seen_w=" in note
+    assert "1600×900" in note, note
+    # 图片尺寸确实变小：提示里的目标宽度应小于原始 1600
+    target_w = int(note.split("压缩为 ")[1].split("×")[0])
+    assert target_w < 1600, note
+
+
 # ---------- 3. 历史修剪：剥离超量旧图 + 治理留存旧图 ----------
 
 def _tool_img_msg(url: str, i: int) -> dict:

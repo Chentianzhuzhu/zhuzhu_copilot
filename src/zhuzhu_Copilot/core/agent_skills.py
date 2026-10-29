@@ -1588,6 +1588,55 @@ def save_mcp_servers(servers: list) -> bool:
         return False
 
 
+# 环境变量里像密钥的键名（导出配置时默认脱敏，避免把 KEY/TOKEN 明文发给别人）
+_SECRET_KEY_RE = re.compile(r"(?i)(api[_-]?key|key|token|secret|password|passwd|auth)")
+_MCP_SECRET_PLACEHOLDER = "<请填入你的密钥>"
+
+
+def _mcp_export_entry(cfg: dict, include_secrets: bool) -> dict:
+    """单个服务器配置 → 标准 mcpServers 条目（stdio 用 command/args/env，sse 用 url）。"""
+    typ = str(cfg.get("type") or "stdio").strip().lower()
+    entry: dict = {}
+    if typ == "sse":
+        entry["url"] = str(cfg.get("url") or "")
+        entry["type"] = "sse"
+    else:
+        entry["command"] = str(cfg.get("command") or "")
+        args = [str(a) for a in (cfg.get("args") or [])]
+        if args:
+            entry["args"] = args
+    env = cfg.get("env") or {}
+    if isinstance(env, dict) and env:
+        out_env: dict = {}
+        for k, v in env.items():
+            key, val = str(k), ("" if v is None else str(v))
+            if not val:
+                continue
+            if not include_secrets and _SECRET_KEY_RE.search(key):
+                val = _MCP_SECRET_PLACEHOLDER
+            out_env[key] = val
+        if out_env:
+            entry["env"] = out_env
+    return entry
+
+
+def mcp_servers_json(servers: list, include_secrets: bool = False) -> str:
+    """导出标准 `mcpServers` JSON，供其他 Agent（Claude Desktop / Cursor / agnes 等）接入。
+
+    - 只导出**启用**的服务器（停用项本就不该出现在运行配置里）；
+    - 默认脱敏：值像密钥的环境变量替换为占位符，UI 提供「包含密钥明文」开关。
+    """
+    out: dict = {}
+    for cfg in servers or []:
+        if not isinstance(cfg, dict) or cfg.get("enabled", True) is False:
+            continue
+        name = str(cfg.get("name") or "").strip()
+        if not name:
+            continue
+        out[name] = _mcp_export_entry(cfg, include_secrets)
+    return json.dumps({"mcpServers": out}, ensure_ascii=False, indent=2)
+
+
 # ------------------------------------------------------------
 # 工作流绑定注册表：skill / plugin / mcp 资源可指定一个或多个工作流使用。
 # 未绑定 = 全局（所有工作流可用）；绑定 = 仅绑定的工作流可用（隔离）。

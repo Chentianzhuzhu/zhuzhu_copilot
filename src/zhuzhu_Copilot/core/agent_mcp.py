@@ -514,13 +514,18 @@ class McpManager:
                 self._connect(cfg)
             return self._rebuild_aggregate()
 
-    def reload(self, servers: list) -> list:
+    def reload(self, servers: list, force=()) -> list:
         """**增量**热加载：只重建「新增或配置变更」的服务器，断开已移除的，未变的连接原样保留。
 
         为什么不一律 close_all + connect_all：每个服务器都是一次真实建连（stdio 要起子进程、
         sse 要握手），全量重连会把与本次变更无关的服务器一起打断 —— 正在用的服务器会莫名断线
         （丢掉进程内状态），耗时也随服务器数量线性增长。增量只付「真正变了的那几个」的成本。
+
+        `force`：服务器名集合，命中的即使配置未变也强制断开重连 —— 这是设置页「重启」
+        按钮的实现：只影响被点名的服务器，其余连接保持不动。名字若已不在 `servers`
+        （被停用/删除），仍按「移除」处理，不会复活。
         """
+        forced = {str(n) for n in (force or ())}
         want: dict = {}
         for cfg in servers:
             want[str(cfg.get("name") or "mcp")] = cfg
@@ -532,10 +537,11 @@ class McpManager:
                 if name not in want:
                     self._drop(name)
                     removed.append(name)
-                elif (self._configs.get(name) != want[name]
+                elif (name in forced
+                      or self._configs.get(name) != want[name]
                       or self._stamps.get(name) != self._script_stamp(want[name])):
                     # 配置变了**或脚本文件被改写**都要重连：后者是「改完插件代码不重启」
-                    # 的关键（只比配置时进程会一直跑旧代码）
+                    # 的关键（只比配置时进程会一直跑旧代码）。force 则是用户显式重启。
                     self._drop(name)
                     updated.append(name)
             self.errors = []

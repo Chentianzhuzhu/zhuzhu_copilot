@@ -3789,7 +3789,10 @@ def _interrupted() -> bool:
 
 
 # ---- 视觉基准：AI 所见图 ↔ 屏幕物理坐标 ----
-_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0, "ts": 0.0}
+# fg / fg_rect：截图瞬间的前台窗口与其矩形。坐标动作前据此判断「画面是否已经变了」
+# （见 _shot_drift_note）—— 只做窗口一致性，不做像素指纹（后者误报多、开销大）。
+_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0,
+         "ts": 0.0, "fg": 0, "fg_rect": None}
 
 # 截图基准的有效期（秒）：坐标点击必须建立在**刚看过的画面**上。
 # 界面是活的（窗口会移动、列表会滚动、弹窗会冒出来），拿几分钟前的截图算出来的
@@ -3799,9 +3802,21 @@ SHOT_MAX_AGE_S = 300.0
 
 
 def _set_view(x0, y0, w, h, img_w, img_h, kind: str):
-    """记录当前视觉基准（整屏 / 局部放大）。坐标点击据此换算为屏幕物理像素。"""
+    """记录当前视觉基准（整屏 / 局部放大）。坐标点击据此换算为屏幕物理像素。
+
+    同时记录截图瞬间的前台窗口（fg）与矩形（fg_rect）：后续坐标动作据此判断
+    「画面是否已经换了窗口/被最小化」，避免拿旧截图点新界面（见 _shot_drift_note）。
+    """
     _VIEW.update({"x0": float(x0), "y0": float(y0), "w": float(w), "h": float(h),
                   "img_w": float(img_w), "img_h": float(img_h), "ts": time.time()})
+    try:
+        fg = int(foreground_window() or 0)
+        r = window_rect(fg) if fg else None
+        _VIEW["fg"] = fg
+        _VIEW["fg_rect"] = ((r.left, r.top, r.right, r.bottom) if r else None)
+    except Exception:
+        _VIEW["fg"] = 0
+        _VIEW["fg_rect"] = None
     _STATE["view"] = kind
 
 
@@ -3998,6 +4013,51 @@ def _require_fresh_shot(what: str = "点击") -> None:
         f"请按顺序：① screen_shot 先看图；"
         f"② 小目标先 zoom_in 放大读数；③ 拿不准就 refine_point 挑候选编号；④ 再 click。\n"
         f"（若你手里是屏幕物理坐标，传 space=\"screen\" 可直接点击。）")
+
+
+def _shot_drift_note(x, y, target: int = 0, args: dict = None) -> str:
+    """截图之后画面已经变了（前台被关/最小化/换成别的窗口）→ 拒绝旧图坐标点击。
+
+    为什么必须拦：模型手里的坐标来自「它看过的那张图」。图里的窗口如果已经关掉或被
+    最小化，同一个像素现在落在桌面上（甚至是自己应用的窗口），点下去就是「乱点/乱切
+    窗口」。这里只做**窗口一致性**校验，不做像素指纹 —— 动画/时钟/光标都会让指纹变化，
+    误报会把正常操作也拦掉。
+
+    判据：截图时的前台窗口 fg 仍健在（未关闭/未最小化），当前前台仍是 fg → 放行；
+    前台换了，但落点上的顶层窗口仍是 fg（或其弹出菜单）或显式目标窗口 → 放行
+    （遮挡交给 _ensure_click_target 处理）；否则视为画面漂移。
+
+    `space="screen"`（物理坐标）不依赖截图基准，直接跳过。
+    """
+    space = str((args or {}).get("space") or "image").strip().lower()
+    if space in ("screen", "physical", "abs", "absolute", "物理", "绝对"):
+        return ""
+    fg = int(_VIEW.get("fg") or 0)
+    if not fg or _VIEW.get("img_w", 0.0) <= 0:
+        return ""
+    # 落点不在截图时前台窗口的矩形内 → 该处内容本来就不是这个窗口画的，
+    # 无从判断是否漂移；放行（多窗口并列时避免误报）。
+    rect = _VIEW.get("fg_rect")
+    if rect and not (rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]):
+        return ""
+    try:
+        if not user32.IsWindow(fg) or bool(user32.IsIconic(fg)):
+            return ("⚠ **已拒绝本次点击**：截图后前台窗口已关闭或最小化，画面已变。"
+                    "请先 screen_shot 重新看图，再按新图上的坐标操作。")
+        if foreground_window() == fg:
+            return ""      # 前台没换：看到的就是截图里的画面
+    except Exception:
+        return ""
+    under = window_at(x, y)
+    roots = {fg, int(target or 0)}
+    if not under or under in roots or _root_owner(under) in roots:
+        return ""
+    old = window_title(fg) or fg
+    new = window_title(under) or under
+    return (f"⚠ **已拒绝本次点击**：截图后该位置的顶层窗口已从「{old}」变成「{new}」。"
+            "旧图上的坐标对应的是旧窗口内容，继续点会落到别的应用上。"
+            "请先 screen_shot 重新看图；要操作某个窗口，先用 "
+            f"manage_window(action=\"activate\", hwnd=…) 切到它再截图。")
 
 
 def _resolve_cand(args: dict):
@@ -4880,6 +4940,11 @@ def tool_click(args: dict) -> str:
         # 记住最近一次显式目标窗口：后续 type_text / key_press 不传 hwnd 也能继续保护，
         # 免得低质量模型点完输入框就忘了焦点该去哪儿。
         _STATE["view_target"] = hwnd
+    # 截图后画面已换窗口/被最小化 → 旧图坐标作废（防「点偏一大片 / 乱切窗口」）
+    drift = _shot_drift_note(x, y, hwnd, args)
+    if drift:
+        _log("ai", f"拒绝点击 ({x},{y})：截图后画面已变")
+        return drift
     # 「逐条点开列表试探」→ 冷却期内硬拒绝点列表行（allow_list_click=true 可显式放行）
     is_row = "行" in (snap_note or "")
     if is_row and not _bool(args.get("allow_list_click"), False):
@@ -4977,6 +5042,9 @@ def tool_long_press(args: dict) -> str:
     bounds = _screen_bounds_note(x, y, "长按")
     if bounds:
         return bounds
+    drift = _shot_drift_note(x, y, 0, args)
+    if drift:
+        return drift
     pre = _ensure_click_target(x, y, args)
     ok = do_long_press(x, y, dur, mode=_input_mode(args))
     if not ok:

@@ -6871,6 +6871,9 @@ class _AgentSettingsDialog(QDialog):
             f"color: {self._ACCENT_HOVER}; }}")
         self._mcp_sync_guard = False
         self.mcp_list.itemChanged.connect(self._on_mcp_item_changed)
+        # 每行快捷操作：右键「重启此服务器 / 复制此服务器配置」（无需改列表控件）
+        self.mcp_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.mcp_list.customContextMenuRequested.connect(self._on_mcp_context_menu)
         lay.addWidget(self.mcp_list, 1)
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -6896,6 +6899,29 @@ class _AgentSettingsDialog(QDialog):
         row.addWidget(del_b)
         row.addStretch(1)
         lay.addLayout(row)
+        # 重启与导出：单个（选中/右键）/ 全部 / 复制配置（接入其他 Agent）
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        restart_b = QPushButton(_ui("重启选中"))
+        restart_b.setStyleSheet(self._btn_qss("ghost"))
+        restart_b.setAutoDefault(False)
+        restart_b.setToolTip(_ui("强制断开并重连当前选中的服务器（使用已保存的配置）"))
+        restart_b.clicked.connect(self._on_mcp_restart_selected)
+        restart_all_b = QPushButton(_ui("全部重启"))
+        restart_all_b.setStyleSheet(self._btn_qss("ghost"))
+        restart_all_b.setAutoDefault(False)
+        restart_all_b.setToolTip(_ui("强制重连所有已启用的服务器（其余连接不受影响）"))
+        restart_all_b.clicked.connect(self._on_mcp_restart_all)
+        copy_b = QPushButton(_ui("复制配置"))
+        copy_b.setStyleSheet(self._btn_qss("ghost"))
+        copy_b.setAutoDefault(False)
+        copy_b.setToolTip(_ui("导出标准 mcpServers JSON，可直接粘贴给其他 Agent 接入"))
+        copy_b.clicked.connect(self._on_mcp_copy)
+        row2.addWidget(restart_b)
+        row2.addWidget(restart_all_b)
+        row2.addWidget(copy_b)
+        row2.addStretch(1)
+        lay.addLayout(row2)
         self._reload_mcp_list()
         return w
 
@@ -9892,6 +9918,81 @@ class _AgentSettingsDialog(QDialog):
                 agent_skills.remove_workflow_binding("mcp", name)
             self._reload_mcp_list()
 
+    # ---------- MCP 重启 / 配置导出 ----------
+    def _current_mcp_name(self) -> str:
+        row = self.mcp_list.currentRow()
+        if 0 <= row < len(self._mcp_servers):
+            return str(self._mcp_servers[row].get("name") or "")
+        return ""
+
+    def _on_mcp_context_menu(self, pos):
+        """列表行右键：只针对被点中的那一行做重启/导出。"""
+        item = self.mcp_list.itemAt(pos)
+        if item is None:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(idx, int) or not (0 <= idx < len(self._mcp_servers)):
+            return
+        name = str(self._mcp_servers[idx].get("name") or "")
+        menu = QMenu(self)
+        restart_act = menu.addAction(_ui("重启此服务器"))
+        copy_act = menu.addAction(_ui("复制此服务器配置"))
+        act = menu.exec(self.mcp_list.mapToGlobal(pos))
+        if act is restart_act:
+            self._restart_mcp(name)
+        elif act is copy_act:
+            self._on_mcp_copy([name])
+
+    def _on_mcp_restart_selected(self, *_):
+        name = self._current_mcp_name()
+        if not name:
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个服务器"))
+            return
+        self._restart_mcp(name)
+
+    def _on_mcp_restart_all(self, *_):
+        if not self._mcp_servers:
+            QMessageBox.information(self, _ui("提示"), _ui("还没有 MCP 服务器"))
+            return
+        self._restart_mcp("")
+
+    def _mcp_entry_changed(self, saved_cfg: dict) -> bool:
+        """内存配置是否与已保存配置不同（重启会按已保存配置执行，需先提示）。"""
+        name = str(saved_cfg.get("name") or "")
+        for s in self._mcp_servers:
+            if str(s.get("name") or "") == name:
+                return s != saved_cfg
+        return True
+
+    def _restart_mcp(self, name: str = ""):
+        """请求主面板后台强制重连单个（空名=全部）。重启使用**已保存**配置。"""
+        saved = {str(s.get("name") or ""): s
+                 for s in agent_skills.load_mcp_servers(include_disabled=True)}
+        if name and name in saved and self._mcp_entry_changed(saved[name]):
+            QMessageBox.information(
+                self, _ui("重启 MCP"),
+                _ui("该服务器有未保存的修改：本次重启按已保存的配置执行，保存后会自动重连。"))
+        p = self.parent()
+        fn = getattr(p, "_restart_mcp", None)
+        if not callable(fn):
+            QMessageBox.warning(self, _ui("操作失败"),
+                                _ui("无法重启 MCP：请在主面板中操作。"))
+            return
+        fn(name or None)
+
+    def _on_mcp_copy(self, names=None):
+        """导出 MCP 配置：names 为空导出全部启用项。"""
+        cfg_list = self._mcp_servers
+        if names:
+            want = set(names)
+            cfg_list = [s for s in cfg_list if str(s.get("name") or "") in want]
+        if not any(s.get("enabled", True) is not False for s in cfg_list):
+            QMessageBox.information(
+                self, _ui("提示"),
+                _ui("没有可导出的 MCP 服务器（已停用的服务器不会导出）"))
+            return
+        _McpConfigDialog(cfg_list, parent=self).exec()
+
     def _on_mode_changed(self, idx):
         """切换执行模式：切到 YOLO 需二次确认，防止误开。
 
@@ -10301,6 +10402,67 @@ class _AgentSettingsDialog(QDialog):
             self._reload_skill_list(self._current_skill_workflow())
         else:
             QMessageBox.warning(self, _ui("删除失败"), msg)
+
+class _McpConfigDialog(QDialog):
+    """导出 MCP 配置：标准 mcpServers JSON（默认脱敏，可勾选明文），一键复制。"""
+
+    def __init__(self, servers: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_ui("复制 MCP 配置"))
+        self.setMinimumWidth(600)
+        self._servers = list(servers or [])
+        _bg, _panel, _bd = (_base_color("BG"), _base_color("PANEL"),
+                            _base_color("BORDER"))
+        self.setStyleSheet(
+            f"QDialog {{ background: {_bg}; }}"
+            f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
+            f"QPlainTextEdit {{ background: {_panel}; color: {TEXT};"
+            f"border: 1px solid {_bd}; border-radius: 6px; padding: 8px; }}"
+            f"QCheckBox {{ color: {TEXT}; font-size: 13px; spacing: 8px; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        hint = QLabel(_ui("标准 mcpServers 配置：可直接粘贴到其他 Agent（Claude Desktop / "
+                          "Cursor / agnes 等）。停用的服务器不会导出；默认不含密钥明文。"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        lay.addWidget(hint)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        lay.addWidget(self.text, 1)
+        self.plain_check = QCheckBox(_ui("包含密钥明文（仅自己使用）"))
+        self.plain_check.stateChanged.connect(self._refresh)
+        lay.addWidget(self.plain_check)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        self.copy_btn = QPushButton(_ui("复制到剪贴板"))
+        self.copy_btn.setStyleSheet(
+            f"background: {_base_color('ACCENT', '#2F6BFF')}; color: #FFFFFF;"
+            "border: none; border-radius: 8px; padding: 7px 16px; font-weight: 700;")
+        self.copy_btn.setAutoDefault(False)
+        self.copy_btn.clicked.connect(self._copy)
+        close_btn = QPushButton(_ui("关闭"))
+        close_btn.setStyleSheet(
+            f"background: {_panel}; color: {TEXT}; border: 1px solid {_bd};"
+            "border-radius: 8px; padding: 7px 16px; font-weight: 600;")
+        close_btn.setAutoDefault(False)
+        close_btn.clicked.connect(self.accept)
+        row.addWidget(self.copy_btn)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+        self._refresh()
+
+    def _refresh(self, *_):
+        self.text.setPlainText(agent_skills.mcp_servers_json(
+            self._servers, include_secrets=self.plain_check.isChecked()))
+        self.copy_btn.setText(_ui("复制到剪贴板"))
+
+    def _copy(self):
+        QApplication.clipboard().setText(self.text.toPlainText())
+        self.copy_btn.setText(_ui("已复制"))
+
 
 class _McpServerDialog(QDialog):
     """单个 MCP 服务器配置：stdio（命令+参数）或 SSE（URL）"""
@@ -28008,6 +28170,34 @@ class AgentPanel(QDialog):
                 msg += f"；失败: {errs}"
         except Exception as e:
             msg = f"MCP: 重连失败 {e}"
+        self.mcp_signal.emit(msg)
+
+    def _restart_mcp(self, name=None):
+        """后台**强制**重启单个 MCP 服务器（name=None 时重启全部启用项）。
+
+        与 `_reconnect_mcp` 的区别：它只重建变化过的服务器，这里按用户显式意图
+        无条件断开重连，用于「服务器卡死/改了外部环境」时的单点恢复。
+        """
+        threading.Thread(target=self._mcp_restart_worker, args=(name,),
+                         daemon=True).start()
+
+    def _mcp_restart_worker(self, name=None):
+        try:
+            servers = agent_skills.load_mcp_servers()
+            names = {str(s.get("name") or "mcp") for s in servers}
+            if name and str(name) not in names:
+                self.mcp_signal.emit(f"MCP: 服务器「{name}」已停用，未重启")
+                return
+            force = {str(name)} if name else names
+            tools = self._mcp.reload(servers, force=force)
+            errs = [e for e in (getattr(self._mcp, "errors", None) or [])
+                    if not name or f"[{name}]" in e]
+            label = f"「{name}」" if name else f"全部（{len(force)} 个服务器）"
+            msg = f"MCP: 已重启{label}，共 {len(tools)} 个工具"
+            if errs:
+                msg += "；失败: " + "；".join(errs)
+        except Exception as e:
+            msg = f"MCP: 重启失败 {e}"
         self.mcp_signal.emit(msg)
 
     # ---------- 命令补全（/ 展示全部命令 + 内联预测） ----------
