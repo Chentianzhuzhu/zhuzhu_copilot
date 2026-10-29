@@ -3986,6 +3986,82 @@ def move_window(hwnd: int, x: int, y: int, w: int = 0, h: int = 0) -> str:
             f"尺寸 {max(1, width)}×{max(1, height)}")
 
 
+def _fits_work_area(r, wx: int, wy: int, ww: int, wh: int) -> bool:
+    """窗口矩形是否完整落在可用桌面区域内（容差 4px，避免边框/阴影误判）。"""
+    return (r.left >= wx - 4 and r.top >= wy - 4
+            and r.right <= wx + ww + 4 and r.bottom <= wy + wh + 4)
+
+
+def _window_fit_note(hwnd: int) -> str:
+    """窗口未完整显示时的提示（给模型：先 fit，再滚动，别点看不见的部分）。"""
+    try:
+        r = window_rect(hwnd)
+        wx, wy, ww, wh = aura._work_area()
+    except Exception:
+        return ""
+    if _fits_work_area(r, wx, wy, ww, wh):
+        return ""
+    parts = []
+    if r.left < wx:
+        parts.append(f"左侧超出 {wx - r.left}px")
+    if r.top < wy:
+        parts.append(f"顶部超出 {wy - r.top}px")
+    if r.right > wx + ww:
+        parts.append(f"右侧超出 {r.right - (wx + ww)}px")
+    if r.bottom > wy + wh:
+        parts.append(f"底部超出 {r.bottom - (wy + wh)}px")
+    if (r.right - r.left) > ww:
+        parts.append(f"宽度比屏幕可用区大 {r.right - r.left - ww}px")
+    if (r.bottom - r.top) > wh:
+        parts.append(f"高度比屏幕可用区大 {r.bottom - r.top - wh}px")
+    return ("。⚠ 该窗口**没有完整显示**（" + "、".join(parts) +
+            "）：先用 manage_window(action=\"fit\", hwnd=…) 最大化或移进屏幕；"
+            "内容仍超出可视区就在窗口内 scroll/swipe，**不要点击看不见的部分**")
+
+
+def fit_window(hwnd: int) -> str:
+    """把窗口完整放进屏幕：能最大化就最大化，否则缩放/平移进可用区域。
+
+    为什么需要（用户反馈：窗口显示不全时 Agent 不会最大化/移动/滚动，只会在看不见的
+    地方乱点）：模型没有「窗口超出屏幕」这个概念，也没有可靠的补救动作。这里给它一个
+    一键动作 —— 先 ShowWindow(SW_MAXIMIZE)；固定尺寸窗口最大化无效时，用 SetWindowPos
+    把尺寸压到可用区并平移进屏，结果如实回报实际矩形，便于模型接着截图/滚动。
+    """
+    hwnd = int(hwnd or 0)
+    if not hwnd or not user32.IsWindow(hwnd):
+        raise ValueError(f"窗口不存在（hwnd={hwnd}）")
+    wx, wy, ww, wh = aura._work_area()
+    r = window_rect(hwnd)
+    name = window_title(hwnd) or hwnd
+    if _fits_work_area(r, wx, wy, ww, wh):
+        return (f"窗口「{name}」已经完整显示（({r.left},{r.top}) "
+                f"{r.right - r.left}×{r.bottom - r.top}），不需要调整。")
+    with _Injecting():
+        user32.ShowWindow(hwnd, SW_MAXIMIZE)
+    time.sleep(0.2)
+    r2 = window_rect(hwnd)
+    if _fits_work_area(r2, wx, wy, ww, wh):
+        return (f"已最大化窗口「{name}」，完整显示（({r2.left},{r2.top}) "
+                f"{r2.right - r2.left}×{r2.bottom - r2.top}）。")
+    # 最大化无效（固定尺寸对话框 / 禁止最大化的窗口）：恢复后压缩+平移进可用区
+    with _Injecting():
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    time.sleep(0.15)
+    r = window_rect(hwnd)
+    w = min(max(1, r.right - r.left), ww)
+    h = min(max(1, r.bottom - r.top), wh)
+    x = min(max(int(r.left), wx), wx + max(0, ww - w))
+    y = min(max(int(r.top), wy), wy + max(0, wh - h))
+    with _Injecting():
+        user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE)
+    time.sleep(0.15)
+    r3 = window_rect(hwnd)
+    return (f"窗口「{name}」不能最大化，已缩放并移进屏幕：位置 ({x},{y})，"
+            f"尺寸 {w}×{h}（实际 ({r3.left},{r3.top}) "
+            f"{r3.right - r3.left}×{r3.bottom - r3.top}）。"
+            "内容仍超出可视区就在窗口内 scroll/swipe 查看，不要点看不见的部分。")
+
+
 def wait_for_window(title: str = "", hwnd: int = 0, timeout: float = 10.0,
                      poll: float = 0.25) -> int:
     """等待窗口出现（复杂桌面里安装向导/弹窗常延迟弹出，固定 sleep 不可靠）。"""
@@ -4515,7 +4591,8 @@ _LAST_ACTION_TS = 0.0
 #: 列表行点击轨迹：用于识别「一条一条点开会话试探」这种乱点行为
 _LIST_SCAN_WIN_S = 25.0       # 统计窗口
 _LIST_SCAN_ROWS = 3           # 同一窗口内点开 ≥3 条不同行即告警（只提示一次）
-_ROW_SCAN = {"ts": 0.0, "ys": [], "warned": False}
+_LIST_DENY_S = 20.0           # 命中告警后的冷却时长：期间继续点列表行会被直接拒绝
+_ROW_SCAN = {"ts": 0.0, "ys": [], "warned": False, "blocked_until": 0.0}
 
 
 def _list_scan_note(hwnd: int, y: int, is_row: bool) -> str:
@@ -4529,7 +4606,8 @@ def _list_scan_note(hwnd: int, y: int, is_row: bool) -> str:
         return ""
     now = time.time()
     if now - float(_ROW_SCAN.get("ts") or 0.0) > _LIST_SCAN_WIN_S:
-        _ROW_SCAN.update({"ts": now, "ys": [], "warned": False})
+        _ROW_SCAN.update({"ts": now, "ys": [], "warned": False,
+                          "blocked_until": 0.0})
     ys = _ROW_SCAN["ys"]
     if not ys:
         _ROW_SCAN["ts"] = now
@@ -4539,10 +4617,32 @@ def _list_scan_note(hwnd: int, y: int, is_row: bool) -> str:
     rows = 1 + sum(1 for a, b in zip(distinct, distinct[1:]) if b - a >= 12)
     if rows >= _LIST_SCAN_ROWS and not _ROW_SCAN.get("warned"):
         _ROW_SCAN["warned"] = True
+        _ROW_SCAN["blocked_until"] = now + _LIST_DENY_S
         return ("\n⚠ **检测到你在连续点开列表里的不同条目**（同一窗口内第 3 条）。"
                 "找目标请先看截图上的标题/名字确认那一行，或点搜索框输入名字后点唯一结果；"
-                "**不要逐条点开试探** —— 这会打开错误会话，发消息场景还会发错人。")
+                "**不要逐条点开试探** —— 这会打开错误会话，发消息场景还会发错人。"
+                f"接下来 {_LIST_DENY_S:.0f} 秒内继续点列表行会被**直接拒绝**。")
     return ""
+
+
+def _list_scan_deny(is_row: bool) -> str:
+    """冷却期内再次点列表行 → 直接拒绝（硬拦，不只是提示）。
+
+    用户反馈：提示词／告警都写了「不要逐条点开试探」，模型还是会继续点。软提示对它无效，
+    所以改成硬拦：冷却期内点「行」直接返回拒绝，只有显式传 `allow_list_click=true`
+    （模型已确认目标）才放行。非「行」目标的点击不受影响。
+    """
+    if not is_row:
+        return ""
+    left = float(_ROW_SCAN.get("blocked_until") or 0.0) - time.time()
+    if left <= 0:
+        return ""
+    return (f"⚠ **已拒绝本次点击**：你刚在 {_LIST_SCAN_WIN_S:.0f} 秒内连续点开了 3 条不同的列表行"
+            f"（逐条点开试探）。冷却还剩 {left:.0f} 秒。\n"
+            "正确做法：① 看截图上的标题/名字，确认要的就是那一行再点；"
+            "② 列表里有搜索框就点搜索框 → type_text 名字 → 点唯一结果；"
+            "③ 实在需要点某一行且已确认目标，传 allow_list_click=true 重试。\n"
+            "**不要换一条又一条地试**。")
 
 
 def _mark_action_done():
@@ -5126,6 +5226,8 @@ def tool_screen_shot(args: dict) -> list:
                          "界面，如 Blender 一类 3D 软件），已改用屏幕抓取 —— 它会先激活并置顶"
                          "该窗口，操作期间请勿让其他窗口盖住它")
             _log("ai", f"截屏：窗口「{window_title(target)}」")
+        # 窗口没完整显示时直接把补救动作写进返回：maximize/移动/滚动都要模型看得见才会做
+        desc += _window_fit_note(target)
     else:
         png, iw, ih, ox, oy, vw, vh = grab_screen(grid=grid)
         _set_view(ox, oy, vw, vh, iw, ih, "full")
@@ -5137,6 +5239,10 @@ def tool_screen_shot(args: dict) -> list:
                      f"{scale:.2f} 倍；点小目标（工具栏按钮/菜单项）请先 zoom_in 放大到"
                      "接近 1:1 再读数。")
         _log("ai", "截屏：整个桌面")
+        # 前台窗口显示不全（被拖出屏/尺寸超出）时，把补救动作直接写进返回
+        fg = foreground_window()
+        if fg:
+            desc += _window_fit_note(fg)
     _refresh_env()
     return [{"type": "text", "text": _shot_meta(desc, grid=grid)},
             {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}]
@@ -5664,9 +5770,16 @@ def tool_click(args: dict) -> str:
         button = "left"
         clicks = 2
     verify = _bool(args.get("verify"), False)
-    pre = _ensure_click_target(x, y, args)
     # 生效校验要拿目标窗口做「整窗指纹」：显式 hwnd 优先，其次最近一次窗口截图的那个
     hwnd = _num(args.get("hwnd"), 0) or int(_STATE.get("view_target") or 0)
+    # 「逐条点开列表试探」→ 冷却期内硬拒绝点列表行（allow_list_click=true 可显式放行）
+    is_row = "行" in (snap_note or "")
+    if is_row and not _bool(args.get("allow_list_click"), False):
+        deny = _list_scan_deny(True)
+        if deny:
+            _log("ai", f"拒绝点击 ({x},{y})：逐条点开列表试探，冷却中")
+            return deny
+    pre = _ensure_click_target(x, y, args)
     before = _pre_click_probe(x, y, hwnd) if verify else ()
     if not do_click(x, y, button, clicks, mode=_input_mode(args)):
         _refresh_env()
@@ -5711,7 +5824,7 @@ def tool_click(args: dict) -> str:
     label = {"right": "右键", "double": "双击"}.get(action, "点击")
     _log("ai", f"{label} {x},{y}（{button}×{clicks}，鼠标注入），落点 ({ax},{ay})")
     _refresh_env()
-    scan = _list_scan_note(hwnd, y, "行" in (snap_note or ""))
+    scan = _list_scan_note(hwnd, y, is_row)
     return (f"已{label} ({x},{y}) {button}×{clicks}（屏幕物理坐标，鼠标注入）。"
             + _join_notes(snap_note, pre, land, vtext + retry_note, _take_coord_note())
             + "请重新 screen_shot 验证结果。" + scan)
@@ -6299,13 +6412,15 @@ def tool_manage_window(args: dict) -> str:
         return (f"已请求把窗口「{name}」切到前台，但{note}。"
                 f"继续点击有落到错误窗口的风险，建议先处理前置窗口"
                 f"（如用 manage_window 列出窗口确认），或请用户手动切到目标窗口。")
+    if action == "fit":
+        return fit_window(hwnd)
     if action == "move":
         return move_window(hwnd, to_physical(args.get("x"), args.get("y"))[0],
                            to_physical(args.get("x"), args.get("y"))[1],
                            _num(args.get("w"), 0), _num(args.get("h"), 0))
     if action in ("maximize", "minimize", "restore", "show", "close"):
         return set_window_state(hwnd, action)
-    raise ValueError(f"未知动作: {action}（可用 state/list/activate/focus/maximize/"
+    raise ValueError(f"未知动作: {action}（可用 state/list/activate/focus/fit/maximize/"
                      f"minimize/restore/move/close/wait）")
 
 
@@ -6432,6 +6547,7 @@ TOOLS = [
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"},
          "title": {"type": "string", "description": "目标窗口标题片段（可选；填了就在该窗口内点击，并自动把它激活置顶）"},
+         "allow_list_click": {"type": "boolean", "description": "已确认要点的就是列表这一行时才传 true：连续点开 3 条不同列表行后会被临时拒绝点行（防逐条试探）"},
          "hwnd": {"type": "integer", "description": "目标窗口句柄（可选，来自 list_windows）"}},
          "required": []}},
     {"name": "long_press", "description":
@@ -6602,12 +6718,13 @@ TOOLS = [
     {"name": "manage_window", "description":
         "窗口/应用管理：state 列出窗口（含最小化标记）；"
         "activate/focus 切到前台并实测校验；"
+        "**fit = 一键让窗口完整显示**（先最大化，固定尺寸窗口则缩放并移进屏幕）；"
         "maximize/minimize/restore 调整显示状态；move 移动或改尺寸；close 关闭；"
         "wait 等待某标题窗口出现（弹窗延迟弹出时用，比固定 sleep 可靠）。"
         "**切到已在运行的应用请优先用 taskbar_open(index=N)，不要反复调本工具置顶。**",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "description":
-                    "state/list/activate/focus/maximize/minimize/restore/move/close/wait"},
+                    "state/list/activate/focus/fit/maximize/minimize/restore/move/close/wait"},
          "title": {"type": "string", "description": "窗口标题片段"},
          "hwnd": {"type": "integer", "description": "窗口句柄"},
          "x": {"type": "integer", "description": "move 时的目标 x（截图基准）"},

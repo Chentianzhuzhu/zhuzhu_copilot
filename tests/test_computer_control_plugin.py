@@ -152,18 +152,67 @@ def test_skill_prefers_click_or_swipe_over_wheel_for_row_lists():
 def test_repeated_row_clicks_trigger_list_scan_warning():
     """连续点开 3 条不同列表行 → 当次点击结果里必须出现一次性告警。"""
     mod = _load_module()
-    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False})
+    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False, "blocked_until": 0.0})
     assert mod._list_scan_note(1, 200, True) == ""
     assert mod._list_scan_note(1, 240, True) == ""
     warn = mod._list_scan_note(1, 280, True)
     assert "连续点开列表里的不同条目" in warn
+    assert "直接拒绝" in warn
     # 同一行反复点（例如重试）不算"换一条"
-    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False})
+    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False, "blocked_until": 0.0})
     for _ in range(5):
         assert mod._list_scan_note(1, 200, True) == ""
     # 非「行」点击（普通按钮/图标）不参与统计
-    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False})
+    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False, "blocked_until": 0.0})
     assert mod._list_scan_note(1, 200, False) == ""
+
+
+def test_list_row_clicks_are_hard_blocked_during_cooldown(monkeypatch):
+    """告警之后进入冷却：期间点列表行被**硬拒绝**，非列表行不受影响，冷却结束自动解除。
+
+    用户反馈：文档和告警都写了「不要逐条点开试探」，模型照样一条条点。软提示无效，
+    必须真的拒绝执行。
+    """
+    mod = _load_module()
+    mod._ROW_SCAN.update({"ts": 0.0, "ys": [], "warned": False, "blocked_until": 0.0})
+    clock = {"now": 100.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    for y in (200, 240):
+        assert mod._list_scan_note(1, y, True) == ""
+    assert "直接拒绝" in mod._list_scan_note(1, 280, True)
+    deny = mod._list_scan_deny(True)
+    assert "已拒绝本次点击" in deny and "allow_list_click=true" in deny
+    assert mod._list_scan_deny(False) == "", "普通按钮/图标不受冷却影响"
+    clock["now"] = 100.0 + mod._LIST_DENY_S + 1
+    assert mod._list_scan_deny(True) == "", "冷却结束后必须自动解除"
+
+
+def test_click_refuses_list_rows_in_cooldown_and_allow_list_click_bypasses(monkeypatch):
+    """冷却期内 click 点「行」直接返回拒绝（不注入），传 allow_list_click=true 才放行。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    clock = {"now": 101.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    mod._ROW_SCAN.update({"ts": 100.0, "ys": [200, 240], "warned": True,
+                          "blocked_until": 120.0})
+    clicked = []
+    monkeypatch.setattr(mod, "_resolve_point", lambda a, *k: (900, 280))
+    monkeypatch.setattr(mod, "_apply_snap",
+                        lambda a, x, y, default_on=True:
+                        (900, 280, "已吸附到列表行（横向内容带）的中心"))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (900, 280))
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    monkeypatch.setattr(mod, "do_click",
+                        lambda x, y, b, c, mode="auto": clicked.append((x, y)) or True)
+    out = mod._HANDLERS["click"]({"x": 900, "y": 280})
+    assert clicked == [], "冷却期内点列表行必须真的不注入"
+    assert "已拒绝本次点击" in out
+    out2 = mod._HANDLERS["click"]({"x": 900, "y": 280, "allow_list_click": True})
+    assert clicked == [(900, 280)], "显式 allow_list_click=true 必须放行"
+    assert "已点击" in out2
 
 
 def test_skill_md_prefers_full_screen_capture():
@@ -178,6 +227,113 @@ def test_skill_md_prefers_full_screen_capture():
     assert 'screen_shot(mode="full")' in text
     # 窗口截图只允许出现在「大窗口 / GPU 自绘需要 1:1」这两个受限场景
     assert "远大于屏幕" in text and "GPU 自绘界面" in text
+
+
+def test_skill_md_covers_offscreen_window_recovery():
+    """窗口显示不全时必须有可执行动作：fit → 重新截图 → 窗口内滚动，别点看不见的地方。"""
+    text = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "窗口显示不全" in text
+    assert 'manage_window(action="fit"' in text
+    assert "不要点看不见" in text
+
+
+# ---------- 窗口显示不全：fit_window ----------
+
+class _Rect:
+    def __init__(self, l, t, r, b):
+        self.left, self.top, self.right, self.bottom = l, t, r, b
+
+
+def _fit_env(monkeypatch, mod, rects, work=(0, 0, 1920, 1040)):
+    """给 fit_window 造可控环境：假 user32 + 按调用顺序返回的窗口矩形。"""
+    class _U:
+        def __init__(self):
+            self.calls = []
+
+        def IsWindow(self, h):
+            return True
+
+        def ShowWindow(self, h, cmd):
+            self.calls.append(("show", cmd))
+            return True
+
+        def SetWindowPos(self, h, after, x, y, w, hh, flags):
+            self.calls.append(("pos", x, y, w, hh))
+            return True
+
+    u = _U()
+    monkeypatch.setattr(mod, "user32", u)
+    monkeypatch.setattr(mod, "window_title", lambda h: "测试窗口")
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(mod.aura, "_work_area", lambda: work)
+    seq = {"i": 0}
+
+    def _rect(h):
+        idx = min(seq["i"], len(rects) - 1)
+        seq["i"] += 1
+        return _Rect(*rects[idx])
+
+    monkeypatch.setattr(mod, "window_rect", _rect)
+    return u
+
+
+def test_fit_window_noops_when_already_visible(monkeypatch):
+    """已经完整显示 → 不做任何调整（避免模型无意义地反复最大化/移动）。"""
+    mod = _load_module()
+    u = _fit_env(monkeypatch, mod, [(8, 8, 1912, 1032)])
+    out = mod.fit_window(11)
+    assert "已经完整显示" in out
+    assert u.calls == []
+
+
+def test_fit_window_maximizes_a_window_that_does_not_fit(monkeypatch):
+    """窗口超出可用区 → 先最大化；最大化后完整显示就停手。"""
+    mod = _load_module()
+    u = _fit_env(monkeypatch, mod, [(100, 60, 1500, 1200), (0, 0, 1920, 1040)])
+    out = mod.fit_window(11)
+    assert "已最大化" in out and "完整显示" in out
+    assert u.calls == [("show", mod.SW_MAXIMIZE)]
+
+
+def test_fit_window_scales_and_moves_fixed_size_window(monkeypatch):
+    """最大化无效（固定尺寸对话框）→ 恢复后压缩尺寸并平移进可用区。"""
+    mod = _load_module()
+    orig = (-300, -200, 500, 400)            # 800×600，左上角在屏幕外
+    u = _fit_env(monkeypatch, mod, [orig, orig, orig, (0, 0, 800, 600)])
+    out = mod.fit_window(11)
+    assert "不能最大化" in out and "移进屏幕" in out and "800×600" in out
+    assert u.calls[0] == ("show", mod.SW_MAXIMIZE)
+    assert u.calls[1] == ("show", mod.SW_RESTORE)
+    assert u.calls[2] == ("pos", 0, 0, 800, 600)
+
+
+def test_window_fit_note_reports_out_of_screen_window(monkeypatch):
+    """截图返回里的 fit 提示：说清哪一侧超出多少，并给出可执行动作。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "window_rect", lambda h: _Rect(-200, -100, 1600, 1200))
+    monkeypatch.setattr(mod.aura, "_work_area", lambda: (0, 0, 1920, 1040))
+    note = mod._window_fit_note(11)
+    assert "没有完整显示" in note and 'manage_window(action="fit"' in note
+    assert "左侧超出 200px" in note and "底部超出 160px" in note
+    monkeypatch.setattr(mod, "window_rect", lambda h: _Rect(0, 0, 1920, 1040))
+    assert mod._window_fit_note(11) == "", "完整显示的窗口不该出现提示"
+
+
+def test_full_screen_shot_warns_when_foreground_window_is_cropped(monkeypatch):
+    """整屏截图时前台窗口显示不全 → 返回文案必须带上 fit 提示（模型才会去修窗口）。"""
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_settle_after_action", lambda: None)
+    monkeypatch.setattr(mod, "grab_screen",
+                        lambda grid=False: (b"\x89PNG", 1280, 720, 0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_set_view", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "foreground_window", lambda: 77)
+    monkeypatch.setattr(mod, "_window_fit_note",
+                        lambda h: "。⚠ 该窗口**没有完整显示**（右侧超出 120px）")
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_shot_meta", lambda desc, grid=False: desc)
+    out = mod._HANDLERS["screen_shot"]({})
+    text = "\n".join(c.get("text", "") for c in out if c.get("type") == "text")
+    assert "没有完整显示" in text
 
 
 # ---------- MCP 协议 ----------
