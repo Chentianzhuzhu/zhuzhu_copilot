@@ -3625,3 +3625,77 @@ def test_screen_bounds_uses_exclusive_right_bottom_edges(monkeypatch):
     assert mod._screen_bounds_note(1919, 1079) == ""
     assert "不在屏幕范围" in mod._screen_bounds_note(1920, 1079)
     assert "不在屏幕范围" in mod._screen_bounds_note(1919, 1080)
+
+
+def test_resolve_point_accepts_normalized_coordinates(monkeypatch):
+    """服务商可能压缩图片：归一化坐标（0~1 / 0~1000 / 百分比）必须与图像尺寸无关。"""
+    mod = _load_module()
+    mod._set_view(0, 0, 1920, 1080, 1280, 720, "full")
+    mod._take_coord_note()
+    # 0~1 比例
+    assert mod._resolve_point({"nx": 0.5, "ny": 0.5}) == (960, 540)
+    # 0~1000 千分比（模型更常写 500 而不是 0.5）
+    assert mod._resolve_point({"nx": 500, "ny": 500}) == (960, 540)
+    # 百分比字符串
+    assert mod._resolve_point({"x": "50%", "y": "25%"}) == (960, 270)
+    # 显式 space=norm + x/y
+    assert mod._resolve_point({"x": 250, "y": 750, "space": "norm"}) == (480, 810)
+    # 归一化坐标不触发「超出图像范围」的物理坐标自动纠正
+    assert "归一化" in mod._take_coord_note()
+
+
+def test_click_accepts_normalized_coordinates(monkeypatch):
+    """click(nx/ny) 端到端：归一化 → 图像像素 → 屏幕物理坐标。"""
+    mod = _load_module()
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    mod._set_view(0, 0, 1920, 1080, 1280, 720, "full")
+    monkeypatch.setattr(mod, "_apply_snap",
+                        lambda a, x, y, default_on=True: (x, y, ""))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (480, 810))
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    clicked = []
+    monkeypatch.setattr(mod, "do_click",
+                        lambda x, y, b, c, mode="auto": clicked.append((x, y)) or True)
+    out = mod._HANDLERS["click"]({"nx": 0.25, "ny": 0.75})
+    assert clicked == [(480, 810)], f"归一化坐标换算错误：{clicked}"
+    assert "已点击" in out
+
+
+def test_shot_meta_warns_provider_may_compress_image():
+    """截图文案必须提醒：图片被服务商压缩/裁剪时，绝对像素读数不可靠，改用归一化坐标。"""
+    mod = _load_module()
+    mod._set_view(0, 0, 1920, 1080, 1280, 720, "full")
+    meta = mod._shot_meta("已截取整个桌面")
+    assert "服务商" in meta and "压缩" in meta
+    assert "nx" in meta and "归一化" in meta
+    assert "1280" in meta and "720" in meta, "必须写出本次图像的真实像素尺寸"
+
+
+def test_screen_info_reports_dpi_awareness(monkeypatch):
+    """任何分辨率/DPI 下都必须以物理像素工作；screen_info 要如实报告。"""
+    mod = _load_module()
+    assert isinstance(mod._DPI_AWARE, bool)
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_STATE", dict(mod._STATE, screen=[1920, 1080],
+                                            cursor=[100, 200],
+                                            foreground={"hwnd": 0, "title": ""},
+                                            active_until=0.0))
+    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
+    monkeypatch.setattr(mod, "_focus_line", lambda: "无")
+    monkeypatch.setattr(mod, "_aura_status_line", lambda: "")
+    monkeypatch.setattr(mod, "_transform_line", lambda: "坐标换算")
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    out = mod._HANDLERS["screen_info"]({})
+    assert "DPI" in out and "物理像素" in out
+    assert "1920×1080" in out
+
+
+def test_skill_covers_provider_compression_and_normalized_coords():
+    """SKILL 必须教模型在图片被服务商压缩/裁剪时改用归一化坐标或候选编号。"""
+    text = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "服务商" in text and "压缩" in text
+    assert "归一化" in text and "nx" in text
+    assert "cand" in text

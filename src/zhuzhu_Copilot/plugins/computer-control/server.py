@@ -362,21 +362,33 @@ def _bind_win32():
 _bind_win32()
 
 
-def _init_dpi_awareness():
-    """每显示器 DPI 感知：保证屏幕尺寸/窗口矩形/注入坐标统一为物理像素，杜绝缩放偏移。"""
+def _init_dpi_awareness() -> bool:
+    """每显示器 DPI 感知：保证屏幕尺寸/窗口矩形/注入坐标统一为物理像素，杜绝缩放偏移。
+
+    返回是否成功。任何分辨率/DPI（100%/125%/150%/200%、单屏/多屏混合 DPI）下，
+    `GetSystemMetrics`、`GetWindowRect`、`SendInput` 都必须用同一套**物理像素**，
+    否则点击会按系统缩放比整体偏移。
+    """
     for ctx in (-4, -3):        # PER_MONITOR_AWARE_V2 / PER_MONITOR_AWARE
         try:
             if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(ctx)):
-                return
+                return True
         except Exception:
             pass
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return True
     except Exception:
         try:
             user32.SetProcessDPIAware()
+            return True
         except Exception:
-            pass
+            return False
+
+
+# 导入即启用 DPI 感知（不依赖 main() 何时被调用）：screen_info / 截图 / 注入的坐标
+# 必须从第一个工具调用起就是物理像素，否则 125%/150% 缩放下会整体偏移。
+_DPI_AWARE = _init_dpi_awareness()
 
 
 # ============================================================================
@@ -4047,7 +4059,37 @@ def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
 
     kx/ky 用于取不同键名（drag 用 x1/y1、x2/y2）。
     """
-    if str(args.get("space") or "image").strip().lower() in (
+    space = str(args.get("space") or "image").strip().lower()
+    # ---- 归一化坐标（对模型服务商的图片压缩/缩放天然免疫）----
+    # 部分服务商会把发给视觉模型的截图再压缩/裁剪，模型读到的"像素"就不是插件发出的
+    # 图像坐标，按绝对像素换算必然整体偏移。归一化坐标（图宽的百分比）与图片尺寸无关，
+    # 只要宽高比不变，压缩多少次换算结果都一样。
+    norm_keys = {"x": "nx", "y": "ny", "x1": "nx1", "y1": "ny1",
+                 "x2": "nx2", "y2": "ny2"}
+    nxk, nyk = norm_keys.get(kx), norm_keys.get(ky)
+    norm_src = (args.get(nxk) if nxk else None, args.get(nyk) if nyk else None)
+    use_norm = (space in ("norm", "normalized", "归一化", "比例")
+                or norm_src[0] not in (None, "") or norm_src[1] not in (None, "")
+                or str(args.get(kx) or "").strip().endswith("%")
+                or str(args.get(ky) or "").strip().endswith("%"))
+    if use_norm:
+        _require_fresh_shot()
+        iw = _VIEW.get("img_w") or 0.0
+        ih = _VIEW.get("img_h") or 0.0
+        if iw <= 0 or ih <= 0:
+            raise ValueError("归一化坐标需要一张截图基准；请先 screen_shot。")
+        vx = norm_src[0] if norm_src[0] not in (None, "") else args.get(kx)
+        vy = norm_src[1] if norm_src[1] not in (None, "") else args.get(ky)
+        rx, ry = _norm_ratio(vx), _norm_ratio(vy)
+        if rx is None or ry is None:
+            raise ValueError(
+                f"归一化坐标无法解析：({vx},{vy})。请传 nx/ny（0~1 小数，或 0~1000 千分比），"
+                "例如 nx=0.5, ny=0.5 表示图像正中心。")
+        _COORD_AUTOFIX["note"] = (
+            f"归一化坐标：({vx},{vy}) → 图像 ({rx * iw:.0f},{ry * ih:.0f}) "
+            f"（本图 {int(iw)}×{int(ih)}）。")
+        return to_physical(rx * iw, ry * ih)
+    if space in (
             "screen", "physical", "abs", "absolute", "物理", "绝对"):
         return _num(args.get(kx)), _num(args.get(ky))
     _require_fresh_shot()
@@ -4067,6 +4109,38 @@ def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
             f"下次带上 space=\"screen\" 可省掉这次自动判断。")
         return ix, iy
     return to_physical(ix, iy)
+
+
+def _fnum(v, default=None):
+    """健壮浮点解析：容忍 '0.5' / '50%' / 'x=0.25' 等写法（保留小数）。"""
+    if isinstance(v, bool):
+        return float(int(v))
+    if isinstance(v, (int, float)):
+        return float(v)
+    for tok in re.findall(r"-?\d+(?:\.\d+)?", str(v or "")):
+        try:
+            return float(tok)
+        except ValueError:
+            continue
+    return default
+
+
+def _norm_ratio(v):
+    """把归一化坐标解析成 0~1 比例：支持 0~1 小数、0~1000 千分比、'50%'。"""
+    if v in (None, ""):
+        return None
+    s = str(v).strip()
+    if s.endswith("%"):
+        val = _fnum(s, None)
+        return None if val is None else max(0.0, min(1.0, val / 100.0))
+    val = _fnum(v, None)
+    if val is None or val < 0:
+        return None
+    if val <= 1.0:
+        return val
+    if val <= 1000.0:
+        return val / 1000.0
+    return None
 
 
 def _num(v, default: int = 0) -> int:
@@ -4118,6 +4192,7 @@ def tool_screen_info(args: dict) -> str:
     remain = max(0, int(_STATE["active_until"] - time.time()))
     lines = [
         f"屏幕物理分辨率: {sw}×{sh}（主显示器；进程已做 DPI 感知，坐标即物理像素）",
+        f"DPI 感知: {'已启用（Per-Monitor V2）—— 任意缩放比例下所有尺寸/坐标均为物理像素' if _DPI_AWARE else '⚠ 未启用：系统缩放可能导致整体偏移'}",
         f"虚拟桌面: 原点 ({vx},{vy}) 尺寸 {vw}×{vh}"
         + ("　← 多显示器：截图覆盖整个虚拟桌面，原点不为 0 属正常" if multi else ""),
         f"输入方式: 鼠标注入（像素级精准，默认）"
@@ -4167,8 +4242,15 @@ def _shot_meta(desc: str, grid: bool = False) -> str:
     head = (f"{desc}。本图**按你的要求叠加了 {GRID_CELLS}×{GRID_CELLS} 坐标网格与像素刻度**，"
             "刻度数字即图像像素值；" if grid else
             f"{desc}。截图为**纯净原图**（不叠加坐标网格/刻度/准星），你直接看图判断目标位置即可；")
+    iw, ih = _VIEW.get("img_w", 0.0) or 0.0, _VIEW.get("img_h", 0.0) or 0.0
+    size_line = (f"本次图像真实像素尺寸 **{int(iw)}×{int(ih)}**；" if iw > 0 and ih > 0 else "")
     return (head + "所有工具的 x/y 一律用**图像像素坐标**（图像左上角为 0,0），"
             "插件自动换算为屏幕物理坐标，无需再乘缩放比例。"
+            + size_line
+            + "⚠ 部分模型服务商会把截图**压缩/缩放**后再给你看 —— 若你看到的图片尺寸与上面不一致，"
+              "绝对像素读数会整体偏移。此时改用**归一化坐标**：nx/ny 取 0~1（或 0~1000 千分比），"
+              "例如 nx=500, ny=500 即图中心；或先 refine_point 再 click(cand=编号) —— "
+              "候选坐标由插件计算，完全不受图片压缩影响。"
             + _transform_line()
             + "点击默认会自动做元素吸附（把坐标修正到最近控件的中心，见 refine_point）；"
               "需要点精确像素时传 snap=false。"
@@ -4717,9 +4799,10 @@ def tool_click(args: dict) -> str:
         x, y, snap_note = cand
     est = None
     if not cand:
-        if args.get("x") in (None, "") or args.get("y") in (None, ""):
-            raise ValueError("click 需要坐标：传 x/y（截图基准）或 cand=编号"
-                             "（编号来自 refine_point）。两者都没给，无法定位目标。")
+        has_norm = (args.get("nx") not in (None, "") and args.get("ny") not in (None, ""))
+        if not has_norm and (args.get("x") in (None, "") or args.get("y") in (None, "")):
+            raise ValueError("click 需要坐标：传 x/y（截图基准）、nx/ny（归一化 0~1 或 0~1000）"
+                             "或 cand=编号（编号来自 refine_point）。三者都没给，无法定位目标。")
         x, y = _resolve_point(args)
         est = (x, y)          # 吸附前的估计点：换候选重试要靠它重新枚举候选
         x, y, snap_note = _apply_snap(args, x, y)
@@ -5445,8 +5528,10 @@ TOOLS = [
          "grid": {"type": "boolean", "description": "是否叠加坐标网格刻度（默认 false，纯净放大）"},
          "cursor": {"type": "boolean", "description": "是否叠加鼠标准星（默认 false）"},
          "smooth": {"type": "boolean", "description": "是否平滑插值放大（默认 false=最近邻，像素边缘硬实、便于精确读数）"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
-         "required": ["x", "y"]}},
+         "nx": {"type": "number", "description": "归一化 x（0~1 或 0~1000）；图片被服务商压缩时用它代替 x"},
+         "ny": {"type": "number", "description": "归一化 y（0~1 或 0~1000）"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化"}},
+         "required": []}},
     {"name": "list_windows", "description":
         "列出当前可见窗口（句柄/类别/标题/位置/尺寸/进程/类名）。"
         "**⚠ 成本高，默认不要调用**：桌面动辄上百个窗口，这一屏文字既占上下文又逼你"
@@ -5486,8 +5571,10 @@ TOOLS = [
          "x": {"type": "integer", "description": "x 坐标（截图基准）"},
          "y": {"type": "integer", "description": "y 坐标（截图基准）"},
          "move": {"type": "boolean", "description": "是否真的把光标移过去，默认 true"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
-         "required": ["x", "y"]}},
+         "nx": {"type": "number", "description": "归一化 x（0~1 或 0~1000）；图片被服务商压缩时用它代替 x"},
+         "ny": {"type": "number", "description": "归一化 y（0~1 或 0~1000）"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化"}},
+         "required": []}},
     {"name": "refine_point", "description":
         "**坐标精修（强烈建议在 click 前用）**：你从截图上估出的坐标是「估」的 —— 屏幕缩放到 "
         "1280 宽后，图上 1px 误差在 4K 屏上就是 3px，而 Blender/剪辑软件里按钮只有 20px 高，"
@@ -5503,8 +5590,10 @@ TOOLS = [
          "y": {"type": "integer", "description": "你估计的 y（截图基准）"},
          "reach": {"type": "integer", "description": "搜索半径像素，默认 88（估计得越不准越要加大，最大 140）"},
          "pick": {"type": "integer", "description": "指定候选菜单里的编号 N，直接取第 N 个候选的中心（不填=取最近的那个）"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
-         "required": ["x", "y"]}},
+         "nx": {"type": "number", "description": "归一化 x（0~1 或 0~1000）；图片被服务商压缩时用它代替 x"},
+         "ny": {"type": "number", "description": "归一化 y（0~1 或 0~1000）"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化"}},
+         "required": []}},
     {"name": "click", "description":
         "鼠标操作统一入口（x/y 为当前截图基准坐标）。用 action 选动作（只需记住这一个工具）："
         "click=单击（默认）/double=双击/right=右键/long_press=长按（可呼出上下文菜单）/"
@@ -5523,6 +5612,8 @@ TOOLS = [
          "x": {"type": "integer", "description": "x 坐标（截图基准）；action=drag/swipe/select 时为起点；用 cand 时可省略"},
          "y": {"type": "integer", "description": "y 坐标（截图基准）；action=drag/swipe/select 时为起点；用 cand 时可省略"},
          "cand": {"type": "integer", "description": "按 refine_point 列出的候选编号点击（坐标由插件按候选框几何中心算出，优先用它）"},
+         "nx": {"type": "number", "description": "归一化 x（图宽百分比）：0~1 小数或 0~1000 千分比；与 ny 一起可替代 x/y，图片被服务商压缩时最可靠"},
+         "ny": {"type": "number", "description": "归一化 y（图高百分比）：0~1 小数或 0~1000 千分比"},
          "action": {"type": "string", "description": "click（默认）/double/right/long_press/drag/swipe/select"},
          "x2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 x（截图基准）"},
          "y2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 y（截图基准）"},
@@ -5534,7 +5625,7 @@ TOOLS = [
          "retry": {"type": "boolean", "description": "verify 判定没点中时，自动改点同一目标的次优候选一次（默认 true）"},
          "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false；用 cand 时自动关闭）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化 0~1/0~1000"},
          "title": {"type": "string", "description": "目标窗口标题片段（可选；可见区域直接点，仅落点被遮挡时才激活置顶）"},
          "allow_list_click": {"type": "boolean", "description": "已确认要点的就是列表这一行时才传 true：连续点开 3 条不同列表行后会被临时拒绝点行（防逐条试探）"},
          "hwnd": {"type": "integer", "description": "目标窗口句柄（可选，来自 list_windows）"}},
@@ -6098,7 +6189,8 @@ def _handle(msg: dict):
 
 
 def main():
-    _init_dpi_awareness()
+    global _DPI_AWARE
+    _DPI_AWARE = _init_dpi_awareness() or _DPI_AWARE
     # 不启动本地可视化服务：AI 操控期间由屏幕光带 + 顶部胶囊提示窗直接提示用户，
     # 不再往用户浏览器里塞一个预览页（那是多余的一层，还容易被当成"AI 打开了网页"）。
     _watcher.start()       # 真人输入打断检测
