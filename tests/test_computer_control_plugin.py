@@ -203,10 +203,10 @@ def test_click_refuses_list_rows_in_cooldown_and_allow_list_click_bypasses(monke
     monkeypatch.setattr(mod, "_log", lambda who, text: None)
     monkeypatch.setattr(mod, "do_click",
                         lambda x, y, b, c, mode="auto": clicked.append((x, y)) or True)
-    out = mod._HANDLERS["click"]({"x": 900, "y": 280})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 900, "y": 280})
     assert clicked == [], "冷却期内点列表行必须真的不注入"
     assert "已拒绝本次点击" in out
-    out2 = mod._HANDLERS["click"]({"x": 900, "y": 280, "allow_list_click": True})
+    out2 = mod._HANDLERS["click"]({"raw": True, "x": 900, "y": 280, "allow_list_click": True})
     assert clicked == [(900, 280)], "显式 allow_list_click=true 必须放行"
     assert "已点击" in out2
 
@@ -1247,7 +1247,7 @@ def test_click_does_not_retry_when_the_window_changed_at_all(monkeypatch):
     monkeypatch.setattr(mod, "_alt_snap_point", lambda *a: (530, 404))
     # 局部没变化，但整窗变了 1 个采样点（0.17%，没到阈值）
     monkeypatch.setattr(mod, "_click_verify_ex", lambda *a: (False, 0.002, "没到阈值"))
-    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400, "verify": True})
     assert clicks == [(510, 402)], f"界面有变化时不得重复点击，实得 {clicks}"
     assert "没到阈值" in out
 
@@ -1572,7 +1572,7 @@ def test_click_rejects_offscreen_point_instead_of_clamping(monkeypatch):
     clicked = []
     monkeypatch.setattr(mod, "do_click",
                         lambda *a, **k: clicked.append(1) or True)
-    out = mod._HANDLERS["click"]({"x": 2600, "y": 500})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 2600, "y": 500})
     assert clicked == [], "屏幕外的点必须拒绝，不得注入"
     assert "已拒绝本次点击" in out and "不在屏幕范围" in out
     assert "screen_shot 重新看图" in out and "fit" in out
@@ -2355,7 +2355,7 @@ def test_click_applies_snap_and_reports_it(monkeypatch):
     clicked = []
     monkeypatch.setattr(mod, "do_click",
                         lambda x, y, b="left", c=1, **k: clicked.append((x, y)) or True)
-    out = mod._HANDLERS["click"]({"x": 500, "y": 400})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400})
     assert clicked == [(503, 398)], "必须点吸附后的坐标"
     assert "吸附" in out and "503" in out
 
@@ -2371,7 +2371,7 @@ def test_click_with_snap_false_keeps_exact_pixel(monkeypatch):
     clicked = []
     monkeypatch.setattr(mod, "do_click",
                         lambda x, y, b="left", c=1, **k: clicked.append((x, y)) or True)
-    mod._HANDLERS["click"]({"x": 500, "y": 400, "snap": False})
+    mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400, "snap": False})
     assert clicked == [(500, 400)]
 
 
@@ -2867,12 +2867,12 @@ def test_click_reports_the_actual_cursor_landing(monkeypatch):
     # 一致 → 明确告知 0 偏差
     monkeypatch.setattr(mod, "_cursor_pos", lambda: (500, 400))
     monkeypatch.setattr(mod, "_refresh_env", lambda: None)
-    ok = mod._HANDLERS["click"]({"x": 500, "y": 400})
+    ok = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400})
     assert "落点回读" in ok and "0 偏差" in ok
 
     # 不一致 → 必须显式警告，而不是让模型以为点对了
     monkeypatch.setattr(mod, "_cursor_pos", lambda: (512, 396))
-    bad = mod._HANDLERS["click"]({"x": 500, "y": 400})
+    bad = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400})
     assert "落点回读" in bad and "512" in bad and "396" in bad
     assert "verify_point" in bad, "落点有偏差时必须提示用 verify_point 自检"
 
@@ -2995,7 +2995,7 @@ def test_click_retries_the_next_candidate_when_nothing_changed(monkeypatch):
 
     monkeypatch.setattr(mod, "_click_verify_ex", _fake_verify)
 
-    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400, "verify": True})
     assert clicks == [(510, 402), (530, 404)], clicks
     assert "自动改点同一目标的次优候选" in out
     assert "530" in out and "404" in out
@@ -3018,10 +3018,10 @@ def test_click_retry_can_be_disabled_and_is_bounded(monkeypatch):
     monkeypatch.setattr(mod, "_alt_snap_point", lambda *a: (530, 404))
     monkeypatch.setattr(mod, "_click_verify_ex", lambda *a: (False, 0.0, "落点没有变化"))
 
-    mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True, "retry": False})
+    mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400, "verify": True, "retry": False})
     assert clicks == [(510, 402)]
     clicks.clear()
-    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "verify": True})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400, "verify": True})
     assert clicks == [(510, 402), (530, 404)], "最多只重试一次"
     assert "已停止重试" in out
 
@@ -3172,7 +3172,7 @@ def test_click_tool_tells_the_model_it_did_not_click(monkeypatch):
     monkeypatch.setattr(mod, "_send_mouse", lambda f, dx=0, dy=0, data=0: None)
     monkeypatch.setattr(mod, "_log", lambda who, text: None)
     monkeypatch.setattr(mod, "_refresh_env", lambda: None)
-    out = mod._HANDLERS["click"]({"x": 500, "y": 400})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400})
     assert ("没有完成" in out or "动作没有执行" in out)
     assert "真实鼠标" in out, "必须告诉模型『可能是真实鼠标』这类可执行线索"
     assert "不要重复重试" in out, "必须劝阻盲目重试，否则就是新一轮死循环"
@@ -3462,7 +3462,7 @@ def test_click_does_not_snap_outside_explicit_target_window(monkeypatch):
         return True
 
     monkeypatch.setattr(mod, "do_click", _click)
-    out = mod._HANDLERS["click"]({"x": 500, "y": 400, "hwnd": 42})
+    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400, "hwnd": 42})
     assert clicked == [(500, 400)], "跨窗口吸附必须回退到原估计点"
     assert "跨出目标窗口" in out
 
@@ -3699,3 +3699,65 @@ def test_skill_covers_provider_compression_and_normalized_coords():
     assert "服务商" in text and "压缩" in text
     assert "归一化" in text and "nx" in text
     assert "cand" in text
+
+
+def _click_env(mod, monkeypatch):
+    """click 工具的最小桩环境：记录注入点，跳过吸附/遮挡。"""
+    mod._STATE["interrupted"] = mod._STATE["paused"] = False
+    monkeypatch.setattr(mod, "_apply_snap",
+                        lambda a, x, y, default_on=True: (x, y, ""))
+    monkeypatch.setattr(mod, "_ensure_click_target", lambda x, y, a: "")
+    monkeypatch.setattr(mod, "_input_mode", lambda a: "mouse")
+    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
+    monkeypatch.setattr(mod, "_log", lambda who, text: None)
+    clicked = []
+    pos = {"x": 0, "y": 0}
+
+    def _do(x, y, b, c, mode="auto"):
+        clicked.append((x, y))
+        pos.update(x=x, y=y)
+        return True
+
+    monkeypatch.setattr(mod, "do_click", _do)
+    monkeypatch.setattr(mod, "_cursor_pos", lambda: (pos["x"], pos["y"]))
+    return clicked
+
+
+def test_click_requires_cand_or_calibration_for_image_coordinates(monkeypatch):
+    """图像坐标点击默认被拦截：逼迫走候选编号 / 所见尺寸校准 / 显式精确像素。"""
+    mod = _load_module()
+    mod._set_view(0, 0, 1920, 1080, 1280, 720, "full")
+    clicked = _click_env(mod, monkeypatch)
+    out = mod._HANDLERS["click"]({"x": 640, "y": 360})
+    assert clicked == [], "未校准的图像坐标不得直接注入"
+    assert "已拒绝本次点击" in out
+    for key in ("cand=编号", "seen_w", "raw=true", 'space="screen"'):
+        assert key in out, f"拒绝文案缺少逃生门: {key}"
+
+
+def test_click_allows_raw_exact_pixel(monkeypatch):
+    """raw=true：模型明确要点精确像素（画布/空白处）时放行。"""
+    mod = _load_module()
+    mod._set_view(0, 0, 1920, 1080, 1280, 720, "full")
+    clicked = _click_env(mod, monkeypatch)
+    mod._HANDLERS["click"]({"x": 640, "y": 360, "raw": True})
+    assert clicked == [(960, 540)]
+
+
+def test_click_calibrates_with_seen_dimensions(monkeypatch):
+    """模型回报所见尺寸（被服务商压缩）时，按比例换回插件图像坐标。"""
+    mod = _load_module()
+    mod._set_view(0, 0, 1920, 1080, 1280, 720, "full")
+    clicked = _click_env(mod, monkeypatch)
+    # 模型看到 1024×576（0.8 压缩）：它图上的 (400,400) 对应插件图 (500,500) → 屏幕 (750,750)
+    mod._HANDLERS["click"]({"x": 400, "y": 400, "seen_w": 1024, "seen_h": 576})
+    assert clicked == [(750, 750)], f"所见尺寸校准错误：{clicked}"
+
+
+def test_shot_meta_requests_seen_dimensions():
+    """截图文案必须要求模型在尺寸不一致时回报 seen_w/seen_h。"""
+    mod = _load_module()
+    mod._set_view(0, 0, 1920, 1080, 1280, 720, "full")
+    meta = mod._shot_meta("已截取整个桌面")
+    assert "seen_w" in meta and "seen_h" in meta
+    assert "1280×720" in meta or "1280" in meta

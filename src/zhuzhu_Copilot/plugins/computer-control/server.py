@@ -4094,6 +4094,20 @@ def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
         return _num(args.get(kx)), _num(args.get(ky))
     _require_fresh_shot()
     ix, iy = _num(args.get(kx)), _num(args.get(ky))
+    # ---- 所见尺寸自校准（治「服务商压缩图片 → 绝对像素整体偏移」）----
+    # 部分模型服务商会把截图等比缩放后再喂给模型。若模型回报它实际看到的图片尺寸
+    # （seen_w/seen_h），这里就能把「它图上的像素」换回插件发出的图像像素。
+    iw0 = _VIEW.get("img_w") or 0.0
+    ih0 = _VIEW.get("img_h") or 0.0
+    seen_w = _fnum(args.get("seen_w"), 0.0) or 0.0
+    seen_h = _fnum(args.get("seen_h"), 0.0) or 0.0
+    if seen_w > 0 and seen_h > 0 and iw0 > 0 and ih0 > 0:
+        kx_, ky_ = iw0 / seen_w, ih0 / seen_h
+        if abs(kx_ - 1) > 0.01 or abs(ky_ - 1) > 0.01:
+            ix, iy = ix * kx_, iy * ky_
+            _COORD_AUTOFIX["note"] = (
+                f"按所见尺寸校准：你认为图片是 {seen_w:g}×{seen_h:g}，插件实际发出 "
+                f"{int(iw0)}×{int(ih0)}，已按比例换算回图像坐标 ({ix:.0f},{iy:.0f})。")
     # ---- 坐标系防呆（治「点偏一大片」）----
     # 图像坐标**不可能**超出图像尺寸。超出只有一个解释：手里拿的是屏幕物理坐标
     # （最常见来源：refine_point / verify_point 的返回值、list_windows 的窗口位置、
@@ -4141,6 +4155,39 @@ def _norm_ratio(v):
     if val <= 1000.0:
         return val / 1000.0
     return None
+
+
+def _cand_gate(args: dict, cand) -> str:
+    """拦截「可能因服务商压缩而偏移」的图像坐标点击，逼迫走可校准/候选编号路径。
+
+    为什么默认拒绝：用户实测 agnes 等服务商会把截图压缩后再给模型，模型读到的
+    像素与插件发出的图像尺寸不一致，任何绝对像素换算都会整体偏移（越靠右下越偏）。
+    只靠吸附救不了 —— 估计点本身已经错了，吸附只会吸到旁边那个元素。
+
+    放行条件（任一）：
+      * 有 cand（候选编号）—— 坐标由插件按原始屏幕像素计算，完全免疫压缩；
+      * 传 seen_w/seen_h —— 模型报出它看到的图片尺寸，插件按比例校准；
+      * raw=true —— 模型明确要点精确像素（画布/空白处）；
+      * space=screen —— 模型明确给的是屏幕物理坐标；
+      * space=norm 或 nx/ny —— 归一化坐标本身与图片尺寸无关。
+    """
+    if cand:
+        return ""
+    space = str(args.get("space") or "image").strip().lower()
+    has_seen = (args.get("seen_w") not in (None, "") and args.get("seen_h") not in (None, ""))
+    norm_mode = (space in ("norm", "normalized", "归一化", "比例")
+                 or args.get("nx") not in (None, "") or args.get("ny") not in (None, ""))
+    if _bool(args.get("raw"), False) or has_seen or norm_mode or space in (
+            "screen", "physical", "abs", "absolute", "物理", "绝对"):
+        return ""
+    # 「没有截图基准 / 基准过期」是更根本的问题，优先按它报错
+    _require_fresh_shot()
+    return ("⚠ **已拒绝本次点击**：图像坐标可能因模型服务商压缩图片而整体偏移，已拦截。\n"
+            "改用任一方式后重试：\n"
+            "① **最稳**：`refine_point(x,y)` → `click(cand=编号)`（坐标由插件按原始屏幕像素计算）；\n"
+            "② 你知道自己看到的图片尺寸：同时传 `seen_w`/`seen_h`，插件按比例校准；\n"
+            "③ 确实要点精确像素（画布/输入框空白）：传 `raw=true`；\n"
+            "④ 手里是屏幕物理坐标：传 `space=\"screen\"`。")
 
 
 def _num(v, default: int = 0) -> int:
@@ -4248,9 +4295,11 @@ def _shot_meta(desc: str, grid: bool = False) -> str:
             "插件自动换算为屏幕物理坐标，无需再乘缩放比例。"
             + size_line
             + "⚠ 部分模型服务商会把截图**压缩/缩放**后再给你看 —— 若你看到的图片尺寸与上面不一致，"
-              "绝对像素读数会整体偏移。此时改用**归一化坐标**：nx/ny 取 0~1（或 0~1000 千分比），"
-              "例如 nx=500, ny=500 即图中心；或先 refine_point 再 click(cand=编号) —— "
-              "候选坐标由插件计算，完全不受图片压缩影响。"
+              "绝对像素读数会整体偏移。此时：① 下一次调用同时传 `seen_w`/`seen_h`（你实际看到的宽高），"
+              "插件会按比例校准；② 或改用**归一化坐标** nx/ny（0~1 或 0~1000）；"
+              "③ 最稳是先 refine_point 再 click(cand=编号) —— 候选坐标由插件计算，完全不受压缩影响。\n"
+              "为防这次偏移，**未带 cand/seen_w/raw 的图像坐标点击会被拦截**；"
+              "明确要点精确像素时传 raw=true。"
             + _transform_line()
             + "点击默认会自动做元素吸附（把坐标修正到最近控件的中心，见 refine_point）；"
               "需要点精确像素时传 snap=false。"
@@ -4803,6 +4852,10 @@ def tool_click(args: dict) -> str:
         if not has_norm and (args.get("x") in (None, "") or args.get("y") in (None, "")):
             raise ValueError("click 需要坐标：传 x/y（截图基准）、nx/ny（归一化 0~1 或 0~1000）"
                              "或 cand=编号（编号来自 refine_point）。三者都没给，无法定位目标。")
+        gate = _cand_gate(args, cand)
+        if gate:
+            _log("ai", f"拒绝图像坐标点击 ({args.get('x')},{args.get('y')})：需候选编号/校准")
+            return gate
         x, y = _resolve_point(args)
         est = (x, y)          # 吸附前的估计点：换候选重试要靠它重新枚举候选
         x, y, snap_note = _apply_snap(args, x, y)
@@ -4913,6 +4966,9 @@ def tool_long_press(args: dict) -> str:
     if cand:
         x, y, snap_note = cand
     else:
+        gate = _cand_gate(args, cand)
+        if gate:
+            return gate
         if args.get("x") in (None, "") or args.get("y") in (None, ""):
             raise ValueError("long_press 需要坐标：传 x/y（截图基准）或 cand=编号。")
         x, y = _resolve_point(args)
@@ -5614,6 +5670,9 @@ TOOLS = [
          "cand": {"type": "integer", "description": "按 refine_point 列出的候选编号点击（坐标由插件按候选框几何中心算出，优先用它）"},
          "nx": {"type": "number", "description": "归一化 x（图宽百分比）：0~1 小数或 0~1000 千分比；与 ny 一起可替代 x/y，图片被服务商压缩时最可靠"},
          "ny": {"type": "number", "description": "归一化 y（图高百分比）：0~1 小数或 0~1000 千分比"},
+         "seen_w": {"type": "integer", "description": "你实际看到的图片宽度（若与截图声明的尺寸不同，插件按此校准坐标）"},
+         "seen_h": {"type": "integer", "description": "你实际看到的图片高度"},
+         "raw": {"type": "boolean", "description": "明确要点精确像素（画布/空白处）：跳过压缩拦截，直接按图像坐标点"},
          "action": {"type": "string", "description": "click（默认）/double/right/long_press/drag/swipe/select"},
          "x2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 x（截图基准）"},
          "y2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 y（截图基准）"},
