@@ -292,37 +292,34 @@ def test_click_without_coordinates_raises():
 
 
 # ===========================================================================
-# 四、打开应用：任务栏 / 托盘优先
+# 四、打开应用：切前台 / 启动（任务栏图标识别已移除）
 # ===========================================================================
 
-def test_open_app_schema_exposes_taskbar_priority_args():
+def test_open_app_schema_is_minimal_after_taskbar_removal():
+    """任务栏编号能力已删除：open_app 只剩 name / launch / timeout。"""
     mod = _cc()
     schema = next(t for t in mod.TOOLS if t["name"] == "open_app")
     props = schema["inputSchema"]["properties"]
-    for key in ("index", "where", "launch"):
-        assert key in props, f"open_app 缺少 {key} 参数（任务栏/托盘优先依赖它）"
+    assert set(props) == {"name", "launch", "timeout"}
     assert schema["inputSchema"]["required"] == ["name"]
 
 
-def test_open_app_index_clicks_taskbar_slot(monkeypatch):
-    """open_app(index=N) 必须转成任务栏编号点击，而不是启动新实例。"""
+def test_open_app_ignores_legacy_index_argument(monkeypatch):
+    """旧编号参数已移除：传 index 也不会去找任务栏图标，只走正常的切前台流程。"""
     mod = _cc()
     mod._STATE["interrupted"] = mod._STATE["paused"] = False
-    seen = {}
-
-    def fake_taskbar(args):
-        seen.update(args)
-        return [{"type": "text", "text": "任务栏编号图"}]
-
-    monkeypatch.setattr(mod, "tool_taskbar_open", fake_taskbar)
+    monkeypatch.setattr(mod, "_find_app_window", lambda keys: (4242, "微信", "窗口标题"))
+    monkeypatch.setattr(mod, "_bring_to_front", lambda h: (True, ""))
+    monkeypatch.setattr(mod, "window_rect",
+                        lambda h: type("R", (), {"left": 10, "top": 20, "right": 810,
+                                                 "bottom": 620})())
     out = mod._HANDLERS["open_app"]({"name": "微信", "index": 3})
-    assert seen.get("index") == 3, f"未按编号点任务栏：{seen}"
-    text = out[0]["text"] if isinstance(out, list) else str(out)
-    assert "第 3 个" in text
+    text = out if isinstance(out, str) else str(out)
+    assert "4242" in text and "第 3 个" not in text
 
 
 def test_open_app_tray_does_not_launch_duplicate(monkeypatch):
-    """进程在跑但没有可见窗口（托盘）→ 不许启动第二个实例，回编号图。"""
+    """进程在跑但没有可见窗口（托盘）→ 不许启动第二个实例，让用户手动唤出。"""
     mod = _cc()
     mod._STATE["interrupted"] = mod._STATE["paused"] = False
     monkeypatch.setattr(mod, "_find_app_window", lambda keys: (0, "", ""))
@@ -333,11 +330,10 @@ def test_open_app_tray_does_not_launch_duplicate(monkeypatch):
     monkeypatch.setattr(mod, "launch_app",
                         lambda t: (_ for _ in ()).throw(
                             AssertionError("托盘应用不该再启动一个实例")))
-    monkeypatch.setattr(mod, "tool_taskbar_open",
-                        lambda args: [{"type": "text", "text": "编号图"}])
     out = mod._HANDLERS["open_app"]({"name": "微信"})
-    text = out[0]["text"] if isinstance(out, list) else str(out)
-    assert "托盘" in text and "index" in text
+    text = out if isinstance(out, str) else str(out)
+    assert "进程" in text and "托盘" in text and "没有启动" in text
+    assert "index" not in text and "任务栏" not in text
 
 
 def test_open_app_launches_when_really_not_running(monkeypatch):

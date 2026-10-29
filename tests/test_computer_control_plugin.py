@@ -113,18 +113,14 @@ def test_skill_md_frontmatter_and_protocol():
 def test_skill_md_mandates_open_app_before_hunting_windows():
     """回归用户反馈：「应用在后台或最小化时 agent 疯狂调用工具查找位置」。
 
-    修复的**一半**在代码（taskbar_open 点图标切窗口 / open_app 启动恢复校验），
-    另一半在技能规范 —— 模型得知道「先截图看任务栏 → 有图标就点 → 没有才 open_app，
-    全程别用 list_windows 找窗口」。这条规范一旦被删掉，问题就会复发，所以固化成断言。
+    任务栏图标识别已按用户要求删除，切后台应用统一由 open_app 完成；
+    规范必须把这件事写清楚，并继续禁止「自己找窗口」。
     """
     text = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert "open_app" in text, "技能规范必须把 open_app 写进流程"
-    assert "taskbar_open" in text, "技能规范必须把任务栏点图标写进流程"
+    assert "taskbar_open" not in text, "任务栏图标识别已删除，文档不得再提"
     assert "找窗口" in text, "必须明确禁止「自己找窗口」"
-    # 顺序契约：截图 → 任务栏 → 后台面板 → open_app 兜底
-    assert text.index("screen_shot(mode=\"full\")") < text.index("taskbar_open(index=N)") \
-        < text.index("taskbar_open(where=\"panel\")") < text.index('open_app(name="微信")'), \
-        "第 0 步的四级顺序必须是：截图 → 任务栏 → 「↑」面板 → open_app"
+    assert "切应用用 `open_app`" in text, "第 0 步必须明确用 open_app 切后台应用"
     # 复杂任务剧本（打开微信 → 给第 N 个人发消息 → 发文件 → 引用消息）三要素都要在
     for key in ("第 N 个人", "引用", "文件选择对话框"):
         assert key in text, f"SKILL.md 缺少复杂任务剧本要素: {key}"
@@ -216,17 +212,13 @@ def test_click_refuses_list_rows_in_cooldown_and_allow_list_click_bypasses(monke
 
 
 def test_skill_md_prefers_full_screen_capture():
-    """回归用户反馈：「Agent 有时只截窗口不用整屏，窗口被遮挡时就点偏」。
-
-    截图策略必须写明**默认整屏**，并且不得再出现「优先截窗口」这类反向引导 ——
-    模型完全按技能文档行动，文档写错方向，代码再准也救不回来。
-    """
+    """截图策略必须写明**始终整屏**，且不得再出现窗口截图（用户要求彻底移除）。"""
     text = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert "优先截窗口" not in text, "不得再引导模型优先截窗口（会被遮挡物误导）"
-    assert "默认截整屏" in text, "必须明确默认整屏"
-    assert 'screen_shot(mode="full")' in text
-    # 窗口截图只允许出现在「大窗口 / GPU 自绘需要 1:1」这两个受限场景
-    assert "远大于屏幕" in text and "GPU 自绘界面" in text
+    assert "截图始终整屏" in text, "必须明确截图始终整屏"
+    assert 'screen_shot(mode="window")' not in text, "窗口截图能力已删除，文档不得再提"
+    assert "已彻底移除窗口截图能力" in text
+    assert "GPU 自绘界面" in text, "GPU 自绘界面仍要按整屏 + zoom_in 说明"
 
 
 def test_skill_md_covers_offscreen_window_recovery():
@@ -920,8 +912,8 @@ def test_overlays_are_excluded_from_screen_capture():
     assert "def capture_guard" in aura_src
     src = SERVER.read_text(encoding="utf-8")
     assert "def _no_overlay" in src
-    # 整屏截图 / 矩形抓取 / 区域快照 / 窗口屏幕兜底 —— 四条路径都要有
-    assert src.count("with _no_overlay():") >= 4, "有抓屏路径没套截图排除"
+    # 整屏截图 / 矩形抓取 / 区域快照 —— 三条抓屏路径都要有
+    assert src.count("with _no_overlay():") >= 3, "有抓屏路径没套截图排除"
 
 
 def test_start_revives_the_hint_thread_independently():
@@ -1363,7 +1355,7 @@ def test_screenshot_is_clean_by_default():
     """发给 AI 的截图默认纯净：不画坐标网格/刻度/准星（坐标轴只在显式要求时才叠加）"""
     import inspect
     mod = _load_module()
-    for fn in (mod.grab_screen, mod.grab_window, mod.grab_zoom):
+    for fn in (mod.grab_screen, mod.grab_zoom):
         params = inspect.signature(fn).parameters
         assert params["grid"].default is False, f"{fn.__name__} 默认不应叠加网格"
     assert inspect.signature(mod.grab_screen).parameters["cursor"].default is False
@@ -1569,177 +1561,6 @@ def test_move_absolute_uses_virtual_desk_flag(monkeypatch):
     assert seen[0][1] == 0
 
 
-def test_bits_are_blank_detects_blank_but_keeps_dark_theme():
-    """空图判定：纯黑/全同色算空白；Blender 那种深灰主题不能误判为空白"""
-    mod = _load_module()
-    w = h = 40
-    n = w * h
-    assert mod._bits_are_blank(bytes([0, 0, 0, 255]) * n, w, h) is True
-    # Blender 主题色 #303030（48）是正常界面，绝不能判成空白
-    assert mod._bits_are_blank(bytes([0x30, 0x30, 0x30, 255]) * n, w, h) is False
-    # 近黑（16）与近白（255）的整块空表面才算空白
-    assert mod._bits_are_blank(bytes([16, 16, 16, 255]) * n, w, h) is True
-    assert mod._bits_are_blank(bytes([255, 255, 255, 255]) * n, w, h) is True
-    half = n // 2
-    mixed = bytes([0, 0, 0, 255]) * half + bytes([200, 200, 200, 255]) * (n - half)
-    assert mod._bits_are_blank(mixed, w, h) is False
-    assert mod._bits_are_blank(b"", w, h) is True
-
-
-def test_region_diff_detects_ui_response():
-    """点击生效校验：逐像素比对能抓到细线级变化，也能滤掉噪声"""
-    mod = _load_module()
-    w = h = 8
-    base = bytearray([30, 30, 30, 255] * (w * h))
-    same = bytes(base)
-    changed, total = mod._region_diff(bytes(base), same)
-    assert (changed, total) == (0, w * h)
-    # 只改 2 个像素（模拟 2px 宽的标记线）也必须被抓到
-    after = bytearray(base)
-    after[0:4] = bytes([255, 60, 60, 255])
-    after[4:8] = bytes([255, 60, 60, 255])
-    changed, total = mod._region_diff(bytes(base), bytes(after))
-    assert changed == 2 and total == w * h
-    # 轻微噪声（差值 <= 阈值）不算变化
-    noisy = bytearray(base)
-    for i in range(0, len(noisy), 4):
-        noisy[i] += 8
-    assert mod._region_diff(bytes(base), bytes(noisy))[0] == 0
-    # 尺寸不一致/空输入 → 不做判断
-    assert mod._region_diff(b"", bytes(base)) == (0, 0)
-    assert mod._region_diff(bytes(base), b"\x00" * 4) == (0, 0)
-
-
-def test_grab_window_falls_back_to_screen_when_printwindow_blank(monkeypatch):
-    """PrintWindow 抓到空白（GPU 自绘/独占表面界面）→ 自动改用屏幕抓取并如实标注"""
-    mod = _load_module()
-
-    class _R:
-        left, top, right, bottom = 0, 0, 100, 80
-
-    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
-    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
-    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
-    monkeypatch.setattr(mod, "_grab_window_printwindow",
-                        lambda *a, **k: (None, "PrintWindow 抓到的是空白画面"))
-    monkeypatch.setattr(mod, "_grab_window_screen",
-                        lambda *a, **k: (b"PNG-SCREEN", "屏幕抓取"))
-    monkeypatch.setattr(mod, "_GRAB_INFO", {"strategy": "", "blank": False,
-                                           "img_w": 100, "img_h": 80})
-    png, iw, ih, x, y, w, h = mod.grab_window(123)
-    assert png == b"PNG-SCREEN"
-    assert mod._GRAB_INFO["strategy"] == "屏幕抓取"
-    assert (w, h) == (100, 80)
-
-
-def test_grab_window_falls_back_to_full_screen_when_occluded(monkeypatch):
-    """窗口被遮挡（屏幕抓取会截到遮挡窗口）→ 自动改用整屏，且基准切成整屏。
-
-    用户反馈：明明点的是目标窗口，点下去却打到遮挡窗口上 —— 因为窗口截图给出的是
-    遮挡窗口的画面，坐标却按目标窗口换算。整屏兜底保证「图 = 用户眼前的画面」。
-    """
-    mod = _load_module()
-
-    class _R:
-        left, top, right, bottom = 10, 20, 110, 100
-
-    def _occluded_screen(*a, **k):
-        mod._GRAB_INFO["occluded"] = "别的窗口"
-        return None, ""
-
-    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
-    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
-    monkeypatch.setattr(mod, "_grab_window_printwindow",
-                        lambda *a, **k: (None, "PrintWindow 抓到的是空白画面"))
-    monkeypatch.setattr(mod, "_grab_window_screen", _occluded_screen)
-    monkeypatch.setattr(mod, "grab_screen",
-                        lambda **k: (b"PNG-FULL", 1280, 720, -1920, 0, 3840, 2160))
-    monkeypatch.setattr(mod, "_log", lambda who, text: None)
-    png, iw, ih, x, y, w, h = mod.grab_window(123)
-    assert png == b"PNG-FULL"
-    assert mod._GRAB_INFO["full"] is True
-    assert (x, y, w, h) == (-1920, 0, 3840, 2160), "整屏兜底时坐标基准必须是整屏"
-    assert mod._GRAB_INFO["occluded"] == "别的窗口"
-
-
-def test_grab_window_prefers_printwindow_when_usable(monkeypatch):
-    """PrintWindow 正常时不得绕道屏幕抓取（它不受遮挡影响，更可靠）"""
-    mod = _load_module()
-
-    class _R:
-        left, top, right, bottom = 5, 6, 105, 86
-
-    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
-    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
-    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
-    monkeypatch.setattr(mod, "_grab_window_printwindow",
-                        lambda *a, **k: (b"PNG-PW", "PrintWindow"))
-    called = []
-    monkeypatch.setattr(mod, "_grab_window_screen",
-                        lambda *a, **k: called.append(1) or (b"X", "屏幕抓取"))
-    monkeypatch.setattr(mod, "_GRAB_INFO", {"strategy": "", "blank": False,
-                                           "img_w": 100, "img_h": 80})
-    png, iw, ih, x, y, w, h = mod.grab_window(123)
-    assert png == b"PNG-PW" and not called
-    assert (x, y) == (5, 6)
-
-
-def test_grab_window_refuses_window_baseline_when_partially_offscreen(monkeypatch):
-    """窗口被拖出屏幕 → 绝不拿窗口图出坐标基准，改用整屏（否则点击偏离得离谱）。
-
-    用户反馈：Agent 截的是程序窗口而不是全屏，窗口又没完整显示，点击偏得大。
-    窗口图里屏幕外的那块像素在屏幕上不存在，照它算出的物理坐标会被系统钳到屏幕边缘。
-    """
-    mod = _load_module()
-
-    class _R:
-        left, top, right, bottom = -900, 0, 1020, 900
-
-    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
-    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
-    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
-    called = []
-    monkeypatch.setattr(mod, "_grab_window_printwindow",
-                        lambda *a, **k: called.append(1) or (b"PNG-PW", "PrintWindow"))
-    monkeypatch.setattr(mod, "grab_screen",
-                        lambda **k: (b"PNG-FULL", 1280, 720, 0, 0, 1920, 1080))
-    monkeypatch.setattr(mod, "_log", lambda who, text: None)
-    png, iw, ih, x, y, w, h = mod.grab_window(123)
-    assert png == b"PNG-FULL", "未完整显示的窗口必须整屏兜底"
-    assert called == [], "不得再走窗口抓图"
-    assert mod._GRAB_INFO["full"] is True
-    assert "没有完整显示" in mod._GRAB_INFO["why"]
-    assert (x, y, w, h) == (0, 0, 1920, 1080), "坐标基准必须切成整屏"
-
-
-def test_grab_window_baseline_uses_cropped_region_not_full_window_rect(monkeypatch):
-    """屏幕抓取被裁到屏内时，坐标基准必须是**实际抓取区域**（不是窗口矩形）。
-
-    否则缩放比按窗口宽度算、图却只有裁剪后那么大 → 越靠右/下偏得越多。
-    """
-    mod = _load_module()
-
-    class _R:
-        left, top, right, bottom = -8, -8, 1928, 1088   # 最大化窗口的隐形边框
-
-    monkeypatch.setattr(mod, "_ensure_window_capturable", lambda h: "")
-    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
-    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 1920, 1080))
-    monkeypatch.setattr(mod, "_grab_window_printwindow", lambda *a, **k: (None, "空白"))
-
-    def _screen(*a, **k):
-        mod._GRAB_INFO.update({"img_w": 1280, "img_h": 720, "blank": False,
-                               "region": (0, 0, 1920, 1080)})
-        return b"PNG-SCREEN", "屏幕抓取"
-
-    monkeypatch.setattr(mod, "_grab_window_screen", _screen)
-    monkeypatch.setattr(mod, "_GRAB_INFO", {"strategy": "", "blank": False,
-                                           "img_w": 0, "img_h": 0})
-    png, iw, ih, x, y, w, h = mod.grab_window(123)
-    assert png == b"PNG-SCREEN"
-    assert (x, y, w, h) == (0, 0, 1920, 1080), "必须按裁剪后的实际抓取区域出基准"
-
-
 def test_click_rejects_offscreen_point_instead_of_clamping(monkeypatch):
     """落点在屏幕外 → 拒绝执行并提示重截/先 fit，不能交给系统钳到屏幕边缘。"""
     mod = _load_module()
@@ -1754,7 +1575,7 @@ def test_click_rejects_offscreen_point_instead_of_clamping(monkeypatch):
     out = mod._HANDLERS["click"]({"x": 2600, "y": 500})
     assert clicked == [], "屏幕外的点必须拒绝，不得注入"
     assert "已拒绝本次点击" in out and "不在屏幕范围" in out
-    assert 'screen_shot(mode="full")' in out and "fit" in out
+    assert "screen_shot 重新看图" in out and "fit" in out
 
 
 def test_verify_point_reports_zero_deviation(monkeypatch):
@@ -1919,158 +1740,6 @@ def test_type_text_refuses_when_target_not_focused(monkeypatch):
         mod._HANDLERS["type_text"]({"text": "这条消息绝不能发错地方"})
     assert typed == [], "被拒绝时不得注入任何字符"
 
-
-
-def test_ensure_window_capturable_handles_minimized(monkeypatch):
-    """最小化窗口必须先恢复；仍不可用则拒绝，绝不交出一张会让坐标全错的废图
-
-    实测踩过的坑：窗口最小化后 GetWindowRect 变成 (-32000,-32000,160,28) 哨兵值，
-    PrintWindow 也只给 160×28 的废图 —— 但调用方看起来「截图成功了」，
-    照着它算出来的坐标全在屏幕外，点击永远落不到目标上。
-    """
-    mod = _load_module()
-    shown = []
-
-    class _U:
-        @staticmethod
-        def IsWindow(h):
-            return True
-
-        @staticmethod
-        def IsIconic(h):
-            return state["iconic"]
-
-        @staticmethod
-        def ShowWindow(h, cmd):
-            shown.append((h, cmd))
-            state["iconic"] = False
-            return True
-
-    state = {"iconic": True}
-
-    class _R:
-        left, top, right, bottom = 504, 219, 1448, 866
-
-    monkeypatch.setattr(mod, "user32", _U)
-    monkeypatch.setattr(mod, "window_rect", lambda h: _R)
-    monkeypatch.setattr(mod, "window_title", lambda h: "微信")
-    monkeypatch.setattr(mod, "time", mod.time)
-    note = mod._ensure_window_capturable(123)
-    assert shown and shown[0][1] == mod.SW_RESTORE, "应调用 ShowWindow(SW_RESTORE)"
-    assert "最小化" in note
-
-    # 恢复失败（矩形仍是哨兵值）→ 必须拒绝
-    state["iconic"] = True
-
-    class _R2:
-        left, top, right, bottom = -32000, -32000, -31840, -31972
-
-    monkeypatch.setattr(mod, "window_rect", lambda h: _R2)
-    with pytest.raises(RuntimeError) as ei:
-        mod._ensure_window_capturable(123)
-    assert "最小化" in str(ei.value) and "坐标会全错" in str(ei.value)
-
-
-# ============================================================================
-# open_app / 应用启动 / 窗口前置（「应用在后台或最小化时疯狂找窗口」的修复）
-# ============================================================================
-
-def test_open_app_registered_and_is_control_tool():
-    """open_app 必须注册，且属「会改变桌面状态」的工具（要点亮光环）"""
-    mod = _load_module()
-    declared = {t["name"] for t in mod.TOOLS}
-    assert "open_app" in declared
-    assert "open_app" in mod._HANDLERS
-    assert "open_app" in mod._CONTROL_TOOLS
-    schema = next(t for t in mod.TOOLS if t["name"] == "open_app")
-    assert schema["inputSchema"]["required"] == ["name"]
-    # 描述里要明确「不要用 list_windows 反复找窗口」，这是修复的核心
-    assert "list_windows" in schema["description"]
-
-
-def test_app_index_covers_start_menu_and_system_exes():
-    """应用索引要能覆盖开始菜单快捷方式（这是「打开微信」能被解析的前提）"""
-    mod = _load_module()
-    idx = mod._app_index(refresh=True)
-    assert idx, "应用索引不应为空"
-    kinds = {i["kind"] for i in idx}
-    assert "lnk" in kinds, "应包含开始菜单 .lnk 条目"
-    for it in idx:
-        assert it["name"] and it["target"], "索引条目必须有名字与目标"
-    # 卸载器/官网这类噪音入口不该进索引（否则模糊匹配会挑中它们）
-    assert not any("卸载" in i["name"] for i in idx)
-
-
-def test_app_alias_and_scoring():
-    """别名展开与打分：精确 > 前缀 > 包含 > 相似度"""
-    mod = _load_module()
-    keys = mod._app_keys("微信")
-    assert "wechat" in keys and "微信" in keys, "「微信」应展开出进程名关键字"
-    # 未收录的名字原样返回，不能抛异常
-    assert mod._app_keys("某个没收录的软件") == ("某个没收录的软件",)
-    assert mod._app_score(keys, "微信") == 1.0
-    assert mod._app_score(keys, "WeChat") == 1.0          # 归一化后忽略大小写
-    assert mod._app_score(keys, "Weixin.exe") > 0.7       # 前缀
-    assert mod._app_score(("notepad",), "完全无关的名字") < 0.62
-
-
-def test_resolve_app_finds_system_tool_by_exe():
-    """系统自带工具（记事本）只有 exe、没有快捷方式，必须靠系统目录探测兜住"""
-    mod = _load_module()
-    res = mod._resolve_app("记事本")
-    assert res["target"], "「记事本」应能被解析出启动目标"
-    assert res["target"].lower().endswith(".exe")
-
-
-def test_resolve_app_settings_uses_protocol_uri():
-    """「设置」是 UWP，没有 exe —— 必须走协议 URI（否则会解析失败）"""
-    mod = _load_module()
-    res = mod._resolve_app("设置")
-    assert res["target"] == "ms-settings:"
-    assert res["kind"] == "uri"
-
-
-def test_resolve_app_unknown_returns_candidates_not_crash():
-    """找不到时必须给出候选名字（让模型一次改对），而不是抛异常或空手而归"""
-    mod = _load_module()
-    res = mod._resolve_app("绝不可能存在的软件名zzz")
-    assert res["target"] == ""
-    assert isinstance(res["candidates"], list)
-
-
-def test_is_launch_uri_does_not_mistake_drive_path_for_uri():
-    """盘符 `C://…` 也匹配 `^[a-z]:`，绝不能被当成协议 URI（否则启动目标会被跳过存在性校验）"""
-    mod = _load_module()
-    assert mod._is_launch_uri("ms-settings:")
-    assert mod._is_launch_uri(r"shell:AppsFolder\Foo!App")
-    assert not mod._is_launch_uri(r"C:/Windows/System32/calc.exe")
-    assert not mod._is_launch_uri(r"D:/some/path/app.exe")
-
-
-def test_launch_app_rejects_missing_target():
-    """启动不存在的目标必须明确报错，不能静默什么都不做"""
-    mod = _load_module()
-    with pytest.raises(RuntimeError) as ei:
-        mod.launch_app(r"C:/definitely/not/here/nope.exe")
-    assert "不存在" in str(ei.value)
-    with pytest.raises(ValueError):
-        mod.launch_app("")
-
-
-def test_open_app_requires_name():
-    """缺 name 时必须报可读错误，而不是去猜一个应用"""
-    mod = _load_module()
-    with pytest.raises(ValueError) as ei:
-        mod._HANDLERS["open_app"]({})
-    assert "name" in str(ei.value)
-
-
-def test_open_app_unknown_app_lists_candidates():
-    """未知应用：报错里必须带「已安装应用里最接近的」候选，帮模型一次改对"""
-    mod = _load_module()
-    with pytest.raises(RuntimeError) as ei:
-        mod._HANDLERS["open_app"]({"name": "绝不可能存在的软件名zzz"})
-    assert "没找到" in str(ei.value)
 
 
 def test_raise_topmost_undoes_topmost(monkeypatch):
@@ -3470,338 +3139,6 @@ def test_no_bare_byref_call_remains():
         "裸 byref 会抛 NameError，且很可能被对应的 try 吞掉，导致静默返回空值")
 
 
-# ============================================================================
-# 任务栏引擎：通栏检测 / 双向渐变背景 / 列活动度分段 / 编号点击
-# ============================================================================
-def _synth_taskbar(w=1200, band_h=40, strip_h=200, icons=(), bars=(), chevron=None):
-    """造一条带**双向渐变**的合成任务栏（BGRA），返回 (bits, w, strip_h, top)。
-
-    为什么背景要做成双向渐变：这是本机实测的真实形态 —— 横向因为壁纸/亚克力透出来
-    左亮右暗（实测左 (80,38,22)、右 (43,35,31)，差 40+ 级），竖向越往下越亮。
-    旧模型「区域一个背景色 + 色差阈值」在这种背景上会把左半条整片判成前景
-    （实测 100% 像素「像前景」，图标一个都切不出来）。
-
-    横向刻意做成**分段平色**（左 35% 一块、右边一块）而不是连续渐变：真实任务栏就是
-    这样（壁纸透出来是一整块，不是平滑斜坡），而且只有平色区占比 ≥45% 时「逐行众数色」
-    才能成立 —— 连续渐变会让每行众数色的覆盖率掉到 30% 以下，通栏根本检不出来。
-
-    icons: [(x0, x1, (r,g,b), 高)] —— 高度填 0 时按 band_h 的 60% 居中放。
-    bars:  [(x0, x1)] —— 图标下方那条「已启动指示条」（厚 3px，贴条带底部）。
-    chevron: (x0, x1) —— 「↑」那种又小又扁的字形（实测 12×7）。
-    """
-    buf = bytearray(bytes((150, 150, 150, 255)) * (w * strip_h))   # 壁纸（与任务栏色差极大）
-    top = strip_h - band_h
-    split = int(w * 0.35)
-    for y in range(top, strip_h):
-        v = int(10 * (y - top) / max(1, band_h - 1))   # 竖向渐变
-        for x in range(w):
-            if x < split:                              # 左区：壁纸透出来，明显更亮
-                r, g, b = 78, 46, 24
-            else:
-                r, g, b = 44, 34, 29
-            o = (y * w + x) * 4
-            buf[o:o + 4] = bytes((b + v, g + v, r + v, 255))
-    for x0, x1, col, ih in icons:
-        ih = ih or int(band_h * 0.6)
-        y0 = top + (band_h - ih) // 2
-        _paint_rect(buf, w, x0, y0, x1, y0 + ih - 1, col)
-    for x0, x1 in bars:
-        _paint_rect(buf, w, x0, strip_h - 4, x1, strip_h - 2, (60, 160, 240))
-    if chevron:
-        x0, x1 = chevron
-        y0 = top + band_h // 2 - 3
-        _paint_rect(buf, w, x0, y0, x1, y0 + 6, (190, 190, 190))
-    return bytes(buf), w, strip_h, top
-
-
-def _use_taskbar(mod, monkeypatch, bits, w, strip_h):
-    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, w, 1080))
-    monkeypatch.setattr(
-        mod, "_grab_rect_bits",
-        lambda x0, y0, ww, hh: (bytes(bits), x0, y0, ww, hh))
-
-
-def test_taskbar_band_detects_the_strip_and_its_height(monkeypatch):
-    """底部通栏要能被切出来，高度、原点都要对。"""
-    mod = _load_module()
-    bits, w, sh, top = _synth_taskbar()
-    _use_taskbar(mod, monkeypatch, bits, w, sh)
-    scan = mod._taskbar_scan()
-    assert scan["ok"], scan
-    assert scan["top"] == top and scan["bottom"] == sh - 1
-    assert scan["gy"] + scan["top"] == 1080 - sh + top, "通栏的屏幕 y 要落在条带顶部"
-    assert scan["gw"] == w
-
-
-def test_taskbar_band_rejects_a_uniform_screen(monkeypatch):
-    """整屏一个颜色时**不能**硬认成任务栏（那会把整个桌面当图标条去点）。"""
-    mod = _load_module()
-    buf = bytearray(bytes((40, 40, 40, 255)) * (800 * 200))
-    monkeypatch.setattr(mod, "_virtual_screen", lambda: (0, 0, 800, 1080))
-    monkeypatch.setattr(mod, "_grab_rect_bits",
-                        lambda x0, y0, ww, hh: (bytes(buf), x0, y0, ww, hh))
-    scan = mod._taskbar_scan()
-    assert not scan["ok"] and scan["reason"] == "no_band"
-
-
-def test_band_base_recovers_a_horizontal_gradient(monkeypatch):
-    """逐列背景必须跟着横向渐变走 —— 否则左半条整片会被当成前景。"""
-    mod = _load_module()
-    bits, w, sh, top = _synth_taskbar()
-    band = bits[top * w * 4:]
-    base = mod._band_base_cols(band, w, sh - top)
-    assert base[5][2] - base[w - 6][2] >= 20, "左侧背景应明显亮于右侧（R 通道差 20+）"
-    assert abs(base[5][2] - 78) <= 4 and abs(base[w - 6][2] - 44) <= 4
-
-
-def test_band_base_survives_a_polluted_top_row(monkeypatch):
-    """顶行被图标/窗口边缘压到时，中值滤波要把那几列的背景色救回来。"""
-    mod = _load_module()
-    bits, w, sh, top = _synth_taskbar()
-    buf = bytearray(bits)
-    _paint_rect(buf, w, 500, top, 501, top + 1, (255, 0, 255))   # 两列被污染
-    base = mod._band_base_cols(bytes(buf), w, sh - top)
-    ref = base[480]
-    for x in (500, 501):
-        assert abs(base[x][0] - ref[0]) + abs(base[x][1] - ref[1]) \
-            + abs(base[x][2] - ref[2]) <= 12, f"x={x} 的背景色被图标污染了：{base[x]} vs {ref}"
-
-
-def test_band_runs_splits_on_real_gaps_only():
-    """图标之间 3px 以上的缝才切开；字形内部 1~2px 的缝不能切（否则一个字裂成两块）。"""
-    mod = _load_module()
-    assert mod.TASKBAR_SPLIT_GAP == 3
-    act = [0] * 5 + [1] * 10 + [0] * 2 + [1] * 10 + [0] * 5
-    assert mod._band_runs(act, len(act)) == [(5, 26)], "2px 内缝不该切开"
-    act2 = [0] * 5 + [1] * 10 + [0] * 3 + [1] * 10
-    assert mod._band_runs(act2, len(act2)) == [(5, 14), (18, 27)], "3px 缝必须切开"
-
-
-def test_taskbar_slots_do_not_merge_adjacent_icons(monkeypatch):
-    """相邻的两个任务栏按钮**绝不能**并成一个槽位。
-
-    这是「点了没反应」最典型的成因：落点落在两个图标之间的缝上。旧实现用
-    「连通域 + 12px 间隙合并」，而 Win11 相邻图标之间只有 6~8px 缝 —— 必然并错。
-    """
-    mod = _load_module()
-    bits, w, sh, top = _synth_taskbar(
-        icons=[(300, 322, (240, 90, 60), 0), (330, 352, (70, 200, 120), 0)])
-    _use_taskbar(mod, monkeypatch, bits, w, sh)
-    slots = mod._taskbar_scan()["slots"]
-    assert len(slots) == 2, f"两个图标应给出两个槽位，实得 {[(s['x'], s['w']) for s in slots]}"
-    assert slots[0]["x"] == 311 and slots[1]["x"] == 341
-    assert all(s["w"] <= 26 for s in slots), "槽位宽度不能横跨两个图标"
-
-
-def test_taskbar_marks_running_apps_by_the_indicator_bar(monkeypatch):
-    """图标下方那条小横条 = 该应用正在运行（点它等于切窗口，不会重开一个）。"""
-    mod = _load_module()
-    bits, w, sh, top = _synth_taskbar(
-        icons=[(300, 322, (240, 90, 60), 0), (330, 352, (70, 200, 120), 0)],
-        bars=[(305, 318)])
-    _use_taskbar(mod, monkeypatch, bits, w, sh)
-    slots = mod._taskbar_scan()["slots"]
-    assert slots[0]["running"] is True, "第一个图标下方有指示条 → 正在运行"
-    assert slots[1]["running"] is False, "第二个没有指示条"
-
-
-def test_taskbar_keeps_the_small_chevron(monkeypatch):
-    """「↑ 隐藏图标」只有 12×7，不能被最小尺寸过滤掉（否则面板流程找不到入口）。"""
-    mod = _load_module()
-    assert mod.TASKBAR_SLOT_MIN_H <= 7, "最小高度必须 ≤7，否则「↑」会被丢掉"
-    bits, w, sh, top = _synth_taskbar(
-        icons=[(300, 322, (240, 90, 60), 0)], chevron=(1100, 1111))
-    _use_taskbar(mod, monkeypatch, bits, w, sh)
-    slots = mod._taskbar_scan()["slots"]
-    chev = [s for s in slots if s["x"] >= 1000]
-    assert len(chev) == 1, f"应识别出「↑」，实得 {[(s['x'], s['w'], s['h']) for s in slots]}"
-    assert chev[0]["h"] == 7 and chev[0]["w"] == 12
-    # 面板流程按「右侧托盘区里最左的小图标」认「↑」，必须正好落到它身上
-    right = [s for s in slots
-             if s["x"] >= w - mod.TASKBAR_RIGHT_ZONE and s["w"] <= mod.TASKBAR_CHEVRON_MAX_W]
-    assert right and right[0]["x"] == 1106
-
-
-def test_taskbar_zone_partitions_the_bar():
-    """左/中/右三个区要按几何切干净（模型据此避免点到输入法/时钟）。"""
-    mod = _load_module()
-    assert "最左区" in mod._taskbar_zone(100, 0, 1920)
-    assert mod._taskbar_zone(900, 0, 1920) == "应用区"
-    assert "托盘区" in mod._taskbar_zone(1800, 0, 1920)
-
-
-def test_taskbar_slot_lines_are_clickable_and_flag_running():
-    """槽位文字要能直接照抄成 click 调用，并且标明「已启动」。"""
-    mod = _load_module()
-    slots = [{"i": 1, "x": 311, "y": 1052, "w": 23, "h": 24, "box": (300, 1040, 322, 1063),
-              "running": True},
-             {"i": 2, "x": 341, "y": 1052, "w": 23, "h": 24, "box": (330, 1040, 352, 1063),
-              "running": False}]
-    lines = mod._taskbar_slot_lines(slots, 0, 1200, pick=2)
-    assert "1. 中心(311,1052)" in lines[0] and "23×24" in lines[0]
-    assert "已启动" in lines[0] and "已启动" not in lines[1]
-    assert "本次点击" in lines[1]
-
-
-def test_taskbar_images_carry_no_markers(monkeypatch):
-    """任务栏/面板返给模型的图必须是纯净原图：不画编号框、不画准星、无任何标记。
-
-    槽位信息全部走文字表（编号/中心坐标/尺寸），图上不叠加任何东西 —— 标记会盖住
-    图标本身，且框线在缩放的条带图上反而干扰认图。
-    """
-    mod = _load_module()
-    seen = []
-
-    def _capture(src_dc, sx, sy, sw, sh, tw, cells=0, cursor_pt=None,
-                 smooth=True, marks=None, level=6, boxes=None):
-        seen.append({"boxes": boxes, "marks": marks, "cells": cells,
-                     "cursor": cursor_pt})
-        return b"PNG", 900, 40
-
-    monkeypatch.setattr(mod, "_capture_scaled", _capture)
-    mod._STATE["interrupted"] = mod._STATE["paused"] = False
-    monkeypatch.setattr(mod, "_guard", lambda what: "")
-    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
-    monkeypatch.setattr(mod, "_log", lambda who, text: None)
-    monkeypatch.setattr(mod.user32, "GetDC", lambda h: 1)
-    monkeypatch.setattr(mod.user32, "ReleaseDC", lambda h, d: 1)
-    bits, w, sh, top = _synth_taskbar(
-        icons=[(300, 322, (240, 90, 60), 0), (330, 352, (70, 200, 120), 0)])
-    _use_taskbar(mod, monkeypatch, bits, w, sh)
-    out = mod.tool_taskbar_open({})
-    assert out[1]["type"] == "image"
-    assert seen and all(not s["boxes"] and not s["marks"] and not s["cells"]
-                        and s["cursor"] is None for s in seen), \
-        f"任务栏图必须纯净，实得叠加参数 {seen}"
-    assert "无任何标记" in out[0]["text"]
-
-
-def test_taskbar_open_reports_bad_index_and_switches_foreground(monkeypatch):
-    """按编号点击：编号越界要如实说；点完要回读落点并核对前台窗口。"""
-    mod = _load_module()
-    mod._STATE["interrupted"] = mod._STATE["paused"] = False
-    bits, w, sh, top = _synth_taskbar(
-        icons=[(300, 322, (240, 90, 60), 0), (330, 352, (70, 200, 120), 0)])
-    _use_taskbar(mod, monkeypatch, bits, w, sh)
-    monkeypatch.setattr(mod, "_guard", lambda what: "")
-    monkeypatch.setattr(mod, "_refresh_env", lambda: None)
-    monkeypatch.setattr(mod, "_log", lambda who, text: None)
-    monkeypatch.setattr(mod.user32, "GetDC", lambda h: 1)
-    monkeypatch.setattr(mod.user32, "ReleaseDC", lambda h, d: 1)
-    monkeypatch.setattr(mod, "_capture_scaled", lambda *a, **k: (b"PNG", 900, 40))
-
-    out = mod.tool_taskbar_open({})
-    assert "个图标槽位" in out[0]["text"] and out[1]["type"] == "image"
-
-    bad = mod.tool_taskbar_open({"index": 99})
-    assert "没有编号 99" in bad[0]["text"] and len(bad) == 1
-
-    clicked = []
-    fg = {"h": 1}
-
-    def _click(x, y, b, c, mode="mouse"):
-        clicked.append((x, y))
-        fg["h"] += 1          # 模拟「点了任务栏图标 → 前台窗口换成那个应用」
-        return True
-
-    monkeypatch.setattr(mod, "do_click", _click)
-    # 条带 200 高、通栏在其最后 40 行 → 通栏顶 y = 1080-200+160 = 1040；
-    # 图标 24 高居中放（局部行 8~31），中位 y=20 → 屏幕 y=1060。
-    monkeypatch.setattr(mod, "_cursor_pos", lambda: (341, 1060))
-    monkeypatch.setattr(mod, "foreground_window", lambda: fg["h"])
-    monkeypatch.setattr(mod, "window_title", lambda h: f"win{h}")
-    out2 = mod.tool_taskbar_open({"index": 2})
-    assert clicked == [(341, 1060)], f"应点第二个图标的中心，实得 {clicked}"
-    assert "落点回读" in out2[0]["text"] and "0 偏差" in out2[0]["text"]
-    assert "前台窗口已切换" in out2[0]["text"], "切窗口成功必须明确回报"
-
-
-def test_taskbar_click_warns_when_foreground_does_not_change(monkeypatch):
-    """点了但前台窗口没变 → 必须警告「别盲目重复点」，而不是报成功。"""
-    mod = _load_module()
-    mod._STATE["interrupted"] = mod._STATE["paused"] = False
-    monkeypatch.setattr(mod, "do_click", lambda x, y, b, c, mode="mouse": True)
-    monkeypatch.setattr(mod, "_cursor_pos", lambda: (500, 500))
-    monkeypatch.setattr(mod, "foreground_window", lambda: 7)
-    monkeypatch.setattr(mod, "window_title", lambda h: "微信")
-    note = mod._taskbar_click(500, 500, "任务栏第 3 个槽位", wait_ms=60)
-    assert "仍未变化" in note
-    assert "不要重复点同一个图标" in note, "必须明确劝阻重复点击"
-    assert "timeout=3000" in note, "要告诉模型怎么等更久"
-
-
-def test_taskbar_click_polls_until_the_foreground_changes(monkeypatch):
-    """点击后必须**轮询**等前台切换，而不是睡死一段再只看一眼。
-
-    任务栏点击有两类：切到已在运行的应用（几十毫秒）与启动未运行的应用（1~3 秒）。
-    固定 sleep 250ms 再看一眼，慢启动的必定被判「没反应」，模型于是反复点同一个图标，
-    整体耗时越积越长 —— 用户看到的就是「taskbar_open 超时」。
-    """
-    import time as _t
-    mod = _load_module()
-    calls = {"n": 0}
-
-    def _fg():
-        calls["n"] += 1
-        return 7 if calls["n"] <= 2 else 99      # 第 3 次查询才切过去
-
-    monkeypatch.setattr(mod, "do_click", lambda x, y, b, c, mode="mouse": True)
-    monkeypatch.setattr(mod, "_cursor_pos", lambda: (500, 500))
-    monkeypatch.setattr(mod, "foreground_window", _fg)
-    monkeypatch.setattr(mod, "window_title", lambda h: f"win{h}")
-    t0 = _t.perf_counter()
-    note = mod._taskbar_click(500, 500, "槽位", wait_ms=3000)
-    dt = _t.perf_counter() - t0
-    assert "前台窗口已切换" in note
-    assert 99 in [calls["n"]] or calls["n"] >= 3
-    assert dt < 1.0, f"一旦切换就该立刻返回，不该睡满 3s（实际 {dt:.2f}s）"
-
-
-def test_change_bbox_skips_identical_rows_quickly(monkeypatch):
-    """未变化的整行必须被跳过（C 层 bytes 比较），否则面板没弹出时要白扫几十万像素。"""
-    import time as _t
-    mod = _load_module()
-    w, h = 380, 480
-    a = bytes(w * h * 4)                       # 全 0
-    b = bytearray(a)
-    # 只改中间一小块（模拟面板）
-    for y in range(200, 260):
-        off = (y * w + 100) * 4
-        b[off:off + 40 * 4] = b"\xff" * (40 * 4)
-    t0 = _t.perf_counter()
-    bb, changed = mod._change_bbox(a, bytes(b), w, h)
-    dt = _t.perf_counter() - t0
-    assert bb is not None and changed > 0
-    assert bb[0] <= 100 and bb[1] <= 200
-    assert dt < 0.25, f"逐行跳过没生效（{dt:.3f}s）"
-    # 两份完全相同 → 不花时间
-    t0 = _t.perf_counter()
-    assert mod._change_bbox(a, a, w, h) == (None, 0)
-    assert _t.perf_counter() - t0 < 0.1
-
-
-def test_merge_parts_still_merges_inside_a_panel():
-    """面板（网格）里图标碎片仍要按间隙合并 —— 这条路径不能被任务栏改动带走。"""
-    mod = _load_module()
-    parts = [{"minx": 10, "maxx": 30, "miny": 5, "maxy": 25, "area": 200},
-             {"minx": 33, "maxx": 50, "miny": 5, "maxy": 25, "area": 150},
-             {"minx": 120, "maxx": 140, "miny": 5, "maxy": 25, "area": 180}]
-    merged = mod._merge_parts(parts, 300, 40)
-    assert len(merged) == 2, f"3px 缝应合并、70px 缝应分开，实得 {merged}"
-    assert (merged[0]["minx"], merged[0]["maxx"]) == (10, 50)
-
-
-def test_taskbar_open_is_registered_and_wired():
-    """工具必须出现在工具表与分发表里（否则模型看不到 / 调用不了）。"""
-    mod = _load_module()
-    names = [t["name"] for t in mod.TOOLS]
-    assert "taskbar_open" in names
-    assert "taskbar_open" in mod._HANDLERS
-    spec = next(t for t in mod.TOOLS if t["name"] == "taskbar_open")
-    props = spec["inputSchema"]["properties"]
-    assert set(props) >= {"where", "index", "chevron", "name", "timeout"}
-
-
 def test_click_refuses_to_press_when_the_cursor_is_stolen(monkeypatch):
     """真实鼠标抢走光标时，宁可**不点**，也不能按在错误的位置上。
 
@@ -4021,6 +3358,36 @@ def test_shipped_plugin_update_replaces_old_version_and_drops_obsolete_files(
     assert json.loads((dst / "plugin.json").read_text(encoding="utf-8"))["revision"] == 2
 
 
+def test_window_capture_and_taskbar_tools_are_removed():
+    """用户要求：删除截取特定窗口的截图与任务栏图标识别工具。
+
+    多窗口场景统一用整屏截图（图=用户眼前画面），切后台应用交给 open_app。
+    这两个能力一旦被加回来，「照着窗口图算坐标却点到屏幕外/隔壁窗口」与
+    「任务栏 20px 图标目测必偏」的旧问题就会复发，所以固化成断言。
+    """
+    mod = _load_module()
+    shot = next(t for t in mod.TOOLS if t["name"] == "screen_shot")
+    props = shot["inputSchema"]["properties"]
+    assert set(props) == {"grid", "wait_ms"}, f"screen_shot 只保留整屏参数，实得 {sorted(props)}"
+    assert "mode" not in props and "hwnd" not in props and "title" not in props
+    assert not hasattr(mod, "grab_window"), "窗口截图实现必须删除"
+    assert not hasattr(mod, "_grab_window_printwindow")
+    assert "taskbar_open" not in {t["name"] for t in mod.TOOLS}
+    assert "taskbar_open" not in mod._HANDLERS
+    assert "taskbar_open" not in mod._CONTROL_TOOLS
+    src = SERVER.read_text(encoding="utf-8").lower()
+    assert "taskbar" not in src, "任务栏识别实现必须整段删除"
+
+
+def test_open_app_switches_background_window_without_taskbar_args():
+    """open_app 直接切后台应用即可，不再需要任务栏编号参数。"""
+    mod = _load_module()
+    spec = next(t for t in mod.TOOLS if t["name"] == "open_app")
+    props = spec["inputSchema"]["properties"]
+    assert "index" not in props and "where" not in props and "chevron" not in props
+    assert set(props) >= {"name", "launch", "timeout"}
+
+
 def test_alt_tab_switches_without_reactivating_old_target(monkeypatch):
     """Alt+Tab 是系统窗口导航：不得先抢回旧目标，返回真实新前台并清除旧输入目标。"""
     mod = _load_module()
@@ -4067,20 +3434,6 @@ def test_screen_shot_wait_ms_waits_once_before_capture(monkeypatch):
     assert "2.5" in text and "等待" in text
     shot = next(t for t in mod.TOOLS if t["name"] == "screen_shot")
     assert "wait_ms" in shot["inputSchema"]["properties"]
-
-
-def test_window_screenshot_baseline_rejects_moved_window(monkeypatch):
-    """窗口截图后窗口移动/缩放，旧图像坐标必须失效，不能继续按旧位置点击。"""
-    mod = _load_module()
-    monkeypatch.setattr(mod, "_VIEW", {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0,
-                                       "img_w": 0.0, "img_h": 0.0, "ts": 0.0})
-    monkeypatch.setattr(mod, "_STATE", dict(mod._STATE))
-    rect = {"v": (100, 100, 600, 500)}
-    monkeypatch.setattr(mod, "window_rect", lambda h: _Rect(*rect["v"]))
-    mod._set_view(100, 100, 500, 400, 500, 400, "window", 42)
-    rect["v"] = (160, 100, 660, 500)       # 截图后窗口向右移动 60px
-    with pytest.raises(ValueError, match="移动或缩放"):
-        mod._require_fresh_shot()
 
 
 def test_click_does_not_snap_outside_explicit_target_window(monkeypatch):
@@ -4257,8 +3610,8 @@ def test_tool_schemas_explain_fault_tolerant_usage():
     mod = _load_module()
     tools = {t["name"]: t for t in mod.TOOLS}
     assert "wait_ms" in tools["screen_shot"]["description"]
-    assert "完整可见" in tools["screen_shot"]["description"]
-    assert "远大于屏幕" not in tools["screen_shot"]["description"]
+    assert "始终整屏" in tools["screen_shot"]["description"]
+    assert "mode=window" not in tools["screen_shot"]["description"]
     assert "可见" in tools["click"]["description"]
     assert "遮挡" in tools["click"]["description"]
     assert "alt+tab" in tools["key_press"]["description"].lower()
