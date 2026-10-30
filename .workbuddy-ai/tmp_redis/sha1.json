@@ -1,8 +1,0 @@
-{
-  "order_dedup.lua": "c6546f4a864bea41c72757a49a0e4efb81c6f677",
-  "stock_deduct.lua": "cb8074987e00e526e4ed33852466ab6c6c5f3b45",
-  "points_deduct.lua": "138abc77a8384128f8295f8fa81c503f81d03444",
-  "points_credit.lua": "14950785aaa5f972365bf1c906db122bfb3ecd80",
-  "login_throttle.lua": "88572aacaf464046cc44340edd39f6a8e4202f02",
-  "batch_get.lua": "3fb3d771ee5a8e4dbfc598ce639cd4f7b4fa3d9e"
-}

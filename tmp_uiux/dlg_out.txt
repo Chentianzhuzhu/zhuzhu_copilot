@@ -1,9 +1,0 @@
-﻿plain QDialog -> overlay visible: True
-2026-10-25 13:48:58,830 [INFO] YARA 引擎已加载 1 个规则文件
-[dnd] showEvent is_admin=False _admin_dnd=False
-[dnd] 非管理员运行：走 Qt 原生拖放
-[WeChatBridge] credentials loaded, bound= True
-[WeChatBridge] auto-start polling on startup
-[WeChatBridge] poll loop started, gen= 1 token= 7f8dcfac5d49@im.bot:
-real settings dlg -> overlay visible: True
-  dlg visible: True
