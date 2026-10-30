@@ -8,8 +8,8 @@
 
 import pytest
 
-from PyQt6.QtCore import QRect
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
+from PyQt6.QtCore import QRect, QRectF
+from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 from zhuzhu_Copilot.core import app_wallpaper as w
@@ -63,6 +63,32 @@ def _solid_png(tmp_path, color: str = "#2F52D8", size: int = 64) -> str:
     path = tmp_path / "wall.png"
     assert pm.save(str(path), "PNG")
     return str(path)
+
+
+# ══════════════ 绘制：不得破坏外层圆角裁剪 ══════════════
+
+def test_paint_preserves_outer_rounded_clip(monkeypatch, tmp_path):
+    """自定义背景模式下窗口四角必须仍是圆角：壁纸绘制只能「求交」裁剪区。
+
+    主面板 paintEvent 已用圆角路径裁剪窗口；旧实现用 setClipRect 把裁剪区
+    替换成矩形，于是壁纸铺满四角 → 窗口视觉上变成直角。
+    """
+    img_path = _solid_png(tmp_path, "#2F52D8", 64)
+    monkeypatch.setattr(w, "load", lambda: w.WallpaperParams(
+        bg_image=img_path, bg_fit="cover", bg_blur=0.0, bg_dim=0.0))
+
+    target = QImage(80, 60, QImage.Format.Format_ARGB32)
+    target.fill(QColor(0, 0, 0, 0))
+    p = QPainter(target)
+    clip = QPainterPath()
+    clip.addRoundedRect(QRectF(0, 0, 80, 60), 12, 12)
+    p.setClipPath(clip)
+    assert w.paint(p, QRect(0, 0, 80, 60), "#000000") is True
+    p.end()
+
+    assert target.pixelColor(0, 0).alpha() == 0, "圆角外像素必须保持透明"
+    assert target.pixelColor(79, 59).alpha() == 0, "右下圆角外同样不得被壁纸填成直角"
+    assert target.pixelColor(40, 30).alpha() > 0, "窗口内部仍要有壁纸"
 
 
 # ══════════════ 高斯模糊 ══════════════

@@ -3085,10 +3085,11 @@ class _ActionFeedback(QWidget):
 
     SPIN_MS = 40                # 转圈帧间隔（约 25fps）
     CHECK_MS = 16               # 打勾帧间隔
-    CHECK_DRAW_MS = 520         # 对勾自下而上画完的时长
+    CHECK_DRAW_MS = 620         # 对勾从左下笔尖画到右上收笔的时长
     HOLD_MS = 900               # 对勾画完后停留时长
-    _DOT_R = 2.0                # 小圆点半径
-    _ORBIT_R = 7.0              # 小圆点绕行半径
+    DOTS = 6                    # 绕圈小圆点数量
+    _DOT_R = 1.9                # 小圆点半径
+    _ORBIT_R = 8.0              # 小圆点绕行半径
 
     def __init__(self, button: QPushButton, bg: str, fg: str):
         super().__init__(button)
@@ -3176,28 +3177,57 @@ class _ActionFeedback(QWidget):
         if self._mode == "spin":
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self._fg)
-            for i in range(3):
-                ang = math.radians(self._angle + i * 120.0)
-                p.setOpacity(0.30 + 0.70 * (i / 2.0))
+            for i in range(self.DOTS):
+                ang = math.radians(self._angle + i * (360.0 / self.DOTS))
+                # 沿绕行方向依次变亮：视觉上是一串圆点在追着转
+                p.setOpacity(0.22 + 0.78 * (i / float(self.DOTS - 1)))
                 p.drawEllipse(QPointF(cx + math.cos(ang) * self._ORBIT_R,
                                       cy + math.sin(ang) * self._ORBIT_R),
                               self._DOT_R, self._DOT_R)
             p.setOpacity(1.0)
         else:
-            # 自下而上：用从底部向上抬升的裁剪区，让完整对勾逐步「长」出来
+            # 像人手动打勾：笔尖从左下起笔 → 下探到底部转折 → 向右上收笔。
+            # 按折线**长度**逐步绘制（不是整图遮罩上移），所以笔迹是"长出来"的。
             s = min(self.width(), self.height()) * 0.30
-            check = QPainterPath()
-            check.moveTo(cx - s, cy - s * 0.10)
-            check.lineTo(cx - s * 0.18, cy + s * 0.92)
-            check.lineTo(cx + s, cy - s * 0.90)
-            reveal_top = self.height() * (1.0 - self._progress)
-            p.setClipRect(QRectF(0, reveal_top, self.width(),
-                                 self.height() - reveal_top))
-            pen = QPen(self._fg, 2.6)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            p.drawPath(check)
+            pts = [QPointF(cx - s, cy + s * 0.18),
+                   QPointF(cx - s * 0.20, cy + s * 0.92),
+                   QPointF(cx + s, cy - s * 0.92)]
+            drawn = self._polyline_until(pts, self._progress)
+            if len(drawn) >= 2:
+                pen = QPen(self._fg, 2.6)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                path = QPainterPath()
+                path.moveTo(drawn[0])
+                for pt in drawn[1:]:
+                    path.lineTo(pt)
+                p.drawPath(path)
         p.end()
+
+    @staticmethod
+    def _polyline_until(pts: list, t: float) -> list:
+        """取折线从头起累计长度为 `t`（0~1）比例的那一段，返回点列。
+
+        这是「手写打勾」的关键：按路径长度推进，笔尖严格沿 A→B→C 走，
+        而不是整块图形一起淡入/上移。
+        """
+        total = sum(math.hypot(b.x() - a.x(), b.y() - a.y())
+                    for a, b in zip(pts, pts[1:]))
+        remain = max(0.0, min(1.0, float(t))) * total
+        out = [pts[0]]
+        for a, b in zip(pts, pts[1:]):
+            seg = math.hypot(b.x() - a.x(), b.y() - a.y())
+            if remain <= 0.0:
+                break
+            if remain >= seg:
+                out.append(b)
+                remain -= seg
+            else:
+                k = (remain / seg) if seg else 1.0
+                out.append(QPointF(a.x() + (b.x() - a.x()) * k,
+                                   a.y() + (b.y() - a.y()) * k))
+                remain = 0.0
+        return out
 
 
 # 写入类操作：确认弹窗隐藏具体内容，仅提示目标
@@ -19443,6 +19473,15 @@ class AgentPanel(QDialog):
                             | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("agentMainPanel")
+        # 任务栏图标必须在窗口**首次 show 之前**绑定到原生窗口：任务栏按钮是 shell 在
+        # 首次显示时创建的，显示后再 WM_SETICON 往往只刷新已存在的按钮 —— 于是启动后
+        # 一直显示系统占位图标，直到最小化/还原重建按钮才更新（用户反馈的启动问题）。
+        # 这里提前创建 HWND、补 WS_EX_APPWINDOW 并写入大/小图标，按钮一创建就带专属图标。
+        try:
+            self._ensure_taskbar_entry()
+            set_native_window_icon(self, _app_icon_path())
+        except Exception:
+            pass
         self._drag_press = None   # 顶部区域拖窗起点（全局坐标）
         self._drag_local = QPoint()   # 按下点在窗口内的位置（最大化拖出时按比例还原）
         self._drag_origin = QPoint()  # 拖窗开始时窗口左上角
@@ -23837,8 +23876,10 @@ class AgentPanel(QDialog):
         # 用户第一次点「最小化」上（表现为点了没反应半秒）。放在首帧与首轮子面板归位
         # 之后（600ms）消化掉，既不影响启动，也把「刚打开就点最小化」的窗口期压到很小。
         QTimer.singleShot(600, self._prewarm_window_fx)
-        # 原生窗口显示后强制设置任务栏大/小图标，修复安装后任务栏显示默认图标
+        # 原生窗口显示后再次强制设置任务栏大/小图标；再补一次延迟刷新，
+        # 覆盖「任务栏按钮刚创建、shell 还在用缓存图标」的短暂窗口期。
         set_native_window_icon(self, _app_icon_path())
+        QTimer.singleShot(120, lambda: set_native_window_icon(self, _app_icon_path()))
         # 打开面板时同步显示左侧停靠面板（worktree→git→todos 自上而下堆叠）；
         # 先 sync worktree 再 git，避免 git 先放锚点、worktree 随后压住 git 顶部。
         # 延迟再同步一次兜底面板完全就绪前的时序问题

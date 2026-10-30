@@ -377,7 +377,10 @@ def paint(painter: QPainter, rect: QRect, scrim: str = _SCRIM_FALLBACK) -> bool:
     size = QSize(max(1, rect.width()), max(1, rect.height()))
     try:
         painter.save()
-        painter.setClipRect(rect)
+        # 必须 IntersectClip 而不是默认的 ReplaceClip：主面板 paintEvent 已用圆角路径
+        # 裁剪窗口，壁纸若把裁剪区替换成矩形，四角就会画出直角（用户反馈的「自定义
+        # 背景模式下窗口变直角」）。求交后壁纸仍铺满 rect，同时保留外层圆角。
+        painter.setClipRect(rect, Qt.ClipOperation.IntersectClip)
         # 先按适配方式摆进「与绘制区同尺寸」的画布再模糊 —— 顺序很关键，见 _fitted
         painter.drawPixmap(rect, _blurred(_fitted(pm, size, fit, scrim), blur))
         painter.fillRect(rect, _scrim_color(scrim, p.bg_dim))

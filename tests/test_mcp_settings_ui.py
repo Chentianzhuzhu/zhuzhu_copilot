@@ -9,6 +9,8 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
+import pytest
+from PyQt6.QtCore import QPointF
 from PyQt6.QtWidgets import QApplication, QPushButton
 
 _app = QApplication.instance() or QApplication([])
@@ -36,6 +38,26 @@ def test_export_subset_empty_never_falls_back_to_all():
 
 def test_export_subset_unknown_name_returns_empty():
     assert ap._mcp_export_subset(_servers(), ["missing"]) == []
+
+
+def test_spinner_dot_count_is_six():
+    """绕圈小圆点数量：3 → 6"""
+    assert ap._ActionFeedback.DOTS == 6
+
+
+def test_check_stroke_grows_from_left_bottom_to_right_top():
+    """打勾按路径长度绘制：从左下起笔，经底部转折，最终收笔于右上"""
+    pts = [QPointF(0, 0), QPointF(5, 10), QPointF(20, -10)]
+    assert ap._ActionFeedback._polyline_until(pts, 0.0) == [pts[0]]
+
+    half = ap._ActionFeedback._polyline_until(pts, 0.5)
+    assert half[0] == pts[0]
+    assert len(half) >= 2
+    assert half[-1].x() > 5, "进度过半时笔尖必须已经越过底部转折、向右推进"
+
+    end = ap._ActionFeedback._polyline_until(pts, 1.0)
+    assert end[0] == pts[0]
+    assert end[-1].x() == pytest.approx(20) and end[-1].y() == pytest.approx(-10)
 
 
 def test_action_feedback_spin_then_check_then_reset():
