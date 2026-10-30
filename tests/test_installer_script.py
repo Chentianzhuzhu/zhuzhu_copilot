@@ -6,8 +6,21 @@
 import re
 from pathlib import Path
 
-INSTALLER = Path(__file__).resolve().parent.parent / "installer"
+ROOT = Path(__file__).resolve().parent.parent
+INSTALLER = ROOT / "installer"
 ISS = INSTALLER / "zhuzhu_Copilot.iss"
+
+
+def test_build_release_ps1_is_syntactically_valid():
+    """构建脚本必须能被 PowerShell 解析（曾因 Invoke-Exe 缺少 if ($ViaCmd) 报语法错误）"""
+    import subprocess
+    script = ("$t=$null;$e=$null;"
+              "[void][System.Management.Automation.Language.Parser]::ParseFile("
+              "(Resolve-Path 'build_release.ps1').Path,[ref]$t,[ref]$e);"
+              "if($e.Count -gt 0){Write-Output $e[0].Message;exit 1}")
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                       cwd=str(ROOT), capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, (r.stdout or "") + (r.stderr or "")
 
 
 def _iss() -> str:

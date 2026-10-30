@@ -119,6 +119,7 @@ function Invoke-Exe {
     $ErrorActionPreference = 'Continue'
     if ($WorkDir) { Push-Location $WorkDir }
     try {
+        if ($ViaCmd) {
             $line = '"' + $Exe + '"'
             foreach ($a in $Arguments) {
                 $line += ' ' + ($(if ($a -match '\s') { '"' + $a + '"' } else { $a }))
