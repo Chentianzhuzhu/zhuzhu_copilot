@@ -1766,6 +1766,34 @@ def grab_zoom(cx: int, cy: int, size: int, factor: int, grid: bool = False,
         user32.ReleaseDC(0, dc)
 
 
+def grab_region(x0: int, y0: int, w: int, h: int, factor: int = 1,
+                grid: bool = False, cursor: bool = False,
+                smooth: bool = False) -> tuple:
+    """抓取任意矩形区域并放大 factor 倍（按窗口查看局部细节）。
+
+    与 grab_zoom 的区别：宽高由调用方给出（通常是窗口矩形），所以能完整覆盖
+    目标程序的一整块面板；`grab_zoom` 只取中心附近的正方形，窗口一大就截不全。
+    返回 (png, img_w, img_h, x0, y0, w, h)，坐标基准仍是「源坐标 = 区域原点 + 图像像素×比例」。
+    """
+    vx, vy, vw, vh = _virtual_screen()
+    x0 = max(vx, min(vx + vw - 1, int(x0)))
+    y0 = max(vy, min(vy + vh - 1, int(y0)))
+    w = max(1, min(int(w), vx + vw - x0))
+    h = max(1, min(int(h), vy + vh - y0))
+    factor = max(1, min(int(factor), 8))
+    tw = max(w, min(w * factor, ZOOM_MAX_PX))
+    dc = user32.GetDC(0)
+    try:
+        # 超宽窗口会被压到 ZOOM_MAX_PX：缩小必须用 HALFTONE，最近邻降采样会丢像素
+        png, iw, ih = _capture_scaled(dc, x0, y0, w, h, tw,
+                                      GRID_CELLS if grid else 0,
+                                      (x0 + w // 2, y0 + h // 2) if cursor else None,
+                                      smooth=(smooth or tw < w))
+        return png, iw, ih, x0, y0, w, h
+    finally:
+        user32.ReleaseDC(0, dc)
+
+
 # ============================================================================
 # 输入注入：鼠标 / 键盘（SendInput，带签名）+ 触控（InjectTouchInput，优先）
 # ============================================================================
@@ -4217,8 +4245,8 @@ def _norm_ratio(v):
     return None
 
 
-def _cand_gate(args: dict, cand) -> str:
-    """拦截「可能因服务商压缩而偏移」的图像坐标点击，逼迫走可校准/候选编号路径。
+def _cand_gate(args: dict, cand, what: str = "点击") -> str:
+    """拦截「可能因服务商压缩而偏移」的图像坐标动作，逼迫走可校准/候选编号路径。
 
     为什么默认拒绝：用户实测 agnes 等服务商会把截图压缩后再给模型，模型读到的
     像素与插件发出的图像尺寸不一致，任何绝对像素换算都会整体偏移（越靠右下越偏）。
@@ -4242,12 +4270,13 @@ def _cand_gate(args: dict, cand) -> str:
         return ""
     # 「没有截图基准 / 基准过期」是更根本的问题，优先按它报错
     _require_fresh_shot()
-    return ("⚠ **已拒绝本次点击**：图像坐标可能因模型服务商压缩图片而整体偏移，已拦截。\n"
+    return (f"⚠ **已拒绝本次{what}**：图像坐标可能因模型服务商压缩图片而整体偏移，已拦截。\n"
             "改用任一方式后重试：\n"
-            "① **最稳**：`refine_point(x,y)` → `click(cand=编号)`（坐标由插件按原始屏幕像素计算）；\n"
+            "① **最稳**：`refine_point(x,y)` → 传 `cand=编号`（坐标由插件按原始屏幕像素计算）；\n"
             "② 你知道自己看到的图片尺寸：同时传 `seen_w`/`seen_h`，插件按比例校准；\n"
-            "③ 确实要点精确像素（画布/输入框空白）：传 `raw=true`；\n"
-            "④ 手里是屏幕物理坐标：传 `space=\"screen\"`。")
+            "③ 改用**归一化坐标** `nx`/`ny`（0~1 或 0~1000，与图片尺寸无关）；\n"
+            "④ 确实要精确像素（画布/空白处）：传 `raw=true`；\n"
+            "⑤ 手里是屏幕物理坐标：传 `space=\"screen\"`。")
 
 
 def _num(v, default: int = 0) -> int:
@@ -4358,8 +4387,9 @@ def _shot_meta(desc: str, grid: bool = False) -> str:
               "绝对像素读数会整体偏移。此时：① 下一次调用同时传 `seen_w`/`seen_h`（你实际看到的宽高），"
               "插件会按比例校准；② 或改用**归一化坐标** nx/ny（0~1 或 0~1000）；"
               "③ 最稳是先 refine_point 再 click(cand=编号) —— 候选坐标由插件计算，完全不受压缩影响。\n"
-              "为防这次偏移，**未带 cand/seen_w/raw 的图像坐标点击会被拦截**；"
-              "明确要点精确像素时传 raw=true。"
+              "为防这次偏移，**未带 cand/seen_w/raw 的图像坐标点击与局部放大会被拦截**；"
+              "要点精确像素时传 raw=true。只想看某个窗口的细节时，直接 "
+              "`zoom_in(hwnd=…)`（按窗口放大，不需要你给像素）。"
             + _transform_line()
             + "点击默认会自动做元素吸附（把坐标修正到最近控件的中心，见 refine_point）；"
               "需要点精确像素时传 snap=false。"
@@ -4396,21 +4426,56 @@ def tool_screen_shot(args: dict) -> list:
 
 
 def tool_zoom_in(args: dict) -> list:
+    """放大局部细节。三种定位方式，按可靠性从高到低：
+
+    ① `hwnd`/`title`（可不带坐标）→ 直接放大整个窗口的可见矩形。**不需要模型给像素**，
+       天然免疫服务商压图 —— 「总是截到别的区域」时首选；
+    ② `cand=编号`（来自 refine_point）→ 坐标由插件按原始屏幕像素计算，同样免疫压图；
+    ③ `nx`/`ny`（归一化）或 `seen_w`/`seen_h` 校准后的像素 → 与图片尺寸无关。
+    未校准的绝对像素 x/y 会被 `_cand_gate` 拒绝（服务商压图后必然偏移，会截到别的区域）。
+    """
     _settle_after_action()
-    x, y = _resolve_point(args)
     size = _num(args.get("size"), 400)
     factor = _num(args.get("factor"), 3)
     grid = _bool(args.get("grid"), False)
     cursor = _bool(args.get("cursor"), False)
     smooth = _bool(args.get("smooth"), False)
-    png, iw, ih, x0, y0, region = grab_zoom(x, y, size, factor, grid=grid,
-                                             cursor=cursor, smooth=smooth)
-    _set_view(x0, y0, region, region, iw, ih, "zoom")
-    _log("ai", f"放大查看 ({x},{y}) 区域 {region}px × {factor}")
+    cand = _resolve_cand(args)
+    hwnd = find_window(str(args.get("title") or ""), _num(args.get("hwnd"), 0))
+    has_coord = any(args.get(k) not in (None, "") for k in ("x", "y", "nx", "ny"))
+    note = ""
+    if cand:
+        dx, dy, note = cand
+        png, iw, ih, x0, y0, rw = grab_zoom(dx, dy, size, factor, grid=grid,
+                                            cursor=cursor, smooth=smooth)
+        rh = rw
+        desc = (f"已放大候选 #{_num(args.get('cand'), 0)} 附近 {rw}×{rh} 区域为 "
+                f"{iw}×{ih}（放大 {iw / rw:.1f} 倍）")
+    elif hwnd and not has_coord:
+        r = window_rect(hwnd)
+        x0, y0 = r.left, r.top
+        rw, rh = max(1, r.right - r.left), max(1, r.bottom - r.top)
+        # 窗口模式按 1:1 输出（factor 固定 1）：已经够大，再放大只会撑爆视觉输入
+        png, iw, ih, x0, y0, rw, rh = grab_region(x0, y0, rw, rh, factor=1,
+                                                   grid=grid, cursor=cursor, smooth=smooth)
+        _STATE["view_target"] = hwnd      # 后续 click 默认落在这个窗口上
+        desc = (f"已放大窗口「{window_title(hwnd) or hwnd}」的可见区域 {rw}×{rh} 为 "
+                f"{iw}×{ih}（1:1）；本图原点即窗口左上角，坐标按图像像素给即可")
+    else:
+        gate = _cand_gate(args, cand, "放大")
+        if gate:
+            _log("ai", "拒绝局部放大：图像坐标未校准")
+            return [{"type": "text", "text": gate}]
+        dx, dy = _resolve_point(args)
+        png, iw, ih, x0, y0, rw = grab_zoom(dx, dy, size, factor, grid=grid,
+                                            cursor=cursor, smooth=smooth)
+        rh = rw
+        desc = f"已放大屏幕 ({dx},{dy}) 附近 {rw}×{rh} 区域为 {iw}×{ih}（放大 {iw / rw:.1f} 倍）"
+    _set_view(x0, y0, rw, rh, iw, ih, "zoom")
+    _log("ai", f"放大查看 ({x0},{y0}) 区域 {rw}×{rh}")
     crisp = "" if smooth else "（最近邻放大：边缘是硬实的像素方块，可直接按像素读数）"
-    return [{"type": "text",
-             "text": _shot_meta(f"已放大屏幕 ({x},{y}) 附近 {region}×{region} 区域为 {iw}×{ih}"
-                                f"（放大 {iw / region:.1f} 倍）{crisp}", grid=grid)},
+    return [{"type": "text", "text": _shot_meta(desc + crisp + (f"\n{note}" if note else ""),
+                                               grid=grid)},
             {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}]
 
 
@@ -5639,21 +5704,29 @@ TOOLS = [
          "grid": {"type": "boolean", "description": "是否叠加坐标网格刻度（默认 false；仅人工读数/调试时开启）"},
          "wait_ms": {"type": "integer", "description": "长任务等待多少毫秒后再截图（0~60000）：一次等待+一次截图，避免连续轮询浪费 token"}}}},
     {"name": "zoom_in", "description":
-        "放大屏幕局部以精确定位（两步定位第二步）：x/y 为当前截图基准坐标，"
+        "放大屏幕局部以精确定位（两步定位第二步）。三种定位方式，可靠度从高到低："
+        "① 只传 hwnd/title（不传坐标）→ 直接放大该窗口的完整可见区域，不需要你给像素，"
+        "服务商压缩图片也完全不受影响 ——「总截到别的区域」时首选；"
+        "② cand=编号（来自 refine_point）→ 坐标由插件按原始屏幕像素计算，同样免疫压图；"
+        "③ 传 nx/ny（归一化）或用 seen_w/seen_h 校准的像素。"
+        "**未校准的绝对像素 x/y 会被拒绝**（服务商压图后必然偏移，会截到别的区域）。"
         "size 为放大区域边长（默认 400），factor 为放大倍数（默认 3）。"
-        "返回**纯净放大图**（不叠加网格/刻度/准星），直接看清像素级细节。"
-        "放大走**最近邻**（边缘是硬实的像素方块），所以图上读到的像素与屏幕像素一一对应 —— "
-        "点小目标（工具栏按钮/菜单项）先放大到接近 1:1 再读数，比在全屏缩略图上估准得多。",
+        "返回**纯净放大图**（不叠加网格/刻度/准星），最近邻放大，图上像素与屏幕像素一一对应。",
      "inputSchema": {"type": "object", "properties": {
-         "x": {"type": "integer", "description": "中心 x（当前截图坐标）"},
+         "x": {"type": "integer", "description": "中心 x（当前截图坐标；未校准会被拒绝，优先用 hwnd/cand/nx）"},
          "y": {"type": "integer", "description": "中心 y（当前截图坐标）"},
+         "hwnd": {"type": "integer", "description": "按窗口句柄放大：只放大这个窗口的完整可见区域（不需要坐标）"},
+         "title": {"type": "string", "description": "按窗口标题放大（可省略 hwnd），同样不需要坐标"},
+         "cand": {"type": "integer", "description": "按 refine_point 的候选编号放大（坐标由插件算，免疫压图）"},
          "size": {"type": "integer", "description": "放大区域边长，默认 400"},
-         "factor": {"type": "integer", "description": "放大倍数，默认 3"},
+         "factor": {"type": "integer", "description": "放大倍数，默认 3（窗口模式固定 1:1）"},
          "grid": {"type": "boolean", "description": "是否叠加坐标网格刻度（默认 false，纯净放大）"},
          "cursor": {"type": "boolean", "description": "是否叠加鼠标准星（默认 false）"},
          "smooth": {"type": "boolean", "description": "是否平滑插值放大（默认 false=最近邻，像素边缘硬实、便于精确读数）"},
          "nx": {"type": "number", "description": "归一化 x（0~1 或 0~1000）；图片被服务商压缩时用它代替 x"},
          "ny": {"type": "number", "description": "归一化 y（0~1 或 0~1000）"},
+         "seen_w": {"type": "integer", "description": "你实际看到的图片宽度（与插件声明尺寸不同时用于校准）"},
+         "seen_h": {"type": "integer", "description": "你实际看到的图片高度"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化"}},
          "required": []}},
     {"name": "list_windows", "description":
