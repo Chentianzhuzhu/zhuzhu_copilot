@@ -428,10 +428,10 @@ try {
 
     # ---- 5.5 技能 / Agent 插件种子 --------------------------------------
     if (-not $SkipSeed) {
-        Write-Stage '技能 / Agent 插件 / Copilot 插件种子快照（现有全部资产，安装即用）'
+        Write-Stage '技能 / Agent 插件种子快照（现有全部 skill 与 Agent 插件；Copilot 插件不打包）'
         $rc = Invoke-Exe -Exe $PyInfo.Exe -Arguments (@($PyInfo.Pre) + @('scripts\prepare_assets_seed.py'))
         if ($rc -ne 0) { Fail "prepare_assets_seed.py 失败（退出码 $rc）" }
-        Write-Ok '技能 / Agent 插件 / Copilot 插件种子就绪'
+        Write-Ok '技能 / Agent 插件种子就绪（Copilot 插件保持为空）'
     } else { Write-Warn '已跳过：技能 / 插件种子快照' }
 
     # ---- 6. 清理 -------------------------------------------------------
@@ -539,13 +539,14 @@ try {
         }
         Write-Ok "exe 版本号校验通过（$Version）"
 
-        # 11.2 随包资产种子必须进入 dist：否则新机安装后没有技能 / Agent 插件 / Copilot 插件
+        # 11.2 随包资产种子必须进入 dist：否则新机安装后没有技能 / Agent 插件
+        # （Copilot 插件不进包，默认空列表）
         if (-not $SkipSeed) {
-            foreach ($n in @('skills_seed', 'plugins_seed', 'copilot_plugins_seed')) {
+            foreach ($n in @('skills_seed', 'plugins_seed')) {
                 $p = Join-Path $ProjectDir "dist\zhuzhu Copilot\$n"
                 if (-not (Test-Path $p)) { Fail "随包资产未进入 dist：$n" }
             }
-            Write-Ok '随包资产种子校验通过（skills / plugins / copilot_plugins）'
+            Write-Ok '随包资产种子校验通过（skills / plugins）'
         }
 
         # 11.3 关键模块随包自检（曾漏打包导致对应功能静默失效）

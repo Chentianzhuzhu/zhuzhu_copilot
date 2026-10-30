@@ -96,56 +96,6 @@ def plugin_dir(name: str) -> Path:
     return plugins_dir() / name
 
 
-def _shipped_copilot_plugins_dir() -> Path:
-    """随应用分发的 Copilot 插件资源目录。
-
-    开发模式：src/zhuzhu_Copilot/copilot_plugins_examples；
-    打包：优先 copilot_plugins_seed（scripts/prepare_assets_seed.py 在构建期生成的
-    「仓库示例 + 用户现有」快照），其次 copilot_plugins_examples；基目录依次尝试
-    _MEIPASS、<exe>/_internal、<exe>。
-    """
-    if getattr(sys, "frozen", False):
-        bases = [b for b in (getattr(sys, "_MEIPASS", None),
-                             str(Path(sys.executable).parent / "_internal"),
-                             str(Path(sys.executable).parent)) if b]
-        for name in ("copilot_plugins_seed", "copilot_plugins_examples"):
-            for base in bases:
-                cand = Path(base) / name
-                if cand.is_dir():
-                    return cand
-        return Path()
-    return Path(__file__).resolve().parent.parent / "copilot_plugins_examples"
-
-
-def ensure_shipped_copilot_plugins() -> None:
-    """随包 Copilot 插件：用户目录里缺失时复制过去，做到「安装即用」。
-
-    已存在的同名插件**不覆盖**：里面可能有用户改过的源码、备份、config.json 与
-    applied.json，随包升级不该把用户状态冲掉。复制时跳过 __pycache__/*.pyc。
-    """
-    shipped = _shipped_copilot_plugins_dir()
-    if not shipped.is_dir():
-        return
-    root = plugins_dir()
-    try:
-        entries = sorted(shipped.iterdir())
-    except OSError:
-        return
-    for d in entries:
-        if not d.is_dir() or not (d / "plugin.json").is_file():
-            continue
-        if not _NAME_RE.match(d.name):
-            continue
-        target = root / d.name
-        if target.exists():
-            continue
-        try:
-            shutil.copytree(d, target,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
-        except OSError:
-            continue
-
-
 def _read_meta(name: str) -> dict:
     d = plugin_dir(name)
     f = d / "plugin.json"

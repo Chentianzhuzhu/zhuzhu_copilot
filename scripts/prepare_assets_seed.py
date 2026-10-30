@@ -1,13 +1,14 @@
-"""构建期：把现有全部技能、Agent 插件与 Copilot 插件快照成种子目录，随安装包分发。
+"""构建期：把现有全部技能与 Agent 插件快照成种子目录，随安装包分发。
 
-背景：仓库内置的 src/zhuzhu_Copilot/{skills,plugins,copilot_plugins_examples} 只是
-基线，用户目录里还有自建/导入的技能、插件与 Copilot 插件
-（~/.zhuzhu_Copilot/agent/skills、~/.zhuzhu_Copilot/plugins、
-~/.zhuzhu_Copilot/copilot_plugins）。不打包的话，新机安装后这些资产全都不存在。
-本脚本在构建期把两边合并快照到 build/assets_seed/，PyInstaller 以
-skills_seed / plugins_seed / copilot_plugins_seed 平铺进安装目录，运行时首启再
-同步到用户目录（agent_skills.ensure_md_skills / agent_plugins.ensure_shipped_plugins /
-copilot_plugins.ensure_shipped_copilot_plugins）。
+背景：仓库内置的 src/zhuzhu_Copilot/{skills,plugins} 只是基线，用户目录里还有
+自建/导入的技能与插件（~/.zhuzhu_Copilot/agent/skills、~/.zhuzhu_Copilot/plugins）。
+不打包的话，新机安装后这些资产全都不存在。本脚本在构建期把两边合并快照到
+build/assets_seed/，PyInstaller 以 skills_seed / plugins_seed 平铺进安装目录，
+运行时首启再同步到用户目录（agent_skills.ensure_md_skills /
+agent_plugins.ensure_shipped_plugins）。
+
+**Copilot 插件不参与打包**：它默认必须为空列表，由用户自行导入/生成，
+避免把开发机上的插件带入安装包。
 
 合并规则：
 - 仓库内置优先；用户目录只补齐未内置的同名之外的资产（同名不覆盖内置）。
@@ -79,19 +80,6 @@ def _plugin_reject(d: Path) -> str:
     return ""
 
 
-def _copilot_reject(d: Path) -> str:
-    """Copilot 插件目录不合格原因（空串 = 可打包）。"""
-    meta = agent_plugins._plugin_meta(d)
-    if not meta:
-        return "plugin.json 缺失或无法解析"
-    kind = str(meta.get("kind") or "").strip().lower()
-    if kind not in ("copilot", "combined", ""):
-        return f"kind={kind} 不是 copilot"
-    if not _NAME_RE.match(str(meta.get("name") or d.name)):
-        return "plugin.json 缺少合法 name"
-    return ""
-
-
 def _collect(roots, reject, skip_names=frozenset()):
     """按 origin 顺序收集合格目录（前者优先，同名只留第一份）。
 
@@ -133,7 +121,7 @@ def _write(kind: str, picked: dict) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for name, (origin, d) in picked.items():
         shutil.copytree(d, dst / name, ignore=_ignore)
-        if kind in ("plugins", "copilot_plugins") and origin == "user":
+        if kind == "plugins" and origin == "user":
             # 用户配置可能含密钥/本机路径，不随包发行（缺失时插件按内置默认工作）
             (dst / name / "config.json").unlink(missing_ok=True)
 
@@ -157,28 +145,20 @@ def main() -> int:
     skills, s_skip, s_shadow = _collect(
         [("repo", REPO / "skills"), ("user", agent_skills._skills_dir())],
         _skill_reject, skip_names=_plugin_skill_names(plugins))
-    copilots, c_skip, c_shadow = _collect(
-        [("repo", REPO / "copilot_plugins_examples"),
-         ("user", app_identity.data_root() / "copilot_plugins")],
-        _copilot_reject)
-    if not plugins and not skills and not copilots:
-        print("未收集到任何技能/插件/Copilot 插件，检查仓库 src/zhuzhu_Copilot 与用户数据目录",
-              file=sys.stderr)
+    if not plugins and not skills:
+        print("未收集到任何技能/插件，检查仓库 src/zhuzhu_Copilot 与用户数据目录", file=sys.stderr)
         return 1
 
     _write("plugins", plugins)
     _write("skills", skills)
-    _write("copilot_plugins", copilots)
 
     # 快照来自用户数据目录，脚本里可能还写着旧包名：随包分发前统一改写成当前身份，
     # 否则新机加载时 ModuleNotFoundError（与 prepare_workflow_seed 同款处理）。
     fixed = (app_identity.rewrite_legacy_names_in_tree(SEED / "plugins")
-             + app_identity.rewrite_legacy_names_in_tree(SEED / "skills")
-             + app_identity.rewrite_legacy_names_in_tree(SEED / "copilot_plugins"))
+             + app_identity.rewrite_legacy_names_in_tree(SEED / "skills"))
 
     _report("plugins", plugins, p_skip, p_shadow)
     _report("skills", skills, s_skip, s_shadow)
-    _report("copilot_plugins", copilots, c_skip, c_shadow)
     print(f"资产种子已生成: {SEED}（旧包名改写 {fixed} 个文件）")
     return 0
 

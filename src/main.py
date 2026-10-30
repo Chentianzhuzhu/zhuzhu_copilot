@@ -387,13 +387,7 @@ def _preload_agent_panel_ready():
         agent_llm.load_model_config()         # 填充模型配置解密缓存
     except Exception:
         pass
-    # 随包 Copilot 插件首启落盘（技能/Agent 插件各自由 ensure_* 在首次读取时同步）：
-    # 只在用户目录缺失同名插件时复制，已安装/已修改的插件不受影响。
-    try:
-        from zhuzhu_Copilot.core import copilot_plugins
-        copilot_plugins.ensure_shipped_copilot_plugins()
-    except Exception:
-        pass
+    # Copilot 插件默认必须为空：不随包分发、不在首启自动落盘，由用户自行导入/生成。
 
 
 def _open_agent_panel(app):
