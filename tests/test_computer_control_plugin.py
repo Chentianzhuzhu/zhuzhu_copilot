@@ -3462,7 +3462,9 @@ def test_click_does_not_snap_outside_explicit_target_window(monkeypatch):
         return True
 
     monkeypatch.setattr(mod, "do_click", _click)
-    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400, "hwnd": 42})
+    # verify=false：本用例只验吸附跨窗口回退，不涉及默认点击校验的像素探测
+    out = mod._HANDLERS["click"]({"raw": True, "x": 500, "y": 400,
+                                  "hwnd": 42, "verify": False})
     assert clicked == [(500, 400)], "跨窗口吸附必须回退到原估计点"
     assert "跨出目标窗口" in out
 

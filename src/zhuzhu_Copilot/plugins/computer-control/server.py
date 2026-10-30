@@ -787,6 +787,11 @@ SNAP_MERGE_GAP = 2          # 相邻碎片间距 ≤ 它就并成同一个目标
                             # 又远小于并排按钮之间的间距（一般 ≥6px），不会误并隔壁按钮
 SNAP_MERGE_OVERLAP = 2      # 合并时另一轴至少要重叠这么多像素：只合并“同一块”的碎片，
                             # 避免斜对角的两个噪点被并成一个假大块
+SNAP_MIN_FILL_RATIO = 0.10  # 大块的前景填充率低于此值 ⇒ 边框环/阴影/空心框，不是可点元素。
+                            # 阴影在色差阈值下只剩一圈淡淡的边，填充率通常 <0.1；正常按钮
+                            # （含图标按钮）填充率远高于它。淘汰它们，避免吸附到「框」上。
+SNAP_HOLLOW_MIN_SIDE = 20   # 只对两边都 ≥20px 的大块判填充率：小控件（16px 复选框边框）
+                            # 填充率天然低，但它整块都可点，不能淘汰。
 SNAP_NEAR_MIN = 10          # 「估计点到候选元素外接框」的距离上限（估计点在元素外时）：
 SNAP_NEAR_MAX = 20          # 取 clamp(reach/5, MIN, MAX)。以前按 reach/2 放行（默认 44px、
                             # 扩大半径后 70px），真机出事：在**空输入框**里点，最近的控件
@@ -1481,6 +1486,49 @@ def _adaptive_fg_mask(bits: bytes, w: int, h: int, mask: bytearray, bg) -> bytea
     return best[1] if best is not None else mask
 
 
+def _component_usable(c: dict, w: int, h: int) -> bool:
+    """连通域是否「像控件」：面积、边长合适，没被区域边界截断，且不是空心框/阴影环。
+
+    最后一条（填充率）是新增的：窗口边框、投影、圆角描边在色差阈值下只剩一圈，
+    外接框很大但前景像素很少。吸附到它上面，落点是那圈边线，点下去要么打空、
+    要么点到窗口阴影上 —— 现象就是「明明点在按钮上却偏了」。小控件（复选框边框）
+    豁免：它整块都可点，只是边框细。
+    """
+    bw = c["maxx"] - c["minx"] + 1
+    bh = c["maxy"] - c["miny"] + 1
+    if c["area"] < SNAP_MIN_AREA or bw < SNAP_MIN_SPAN or bh < SNAP_MIN_SPAN:
+        return False
+    if c["area"] > SNAP_MAX_AREA_RATIO * w * h:
+        return False
+    # 触到区域边界 ⇒ 元素被截断，真实中心在区域之外，不能作为吸附目标
+    if c["minx"] <= 0 or c["miny"] <= 0 or c["maxx"] >= w - 1 or c["maxy"] >= h - 1:
+        return False
+    if min(bw, bh) >= SNAP_HOLLOW_MIN_SIDE:
+        if c["area"] / float(bw * bh) < SNAP_MIN_FILL_RATIO:
+            return False
+    return True
+
+
+def _snap_rank_key(c: dict, lx: int, ly: int, inside: bool, dist: float) -> tuple:
+    """候选可信度排序键（纯函数，便于单测）。
+
+    `dist`（估计点到候选外接框的距离）先按 **2px 分桶**，而不是直接比小数点后三位：
+    密排工具条上，估计点常落在两个图标之间，左右候选的 dist 往往只差 0.2~0.9px ——
+    直接比 dist 会被这点噪声决定，吸到「稍近的隔壁」。分桶后两者同档，再由
+    `cdist`（估计点到候选**中心**的距离）决胜：中心更近的那个才是视觉上「你要的」。
+    2px 之外的差异仍按 dist 优先，不会把远处的候选拉进来。
+    """
+    bw = c["maxx"] - c["minx"] + 1
+    bh = c["maxy"] - c["miny"] + 1
+    cx = (c["minx"] + c["maxx"]) / 2.0
+    cy = (c["miny"] + c["maxy"]) / 2.0
+    cdist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
+    # 细长块惩罚：分隔线/滚动条/边框是一维的，同档时必须让位于按钮块
+    slender = 1 if (bw > 5 * bh or bh > 5 * bw) else 0
+    return (0 if inside else 1, int(dist // 2), slender, round(cdist, 2),
+            -(bw * bh), c["miny"], c["minx"])
+
+
 def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
                  max_shift=None, cands=None) -> tuple:
     """单次吸附（固定搜索半径）：把 (x,y) 吸附到附近最可信的元素中心。
@@ -1546,17 +1594,7 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
     lx, ly = int(x) - x0, int(y) - y0          # 估计点在区域内的局部坐标
 
     def _usable(c):
-        """连通域是否「像控件」：面积、边长合适，且没有被区域边界截断。"""
-        bw = c["maxx"] - c["minx"] + 1
-        bh = c["maxy"] - c["miny"] + 1
-        if c["area"] < SNAP_MIN_AREA or bw < SNAP_MIN_SPAN or bh < SNAP_MIN_SPAN:
-            return False
-        if c["area"] > SNAP_MAX_AREA_RATIO * w * h:
-            return False
-        # 触到区域边界 ⇒ 元素被截断，真实中心在区域之外，不能作为吸附目标
-        if c["minx"] <= 0 or c["miny"] <= 0 or c["maxx"] >= w - 1 or c["maxy"] >= h - 1:
-            return False
-        return True
+        return _component_usable(c, w, h)
 
     # 掩码只构造一次，连通域与行带共用（区域 176×176 时这是最大的一笔可省开销）
     mask = _fg_mask(bits, w, h, bg, SNAP_BG_DIST)
@@ -1615,8 +1653,14 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         pick = None
         for c in inband:
             dx = max(c["minx"] - lx, 0, lx - c["maxx"])
-            if dx <= near_cap and (pick is None or dx < pick[0]):
-                pick = (dx, c)
+            if dx > near_cap:
+                continue
+            # 同 2px 距离档内按「中心 x 距离」决胜：横向密排的条目里，
+            # 估计点落在两者之间的空白处时，中心更近的那个才是视觉上要点的。
+            cx = (c["minx"] + c["maxx"]) / 2.0
+            key = (int(dx // 2), abs(cx - lx), c["miny"], c["minx"])
+            if pick is None or key < pick[0]:
+                pick = (key, c)
         if pick is not None:
             c = pick[1]
             # 落点取质心（不对称形状/凹形元素的视觉质量中心，见 _landing_point），
@@ -1663,21 +1707,9 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         if dist > near_cap:
             continue
         inside = (c["minx"] <= lx <= c["maxx"] and c["miny"] <= ly <= c["maxy"])
-        cx = (c["minx"] + c["maxx"]) / 2.0
-        cy = (c["miny"] + c["maxy"]) / 2.0
-        cdist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
-        area = (c["maxx"] - c["minx"] + 1) * (c["maxy"] - c["miny"] + 1)
-        # 细长块惩罚：分隔线/滚动条/边框是一维的，并排按钮之间夹着的常常就是它们。
-        # 旧行为只比「离框距离 + 中心距离 + 面积」，一根 5×60 的细线中心距离往往
-        # 比 nearby 的按钮更近，会把点击拽到线上。同距离时按钮块必须胜过细条。
-        bw = c["maxx"] - c["minx"] + 1
-        bh = c["maxy"] - c["miny"] + 1
-        slender = 1 if (bw > 5 * bh or bh > 5 * bw) else 0
-        # 排序键：点在候选内优先；其次离外接矩形近；同距离时非细长块优先；再其次
-        # 中心近；再大块优先（按钮整体胜过按钮上零碎的文字笔画）；最后用坐标兜底，
-        # 保证确定性。
-        key = (0 if inside else 1, round(dist, 3), slender, round(cdist, 3), -area,
-               c["miny"], c["minx"])
+        # 排序键见 _snap_rank_key：dist 分 2px 档 → 同档按中心距离决胜 → 非细长块优先
+        # → 大块优先（按钮整体胜过按钮上零碎的文字笔画）→ 坐标兜底（保证确定性）。
+        key = _snap_rank_key(c, lx, ly, inside, dist)
         if best is None or key < best[0]:
             best = (key, c, inside)
     if best is None:
@@ -4998,7 +5030,12 @@ def tool_click(args: dict) -> str:
     if bounds:
         _log("ai", f"拒绝点击 ({x},{y})：落点不在屏幕范围内")
         return bounds
-    verify = _bool(args.get("verify"), False)
+    # 默认开启效果校验（用户选择准确率优先）：服务商压图导致的点偏表现为
+    # 「点了但界面没有任何反应」；默认校验能把它如实回传，模型才不会以为点过了。
+    # 显式传 verify=false 可换回旧的低延迟行为。
+    verify_req = args.get("verify")
+    verify = _bool(verify_req, True)
+    verify_explicit = verify_req is not None and _bool(verify_req, False)
     # 生效校验要拿目标窗口做「整窗指纹」：显式 hwnd 优先，其次最近一次显式点击目标
     hwnd = _num(args.get("hwnd"), 0) or int(_STATE.get("view_target") or 0)
     if _num(args.get("hwnd"), 0):
@@ -5032,12 +5069,19 @@ def tool_click(args: dict) -> str:
             f"({ax - x:+d},{ay - y:+d})px —— 注入链路有偏差（多屏归一化 / DPI 缩放），"
             f"请先用 verify_point 自检坐标链路，不要盲目重试。")
     changed, ratio, vtext = _click_verify_ex(x, y, before, hwnd) if verify else (True, 0.0, "")
+    if not verify_explicit and not changed:
+        # 默认校验（模型没主动要求）时，措辞不能吓人：点输入框/已聚焦控件不会有像素变化，
+        # 那是「已生效但无反馈」，不是「失败」。
+        vtext = ("未观察到可见变化（可能已生效但没有像素反馈，例如只是获得焦点）；"
+                 "请用 screen_shot 确认结果，不要重复点同一坐标。")
     retry_note = ""
     # 生效校验判定「没点中」时，自动换次优候选再点一次（一次为限）。
     # 只对「带吸附的普通左键单击」做：右键/双击/多击语义不同，重试可能弹两次菜单。
     # 只有「整窗一个采样点都没变」才允许换候选重试：只要界面有任何动静，
     # 就说明这一击多半已经生效，再点一次必然落到别处（用户反馈的"偏一大片"）。
-    if (verify and not changed and ratio <= 0.0 and est is not None
+    # 自动换候选重试只在模型**显式**要求 verify 时开启：默认校验下「没有像素变化」
+    # 很可能只是焦点转移，再点一次会落到别处（用户反馈过的「乱点」）。
+    if (verify and verify_explicit and not changed and ratio <= 0.0 and est is not None
             and button == "left" and clicks == 1 and _bool(args.get("retry"), True)):
         alt = _alt_snap_point(est[0], est[1], x, y,
                               _num(args.get("snap_reach"), SNAP_REACH_DEFAULT))
@@ -5149,6 +5193,11 @@ def tool_drag(args: dict) -> str:
     path_note = _path_guard(x1, y1, x2, y2, "拖拽")
     if path_note:
         return path_note
+    # 起点是「抓取点」：截图后画面若已换窗口，按旧图抓取会拖错东西（终点同理但不宜
+    # 提前激活目标窗口——那会改变界面布局），所以这里只拦起点。
+    drift = _shot_drift_note(x1, y1, _input_target_hwnd(args), args)
+    if drift:
+        return drift
     pre = _ensure_click_target(x1, y1, args)
     if not do_drag(x1, y1, x2, y2, dur, hold=max(0.02, hold_ms / 1000.0),
                    mode=_input_mode(args), steps=int(steps),
@@ -5755,7 +5804,7 @@ TOOLS = [
          "button": {"type": "string", "description": "left（默认）/right/middle"},
          "clicks": {"type": "integer", "description": "点击次数，默认 1"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（仅触控优先的界面才用）"},
-         "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告是否真的响应（默认 false）"},
+         "verify": {"type": "boolean", "description": "点击后自动校验界面是否响应（默认 true；只追求速度时传 false）"},
          "snap": {"type": "boolean", "description": "是否把 rel 坐标吸附到最近控件的中心（默认 true；想点精确像素传 false）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏得很大时可加大到 140）"}}}},
     {"name": "verify_point", "description":
@@ -5821,8 +5870,8 @@ TOOLS = [
          "button": {"type": "string", "description": "left（默认）/right/middle"},
          "clicks": {"type": "integer", "description": "点击次数，默认 1（action=double 时自动为 2）"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（触控优先的界面才用，实测落点偏差不可控）"},
-         "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告界面是否真的响应了（默认 false；**密排界面建议开**）"},
-         "retry": {"type": "boolean", "description": "verify 判定没点中时，自动改点同一目标的次优候选一次（默认 true）"},
+         "verify": {"type": "boolean", "description": "点击后自动校验界面是否响应（默认 true；只追求速度时可传 false 省约 0.2s）"},
+         "retry": {"type": "boolean", "description": "仅在显式 verify=true 且判定没点中时，自动改点同一目标的次优候选一次（默认 true）"},
          "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false；用 cand 时自动关闭）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
          "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化 0~1/0~1000"},
