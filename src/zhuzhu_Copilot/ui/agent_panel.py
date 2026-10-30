@@ -3076,6 +3076,130 @@ class _TypingDots(QWidget):
         p.end()
 
 
+class _ActionFeedback(QWidget):
+    """按钮内的动作反馈层：执行中「小圆点转圈」，完成后「自下而上打勾」。
+
+    作为按钮的子控件铺满按钮，用按钮同色底盖住文字，结束后自动隐藏；
+    不进布局、不改按钮文字，按钮尺寸/样式完全不受影响。
+    """
+
+    SPIN_MS = 40                # 转圈帧间隔（约 25fps）
+    CHECK_MS = 16               # 打勾帧间隔
+    CHECK_DRAW_MS = 520         # 对勾自下而上画完的时长
+    HOLD_MS = 900               # 对勾画完后停留时长
+    _DOT_R = 2.0                # 小圆点半径
+    _ORBIT_R = 7.0              # 小圆点绕行半径
+
+    def __init__(self, button: QPushButton, bg: str, fg: str):
+        super().__init__(button)
+        self._button = button
+        self._bg = QColor(bg)
+        self._fg = QColor(fg)
+        self._mode = ""          # "" / "spin" / "check"
+        self._angle = 0.0
+        self._progress = 0.0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.timeout.connect(self._tick_spin)
+        self._check_timer = QTimer(self)
+        self._check_timer.timeout.connect(self._tick_check)
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.timeout.connect(self.reset)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        button.installEventFilter(self)
+        self.hide()
+
+    # ---------- 状态控制 ----------
+    def start_spin(self):
+        self._stop_timers()
+        self._mode = "spin"
+        self._angle = 0.0
+        self._progress = 0.0
+        self.setGeometry(self._button.rect())
+        self.show()
+        self.raise_()
+        self._spin_timer.start(self.SPIN_MS)
+        self.update()
+
+    def finish(self, ok: bool = True):
+        self._spin_timer.stop()
+        if not ok:
+            self.reset()
+            return
+        self._mode = "check"
+        self._progress = 0.0
+        self.setGeometry(self._button.rect())
+        self.show()
+        self.raise_()
+        self._check_timer.start(self.CHECK_MS)
+        self.update()
+
+    def reset(self):
+        self._stop_timers()
+        self._mode = ""
+        self._progress = 0.0
+        self.hide()
+        self.update()
+
+    def _stop_timers(self):
+        self._spin_timer.stop()
+        self._check_timer.stop()
+        self._hold_timer.stop()
+
+    def _tick_spin(self):
+        self._angle = (self._angle + 28.0) % 360.0
+        self.update()
+
+    def _tick_check(self):
+        self._progress = min(1.0, self._progress + self.CHECK_MS / float(self.CHECK_DRAW_MS))
+        self.update()
+        if self._progress >= 1.0:
+            self._check_timer.stop()
+            self._hold_timer.start(self.HOLD_MS)
+
+    def eventFilter(self, obj, ev):
+        if obj is self._button and ev.type() == QEvent.Type.Resize:
+            self.setGeometry(self._button.rect())
+        return False
+
+    # ---------- 绘制 ----------
+    def paintEvent(self, event):
+        if not self._mode:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # 按钮同色底：盖住原文字，避免「转圈 + 文字」叠在一起
+        bg_path = QPainterPath()
+        bg_path.addRoundedRect(QRectF(self.rect()), 8, 8)
+        p.fillPath(bg_path, self._bg)
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        if self._mode == "spin":
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(self._fg)
+            for i in range(3):
+                ang = math.radians(self._angle + i * 120.0)
+                p.setOpacity(0.30 + 0.70 * (i / 2.0))
+                p.drawEllipse(QPointF(cx + math.cos(ang) * self._ORBIT_R,
+                                      cy + math.sin(ang) * self._ORBIT_R),
+                              self._DOT_R, self._DOT_R)
+            p.setOpacity(1.0)
+        else:
+            # 自下而上：用从底部向上抬升的裁剪区，让完整对勾逐步「长」出来
+            s = min(self.width(), self.height()) * 0.30
+            check = QPainterPath()
+            check.moveTo(cx - s, cy - s * 0.10)
+            check.lineTo(cx - s * 0.18, cy + s * 0.92)
+            check.lineTo(cx + s, cy - s * 0.90)
+            reveal_top = self.height() * (1.0 - self._progress)
+            p.setClipRect(QRectF(0, reveal_top, self.width(),
+                                 self.height() - reveal_top))
+            pen = QPen(self._fg, 2.6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawPath(check)
+        p.end()
+
+
 # 写入类操作：确认弹窗隐藏具体内容，仅提示目标
 _HIDE_CONTENT_TOOLS = {"write_file", "edit_file", "save_memory", "insert_lines"}
 
@@ -4934,6 +5058,8 @@ class _AgentSettingsDialog(QDialog):
     # 收款码对话框属于本设置对话框（会员页），故信号也声明在这里；不能在后台线程直接
     # 操作控件，否则切换支付方式时更新可能静默失效（见 _memb_show_pay_dialog / _on_pay_qr）。
     pay_qr_signal = pyqtSignal(int, object, str, str)
+    # MCP 重启完成（ok, message）：主面板后台线程 → 本对话框（转圈 → 打勾动画收尾）
+    restart_done = pyqtSignal(bool, str)
 
     # 极简配色：纯黑 / 淡黑 / 白 / 深蓝
     _BG = "#000000"
@@ -5468,10 +5594,6 @@ class _AgentSettingsDialog(QDialog):
         _mode_row.addWidget(self.panel_mode_combo, 3)
         _mode_row.addStretch(2)
         lay.addLayout(_mode_row)
-        pref_sub = QLabel(_ui("融入：子面板嵌入主面板左右栏，作为同一窗口的一部分；贴附：子面板悬浮在主面板外侧，可各自拖动位置与调整大小。工作树 / Git / 任务清单跟随此项设置，预览面板固定融入主面板右侧。设置保存后立即生效。"))
-        pref_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        pref_sub.setWordWrap(True)
-        lay.addWidget(pref_sub)
         # 能力开关：分别控制 MCP / 技能 / 插件，关闭后 AI 不再加载对应能力（settings cap_*）
         lay.addWidget(self._section_label(_ui("能力开关")))
         self.cap_mcp_check = QCheckBox(_ui("启用 MCP 服务器（外部工具）"))
@@ -5497,10 +5619,6 @@ class _AgentSettingsDialog(QDialog):
         self.disable_all_check.setToolTip(_ui("开启后 AI 无法调用任何工具（含 grep/read_file/web_search 等），只能以文本对话作答"))
         self.disable_all_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.disable_all_check)
-        dis_sub = QLabel(_ui("在下面的清单里取消勾选即可禁用某个工具：禁用后它**不会出现在发给模型的服务商请求里**（schema 直接不发，省 token），执行层也会硬拒绝。"))
-        dis_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        dis_sub.setWordWrap(True)
-        lay.addWidget(dis_sub)
         # 工具清单：逐项勾选（比手敲工具名可靠），与下方文本框双向同步
         self.tool_filter_edit = QLineEdit()
         self.tool_filter_edit.setPlaceholderText(_ui("搜索工具名…"))
@@ -5555,13 +5673,6 @@ class _AgentSettingsDialog(QDialog):
             "回退模式：仅本应用的网络请求在直连失败时经 SSH 隧道重试"))
         self.proxy_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.proxy_check)
-        proxy_sub = QLabel(_ui(
-            "填入 SSH 服务器的 IP、端口、用户名与密码。全局模式下系统代理将指向"
-            "本机转发器（浏览器等应用生效）；回退模式仅影响本应用。"))
-        proxy_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        proxy_sub.setWordWrap(True)
-        lay.addWidget(proxy_sub)
-
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
         mode_lbl = QLabel(_ui("模式"))
@@ -5689,9 +5800,6 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(mode_row)
         # 工作目录已迁移到「对话流」页按会话设置（删除通用设置里的全局入口，
         # 避免两处入口语义冲突；会话未设置时仍回退历史全局默认值 agent_workdir）
-        tip = QLabel(_ui("记忆：AI 可将重要信息写入 memory.md 并在后续任务中读取。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        lay.addWidget(tip)
         lay.addStretch(1)
         return w
 
@@ -5699,10 +5807,6 @@ class _AgentSettingsDialog(QDialog):
         """对话流页面：为每个对话分配独立工作目录（新建对话自动沿用上一对话目录）"""
         w = self._page(_ui("对话流"))
         lay = self._page_body(w)
-        tip = QLabel(_ui("为每个对话分配独立的工作目录；新建对话会自动沿用上一个对话的工作目录。留空表示该对话沿用全局工作目录。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -5985,9 +6089,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_rules_page(self, s) -> QWidget:
         w = self._page(_ui("自定义规则"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("每行一条，追加到系统提示词末尾，约束 AI 行为"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        lay.addWidget(sub)
         self.rules_edit = QPlainTextEdit()
         self.rules_edit.setPlaceholderText(_uim(
             "如：\n操作注册表前必须先 ask_user 确认\n不要移动正在运行的应用"))
@@ -5998,9 +6099,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_prompt_page(self, s) -> QWidget:
         w = self._page(_ui("系统提示词"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("追加到默认人设之后，不覆盖内置角色设定"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        lay.addWidget(sub)
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setPlaceholderText(_ui("补充的提示词…"))
         self.prompt_edit.setPlainText(str(s.get("custom_system_prompt") or ""))
@@ -6013,10 +6111,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_bash_page(self, s) -> QWidget:
         w = self._page(_ui("bash 命令白名单"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("每行一条，命中前缀即免确认（如填 git push 可匹配 git push origin main；单命令词如 python 需整条完全一致，防止 -c 注入被放行）"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         self.safe_edit = QPlainTextEdit()
         self.safe_edit.setPlaceholderText(_uim("如：\nnpm\npip\npython\ngit"))
         self.safe_edit.setPlainText(
@@ -6030,10 +6124,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_model_page(self, s) -> QWidget:
         w = self._page(_ui("模型接入"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("每个服务商一张卡片：单击选中，双击编辑。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         m = s.get("model") or {}
         if not isinstance(m, dict):
             m = {}
@@ -6224,10 +6314,6 @@ class _AgentSettingsDialog(QDialog):
         self.efficient_check.blockSignals(False)
         lay.addWidget(self.efficient_check)
         self._sync_context_hint()
-        tip = QLabel(_ui("思考模式按上方开关手动控制。开启「始终思考」后，思考强度取当前「思考强度」滑块档位并自动映射：DeepSeek V4 仅 high/max、GLM-5.2 全档、OpenAI o 系列 reasoning_effort、Agnes reasoning_effort 等"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
         lay.addStretch(1)
         return w
 
@@ -6297,11 +6383,6 @@ class _AgentSettingsDialog(QDialog):
         lay = self._page_body(w)
         from zhuzhu_Copilot.core import music_player as agent_music
         self._music = player = agent_music.get_player()
-
-        tip = QLabel(_ui("上传 MP3 / WAV 等音频到本地库，支持播放进度记忆、音量调节、顺序 / 随机 / 单曲循环切换以及打开 AI 面板自动播放。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
 
         # 当前曲目 + 状态
         self.music_now = QLabel(_ui("未在播放"))
@@ -6679,11 +6760,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_skill_page(self) -> QWidget:
         w = self._page(_ui("技能"))
         lay = self._page_body(w)
-        sub = QLabel(
-            _ui("技能按工作流隔离：切换到/激活某工作流时，只加载该工作流启用的技能。选择下方工作流作用域后，可逐项启用/禁用内置与用户私有技能（即时生效）；导入/删除同样在技能目录即时生效。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         # 工作流作用域选择
         scope = QHBoxLayout()
         scope.setSpacing(8)
@@ -6858,10 +6934,9 @@ class _AgentSettingsDialog(QDialog):
     def _build_mcp_page(self) -> QWidget:
         w = self._page(_ui("MCP 服务器"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("配置外部工具服务器（stdio 本地命令 / sse 远程 URL），保存后自动重连。取消勾选即停用：服务器不再启动，其工具也不会发给模型（省 token）"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
+        self._mcp_fx_active = None
+        self._mcp_fx_pending = None
+        self._mcp_fx_t0 = 0.0
         self.mcp_list = QListWidget()
         self.mcp_list.setStyleSheet(
             f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
@@ -6915,13 +6990,18 @@ class _AgentSettingsDialog(QDialog):
         copy_b = QPushButton(_ui("复制配置"))
         copy_b.setStyleSheet(self._btn_qss("ghost"))
         copy_b.setAutoDefault(False)
-        copy_b.setToolTip(_ui("导出标准 mcpServers JSON，可直接粘贴给其他 Agent 接入"))
-        copy_b.clicked.connect(self._on_mcp_copy)
+        copy_b.setToolTip(_ui("只导出当前选中服务器的标准 mcpServers JSON"))
+        copy_b.clicked.connect(self._on_mcp_copy_selected)
         row2.addWidget(restart_b)
         row2.addWidget(restart_all_b)
         row2.addWidget(copy_b)
         row2.addStretch(1)
         lay.addLayout(row2)
+        # 重启反馈动画：执行中转圈，成功后自下而上打勾（两个按钮各自独立）
+        self._mcp_fx_one = _ActionFeedback(restart_b, self._PANEL, self._ACCENT)
+        self._mcp_fx_all = _ActionFeedback(restart_all_b, self._PANEL, self._ACCENT)
+        self._mcp_restart_btns = (restart_b, restart_all_b)
+        self.restart_done.connect(self._on_mcp_restart_done)
         self._reload_mcp_list()
         return w
 
@@ -8376,11 +8456,6 @@ class _AgentSettingsDialog(QDialog):
         w = self._page(_ui("背景"))
         lay = self._page_body(w)
 
-        tip = QLabel(_ui("选择一张图片作为 AI 面板背景：png / jpg / jpeg / bmp / webp。图片会收进应用数据目录，重启后仍然有效。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
-
         self.wallpaper_now = QLabel("")
         self.wallpaper_now.setStyleSheet(
             f"color: {self._ACCENT}; font-size: 13px; font-weight: 700;")
@@ -8448,11 +8523,6 @@ class _AgentSettingsDialog(QDialog):
         from zhuzhu_Copilot.core.wechat_bridge import get_bridge
         w = self._page(_ui("微信 ClawBot"))
         lay = self._page_body(w)
-
-        tip = QLabel(_ui("用手机微信扫码绑定 ClawBot，在微信中直接给 agent 发消息、接收回复和文件，也可直接把 PPT / Word / Excel / 图片 / 代码等文件发给 agent 读取。基于微信官方 iLink 协议，无需公网 IP。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
 
         # 绑定状态
         self.wechat_status = QLabel("")
@@ -8562,12 +8632,6 @@ class _AgentSettingsDialog(QDialog):
         w = self._page(_ui("会员与积分"))
         lay = self._page_body(w)
 
-        tip = QLabel(_ui("登录账号后可使用内置模型（agnes）；内置模型按 token 消耗积分，"
-                         "下方可订阅会员或购买积分包。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
-
         # ---- 每日签到宣传（签到按钮在个人信息面板用户名右侧）----
         self._memb_checkin_banner = QLabel("")
         self._memb_checkin_banner.setObjectName("membCheckinBanner")
@@ -8582,12 +8646,7 @@ class _AgentSettingsDialog(QDialog):
         cbox.setSpacing(3)
         c_title = QLabel(_ui("每日签到领积分"))
         c_title.setObjectName("membCheckinTitle")
-        c_sub = QLabel(_ui("每日凌晨 00:00 刷新：免费版 +50 / Pro +100 / Max +200 积分。"
-                           "点击个人信息面板中用户名右侧的「签到」按钮即可领取。"))
-        c_sub.setObjectName("membCheckinDim")
-        c_sub.setWordWrap(True)
         cbox.addWidget(c_title)
-        cbox.addWidget(c_sub)
         lay.addWidget(self._memb_checkin_banner)
 
         # ---- 当前状态：积分大数字 + 会员类型标签 ----
@@ -9939,7 +9998,7 @@ class _AgentSettingsDialog(QDialog):
         copy_act = menu.addAction(_ui("复制此服务器配置"))
         act = menu.exec(self.mcp_list.mapToGlobal(pos))
         if act is restart_act:
-            self._restart_mcp(name)
+            self._start_mcp_restart(name, self._mcp_fx_one)
         elif act is copy_act:
             self._on_mcp_copy([name])
 
@@ -9948,13 +10007,13 @@ class _AgentSettingsDialog(QDialog):
         if not name:
             QMessageBox.information(self, _ui("提示"), _ui("请先选择一个服务器"))
             return
-        self._restart_mcp(name)
+        self._start_mcp_restart(name, self._mcp_fx_one)
 
     def _on_mcp_restart_all(self, *_):
         if not self._mcp_servers:
             QMessageBox.information(self, _ui("提示"), _ui("还没有 MCP 服务器"))
             return
-        self._restart_mcp("")
+        self._start_mcp_restart("", self._mcp_fx_all)
 
     def _mcp_entry_changed(self, saved_cfg: dict) -> bool:
         """内存配置是否与已保存配置不同（重启会按已保存配置执行，需先提示）。"""
@@ -9964,8 +10023,10 @@ class _AgentSettingsDialog(QDialog):
                 return s != saved_cfg
         return True
 
-    def _restart_mcp(self, name: str = ""):
-        """请求主面板后台强制重连单个（空名=全部）。重启使用**已保存**配置。"""
+    def _start_mcp_restart(self, name: str, fx):
+        """发起重启：按钮进入转圈态，结果回来后由 `_on_mcp_restart_done` 收尾。"""
+        if self._mcp_fx_active is not None:
+            return                    # 已有重启在进行，避免并发重复重连
         saved = {str(s.get("name") or ""): s
                  for s in agent_skills.load_mcp_servers(include_disabled=True)}
         if name and name in saved and self._mcp_entry_changed(saved[name]):
@@ -9978,18 +10039,55 @@ class _AgentSettingsDialog(QDialog):
             QMessageBox.warning(self, _ui("操作失败"),
                                 _ui("无法重启 MCP：请在主面板中操作。"))
             return
-        fn(name or None)
+        self._mcp_fx_active = fx
+        self._mcp_fx_t0 = time.time()
+        for b in self._mcp_restart_btns:
+            b.setEnabled(False)
+        fx.start_spin()
+        try:
+            fn(name or None, self.restart_done.emit)
+        except TypeError:
+            # 兼容只接受单个参数的实现：立即按“已完成”收尾，动画照常播放
+            fn(name or None)
+            QTimer.singleShot(0, lambda: self.restart_done.emit(True, ""))
 
-    def _on_mcp_copy(self, names=None):
-        """导出 MCP 配置：names 为空导出全部启用项。"""
-        cfg_list = self._mcp_servers
-        if names:
-            want = set(names)
-            cfg_list = [s for s in cfg_list if str(s.get("name") or "") in want]
+    def _on_mcp_restart_done(self, ok: bool, _msg: str = ""):
+        """重启结束：恢复按钮，至少展示 550ms 转圈后播放打勾动画。"""
+        for b in self._mcp_restart_btns:
+            b.setEnabled(True)
+        fx = self._mcp_fx_active
+        self._mcp_fx_active = None
+        if fx is None:
+            return
+        self._mcp_fx_pending = (fx, bool(ok))
+        remain = max(0, 550 - int((time.time() - self._mcp_fx_t0) * 1000))
+        QTimer.singleShot(remain, self._finish_mcp_fx)
+
+    def _finish_mcp_fx(self):
+        pending = self._mcp_fx_pending or (None, False)
+        self._mcp_fx_pending = None
+        fx, ok = pending
+        if fx is not None:
+            try:
+                fx.finish(ok)
+            except RuntimeError:
+                pass              # 对话框已销毁
+
+    def _on_mcp_copy_selected(self, *_):
+        """工具条「复制配置」：只导出当前选中的那一个服务器。"""
+        name = self._current_mcp_name()
+        if not name:
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个服务器"))
+            return
+        self._on_mcp_copy([name])
+
+    def _on_mcp_copy(self, names):
+        """导出**指定**服务器的配置（绝不回退成全部）。"""
+        cfg_list = _mcp_export_subset(self._mcp_servers, names)
         if not any(s.get("enabled", True) is not False for s in cfg_list):
             QMessageBox.information(
                 self, _ui("提示"),
-                _ui("没有可导出的 MCP 服务器（已停用的服务器不会导出）"))
+                _ui("选中的服务器已停用，无法导出；请先启用它。"))
             return
         _McpConfigDialog(cfg_list, parent=self).exec()
 
@@ -10402,6 +10500,18 @@ class _AgentSettingsDialog(QDialog):
             self._reload_skill_list(self._current_skill_workflow())
         else:
             QMessageBox.warning(self, _ui("删除失败"), msg)
+
+
+def _mcp_export_subset(servers: list, names) -> list:
+    """按名字挑出要导出的服务器；names 为空/None 时返回空列表。
+
+    为什么要独立成函数：设置页「复制配置」必须只导出**当前选中**的那一个，
+    曾经按钮回调把 Qt 的 checked=False 当成 names 传入，代码再回退成「全部」，
+    结果复制出所有服务器的配置。这里把「只按名单过滤、绝不回退」固化成纯逻辑。
+    """
+    want = set(names or ())
+    return [s for s in (servers or []) if str((s or {}).get("name") or "") in want]
+
 
 class _McpConfigDialog(QDialog):
     """导出 MCP 配置：标准 mcpServers JSON（默认脱敏，可勾选明文），一键复制。"""
@@ -28172,33 +28282,41 @@ class AgentPanel(QDialog):
             msg = f"MCP: 重连失败 {e}"
         self.mcp_signal.emit(msg)
 
-    def _restart_mcp(self, name=None):
+    def _restart_mcp(self, name=None, done=None):
         """后台**强制**重启单个 MCP 服务器（name=None 时重启全部启用项）。
 
         与 `_reconnect_mcp` 的区别：它只重建变化过的服务器，这里按用户显式意图
         无条件断开重连，用于「服务器卡死/改了外部环境」时的单点恢复。
+        `done(ok, msg)` 用于设置页收尾动画（信号 emit 可从后台线程安全调用）。
         """
-        threading.Thread(target=self._mcp_restart_worker, args=(name,),
+        threading.Thread(target=self._mcp_restart_worker, args=(name, done),
                          daemon=True).start()
 
-    def _mcp_restart_worker(self, name=None):
+    def _mcp_restart_worker(self, name=None, done=None):
+        ok = False
         try:
             servers = agent_skills.load_mcp_servers()
             names = {str(s.get("name") or "mcp") for s in servers}
             if name and str(name) not in names:
-                self.mcp_signal.emit(f"MCP: 服务器「{name}」已停用，未重启")
-                return
-            force = {str(name)} if name else names
-            tools = self._mcp.reload(servers, force=force)
-            errs = [e for e in (getattr(self._mcp, "errors", None) or [])
-                    if not name or f"[{name}]" in e]
-            label = f"「{name}」" if name else f"全部（{len(force)} 个服务器）"
-            msg = f"MCP: 已重启{label}，共 {len(tools)} 个工具"
-            if errs:
-                msg += "；失败: " + "；".join(errs)
+                msg = f"MCP: 服务器「{name}」已停用，未重启"
+            else:
+                force = {str(name)} if name else names
+                tools = self._mcp.reload(servers, force=force)
+                errs = [e for e in (getattr(self._mcp, "errors", None) or [])
+                        if not name or f"[{name}]" in e]
+                label = f"「{name}」" if name else f"全部（{len(force)} 个服务器）"
+                msg = f"MCP: 已重启{label}，共 {len(tools)} 个工具"
+                ok = not errs
+                if errs:
+                    msg += "；失败: " + "；".join(errs)
         except Exception as e:
             msg = f"MCP: 重启失败 {e}"
         self.mcp_signal.emit(msg)
+        if done is not None:
+            try:
+                done(ok, msg)
+            except Exception:
+                pass
 
     # ---------- 命令补全（/ 展示全部命令 + 内联预测） ----------
     def _invalidate_cmd_cache(self):
