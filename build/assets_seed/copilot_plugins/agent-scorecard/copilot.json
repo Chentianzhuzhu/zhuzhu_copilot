@@ -1,0 +1,11 @@
+{
+  "services": [
+    {
+      "id": "agent-scorecard",
+      "title": "任务评分窗",
+      "module": "service/scorecard_service.py",
+      "entry": "start",
+      "stop": "stop"
+    }
+  ]
+}

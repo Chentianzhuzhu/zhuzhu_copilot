@@ -1,0 +1,25 @@
+[
+  {
+    "op": "create_file",
+    "path": "zhuzhu_Copilot/ui/page_quote.py",
+    "content": "\"\"\"每日一句设置页（Copilot 插件 settings-page-demo）。\n\n由 create_file 新建的独立页面模块；页面构建方法由同一插件的另一条 op\n追加到 _AgentSettingsDialog 上（见 source_ops 第 4 条）。\n\"\"\"\nfrom PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel\n\n\nclass QuotePage(QWidget):\n    \"\"\"极简设置页：一段静态文案。真实插件可在这里放任意交互控件。\"\"\"\n\n    def __init__(self, parent=None):\n        super().__init__(parent)\n        lay = QVBoxLayout(self)\n        lay.setContentsMargins(24, 24, 24, 24)\n        lay.setSpacing(12)\n        title = QLabel(\"每日一句\")\n        title.setStyleSheet(\"font-size: 18px; font-weight: 700;\")\n        lay.addWidget(title)\n        body = QLabel(\"这个页面来自 Copilot 插件：新建模块 + 改导航 + 改页面构建器 + 追加构建方法，\"\n                      \"四条源码变更一次集成。\")\n        body.setWordWrap(True)\n        lay.addWidget(body)\n        lay.addStretch(1)\n"
+  },
+  {
+    "op": "insert_after",
+    "path": "zhuzhu_Copilot/ui/agent_panel.py",
+    "anchor": "    (\"Copilot 插件\", \"copilot_plugins\"),",
+    "content": "    (\"每日一句\", \"quote\"),"
+  },
+  {
+    "op": "insert_after",
+    "path": "zhuzhu_Copilot/ui/agent_panel.py",
+    "anchor": "            self._build_copilot_plugin_page,",
+    "content": "            self._build_quote_page,"
+  },
+  {
+    "op": "append",
+    "path": "zhuzhu_Copilot/ui/agent_panel.py",
+    "after": "    # ---- Copilot 插件扩展点：插件可在此之后追加页面构建方法 ----",
+    "content": "\n    def _build_quote_page(self) -> QWidget:\n        \"\"\"每日一句页（Copilot 插件 settings-page-demo 注入）。\"\"\"\n        from zhuzhu_Copilot.ui.page_quote import QuotePage\n        return QuotePage(self.stack)"
+  }
+]

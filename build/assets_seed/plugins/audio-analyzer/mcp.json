@@ -1,0 +1,9 @@
+﻿{
+  "mcpServers": {
+    "audio-analyzer": {
+      "command": "python",
+      "args": ["server.py"],
+      "cwd": "${workspaceFolder}/audio-analyzer"
+    }
+  }
+}

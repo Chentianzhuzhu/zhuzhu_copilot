@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scroll Reveal Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: white;
+            padding: 50px;
+        }
+        
+        .reveal {
+            opacity: 0;
+            transform: translateY(50px);
+            transition: all 0.8s ease-out;
+            padding: 40px;
+            margin: 20px 0;
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            border-left: 4px solid #00f3ff;
+        }
+        
+        .reveal.active {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        .reveal h2 {
+            color: #00f3ff;
+            margin-bottom: 15px;
+        }
+        
+        .stagger-item {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: all 0.6s ease;
+            padding: 20px;
+            margin: 10px 0;
+            background: rgba(0,243,255,0.1);
+            border-radius: 8px;
+        }
+        
+        .reveal.active .stagger-item {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        .reveal.active .stagger-item:nth-child(1) { transition-delay: 0.1s; }
+        .reveal.active .stagger-item:nth-child(2) { transition-delay: 0.2s; }
+        .reveal.active .stagger-item:nth-child(3) { transition-delay: 0.3s; }
+        .reveal.active .stagger-item:nth-child(4) { transition-delay: 0.4s; }
+    </style>
+</head>
+<body>
+    <h1 style="text-align: center; margin-bottom: 40px;">Scroll Reveal Animation</h1>
+    
+    <div class="reveal">
+        <h2>Section 1: Introduction</h2>
+        <p>Scroll down to see the magic happen!</p>
+        <div class="stagger-item">Item 1 - Fades in first</div>
+        <div class="stagger-item">Item 2 - Fades in second</div>
+        <div class="stagger-item">Item 3 - Fades in third</div>
+    </div>
+    
+    <div class="reveal">
+        <h2>Section 2: Features</h2>
+        <div class="stagger-item">Feature A - Smooth reveal</div>
+        <div class="stagger-item">Feature B - Staggered timing</div>
+        <div class="stagger-item">Feature C - Performance optimized</div>
+    </div>
+    
+    <div class="reveal">
+        <h2>Section 3: Benefits</h2>
+        <p>Enhance user experience with beautiful animations</p>
+    </div>
+    
+    <script>
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: "0px 0px -50px 0px"
+        };
+        
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('active');
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, observerOptions);
+        
+        document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+    </script>
+</body>
+</html>

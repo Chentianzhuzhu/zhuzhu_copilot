@@ -1,0 +1,22 @@
+{
+  "product": {
+    "description": "深色背景三点布光：主光（右前上）+ 冷色补光（左前）+ 轮廓光（后上），带哑光地面，适合桌宠与电路板实物渲染。",
+    "world": {"color": "#05070A", "strength": 0.35},
+    "floor": {"enabled": true, "name": "Floor", "color": "#0E1116", "size": 24, "roughness": 0.88, "metallic": 0.0},
+    "lights": [
+      {"kind": "AREA", "name": "Key", "loc": [1.7, -1.8, 2.0], "energy": 900, "size": 2.4, "color": "#FFFFFF", "target": [0, 0, 0]},
+      {"kind": "AREA", "name": "Fill", "loc": [-2.1, -1.3, 1.2], "energy": 260, "size": 3.0, "color": "#BFD4EA", "target": [0, 0, 0]},
+      {"kind": "AREA", "name": "Rim", "loc": [0.4, 2.3, 1.9], "energy": 700, "size": 2.0, "color": "#DCE6F5", "target": [0, 0, 0]}
+    ]
+  },
+  "dramatic": {
+    "description": "硬边高对比：单侧主光 + 强轮廓光，接近产品海报质感。",
+    "world": {"color": "#030406", "strength": 0.18},
+    "floor": {"enabled": true, "name": "Floor", "color": "#080A0D", "size": 24, "roughness": 0.75, "metallic": 0.05},
+    "lights": [
+      {"kind": "AREA", "name": "Key", "loc": [2.2, -1.2, 1.8], "energy": 1200, "size": 1.2, "color": "#FFFFFF", "target": [0, 0, 0]},
+      {"kind": "AREA", "name": "Rim", "loc": [-1.0, 2.5, 2.0], "energy": 1100, "size": 1.2, "color": "#8FB4DC", "target": [0, 0, 0]},
+      {"kind": "AREA", "name": "Fill", "loc": [-2.0, -2.0, 0.8], "energy": 120, "size": 2.6, "color": "#BFD4EA", "target": [0, 0, 0]}
+    ]
+  }
+}

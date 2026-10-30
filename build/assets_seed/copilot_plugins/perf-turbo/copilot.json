@@ -1,0 +1,40 @@
+{
+  "services": [
+    {
+      "id": "perf-turbo-service",
+      "title": "性能采集与自适应",
+      "module": "service/perf_service.py",
+      "entry": "start",
+      "stop": "stop"
+    }
+  ],
+  "pages": [
+    {
+      "id": "perf-turbo-page",
+      "title": "性能看板",
+      "module": "pages/perf_page.py",
+      "widget": "PerfPage",
+      "window": "glass",
+      "auto_show": true,
+      "width": 780,
+      "height": 560
+    }
+  ],
+  "tray": [
+    {
+      "id": "perf-turbo-report",
+      "title": "性能报告",
+      "module": "pages/perf_page.py",
+      "action": "show_report"
+    }
+  ],
+  "shortcuts": [
+    {
+      "id": "perf-turbo-hotkey",
+      "title": "性能报告",
+      "hotkey": "ctrl+alt+p",
+      "module": "pages/perf_page.py",
+      "action": "show_report"
+    }
+  ]
+}

@@ -1,0 +1,1434 @@
+"""blender-modeler：把 Blender 变成 Agent 的真实 3D 建模后端（stdio MCP 服务器）。
+
+架构
+----
+本文件是 MCP stdio 服务器（由应用用内置 Python 拉起），负责：
+  1. 发现本机 blender.exe（可被插件配置 BLENDER_EXE 覆盖）；
+  2. 首次建模调用时拉起**常驻** `blender --background` 进程（blender_host.py），
+     通过 127.0.0.1 本地 socket 转发 JSON 行请求；
+  3. 把渲染出的 PNG 以 MCP image 内容项返回给模型。
+
+为什么常驻而不是一次性脚本：建模是几十次小步迭代（加体块 → 倒角 → 材质 → 打光 →
+渲染 → 修），每次重启 Blender 要 2~5 秒，多步流程会变得不可用。常驻进程同时保留
+场景、材质、相机与 Cycles 渲染缓存。
+
+纪律
+----
+- stdout 只输出 JSON-RPC，日志一律走 stderr；
+- 不做任何 mock：所有结果来自真实 bpy 求值；
+- 插件配置（config.json → 环境变量）：BLENDER_EXE / BLENDER_OUTPUT_DIR /
+  BLENDER_RENDER_ENGINE / BLENDER_START_TIMEOUT / BLENDER_IDLE_TIMEOUT /
+  BLENDER_PREVIEW_PORT / BLENDER_PREVIEW_BIND；
+- 局域网预览页是独立线程里的只读 HTTP 服务，轮询只读缓存，不挤占 Blender 调用锁；
+- 工具在主循环线程里串行执行（与 computer-control 相同的教训：不要用线程池 +
+  超时，否则一个慢工具会把后续调用全部拖进排队超时）。
+"""
+import atexit
+import base64
+import json
+import os
+import select
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import quote, unquote, urlparse
+
+APP_NAME = "blender-modeler"
+MCP_VERSION = "2024-11-05"
+
+PLUGIN_DIR = Path(__file__).resolve().parent
+HOST_SCRIPT = PLUGIN_DIR / "blender_host.py"
+PRESETS_DIR = PLUGIN_DIR / "presets"
+
+START_TIMEOUT = float(os.environ.get("BLENDER_START_TIMEOUT") or 90)
+IDLE_TIMEOUT = float(os.environ.get("BLENDER_IDLE_TIMEOUT") or 1800)
+DEFAULT_ENGINE = (os.environ.get("BLENDER_RENDER_ENGINE") or "CYCLES").upper()
+DEFAULT_SAMPLES = int(os.environ.get("BLENDER_RENDER_SAMPLES") or 32)
+
+#: 生命周期日志（拉起/退出/重启原因）：应用侧把 MCP 子进程 stderr 丢弃，
+#: 没有这份日志就完全无法回答「Blender 为什么又重启了」。只记事件、单文件滚动。
+RUNTIME_LOG = PLUGIN_DIR / "runtime.log"
+_RUNTIME_LOG_MAX = 192 * 1024
+_log_written = -1      # 已写入字节数；-1 = 尚未初始化（首次追加前 stat 一次）
+
+
+def _log(text: str) -> None:
+    """写 stderr（应用会丢弃）+ 追加到 runtime.log（滚动保留上一段）。
+
+    用自记字节数代替每次 stat：Blender 渲染时 stderr 会连续输出进度行，
+    逐行 stat 是白花的 syscall，而这里只需要「超过上限就滚动」。
+    """
+    global _log_written
+    try:
+        sys.stderr.write(f"[{APP_NAME}] {text}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n"
+    try:
+        if _log_written < 0:
+            _log_written = RUNTIME_LOG.stat().st_size if RUNTIME_LOG.is_file() else 0
+        if _log_written > _RUNTIME_LOG_MAX:
+            try:
+                os.replace(RUNTIME_LOG, RUNTIME_LOG.with_suffix(".log.1"))
+            except OSError:
+                pass
+            _log_written = 0
+        with RUNTIME_LOG.open("a", encoding="utf-8") as f:
+            f.write(line)
+        _log_written += len(line.encode("utf-8"))
+    except Exception:
+        pass
+
+
+# ============================================================================
+# 输出目录 / Blender 可执行文件发现
+# ============================================================================
+
+def output_dir() -> Path:
+    """默认落在桌面交付目录：<Desktop>/zhuzhu Copilot/blender；可用配置覆盖。"""
+    raw = str(os.environ.get("BLENDER_OUTPUT_DIR") or "").strip()
+    p = Path(os.path.expanduser(raw)) if raw else (Path.home() / "Desktop" / "zhuzhu Copilot" / "blender")
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        p = PLUGIN_DIR / "output"
+        p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+_BLENDER_CACHE = {"path": "", "ts": 0.0}
+
+
+def _version_key(path: Path):
+    """按目录名里的数字排序（Blender 3.5 < 4.1 < 4.10）。"""
+    import re
+    nums = [int(x) for x in re.findall(r"\d+", path.parent.name)]
+    return nums
+
+
+def find_blender(force: bool = False) -> str:
+    """定位 blender.exe：配置 > 标准安装目录（多版本取最高） > PATH。"""
+    configured = str(os.environ.get("BLENDER_EXE") or "").strip()
+    if configured:
+        p = Path(os.path.expanduser(configured))
+        if p.is_file():
+            return str(p)
+        found = shutil.which(configured)
+        if found:
+            return found
+        raise RuntimeError(f"配置的 BLENDER_EXE 不可用：{configured}")
+
+    if not force and _BLENDER_CACHE["path"] and time.time() - _BLENDER_CACHE["ts"] < 300:
+        if Path(_BLENDER_CACHE["path"]).is_file():
+            return _BLENDER_CACHE["path"]
+
+    roots = [Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Blender Foundation",
+             Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Blender Foundation"]
+    cands = []
+    for root in roots:
+        if not str(root) or not root.is_dir():
+            continue
+        for d in root.iterdir():
+            exe = d / "blender.exe"
+            if exe.is_file():
+                cands.append(exe)
+    if cands:
+        cands.sort(key=_version_key, reverse=True)
+        _BLENDER_CACHE.update(path=str(cands[0]), ts=time.time())
+        return str(cands[0])
+
+    found = shutil.which("blender")
+    if found:
+        _BLENDER_CACHE.update(path=found, ts=time.time())
+        return found
+    raise RuntimeError(
+        "没有找到 Blender。请安装 Blender，或在插件配置里设置 BLENDER_EXE 为 blender.exe 的完整路径。")
+
+
+# ============================================================================
+# 常驻 Blender 进程 + 本地 socket 转发
+# ============================================================================
+
+class BlenderBridge:
+    def __init__(self):
+        self.proc = None
+        self.conn = None
+        self.listen = None
+        self.expect_pid = None
+        self._lock = threading.RLock()
+        self._id = 0
+        self._stderr = deque(maxlen=80)
+        self._stdout = deque(maxlen=40)
+        self._buf = bytearray()      # 行协议缓冲：跨 recv 保留半行，绝不丢数据
+        self.version = ""
+        self.exit_code = None        # 上一次实例的退出码（None=正常/by design 停止）
+        self.last_reason = ""        # 上一次实例消失的原因（供 status / 重启日志说明）
+        self.restored = {}           # 本次实例启动时从上次工作恢复的信息
+        self._parking = False        # 正在退出前保存恢复文件（防 stop 递归）
+
+    # ---------- 进程生命周期 ----------
+
+    def alive(self) -> bool:
+        if not (self.proc and self.conn):
+            return False
+        if self.proc.poll() is None:
+            return True
+        # 进程已退出：留下退出码与原因，下一次 start() 才说得清「为什么重启」
+        if self.exit_code is None:
+            self.exit_code = self.proc.returncode
+            self.last_reason = f"Blender 进程已退出（退出码 {self.exit_code}）"
+            _log(f"⚠ {self.last_reason}")
+        return False
+
+    def start(self, restart: bool = False) -> dict:
+        with self._lock:
+            if self.alive() and not restart:
+                return {"version": self.version, "pid": self.proc.pid, "restarted": False}
+            # 记录「上一实例为什么没了」：用户看到的「频繁重启」绝大多数是
+            # 上一实例异常退出后这里被静默拉起，不留痕就无从排查。
+            prev = self.last_reason or ""
+            if self.proc is not None or self.conn is not None:
+                _log(f"重建 Blender 实例（重启={restart}，上次状态：{prev or '仍在运行/未启动'}"
+                     f"，退出码={self.exit_code}）")
+            self.stop()
+            exe = find_blender()
+            if not HOST_SCRIPT.is_file():
+                raise RuntimeError(f"缺少 blender_host.py：{HOST_SCRIPT}")
+            out = output_dir()
+            self.listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.listen.bind(("127.0.0.1", 0))
+            self.listen.listen(1)
+            port = self.listen.getsockname()[1]
+            self.listen.settimeout(START_TIMEOUT)
+
+            cmd = [exe, "--background", "--factory-startup",
+                   "--python", str(HOST_SCRIPT), "--",
+                   "--port", str(port),
+                   "--output", str(out),
+                   "--presets", str(PRESETS_DIR),
+                   "--idle", str(IDLE_TIMEOUT)]
+            flags = 0
+            if os.name == "nt":
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            _log(f"启动 Blender：{' '.join(cmd)}")
+            self.proc = subprocess.Popen(
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, creationflags=flags, close_fds=True)
+            threading.Thread(target=self._drain, args=(self.proc.stdout, self._stdout, "out"),
+                             daemon=True).start()
+            threading.Thread(target=self._drain, args=(self.proc.stderr, self._stderr, "err"),
+                             daemon=True).start()
+
+            try:
+                self.conn, _ = self.listen.accept()
+                # 全阻塞 + 自己维护行缓冲：**绝不**用 `conn.settimeout()` 配
+                # `makefile().readline()`。官方文档明确警告：套接字超时后文件对象
+                # 的内部缓冲可能处于不一致状态，半行数据会被丢掉 —— 表现为 Blender
+                # 端读到 EOF/报错后退出，下一次调用又被静默拉起，即用户看到的
+                # 「Blender 实例频繁重启」。读超时统一由 select() 控制。
+                self.conn.settimeout(None)
+                self._buf.clear()
+                kind, hello_line = self._read_msg(START_TIMEOUT)
+                if kind == "eof":
+                    raise RuntimeError("Blender 进程在握手前就关闭了连接")
+                hello = json.loads(hello_line.decode("utf-8", "replace") or "{}")
+                if not hello.get("hello"):
+                    raise RuntimeError("Blender 服务握手失败（未收到 hello）")
+                self.version = str(hello.get("blender") or "")
+                self.exit_code = None
+                self.last_reason = ""
+                _log(f"Blender 就绪：{self.version}（pid={self.proc.pid}, port={port}）")
+                # 恢复上一次的工作：闲置退出/重启/崩溃后不该回到空场景。
+                # 失败只记日志（例如首次使用、文件被删），不阻断建模。
+                self.restored = {}
+                try:
+                    r = self.call("session_restore", {}, timeout=max(60.0, START_TIMEOUT))
+                    if isinstance(r, dict) and r.get("restored"):
+                        self.restored = r
+                        _log(f"已恢复上次工作：{r.get('restored')}（{r.get('source')}，"
+                             f"{r.get('objects')} 个对象）")
+                    elif isinstance(r, dict):
+                        _log(f"未恢复上次工作：{r.get('reason')}")
+                except Exception as e:
+                    _log(f"恢复上次工作失败（继续用空场景）：{e}")
+                return {"version": self.version, "pid": self.proc.pid, "restarted": True,
+                        "restored": self.restored}
+            except Exception as e:
+                tail = "\n".join(list(self._stderr)[-12:])
+                self.stop()
+                raise RuntimeError(
+                    f"Blender 后台进程启动失败：{e}\n"
+                    f"可执行文件：{exe}\n"
+                    f"--- Blender 输出（末尾）---\n{tail or '（无输出）'}")
+
+    def stop(self, reason: str = "") -> dict:
+        """关闭实例，返回 {"parked": bool, "recovery": str}。
+
+        reason 只用于日志（写进 runtime.log，便于回溯重启原因）。
+        关之前先请 host 把「未保存的改动」另存为恢复文件：重启/重连后能接着干，
+        不至于因为一次 restart 丢掉整个场景。`_parking` 防递归（park 内部若失败
+        会走 call() → stop()）。
+        """
+        parked = {"parked": False, "recovery": ""}
+        if reason:
+            self.last_reason = reason
+        if self.proc is not None and reason:
+            _log(f"停止 Blender 实例：{reason}")
+        if (not self._parking and self.proc is not None
+                and self.proc.poll() is None and self.conn is not None):
+            self._parking = True
+            try:
+                r = self.call("session_park", {}, timeout=20)
+                if isinstance(r, dict) and r.get("parked"):
+                    parked = {"parked": True, "recovery": str(r.get("recovery") or "")}
+                    _log(f"退出前已保存恢复文件：{r.get('recovery')}")
+            except Exception as e:
+                _log(f"退出前保存恢复文件失败（忽略）：{e}")
+            finally:
+                self._parking = False
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        try:
+            self.listen.close()
+        except Exception:
+            pass
+        self.conn = self.listen = None
+        self._buf.clear()
+        p = self.proc
+        self.proc = None
+        if p is None:
+            return parked
+        try:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    try:
+                        p.wait(timeout=4)
+                    except subprocess.TimeoutExpired:
+                        pass
+        except Exception:
+            pass
+        try:
+            if p.returncode is not None:
+                self.exit_code = int(p.returncode)
+        except Exception:
+            pass
+        self.version = ""
+        return parked
+
+    @staticmethod
+    def _drain(pipe, sink: deque, tag: str):
+        try:
+            for line in iter(pipe.readline, b""):
+                text = line.decode("utf-8", "replace").rstrip()
+                if not text:
+                    continue
+                sink.append(text)
+                if tag == "err":
+                    _log(f"blender: {text}")
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    # ---------- 行协议（select 控超时，缓冲不丢半行） ----------
+
+    #: socket.recv 单次读取上限
+    _RECV_CHUNK = 65536
+    #: 单条响应上限：渲染结果含 base64 PNG，故放宽，但必须有界（防内存失控）
+    _LINE_LIMIT = 64 * 1024 * 1024
+
+    def _read_line(self, timeout: float = None) -> tuple:
+        """读一行 → (状态, 内容)：("line", 数据) / ("blank", b"") / ("eof", b"")。
+
+        超时抛 TimeoutError。**空行与 EOF 必须区分**：只返回 bytes 时，空行会等于
+        b"" 被误判成「进程已退出」，凭空触发一次重启。
+        为什么不用 `makefile().readline()` + socket 超时：见 start() 里的说明 ——
+        超时会把文件对象的缓冲弄坏，半行被丢 → 对端读到 EOF → Blender 退出重启。
+        """
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl >= 0:
+                line = bytes(self._buf[:nl])
+                del self._buf[:nl + 1]
+                return ("line", line) if line else ("blank", b"")
+            if len(self._buf) > self._LINE_LIMIT:
+                raise RuntimeError("Blender 响应超过单条上限，已中断（渲染结果可能过大）")
+            wait = 1.0
+            if deadline is not None:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    raise TimeoutError()
+                wait = min(remain, 1.0)
+            try:
+                ready, _, _ = select.select([self.conn], [], [], wait)
+            except (OSError, ValueError):
+                return ("eof", b"")
+            if not ready:
+                continue
+            try:
+                chunk = self.conn.recv(self._RECV_CHUNK)
+            except OSError:
+                return ("eof", b"")
+            if not chunk:
+                return ("eof", b"")
+            self._buf.extend(chunk)
+
+    def _read_msg(self, timeout: float = None) -> tuple:
+        """读一条**非空** JSON 行 → (状态, 内容)，状态为 "line" / "eof"。
+
+        空行（对端 flush 产生的空帧）直接跳过：它既不是响应也不是 EOF。
+        """
+        while True:
+            kind, line = self._read_line(timeout)
+            if kind == "eof":
+                return ("eof", b"")
+            if kind == "line" and line.strip():
+                return ("line", line)
+
+    def _send_all(self, payload: bytes, timeout: float = 120.0) -> bool:
+        """整包发送（select 控写就绪）：对端失联时不至于永久阻塞。"""
+        view = memoryview(payload)
+        deadline = time.monotonic() + float(timeout)
+        while view:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                return False
+            try:
+                _, ready, _ = select.select([], [self.conn], [], min(remain, 1.0))
+            except (OSError, ValueError):
+                return False
+            if not ready:
+                continue
+            try:
+                n = self.conn.send(view)
+            except OSError:
+                return False
+            if n <= 0:
+                return False
+            view = view[n:]
+        return True
+
+    # ---------- 请求 ----------
+
+    def call(self, method: str, params: dict, timeout: float = 600) -> dict:
+        with self._lock:
+            if not self.alive():
+                self.start()
+            self._id += 1
+            rid = self._id
+            payload = json.dumps({"id": rid, "method": method, "params": params},
+                                 ensure_ascii=False).encode("utf-8") + b"\n"
+            if not self._send_all(payload):
+                self.stop("请求发送失败（对端已断开）")
+                raise RuntimeError(
+                    f"与 Blender 的连接已断开（{method} 未能发出），实例已停止。\n"
+                    f"{self._tail()}")
+            try:
+                kind, line = self._read_msg(timeout)
+            except TimeoutError:
+                self.stop(f"{method} 超过 {timeout:.0f}s 未返回")
+                raise RuntimeError(
+                    f"Blender 在 {timeout:.0f}s 内没有返回（操作可能过重）。后台实例已停止，"
+                    f"请降低渲染分辨率/采样后重试，或先 blender_start 重新拉起。")
+            except RuntimeError:
+                self.stop("响应超长")
+                raise
+            if kind == "eof":
+                code = self.proc.poll() if self.proc is not None else None
+                self.stop(f"{method} 等待响应时对端关闭（退出码 {code}）")
+                raise RuntimeError(
+                    f"Blender 进程已退出（场景丢失，退出码 {code}）。\n{self._tail()}")
+            resp = json.loads(line.decode("utf-8", "replace"))
+            if not resp.get("ok"):
+                raise RuntimeError(str(resp.get("error") or "Blender 未知错误"))
+            result = resp.get("result")
+            return result if isinstance(result, dict) else {"result": result}
+
+    def _tail(self, n: int = 8) -> str:
+        return "\n".join(list(self._stderr)[-n:])
+
+
+BRIDGE = BlenderBridge()
+atexit.register(lambda: BRIDGE.stop())
+
+
+# ============================================================================
+# 局域网预览页：浏览器（手机 / 同网段电脑）实时看渲染图，只读、不改场景
+# ============================================================================
+
+PREVIEW_BIND = (os.environ.get("BLENDER_PREVIEW_BIND") or "0.0.0.0").strip() or "0.0.0.0"
+PREVIEW_PORT = int(os.environ.get("BLENDER_PREVIEW_PORT") or 8787)
+# 页面展示的图片数量上限：只保留最近的渲染结果，避免目录长期使用后列表过重
+PREVIEW_MAX_IMAGES = 60
+
+# ---- 实时视图：每完成一步建模就出一帧，用户能一步步看着建模过程 ----
+#: 关掉整条实时出图（BLENDER_LIVE_PREVIEW=0）：出问题时可用，不影响正式渲染
+LIVE_ENABLED = (os.environ.get("BLENDER_LIVE_PREVIEW") or "1").strip().lower() \
+    not in ("0", "false", "off", "no")
+#: 实时图边长（px）：Workbench 360px 实测 ~0.4s/帧，够看清体块与材质，又不拖节奏
+LIVE_PX = int(os.environ.get("BLENDER_LIVE_PX") or 360)
+#: 实时图落在输出目录的 _live/ 子目录：不进正式渲染列表，也不污染交付目录
+LIVE_SUBDIR = "_live"
+LIVE_NAME = "view.png"
+#: 这些工具本身会产出正式图或不改变画面，不必再补一帧实时图
+#: （scene_open 不在其中：换文件后预览页要立刻显示新场景）
+_LIVE_SKIP = frozenset({"render_image", "export_model", "scene_save", "blender_start"})
+
+_STATE = {"scene": None, "scene_at": 0.0}
+
+
+def _remember_scene(result) -> None:
+    """缓存最近一次场景摘要，供预览页展示（页面轮询不直接占用 Blender 调用锁）。"""
+    if isinstance(result, dict) and isinstance(result.get("summary"), dict):
+        _STATE["scene"] = result["summary"]
+        _STATE["scene_at"] = time.time()
+
+
+def _lan_ip() -> str:
+    """取本机在局域网中的 IPv4：UDP connect 只做路由选择、不发包；失败再退回主机名解析。"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                return ip
+    except OSError:
+        pass
+    return "127.0.0.1"
+
+
+def _live_path() -> Path:
+    """实时视图文件路径（输出目录/_live/view.png）。"""
+    return output_dir() / LIVE_SUBDIR / LIVE_NAME
+
+
+def _live_info() -> dict:
+    """实时视图的元信息（页面据此决定 hero 显示实时图还是最新正式渲染）。"""
+    p = _live_path()
+    try:
+        if p.is_file():
+            st = p.stat()
+            return {"url": f"live.png?v={int(st.st_mtime)}", "mtime": st.st_mtime,
+                    "bytes": st.st_size, "path": str(p)}
+    except OSError:
+        pass
+    return {}
+
+
+def _live_frame() -> bool:
+    """让预览页「一步一帧」：每次建模工具返回前补一张快速实时图。
+
+    失败一律静默（记 runtime.log）：看预览是给人看的，绝不能让出图失败
+    把建模本身搞挂或拖慢。
+    """
+    if not LIVE_ENABLED:
+        return False
+    try:
+        r = BRIDGE.call("live_snapshot", {"resolution": LIVE_PX}, timeout=90)
+    except Exception as e:
+        _log(f"实时快照失败（不影响建模）：{e}")
+        return False
+    if not isinstance(r, dict) or r.get("skipped"):
+        # 场景空/黑帧时跳过是正常的（第一步之前没有东西可看），但留痕便于排查
+        _log(f"实时帧跳过：{(r or {}).get('reason') or r}")
+        return False
+    _log(f"实时帧 {r.get('seconds')}s · {r.get('bytes')}B · {r.get('resolution')}px")
+    return True
+
+
+def _preview_state() -> dict:
+    """预览页数据：渲染实例状态 + 场景摘要（缓存）+ 实时视图 + PNG 列表。"""
+    out = output_dir()
+    images = []
+    try:
+        files = [p for p in out.glob("*.png") if p.is_file()]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[:PREVIEW_MAX_IMAGES]:
+            st = p.stat()
+            images.append({"name": p.name, "url": f"img/{quote(p.name)}?v={int(st.st_mtime)}",
+                           "bytes": st.st_size, "mtime": st.st_mtime})
+    except OSError:
+        pass
+    info = PREVIEW.info()
+    return {"running": BRIDGE.alive(), "blender": BRIDGE.version or "",
+            "output_dir": str(out), "scene": _STATE.get("scene"),
+            "images": images, "now": time.time(), "live": _live_info(),
+            "live_enabled": LIVE_ENABLED, "live_px": LIVE_PX,
+            "lan_url": info["url"] if info["running"] else "",
+            "bind": info["bind"], "port": info["port"]}
+
+
+_PREVIEW_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blender 预览</title>
+<style>
+  :root{--bg:#05070A;--panel:#0E1116;--line:#1E242C;--fg:#D8DDE4;--dim:#7A828C;--ok:#7FB2E5}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace}
+  header{position:sticky;top:0;z-index:2;background:rgba(5,7,10,.92);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.06em}
+  .url{color:var(--dim);font-size:12px}
+  .pill{margin-left:auto;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--dim)}
+  .pill.on{color:var(--ok);border-color:#24486B}
+  main{padding:14px 16px 40px;max-width:1400px;margin:0 auto}
+  #stats{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 10px;min-width:96px}
+  .stat b{display:block;font-size:11px;color:var(--dim);font-weight:400;letter-spacing:.04em}
+  .stat span{font-size:15px}
+  #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;display:block;color:inherit;text-decoration:none}
+  .card img{display:block;width:100%;height:auto;background:#000}
+  .cap{padding:8px 10px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);display:flex;justify-content:space-between;gap:8px}
+  .cap b{color:var(--fg);font-weight:500;word-break:break-all}
+  #hero{position:relative;margin:0 0 14px;border:1px solid var(--line);border-radius:8px;
+        overflow:hidden;background:#000;display:none}
+  #hero img{display:block;width:100%;height:auto}
+  #hero .tag{position:absolute;top:10px;left:10px;font-size:11px;letter-spacing:.08em;
+        color:var(--ok);border:1px solid #24486B;border-radius:999px;padding:2px 9px;
+        background:rgba(5,7,10,.72)}
+  #hero figcaption{position:absolute;left:0;right:0;bottom:0;padding:10px 12px;font-size:12px;
+        color:var(--fg);background:linear-gradient(180deg,rgba(5,7,10,0),rgba(5,7,10,.88))}
+  #empty{color:var(--dim);padding:28px 0;text-align:center;border:1px dashed var(--line);border-radius:8px}
+  #meta{color:var(--dim);font-size:12px;margin-top:16px}
+</style></head>
+<body>
+<header><h1>ZHIZHU BLENDER PREVIEW</h1><span class="url" id="addr"></span>
+<span class="pill" id="status">连接中</span></header>
+<main><div id="stats"></div>
+<figure id="hero"><span class="tag" id="heroTag">最新渲染</span><img id="heroImg" alt="latest">
+<figcaption id="heroCap"></figcaption></figure>
+<div id="grid"></div>
+<div id="empty">尚无正式渲染图：实时视图在上方，正式渲染图由 render_image 产出后出现在这里。</div>
+<div id="meta"></div></main>
+<script>
+(function(){
+  var statusEl=document.getElementById('status'),statsEl=document.getElementById('stats'),
+      gridEl=document.getElementById('grid'),emptyEl=document.getElementById('empty'),
+      metaEl=document.getElementById('meta'),addrEl=document.getElementById('addr'),
+      heroEl=document.getElementById('hero'),heroImg=document.getElementById('heroImg'),
+      heroCap=document.getElementById('heroCap'),heroTag=document.getElementById('heroTag');
+  var sig='';
+  function pad(n){return n<10?'0'+n:''+n;}
+  function timeText(s){var d=new Date(s*1000);return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());}
+  function sizeText(n){return n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,Math.round(n/1024))+' KB';}
+  function stat(label,value){
+    var d=document.createElement('div');d.className='stat';
+    var b=document.createElement('b');b.textContent=label;
+    var s=document.createElement('span');
+    s.textContent=(value===undefined||value===null||value==='')?'—':String(value);
+    d.appendChild(b);d.appendChild(s);return d;
+  }
+  function applyStats(sc){
+    var res=(sc&&sc.resolution)||[];
+    var rows=[['对象',sc&&sc.objects],['三角面',sc&&sc.triangles],['材质',sc&&sc.materials],
+      ['引擎',sc&&sc.engine],['分辨率',res.length?res[0]+' x '+res[1]:''],['相机',sc&&sc.camera]];
+    statsEl.textContent='';
+    rows.forEach(function(r){statsEl.appendChild(stat(r[0],r[1]));});
+  }
+  function applyGrid(images){
+    var next=images.map(function(i){return i.name+'@'+i.bytes+'@'+i.mtime;}).join('|');
+    if(next===sig){return;}
+    sig=next;gridEl.textContent='';
+    emptyEl.style.display=images.length?'none':'block';
+    images.forEach(function(it){
+      var a=document.createElement('a');a.className='card';a.href=it.url;
+      a.target='_blank';a.rel='noopener';
+      var img=document.createElement('img');img.src=it.url;img.alt=it.name;img.loading='lazy';
+      var cap=document.createElement('div');cap.className='cap';
+      var name=document.createElement('b');name.textContent=it.name;
+      var info=document.createElement('span');info.textContent=timeText(it.mtime)+' · '+sizeText(it.bytes);
+      cap.appendChild(name);cap.appendChild(info);
+      a.appendChild(img);a.appendChild(cap);gridEl.appendChild(a);
+    });
+  }
+  // hero 取「实时视图」与「最新正式渲染」里更新的那张：
+  // 建模中每步都出实时图（逐步推进），正式渲染后自动切回成品大图
+  function applyHero(live, images){
+    var cand=null;
+    if(live&&live.url){cand={url:live.url,mtime:live.mtime,bytes:live.bytes,live:true,name:'实时视图'};}
+    if(images.length&&(!cand||images[0].mtime>cand.mtime)){
+      cand={url:images[0].url,mtime:images[0].mtime,bytes:images[0].bytes,live:false,name:images[0].name};
+    }
+    if(!cand){heroEl.style.display='none';return;}
+    heroEl.style.display='block';
+    if(heroImg.getAttribute('src')!==cand.url){heroImg.src=cand.url;}
+    heroTag.textContent=cand.live?'实时视图':'最新渲染';
+    heroCap.textContent=timeText(cand.mtime)+' · '+sizeText(cand.bytes)
+      +(cand.live?' · 每当 Agent 完成一步就刷新':' · '+cand.name);
+  }
+  function tick(){
+    fetch('api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){
+      statusEl.textContent=s.running?'渲染实例运行中':'渲染实例未启动';
+      statusEl.className='pill'+(s.running?' on':'');
+      addrEl.textContent=s.lan_url||'';
+      applyStats(s.scene);applyGrid(s.images||[]);applyHero(s.live,s.images||[]);
+      metaEl.textContent='最近刷新 '+timeText(s.now)+' · 输出目录 '+s.output_dir
+        +' · 渲染图 '+(s.images||[]).length+' 张（最近 60 张）'
+        +(s.live_enabled?' · 实时视图 '+s.live_px+'px 每步自动刷新':' · 实时视图已关闭');
+    }).catch(function(){
+      statusEl.textContent='连接中断';statusEl.className='pill';
+    });
+  }
+  tick();setInterval(tick,1000);
+})();
+</script></body></html>"""
+
+
+class PreviewServer:
+    """只读 HTTP 预览服务（ThreadingHTTPServer，守护线程）。"""
+
+    def __init__(self):
+        self.httpd = None
+        self.thread = None
+        self.port = 0
+        self.bind = ""
+        self.lan = ""
+
+    def running(self) -> bool:
+        return bool(self.httpd is not None and self.thread is not None and self.thread.is_alive())
+
+    def start(self, port=None, bind=None) -> dict:
+        if self.running():
+            return self.info()
+        bind = str(bind or PREVIEW_BIND).strip() or "0.0.0.0"
+        port = PREVIEW_PORT if port in (None, "") else int(port)
+        try:
+            httpd = ThreadingHTTPServer((bind, port), _preview_handler())
+        except OSError as e:
+            raise RuntimeError(f"预览页启动失败（{bind}:{port}）：{e}")
+        httpd.daemon_threads = True
+        self.httpd, self.bind = httpd, bind
+        self.port = int(httpd.server_address[1])
+        self.lan = _lan_ip()
+        self.thread = threading.Thread(target=httpd.serve_forever,
+                                       kwargs={"poll_interval": 0.3}, daemon=True)
+        self.thread.start()
+        _log(f"预览页已启动：{self.info()['url']}")
+        return self.info()
+
+    def stop(self) -> bool:
+        if self.httpd is None:
+            return False
+        try:
+            self.httpd.shutdown()
+        except Exception:
+            pass
+        try:
+            self.httpd.server_close()
+        except Exception:
+            pass
+        self.httpd = self.thread = None
+        return True
+
+    def info(self) -> dict:
+        port = self.port or PREVIEW_PORT
+        return {"running": self.running(), "bind": self.bind or PREVIEW_BIND, "port": port,
+                "lan_ip": self.lan or "127.0.0.1",
+                "local_url": f"http://127.0.0.1:{port}/",
+                "url": f"http://{self.lan or '127.0.0.1'}:{port}/"}
+
+
+PREVIEW = PreviewServer()
+atexit.register(lambda: PREVIEW.stop())
+
+#: 建模时自动打开预览页（用户要能实时看到每一步渲染）。配置
+#: BLENDER_PREVIEW_AUTO_OPEN=0 可关闭；出问题时也可随时 preview_start 手动开。
+PREVIEW_AUTO_OPEN = (os.environ.get("BLENDER_PREVIEW_AUTO_OPEN") or "1").strip().lower() \
+    not in ("0", "false", "off", "no")
+
+#: 本进程内是否已弹出过预览标签页：只开一次，绝不每次调用都弹新窗口
+#: （用户可能已经把它钉在旁边看；每步都开新标签会立刻变成骚扰）。
+_preview_opened = False
+_preview_lock = threading.Lock()
+
+#: 会真正改动场景/产出的工具：调用**之前**确保预览页已打开，
+#: 这样用户从第一步（blender_start / scene_new）就能实时看到进展。
+#: 不含只读工具（status/scene_info/template_list）与预览自身工具。
+_MODELING_TOOLS = frozenset({
+    "blender_start", "scene_new", "scene_save", "scene_open", "scene_import",
+    "object_add", "object_transform", "object_duplicate", "object_delete",
+    "object_join", "object_shade", "object_modifier", "object_boolean",
+    "material_create", "material_assign", "text_add",
+    "camera_add", "camera_frame", "light_add", "light_rig", "world_set",
+    "render_image", "export_model", "template_apply",
+})
+
+
+def _open_in_browser(url: str) -> bool:
+    """用系统默认浏览器打开 URL（Windows 走 os.startfile，最稳）。
+
+    绝不抛异常：打开失败也要让建模继续，只是退回「把地址告诉模型」。
+    """
+    try:
+        if os.name == "nt":
+            os.startfile(url)   # noqa: S606 — 打开用户自己的预览页，非可执行文件
+            return True
+    except Exception as e:
+        _log(f"os.startfile 打开预览页失败：{e}")
+    try:
+        import webbrowser
+        return bool(webbrowser.open(url, new=2))
+    except Exception as e:
+        _log(f"webbrowser 打开预览页失败：{e}")
+        return False
+
+
+def open_preview(force_open: bool = False) -> tuple:
+    """确保预览页在跑，并在首次建模时打开浏览器标签。
+
+    返回 (info or None, 本次是否新开标签)。任何失败只记日志，
+    **绝不影响建模本身** —— 预览是给人看的，不能反过来挡住干活。
+    """
+    global _preview_opened
+    try:
+        info = PREVIEW.info() if PREVIEW.running() else PREVIEW.start()
+    except Exception as e:
+        _log(f"预览页启动失败（建模继续，不影响出图）：{e}")
+        return None, False
+    if not PREVIEW_AUTO_OPEN and not force_open:
+        return info, False
+    if _preview_opened and not force_open:
+        return info, False
+    with _preview_lock:
+        if _preview_opened and not force_open:
+            return info, False
+        ok = _open_in_browser(info["local_url"])
+        _preview_opened = True
+        _log(f"已打开预览页：{info['local_url']}（{'成功' if ok else '失败，地址可由模型告知用户'}）")
+        return info, ok
+
+
+def _preview_handler():
+    """按请求构造 handler；`/` 页面、`/api/state` 数据、`/img/<name>` 图片，其余 404。"""
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "zhizhu-blender-preview/1.0"
+
+        def log_message(self, fmt, *args):   # 静默：HTTP 访问日志不淹 stderr
+            pass
+
+        def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store"):
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", cache)
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def do_GET(self):
+            try:
+                path = unquote(urlparse(self.path).path)
+                if path in ("/", "/index.html"):
+                    self._send(200, _PREVIEW_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                elif path == "/api/state":
+                    body = json.dumps(_preview_state(), ensure_ascii=False).encode("utf-8")
+                    self._send(200, body, "application/json; charset=utf-8")
+                elif path == "/live.png":
+                    self._live()
+                elif path.startswith("/img/"):
+                    self._image(path[len("/img/"):])
+                else:
+                    self._send(404, b"not found", "text/plain; charset=utf-8")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def _live(self):
+            """实时视图：每步都换图，必须 no-store（URL 上另有 ?v=mtime 兜底）。"""
+            p = _live_path()
+            try:
+                body = p.read_bytes()
+            except OSError:
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "image/png")
+
+        def _image(self, name: str):
+            # 只允许输出目录下的单层 .png 文件名，杜绝 ../ 穿越
+            if (not name or "/" in name or "\\" in name or name.startswith(".")
+                    or not name.lower().endswith(".png")):
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            p = output_dir() / name
+            try:
+                if not p.is_file():
+                    raise OSError("missing")
+                body = p.read_bytes()
+            except OSError:
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "image/png", cache="public, max-age=86400")
+
+    return Handler
+
+
+# ============================================================================
+# 结果格式化
+# ============================================================================
+
+def _pretty(result: dict) -> str:
+    if not isinstance(result, dict):
+        return str(result)
+    head = str(result.get("message") or "").strip()
+    rest = {k: v for k, v in result.items() if k != "message"}
+    body = json.dumps(rest, ensure_ascii=False, indent=2) if rest else ""
+    return (head + ("\n" if head and body else "") + body).strip()
+
+
+def _call(method: str, args: dict, timeout: float = 300) -> str:
+    return _pretty(BRIDGE.call(method, args, timeout=timeout))
+
+
+# ============================================================================
+# 工具实现
+# ============================================================================
+
+def tool_status(args):
+    try:
+        exe = find_blender()
+        found, ok = f"Blender 已找到：{exe}", True
+    except Exception as e:
+        found, ok = f"未找到可用的 Blender：{e}", False
+    if args.get("auto_start") and ok:
+        try:
+            BRIDGE.start()
+        except Exception as e:
+            return f"{found}\n启动失败：{e}"
+    if BRIDGE.alive():
+        info = BRIDGE.call("status", {})
+        _remember_scene(BRIDGE.call("scene_info", {"detail": "brief"}))
+        state = f"后台实例运行中（版本 {BRIDGE.version or info.get('blender')}，pid={BRIDGE.proc.pid}）\n" + _pretty(info)
+    else:
+        state = "后台实例未启动（首次建模调用会自动拉起，也可先 blender_start）"
+    if BRIDGE.last_reason:
+        # 上一实例为什么没了：排查「频繁重启」的第一手证据（同时写在 runtime.log）
+        state += f"\n上次实例：{BRIDGE.last_reason}（退出码 {BRIDGE.exit_code}）"
+    if BRIDGE.restored:
+        state += (f"\n本次已恢复上次工作：{BRIDGE.restored.get('restored')}"
+                  f"（{BRIDGE.restored.get('source')}）")
+    try:
+        sess = BRIDGE.call("blend_list", {}) if BRIDGE.alive() else {}
+    except Exception:
+        sess = {}
+    if isinstance(sess, dict) and (sess.get("work_file") or sess.get("recovery")):
+        state += (f"\n工作文件：{sess.get('work_file') or '（未保存过）'}"
+                  f"\n恢复文件：{sess.get('recovery') or '（无）'}"
+                  f"\n未保存改动：{'有' if sess.get('dirty') else '无'}")
+    preview = PREVIEW.info()
+    if preview["running"]:
+        page = (f"预览页：{preview['local_url']}（本机看，1 秒自动刷新）"
+                f"\n        {preview['url']}（手机/同网段看）")
+    else:
+        page = ("预览页未启动（建模时自动打开；也可 preview_start 手动开"
+                + ("" if PREVIEW_AUTO_OPEN else "，当前配置已关闭自动打开")
+                + "）")
+    return f"{found}\n{state}\n输出目录：{output_dir()}\n{page}"
+
+
+def tool_start(args):
+    info = BRIDGE.start(restart=bool(args.get("restart")))
+    summary = BRIDGE.call("status", {})
+    head = f"Blender 后台实例已就绪（版本 {info.get('version') or '?'}，pid={info['pid']}）"
+    restored = info.get("restored") or {}
+    if restored.get("restored"):
+        # 重启/闲置退出后自动接续上一次的工作文件（含未保存改动的恢复文件）
+        head += (f"\n已自动恢复上次工作：{restored['restored']}"
+                 f"（{restored.get('source')}，{restored.get('objects')} 个对象）"
+                 "\n继续在既有场景上改即可；不需要 scene_new（那会清空场景）。")
+    return f"{head}\n{_pretty(summary)}"
+
+
+def tool_stop(args):
+    was = BRIDGE.alive()
+    parked = BRIDGE.stop("用户要求停止 (blender_stop)") or {}
+    if not was:
+        return "后台实例本来就没有运行"
+    if parked.get("parked"):
+        return ("已停止 Blender 后台实例；未保存的改动已存为恢复文件"
+                f"（{parked.get('recovery')}），下次 blender_start 会自动接回原场景。")
+    return "已停止 Blender 后台实例（无未保存改动，下次启动会回到上次保存的工作文件）"
+
+
+def tool_scene_info(args):
+    result = BRIDGE.call("scene_info", args)
+    _remember_scene(result)
+    return _pretty(result)
+
+
+def tool_preview_start(args):
+    """手动开预览页。显式调用时**总是**再打开一次浏览器（用户明确要看的意图）。"""
+    global _preview_opened
+    want_open = bool(args.get("open", True))
+    try:
+        PREVIEW.start(args.get("port"), args.get("bind"))
+    except Exception as e:
+        raise RuntimeError(f"预览页启动失败：{e}")
+    info = PREVIEW.info()
+    opened = _open_in_browser(info["local_url"]) if want_open else False
+    if opened:
+        _preview_opened = True
+    return ("预览页已就绪（只读：不占用、不改动 Blender 场景）。\n"
+            f"本机打开：{info['local_url']}"
+            + ("（已在浏览器打开）\n" if opened else "\n")
+            + f"局域网打开：{info['url']}\n"
+            f"监听地址：{info['bind']}:{info['port']}\n"
+            f"页面每 2 秒刷新一次，显示输出目录（{output_dir()}）里最新的渲染图、"
+            "场景统计（对象/三角面/材质/引擎/分辨率/相机）与最近 60 张历史渲染；"
+            "手机连同一 Wi-Fi 打开局域网地址即可。\n"
+            "若 Windows 首次弹出防火墙提示，请勾选“专用网络”并允许。")
+
+
+def tool_preview_stop(args):
+    """关闭预览页。下次建模会重新拉起并再开一次标签页。"""
+    global _preview_opened
+    was = PREVIEW.stop()
+    _preview_opened = False
+    return "预览页已关闭（下次建模会自动重新打开）" if was else "预览页本来就没有运行"
+
+
+def tool_render(args):
+    # 预览页由 _handle 在分发前统一确保已打开（见 _MODELING_TOOLS），这里不再重复
+    result = BRIDGE.call("render_image", args, timeout=1800)
+    # 渲染成功后顺带刷新场景摘要：预览页轮询时只读缓存，不再打扰 Blender
+    try:
+        _remember_scene(BRIDGE.call("scene_info", {"detail": "brief"}))
+    except Exception:
+        pass
+    text = _pretty(result)
+    content = [{"type": "text", "text": text}]
+    p = str(result.get("path") or "")
+    if p and os.path.isfile(p):
+        try:
+            with open(p, "rb") as f:
+                content.append({"type": "image",
+                                "data": base64.b64encode(f.read()).decode(),
+                                "mimeType": "image/png"})
+        except OSError as e:
+            text += f"\n（读取渲染图失败：{e}）"
+            content[0]["text"] = text
+    return content
+
+
+def _forward(method, timeout=300):
+    def run(args):
+        return _call(method, args, timeout=timeout)
+    return run
+
+
+_HANDLERS = {
+    "blender_status": tool_status,
+    "blender_start": tool_start,
+    "blender_stop": tool_stop,
+    "preview_start": tool_preview_start,
+    "preview_stop": tool_preview_stop,
+    "scene_new": _forward("scene_new"),
+    "scene_info": tool_scene_info,
+    "scene_save": _forward("scene_save"),
+    "scene_open": _forward("scene_open", 900),
+    "scene_import": _forward("scene_import", 900),
+    "blend_list": _forward("blend_list"),
+    "object_add": _forward("object_add"),
+    "object_transform": _forward("object_transform"),
+    "object_duplicate": _forward("object_duplicate"),
+    "object_delete": _forward("object_delete"),
+    "object_join": _forward("object_join"),
+    "object_shade": _forward("object_shade"),
+    "object_modifier": _forward("object_modifier"),
+    "object_boolean": _forward("object_boolean", 600),
+    "material_create": _forward("material_create"),
+    "material_assign": _forward("material_assign"),
+    "text_add": _forward("text_add"),
+    "camera_add": _forward("camera_add"),
+    "camera_frame": _forward("camera_frame"),
+    "light_add": _forward("light_add"),
+    "light_rig": _forward("light_rig"),
+    "world_set": _forward("world_set"),
+    "render_image": tool_render,
+    "export_model": _forward("export_model", 900),
+    "template_list": _forward("template_list"),
+    "template_apply": _forward("template_apply", 600),
+}
+
+
+# ============================================================================
+# MCP 工具表
+# ============================================================================
+
+def _schema(props: dict, required=None):
+    return {"type": "object", "properties": props, "required": list(required or [])}
+
+
+_VEC = {"type": "array", "items": {"type": "number"}, "description": "[x, y, z]"}
+_NAMES = {"type": "array", "items": {"type": "string"}, "description": "对象名列表"}
+_COLOR = {"type": "string", "description": "#RRGGBB 十六进制颜色"}
+
+TOOLS = [
+    {"name": "blender_status", "description":
+        "查看 Blender 可用性、后台实例状态、当前场景摘要（对象/三角面/材质/相机/分辨率）与输出目录。"
+        "只读；auto_start=true 时顺带拉起后台实例。开始建模前先调用它确认环境。",
+     "inputSchema": _schema({"auto_start": {"type": "boolean", "description": "是否顺带启动后台 Blender（默认 false）"}})},
+    {"name": "blender_start", "description":
+        "拉起（或重启）常驻 Blender 后台实例。首次建模调用会自动启动，通常不需要手动调用；"
+        "restart=true 会丢弃当前场景重新拉起。",
+     "inputSchema": _schema({"restart": {"type": "boolean", "description": "是否强制重启（会丢失未保存场景）"}})},
+    {"name": "blender_stop", "description": "停止常驻 Blender 后台实例并释放内存。",
+     "inputSchema": _schema({})},
+    {"name": "preview_start", "description":
+        "开启预览页（只读 HTTP 服务）并在浏览器打开：每 2 秒刷新输出目录里最新的渲染图"
+        "与场景统计（对象/三角面/材质/引擎/分辨率/相机）。建模时会**自动**打开，"
+        "用户手动关掉后可用它重开（open=false 只起服务不开浏览器）。"
+        "不占用 Blender、不改场景；默认监听 0.0.0.0:8787。",
+     "inputSchema": _schema({
+         "port": {"type": "integer", "description": "端口，默认 8787（0 表示系统自动分配）"},
+         "bind": {"type": "string", "description": "监听地址，默认 0.0.0.0（局域网可访问）"},
+         "open": {"type": "boolean", "description": "是否同时在默认浏览器打开（默认 true）"}})},
+    {"name": "preview_stop", "description":
+        "关闭预览页（不影响 Blender 与已渲染的图）；下次建模会自动重新打开。",
+     "inputSchema": _schema({})},
+    {"name": "scene_new", "description":
+        "新建空场景并设置世界背景（默认纯黑）与单位比例。建模任务的第一步。",
+     "inputSchema": _schema({
+         "background_color": _COLOR, "strength": {"type": "number", "description": "世界背景强度，默认 1.0"},
+         "unit_scale": {"type": "number", "description": "单位比例，默认 1.0（1 单位=1 米）"}})},
+    {"name": "scene_info", "description":
+        "读取当前场景：对象列表（位置/旋转/缩放/顶点/面/材质）、包围盒、相机、灯光、渲染设置。"
+        "建模过程中用它核对尺寸与命名，不要靠记忆。",
+     "inputSchema": _schema({"detail": {"type": "string", "enum": ["brief", "full"],
+                                        "description": "brief=概要（默认）；full=含尺寸/修改器/集合"}})},
+    {"name": "scene_save", "description":
+        "保存当前场景为 .blend（相对路径落在输出目录，绝对路径原样使用）。"
+        "保存后的文件会被记为「工作文件」：Blender 实例闲置退出/重启/崩溃后，"
+        "下次自动重新打开它接着干。",
+     "inputSchema": _schema({
+         "name": {"type": "string", "description": "文件名（不含扩展名），默认用场景名"},
+         "path": {"type": "string", "description": "自定义保存路径（可选）"},
+         "compress": {"type": "boolean", "description": "是否压缩，默认 true"}})},
+    {"name": "scene_open", "description":
+        "打开已有 .blend **替换**当前场景（相对路径按输出目录解析）。"
+        "只想把别的文件里的模型搬进当前场景，用 scene_import，别用这个（会丢掉当前进度）。"
+        "文件不存在时返回同目录可用的 .blend 列表。",
+     "inputSchema": _schema({"path": {"type": "string", "description": ".blend 路径或文件名"}}, ["path"])},
+    {"name": "blend_list", "description":
+        "列出可打开/可导入的 .blend（默认输出目录，可传 dir），按修改时间倒序；"
+        "同时返回当前工作文件、恢复文件与是否有未保存改动。接续旧项目前先用它找文件。",
+     "inputSchema": _schema({"dir": {"type": "string", "description": "要列出的目录，默认输出目录"}})},
+    {"name": "scene_import", "description":
+        "把另一个 .blend 里的对象**追加**进当前场景（保留当前所有改动），"
+        "连带材质/贴图依赖一起带入。names 为空 = 导入全部（最多 limit 个）。"
+        "典型用法：接手一个已有的模型文件，把零件搬进正在搭的场景继续做。",
+     "inputSchema": _schema({
+         "path": {"type": "string", "description": "源 .blend 路径（或用 blend_list 查）"},
+         "names": {"type": "array", "items": {"type": "string"},
+                   "description": "要导入的对象名（空=全部）"},
+         "prefix": {"type": "string", "description": "给导入对象加名称前缀，避免重名"},
+         "collection": {"type": "string", "description": "导入到指定集合（不存在则新建）"},
+         "limit": {"type": "integer", "description": "最多导入多少个，默认 200"}}, ["path"])},
+    {"name": "object_add", "description":
+        "创建低模基础体：cube / uv_sphere / ico_sphere / cylinder / cone / torus / plane / capsule / text / empty。"
+        "尺寸单位是米，Z 轴朝上；size 是整体最大尺寸（球=直径，立方体=边长，圆柱=高度/直径）。"
+        "低模风格建议：球体 segments 12~16、圆柱 vertices 12~16，shade=flat，边角加 bevel。",
+     "inputSchema": _schema({
+         "kind": {"type": "string", "enum": ["cube", "uv_sphere", "ico_sphere", "cylinder", "cone",
+                                             "torus", "plane", "capsule", "text", "empty"]},
+         "name": {"type": "string", "description": "对象名（后续工具用它引用）"},
+         "location": _VEC, "rotation": {"type": "array", "items": {"type": "number"},
+                                        "description": "欧拉角（度）[rx, ry, rz]"},
+         "scale": _VEC, "size": {"type": "number", "description": "整体尺寸，默认 1.0"},
+         "segments": {"type": "integer", "description": "球/圆柱/圆环分段，低模用 12~16"},
+         "vertices": {"type": "integer", "description": "圆柱/圆锥边数（可选）"},
+         "shade": {"type": "string", "enum": ["flat", "smooth", "auto"], "description": "着色方式，低模默认 flat"},
+         "bevel": {"type": "number", "description": "倒角宽度（米），0 表示不倒角"},
+         "material": {"type": "string", "description": "已有材质名（可选）"},
+         "color": _COLOR, "collection": {"type": "string", "description": "集合名（不存在会自动创建）"},
+         "body": {"type": "string", "description": "kind=text 时的文字内容"},
+         "align": {"type": "string", "enum": ["LEFT", "CENTER", "RIGHT"], "description": "文字对齐，默认 LEFT"}})},
+    {"name": "object_transform", "description":
+        "批量移动/旋转/缩放对象。relative=true 时按增量叠加（location/delta 相加、scale 相乘、rotation 相加）。",
+     "inputSchema": _schema({
+         "names": _NAMES, "location": _VEC,
+         "rotation": {"type": "array", "items": {"type": "number"}, "description": "欧拉角（度）[rx, ry, rz]"},
+         "scale": _VEC, "delta": _VEC,
+         "relative": {"type": "boolean", "description": "是否增量叠加，默认 false"}}, ["names"])},
+    {"name": "object_duplicate", "description":
+        "复制对象（含网格与材质），可沿 offset 复制多份，或用 mirror=X/Y/Z 生成镜像副本（桌宠左右肢体的标准做法）。",
+     "inputSchema": _schema({
+         "name": {"type": "string", "description": "源对象名"},
+         "new_name": {"type": "string", "description": "新对象基础名"},
+         "offset": _VEC, "count": {"type": "integer", "description": "复制份数，默认 1"},
+         "mirror": {"type": "string", "enum": ["X", "Y", "Z"], "description": "镜像轴（可选）"}}, ["name"])},
+    {"name": "object_delete", "description": "删除一个或多个对象。",
+     "inputSchema": _schema({"names": _NAMES}, ["names"])},
+    {"name": "object_join", "description":
+        "把多个对象合并成一个网格（保留首个对象的材质槽）。低模交付前常用：把桌宠各部件合成单体，或把芯片引脚合成一块。",
+     "inputSchema": _schema({"names": _NAMES,
+                             "name": {"type": "string", "description": "合并后的对象名（可选）"}}, ["names"])},
+    {"name": "object_shade", "description":
+        "设置着色：flat=平面低模；smooth=平滑；auto=按角度自动平滑（angle 默认 30 度）。",
+     "inputSchema": _schema({
+         "names": _NAMES, "mode": {"type": "string", "enum": ["flat", "smooth", "auto"]},
+         "angle": {"type": "number", "description": "auto 模式的角度阈值（度），默认 30"}}, ["names"])},
+    {"name": "object_modifier", "description":
+        "添加/应用修改器：bevel（倒角，低模硬表面必用）/ solidify（加厚）/ array（阵列）/ "
+        "mirror（镜像）/ weighted_normal（硬表面法线）/ triangulate / subsurf。apply=true 立即烘焙。",
+     "inputSchema": _schema({
+         "name": {"type": "string", "description": "对象名"},
+         "modifier": {"type": "string", "enum": ["bevel", "solidify", "array", "mirror",
+                                                 "weighted_normal", "triangulate", "subsurf"]},
+         "width": {"type": "number", "description": "bevel 宽度（米）"},
+         "segments": {"type": "integer", "description": "bevel 分段，默认 2"},
+         "angle": {"type": "number", "description": "bevel 角度阈值（度），默认 30"},
+         "thickness": {"type": "number", "description": "solidify 厚度"},
+         "offset": _VEC, "count": {"type": "integer", "description": "array 数量"},
+         "axis": {"type": "string", "enum": ["X", "Y", "Z"], "description": "mirror 轴"},
+         "levels": {"type": "integer", "description": "subsurf 级别"},
+         "apply": {"type": "boolean", "description": "是否立即应用，默认 false"}}, ["name", "modifier"])},
+    {"name": "object_boolean", "description":
+        "布尔运算：target 与 operand 做 DIFFERENCE / UNION / INTERSECT（默认相减并删除 operand），"
+        "用于电路板开孔、零件挖槽。apply 默认 true。",
+     "inputSchema": _schema({
+         "target": {"type": "string", "description": "被修改的对象"},
+         "operand": {"type": "string", "description": "参与运算的对象"},
+         "op": {"type": "string", "enum": ["DIFFERENCE", "UNION", "INTERSECT"]},
+         "apply": {"type": "boolean", "description": "是否立即应用，默认 true"},
+         "delete_operand": {"type": "boolean", "description": "应用后是否删除 operand，默认 true"}},
+         ["target", "operand"])},
+    {"name": "material_create", "description":
+        "创建/更新 PBR 材质：base_color（#RRGGBB）、metallic、roughness、自发光、透明度。"
+        "低模桌宠用 roughness 0.55~0.7 的哑光；电路板金手指用 metallic 1.0 / roughness 0.25~0.35。",
+     "inputSchema": _schema({
+         "name": {"type": "string", "description": "材质名"},
+         "base_color": _COLOR,
+         "metallic": {"type": "number", "description": "金属度 0~1，默认 0"},
+         "roughness": {"type": "number", "description": "粗糙度 0~1，默认 0.5"},
+         "emission_color": _COLOR, "emission_strength": {"type": "number", "description": "自发光强度"},
+         "alpha": {"type": "number", "description": "透明度 0~1，默认 1"}}, ["name"])},
+    {"name": "material_assign", "description": "把已有材质分配给一个或多个对象。",
+     "inputSchema": _schema({"targets": _NAMES, "material": {"type": "string", "description": "材质名"}},
+                             ["targets", "material"])},
+    {"name": "text_add", "description":
+        "添加文字（自动转网格，导出 glTF/FBX 不会丢）：用于电路板丝印 U1/R1/C1、产品铭牌。"
+        "文字默认躺在 XY 平面上（正面朝 +Z）。",
+     "inputSchema": _schema({
+         "body": {"type": "string", "description": "文字内容"},
+         "name": {"type": "string", "description": "对象名（可选）"},
+         "location": _VEC, "rotation": {"type": "array", "items": {"type": "number"},
+                                        "description": "欧拉角（度）"},
+         "size": {"type": "number", "description": "字高（米），默认 0.2"},
+         "extrude": {"type": "number", "description": "加厚厚度（米），默认 0"},
+         "material": {"type": "string", "description": "已有材质名"}, "color": _COLOR,
+         "align": {"type": "string", "enum": ["LEFT", "CENTER", "RIGHT"]}}, ["body"])},
+    {"name": "camera_add", "description": "创建相机并可选看向 look_at 点；set_active 默认设为当前渲染相机。",
+     "inputSchema": _schema({
+         "name": {"type": "string", "description": "相机名，默认 Camera"},
+         "location": _VEC, "look_at": _VEC,
+         "lens": {"type": "number", "description": "焦距 mm，默认 50"},
+         "ortho": {"type": "boolean", "description": "是否正交"},
+         "ortho_scale": {"type": "number", "description": "正交视野尺寸"}})},
+    {"name": "camera_frame", "description":
+        "自动取景：按当前所有网格的包围盒把相机摆到指定视角并看向中心。"
+        "view=hero/iso/front/back/left/right/top/bottom。渲染前一步调用最省事。",
+     "inputSchema": _schema({
+         "view": {"type": "string", "enum": ["hero", "iso", "front", "back", "left", "right", "top", "bottom"]},
+         "lens": {"type": "number", "description": "焦距 mm，默认 50"},
+         "margin": {"type": "number", "description": "留白系数，默认 1.25（越大越远）"},
+         "ortho": {"type": "boolean", "description": "是否正交"},
+         "camera": {"type": "string", "description": "指定相机名（可选）"}})},
+    {"name": "light_add", "description":
+        "添加灯光：AREA（柔光箱，产品渲染首选）/ SUN / POINT / SPOT。energy 单位瓦，area 用 size 控制柔硬。",
+     "inputSchema": _schema({
+         "kind": {"type": "string", "enum": ["AREA", "SUN", "POINT", "SPOT"]},
+         "name": {"type": "string", "description": "灯光名（可选）"},
+         "location": _VEC, "look_at": _VEC,
+         "energy": {"type": "number", "description": "功率（瓦），默认 400"},
+         "color": _COLOR, "size": {"type": "number", "description": "AREA 尺寸（米），默认 2"},
+         "angle": {"type": "number", "description": "SPOT 张角（度）"}})},
+    {"name": "light_rig", "description":
+        "一键三点布光（含深色世界背景与哑光地面）：preset=product（柔和产品图）/ dramatic（硬边高对比）。"
+        "按当前场景包围盒自动缩放灯位与功率。",
+     "inputSchema": _schema({
+         "preset": {"type": "string", "description": "灯光预设名（内置 product / dramatic），默认 product"},
+         "scale": {"type": "number", "description": "灯位整体缩放，默认 1.0"},
+         "center": _VEC})},
+    {"name": "world_set", "description": "设置世界背景颜色与强度（默认纯黑，符合简约交付风格）。",
+     "inputSchema": _schema({"color": _COLOR, "strength": {"type": "number", "description": "强度，默认 1.0"}})},
+    {"name": "render_image", "description":
+        "渲染当前场景为 PNG 并返回图片给你查看。默认 CYCLES / 960px / 32 采样（CPU，约十几秒）。"
+        "view=hero 会自动取景；引擎可选 CYCLES / BLENDER_EEVEE / BLENDER_WORKBENCH。"
+        "改完模型/材质后必须重新渲染确认，不要凭想象交付。",
+     "inputSchema": _schema({
+         "name": {"type": "string", "description": "输出文件名（不含扩展名）"},
+         "path": {"type": "string", "description": "自定义输出路径（可选）"},
+         "view": {"type": "string", "enum": ["hero", "iso", "front", "back", "left", "right",
+                                             "top", "bottom", "current"], "description": "取景视角，默认 hero"},
+         "camera": {"type": "string", "description": "指定相机（可选）"},
+         "lens": {"type": "number", "description": "焦距 mm，默认 50"},
+         "margin": {"type": "number", "description": "取景留白，默认 1.25"},
+         "resolution": {"type": "integer", "description": "正方形边长，默认 960（也可传 [w,h]）"},
+         "samples": {"type": "integer", "description": f"采样数，默认 {DEFAULT_SAMPLES}"},
+         "engine": {"type": "string", "enum": ["CYCLES", "BLENDER_EEVEE", "BLENDER_WORKBENCH"],
+                    "description": f"渲染引擎，默认 {DEFAULT_ENGINE}"},
+         "transparent": {"type": "boolean", "description": "透明背景（PNG RGBA）"},
+         "denoise": {"type": "boolean", "description": "Cycles 降噪，默认 true"}})},
+    {"name": "export_model", "description":
+        "导出给应用/游戏引擎用的模型：glb（推荐，单一文件自带材质贴图）/ fbx（Unity、Unreal 常用）"
+        "/ obj / stl。默认应用修改器（否则倒角/布尔只存在于 Blender 里）并嵌入贴图；"
+        "FBX 用 FBX_SCALE_ALL 统一缩放，引擎里不用再手调 import scale。",
+     "inputSchema": _schema({
+         "name": {"type": "string", "description": "输出文件名（不含扩展名）"},
+         "format": {"type": "string", "enum": ["glb", "fbx", "obj", "stl"], "description": "默认 glb"},
+         "path": {"type": "string", "description": "自定义输出路径"},
+         "selected_only": {"type": "boolean", "description": "只导出选中对象，默认 false"},
+         "apply_modifiers": {"type": "boolean", "description": "导出前应用修改器，默认 true"},
+         "embed_textures": {"type": "boolean", "description": "FBX 是否把贴图嵌进文件，默认 true"}})},
+    {"name": "template_list", "description":
+        "列出内置模板（桌宠 pet / 电路板 pcb）及其可调参数与风格。新建模板只需在 presets/ 增加 JSON。",
+     "inputSchema": _schema({})},
+    {"name": "template_apply", "description":
+        "套用内置模板：pet（Q 版桌宠）/ pcb（电路板实物）。"
+        "模板数据驱动（presets/<name>.json），支持 size 缩放与 colors 覆盖调色板；"
+        "style 取该模板 styles 里的键（内置 pet: cat/bear/rabbit）。生成后可用 object_* / 材质工具继续改。",
+     "inputSchema": _schema({
+         "template": {"type": "string", "description": "模板名（内置 pet / pcb；presets/ 下的 JSON 文件名即模板名）"},
+         "style": {"type": "string", "description": "风格（pet: cat/bear/rabbit）"},
+         "size": {"type": "number", "description": "整体缩放，默认 1.0"},
+         "colors": {"type": "object", "description": "覆盖调色板，例如 {\"body\":\"#8899AA\"}"},
+         "prefix": {"type": "string", "description": "对象名前缀（多只桌宠用）"}}, ["template"])},
+]
+
+
+# ============================================================================
+# MCP 分发
+# ============================================================================
+
+def _prepend_text(content: list, note: str) -> list:
+    """把提示行插到工具结果最前面（图片项保持原有顺序，不破坏视觉输入）。"""
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            item["text"] = note + str(item.get("text") or "")
+            return content
+    return [{"type": "text", "text": note}] + list(content)
+
+
+def _handle(msg: dict):
+    method = msg.get("method", "")
+    params = msg.get("params", {}) or {}
+    rid = msg.get("id")
+    if method == "initialize":
+        return {"jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": MCP_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": APP_NAME, "version": "1.0"},
+        }}
+    if method == "notifications/initialized":
+        return None
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": rid, "result": {}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}}
+    if method == "tools/call":
+        name = params.get("name", "")
+        fn = _HANDLERS.get(name)
+        if fn is None:
+            return {"jsonrpc": "2.0", "id": rid,
+                    "error": {"code": -32601, "message": f"未知工具: {name}"}}
+        # 建模前先把预览页开起来并打开浏览器：用户要求「建模时必须能实时看」。
+        # 放在调用**之前**（而不是渲染之后），第一步加体块就能看到进度；
+        # 失败不影响建模，只退化成「把地址告诉模型」。
+        note = ""
+        if name in _MODELING_TOOLS:
+            info, opened = open_preview()
+            if opened and info:
+                note = (f"预览页已自动打开：{info['local_url']}（每 2 秒刷新，用户可实时看到"
+                        f"每一步建模与渲染；局域网/手机看 {info['url']}）。\n")
+        try:
+            out = fn(params.get("arguments", {}) or {})
+            content = out if isinstance(out, list) else [{"type": "text", "text": str(out)}]
+            # 「一步一刷新一步」：每次真正改动场景的调用都补一帧实时图，
+            # 用户在预览页看到的就是逐步推进的建模过程（不是只有最后一张成品）。
+            if name in _MODELING_TOOLS and name not in _LIVE_SKIP:
+                _live_frame()
+            if note:
+                content = _prepend_text(content, note)
+            result = {"content": content, "isError": False}
+        except Exception as e:
+            result = {"content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
+                      "isError": True}
+        return {"jsonrpc": "2.0", "id": rid, "result": result}
+    return {"jsonrpc": "2.0", "id": rid,
+            "error": {"code": -32601, "message": f"未知方法: {method}"}}
+
+
+def main():
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    for line in stdin:
+        if not line.strip():
+            continue
+        try:
+            msg = json.loads(line.decode("utf-8", "replace"))
+        except json.JSONDecodeError:
+            continue
+        resp = _handle(msg)
+        if resp is not None:
+            stdout.write(json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n")
+            stdout.flush()
+
+
+# ---------- 离线自检：真实拉起 Blender 并完成一次建模 + 渲染 ----------
+
+def _selftest() -> int:
+    out = {"ok": False, "tools": [t["name"] for t in TOOLS], "steps": {}}
+    try:
+        info = BRIDGE.start()
+        out["steps"]["start"] = {"version": info.get("version"), "pid": info.get("pid")}
+        BRIDGE.call("scene_new", {"background_color": "#05070A"})
+        BRIDGE.call("object_add", {"kind": "cube", "name": "SelfTestCube", "size": 1.0,
+                                   "location": [0, 0, 0.5], "bevel": 0.03, "color": "#8FA3B8"})
+        BRIDGE.call("light_rig", {"preset": "product"})
+        BRIDGE.call("camera_frame", {"view": "hero"})
+        r = BRIDGE.call("render_image", {"name": "selftest", "resolution": 320, "samples": 8},
+                        timeout=600)
+        out["steps"]["render"] = {"path": r.get("path"), "bytes": r.get("bytes"),
+                                  "seconds": r.get("seconds")}
+        out["steps"]["templates"] = [t["template"] for t in BRIDGE.call("template_list", {})["templates"]]
+        out["ok"] = os.path.isfile(str(r.get("path") or ""))
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        BRIDGE.stop()
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out["ok"] else 1
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(_selftest())
+    main()

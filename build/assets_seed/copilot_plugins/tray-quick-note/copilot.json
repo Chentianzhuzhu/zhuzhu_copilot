@@ -1,0 +1,19 @@
+{
+  "tray": [
+    {
+      "id": "quick-note",
+      "title": "快速记一句",
+      "module": "pages/quick_note.py",
+      "action": "quick_note"
+    }
+  ],
+  "services": [
+    {
+      "id": "note-heartbeat",
+      "title": "记事心跳（示例）",
+      "module": "pages/quick_note.py",
+      "entry": "start_service",
+      "stop": "stop_service"
+    }
+  ]
+}
