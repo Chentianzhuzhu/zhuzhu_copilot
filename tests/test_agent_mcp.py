@@ -189,3 +189,63 @@ def test_tool_schemas_for_filters_by_server(fake_transports):
     assert names_b == ["b_tool"]
     assert mgr.tool_schemas_for(set()) == []
     mgr.close_all()
+
+
+def test_reload_force_restarts_only_named_server(fake_transports):
+    """force 强制重启：只重建被点名的服务器，其余连接与工具表保持不动。"""
+    tool = lambda n: {"name": n, "description": n,
+                      "inputSchema": {"type": "object", "properties": {}}}
+    fake_transports.tool_sets = [
+        [tool("read")],
+        [tool("read"), tool("write")],
+        [tool("read"), tool("write")],   # 强制重连 srv_b 时新建的传输
+    ]
+    servers = [
+        {"name": "srv_a", "type": "sse", "url": "http://a/sse"},
+        {"name": "srv_b", "type": "sse", "url": "http://b/sse"},
+    ]
+    mgr = McpManager()
+    mgr.connect_all(servers)
+    a_before = mgr._clients["srv_a"]
+    b_before = mgr._clients["srv_b"]
+
+    tools = mgr.reload(servers, force={"srv_b"})
+    assert [t["function"]["name"] for t in tools] == ["read", "srv_b_read", "write"]
+    assert mgr._clients["srv_a"] is a_before, "未点名的服务器不得被重连"
+    assert mgr._clients["srv_b"] is not b_before, "点名的服务器必须重建连接"
+    assert mgr.last_reload == {"added": [], "updated": ["srv_b"], "removed": []}
+    mgr.close_all()
+
+
+def test_reload_force_does_not_revive_removed_server(fake_transports):
+    """force 名字不在配置里（被停用/删除）时仍按移除处理，不复活。"""
+    fake_transports.tool_sets = [
+        [{"name": "a_tool", "description": "a",
+          "inputSchema": {"type": "object", "properties": {}}}],
+    ]
+    mgr = McpManager()
+    mgr.connect_all([{"name": "srv", "type": "sse", "url": "http://x/sse"}])
+    mgr.reload([], force={"srv"})
+    assert "srv" not in mgr._clients
+    assert mgr.last_reload["removed"] == ["srv"]
+    mgr.close_all()
+
+
+def test_reload_if_stale_reconnects_only_after_script_changes(monkeypatch):
+    """插件脚本被改写 → tool_schemas 前自动增量重连；未变化时一次 stat 都不多连。"""
+    mgr = McpManager()
+    cfg = {"name": "srv", "type": "stdio", "command": "python", "args": ["server.py"]}
+    mgr._configs["srv"] = cfg
+    mgr._last_servers = [cfg]
+    mgr._stamps["srv"] = mgr._script_stamp(cfg)      # 不存在文件 → (None, None)
+    calls = []
+    monkeypatch.setattr(mgr, "reload",
+                        lambda servers: calls.append(list(servers)) or [])
+    assert mgr.reload_if_stale() is False, "指纹未变时不得重连"
+    mgr._stamps["srv"] = ("older", 1, 1)             # 模拟脚本被改写
+    assert mgr.reload_if_stale() is True
+    assert calls == [[cfg]]
+    # 并发保护：自动重连进行中时直接跳过，不重复拉起子进程
+    mgr._reloading = True
+    assert mgr.reload_if_stale() is False
+    mgr._reloading = False

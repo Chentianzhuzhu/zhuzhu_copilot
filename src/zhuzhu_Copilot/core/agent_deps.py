@@ -4,7 +4,8 @@
 对应目录下放 requirements.txt 声明依赖，加载前调用 ensure_dir_deps 自动安装缺失项，
 并以内容哈希做幂等跳过，避免每次启动重复安装。
 
-依赖安装走用户本机 Python（不走内置沙箱虚拟环境），失败仅告警不抛，不影响后续加载。
+依赖安装与应用内置运行时一致（工具/插件/自定义代码共用一个环境），
+开发模式且运行时未部署时回退当前解释器；失败仅告警不抛，不影响后续加载。
 """
 
 import hashlib
@@ -30,18 +31,15 @@ def _desired_hash(path: Path) -> str:
 
 
 def _pip_python() -> str:
-    """返回用于安装依赖的 Python 可执行：开发模式用当前解释器（用户全局环境）；
-    打包(frozen)下 sys.executable 是应用自身 exe，回退沙盒 Python（best effort）。"""
-    if not getattr(sys, "frozen", False):
-        return sys.executable
+    """安装自定义代码依赖的 Python：与应用内置运行时一致。
+
+    运行时已部署（安装版必备）→ 用它（依赖装在工具/插件/脚本共用的同一环境）；
+    开发模式且运行时未部署 → 回退当前解释器。"""
     try:
         from zhuzhu_Copilot.core import agent_runtime
-        exe = agent_runtime.python_exe()
-        if exe.is_file():
-            return str(exe)
+        return agent_runtime.python_interpreter()
     except Exception:
-        pass
-    return "python"
+        return sys.executable if not getattr(sys, "frozen", False) else "python"
 
 
 def ensure_dir_deps(directory, timeout: int = 300) -> None:

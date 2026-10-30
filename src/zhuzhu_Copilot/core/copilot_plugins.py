@@ -47,6 +47,8 @@
 import json
 import os
 import re
+import shutil
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -94,13 +96,63 @@ def plugin_dir(name: str) -> Path:
     return plugins_dir() / name
 
 
+def _shipped_copilot_plugins_dir() -> Path:
+    """随应用分发的 Copilot 插件资源目录。
+
+    开发模式：src/zhuzhu_Copilot/copilot_plugins_examples；
+    打包：优先 copilot_plugins_seed（scripts/prepare_assets_seed.py 在构建期生成的
+    「仓库示例 + 用户现有」快照），其次 copilot_plugins_examples；基目录依次尝试
+    _MEIPASS、<exe>/_internal、<exe>。
+    """
+    if getattr(sys, "frozen", False):
+        bases = [b for b in (getattr(sys, "_MEIPASS", None),
+                             str(Path(sys.executable).parent / "_internal"),
+                             str(Path(sys.executable).parent)) if b]
+        for name in ("copilot_plugins_seed", "copilot_plugins_examples"):
+            for base in bases:
+                cand = Path(base) / name
+                if cand.is_dir():
+                    return cand
+        return Path()
+    return Path(__file__).resolve().parent.parent / "copilot_plugins_examples"
+
+
+def ensure_shipped_copilot_plugins() -> None:
+    """随包 Copilot 插件：用户目录里缺失时复制过去，做到「安装即用」。
+
+    已存在的同名插件**不覆盖**：里面可能有用户改过的源码、备份、config.json 与
+    applied.json，随包升级不该把用户状态冲掉。复制时跳过 __pycache__/*.pyc。
+    """
+    shipped = _shipped_copilot_plugins_dir()
+    if not shipped.is_dir():
+        return
+    root = plugins_dir()
+    try:
+        entries = sorted(shipped.iterdir())
+    except OSError:
+        return
+    for d in entries:
+        if not d.is_dir() or not (d / "plugin.json").is_file():
+            continue
+        if not _NAME_RE.match(d.name):
+            continue
+        target = root / d.name
+        if target.exists():
+            continue
+        try:
+            shutil.copytree(d, target,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
+        except OSError:
+            continue
+
+
 def _read_meta(name: str) -> dict:
     d = plugin_dir(name)
     f = d / "plugin.json"
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的元数据
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -286,7 +338,7 @@ def load_copilot_manifest(pkg_dir) -> dict:
     if not f.is_file():
         return {}
     try:
-        man = json.loads(f.read_text(encoding="utf-8"))
+        man = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的清单
     except (OSError, ValueError):
         return {}
     ok, _why = validate_copilot_manifest(man)
@@ -310,7 +362,7 @@ def get_plugin_config(name: str) -> dict:
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的配置
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
@@ -671,7 +723,7 @@ def import_plugin_zip(zip_path: str) -> tuple:
             if top is None:
                 return False, "插件包缺少 plugin.json"
             meta = json.loads(zf.read((top + "/plugin.json") if top
-                                      else "plugin.json").decode("utf-8"))
+                                      else "plugin.json").decode("utf-8-sig"))
             if not isinstance(meta, dict):
                 return False, "plugin.json 格式错误"
     except (OSError, ValueError, zipfile.BadZipFile) as e:
@@ -913,6 +965,95 @@ def _write_icon_svg(pkg_dir, svg) -> str:
         return "icon.svg"
     except OSError:
         return ""
+
+
+# ══════════════ 骨架：由主 Agent 自己写源码变更（工具内不调用任何大模型） ══════════════
+#
+# 用户要求：对话里生成 Copilot 插件不能再「AI 调 AI」。这里只落骨架与规范，
+# 变更清单由主 Agent 用 read_file / write_file / edit_file 自己写，然后
+# apply_copilot_plugin 落地（校验 → 转译层 → 热加载）。
+# create_from_nl 仅供设置页「AI 创建」按钮使用。
+
+_COPILOT_README = """# Copilot 插件 {name} 实现说明
+
+> 本插件由**主 Agent 自己实现**：按本文件规范用 read_file / write_file / edit_file
+> 写 `source_ops.json` 与包内模块，然后调用 `apply_copilot_plugin(name="{name}")`
+> 落地（校验 → 转译层 → 热加载）。禁止再调用任何「AI 生成插件」类工具或外包给子 Agent。
+
+## 目录
+- `plugin.json`：元数据（name / kind=copilot / enabled / description）。
+- `source_ops.json`：源码变更清单（必填，非空数组）。
+- `copilot.example.json`：应用级扩展清单示例（页面/服务/托盘/快捷键），需要时复制为
+  `copilot.json` 再改；`module` 必须指向**本插件包内**的模块文件。
+- `agent/`（可选）：`SKILL.md` + `server.py`，导入时登记为技能与 MCP。
+
+## source_ops 五种写法（可混用，单插件 ≤50 条）
+```json
+[
+  {"op": "create_file", "path": "zhuzhu_Copilot/ui/my_feature.py", "content": "..."},
+  {"op": "insert_after", "path": "zhuzhu_Copilot/ui/agent_panel.py",
+   "anchor": "def _build_ui(self):", "content": "        self._my_hook()\\n"},
+  {"op": "append", "path": "zhuzhu_Copilot/ui/agent_panel.py", "content": "\\n# ...\\n"},
+  {"op": "replace_lines", "path": "zhuzhu_Copilot/core/agent_tools.py",
+   "start_line": 120, "end_line": 126, "content": "..."},
+  {"op": "replace_module", "path": "zhuzhu_Copilot/ui/styles.py",
+   "start": "def apply_theme()", "end": "def apply_palette(", "content": "..."}
+]
+```
+- 路径必须是**应用源码根内的相对路径**（禁绝对路径 / `..`）。
+- 优先 `create_file` 新建模块，再在现有模块做最小接线；改已有代码时要保证可编译。
+- `insert_after` 的 `anchor` 必须真实存在且唯一（或改用 `line`）。
+
+## 落地与生效
+`apply_copilot_plugin` 会：插件校验系统（静态规则 + 源码评审）→ 备份 → 写入转译层 →
+逐文件 py_compile（失败整体回滚）→ 热加载引擎在运行进程内即时装载（**无需重启应用**）。
+改错了用 `revert_copilot_plugin` 即时回滚。
+"""
+
+_COPILOT_MANIFEST_EXAMPLE = {
+    "pages": [{"title": "示例页面", "module": "my_page.py",
+               "class": "MyPage", "icon": ""}],
+    "services": [{"name": "my_service", "module": "my_service.py",
+                  "start": "start", "stop": "stop"}],
+    "tray": [{"title": "示例动作", "module": "my_tray.py", "action": "run"}],
+    "shortcuts": [{"sequence": "Ctrl+Alt+M", "module": "my_tray.py", "action": "run"}],
+}
+
+
+def scaffold(name: str, description: str = "") -> tuple:
+    """创建 Copilot 插件骨架（不调用 AI）：元数据 + 空变更清单 + 规范 README + 扩展清单示例。"""
+    name = str(name or "").strip().lower()
+    if not _NAME_RE.match(name or ""):
+        return False, "插件名仅支持小写字母 / 数字 / 下划线 / 连字符（≤50 字符）"
+    if plugin_dir(name).exists():
+        return False, f"Copilot 插件「{name}」已存在：直接改文件后调用 apply_copilot_plugin 即可"
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    meta = {"name": name, "kind": "copilot", "enabled": False,
+            "description": str(description or "").strip() or f"{name}（待实现）",
+            "author": "", "created_at": now, "updated_at": now, "icon": ""}
+    d = plugin_dir(name)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        _write_meta(name, meta)
+        (d / "source_ops.json").write_text("[]\n", encoding="utf-8")
+        (d / "copilot.example.json").write_text(
+            json.dumps(_COPILOT_MANIFEST_EXAMPLE, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+        (d / "README.md").write_text(_COPILOT_README.replace("{name}", name),
+                                     encoding="utf-8")
+    except OSError as e:
+        return False, f"创建 Copilot 插件骨架失败: {e}"
+    msg = (f"已创建 Copilot 插件骨架「{name}」：\n"
+           f"- {d / 'plugin.json'}\n- {d / 'source_ops.json'}\n"
+           f"- {d / 'README.md'}\n- {d / 'copilot.example.json'}\n\n"
+           "下一步（必须由你自己完成，不要再调用任何 AI 生成类工具/子 Agent）：\n"
+           f"1) read_file(\"{d / 'README.md'}\") 读 op 写法与约束；\n"
+           "2) 用 read_file 看要接入的源码，按需 create_file 新模块并用 insert_after / "
+           "replace_lines 做最小接线；把清单写进 source_ops.json；\n"
+           "3) 需要页面/服务/托盘/快捷键时，把 copilot.example.json 复制为 copilot.json 并改 "
+           "module 指向包内文件；\n"
+           f"4) 调 apply_copilot_plugin(name=\"{name}\") 落地 + 热加载（无需重启应用）。")
+    return True, msg
 
 
 def create_from_nl(description: str, on_status=None) -> tuple:

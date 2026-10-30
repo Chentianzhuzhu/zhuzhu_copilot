@@ -226,22 +226,19 @@ def test_engine_reload_extensions_survives_no_mcp():
 # ══════════════ 3. 生产者侧：生成类工具必须请求热加载 ══════════════
 
 def test_create_tools_request_hot_reload(iso, monkeypatch):
-    """create_skill / create_plugin / create_mcp 成功后都要带 reload_extensions 标记。
+    """create_skill / plugin_register / create_mcp 成功后都要带 reload_extensions 标记。
 
     没有这个标记，引擎就不会刷新技能缓存与 MCP 连接 —— 生成成功却调不动。
+    Agent 插件现在是两步：create_plugin 只建骨架（不需要热加载），
+    plugin_register 登记时必须请求热加载。
     """
     res = agent_tools._create_skill("flag_skill", "标记演示",
                                     "# flag_skill\n\n## 触发\n测试。\n")
     assert res.get("reload_extensions") is True, res
 
-    def fake_spec(desc, kind):
-        return {"name": "flagplug", "summary": "标记演示",
-                "tools": [{"name": "echo", "description": "回显",
-                           "input_schema": {"type": "object", "properties": {}},
-                           "implementation": "return 'ok'"}]}
-
-    monkeypatch.setattr(agent_plugins, "_ai_generate_spec", fake_spec)
-    res = agent_tools._create_plugin("做一个演示插件", "mcp")
+    scaffold = agent_tools._create_plugin("flagplug", "mcp", "标记演示")
+    assert "骨架" in scaffold.get("text", ""), scaffold
+    res = agent_tools._plugin_register("flagplug")
     assert res.get("reload_extensions") is True, res
 
     res2 = agent_tools._create_mcp({"name": "flag_mcp", "type": "stdio", "command": "python",

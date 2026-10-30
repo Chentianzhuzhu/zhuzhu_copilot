@@ -63,7 +63,6 @@ from PyQt6.QtWidgets import QWidget
 # ---------- 时长与形态参数（单一数据源，调手感只改这里） ----------
 REVEAL_MS = 280          # 展开时长（略长于收起：入场给足「看清」的时间）
 CONCEAL_MS = 230         # 收起时长（Windows 最小化约 200~250ms）
-MORPH_MS = 240           # 最大化 / 还原的尺寸过渡时长
 _FOLD_H = 0.055          # 折叠态高度 = 窗口高度 * 该比例
 _FOLD_W = 0.86           # 折叠态宽度 = 窗口宽度 * 该比例
 _FOLD_MIN_H = 12         # 折叠态最小高度（px），保证「一条边」始终可见
@@ -135,25 +134,68 @@ def _screen_for(win):
     return QGuiApplication.primaryScreen()
 
 
-def unmaximize(win, target: QRect = None):
-    """把最大化窗口还原成普通态（瞬时），并保证几何真正回到普通尺寸。
+#: ShowWindow 的「还原」命令（SW_RESTORE）：清掉最大化/最小化状态并回到还原矩形
+_SW_RESTORE = 9
 
-    两个坑：
-    1. **不要用 showNormal()**：无边框窗口首次 showNormal() 实测阻塞 1400ms（Qt 重建
-       backing store + DWM 切换），而这段时间浮层是静止的 —— 用户看到的就是「点了还原
-       画面卡住一秒半」。`setWindowState(WindowNoState)` 语义等价（窗口本来就可见，
-       show() 是空操作），实测 1ms。
-    2. **setWindowState 只清状态标志，几何不一定跟随**：若窗口的「还原矩形」本身就是
-       满屏尺寸（被拖到满屏、或热区拉满过），还原后窗口仍是 1920x1032 但状态是普通态
-       —— 之后点最大化会因「没有可放大的空间」直接空操作，按钮从此按了没反应。
-       所以这里显式把几何钉回 target（start_maximize 记下的最大化前矩形）。
+
+def _win32_restore(win) -> bool:
+    """Win32 还原最大化/最小化窗口（非阻塞，实测 ~106ms）。
+
+    为什么不用 Qt 的 `setWindowState(WindowNoState)`：实测同一窗口要 ~430ms
+    （Qt 会重建 backing store 并同步跑一次完整 state change），首次 `showNormal()`
+    更可达 1.4s —— 这段时间主线程全被占住，用户看到的就是「点了还原，窗口卡死」。
+    ShowWindow(SW_RESTORE) 只让系统改窗口状态，Qt 随后收到 WM_SIZE 正常同步。
     """
     try:
-        win.setWindowState(Qt.WindowState.WindowNoState)
-        if win.isMaximized():
-            win.showNormal()   # 极少数情况下状态没落地，再走一次原生路径
-        if target is not None and not target.isEmpty() and win.geometry() != target:
+        hwnd = int(win.winId())
+    except Exception:
+        return False
+    if not hwnd:
+        return False
+    try:
+        ctypes.windll.user32.ShowWindow(ctypes.c_void_p(hwnd), _SW_RESTORE)
+        return True
+    except Exception:
+        return False
+
+
+def _pin_geometry(win, target: QRect):
+    """窗口几何与 target 明显不一致时才补一次 setGeometry（延后执行）。
+
+    `setGeometry` 会触发整窗重排（实测可达 260ms），不能放在还原的同步路径上；
+    而 ShowWindow 之后 Qt 的几何要等处理完 WM_SIZE 才更新，立刻比较必然读到旧值。
+    """
+    try:
+        g = win.geometry()
+        if (abs(g.x() - target.x()) > 8 or abs(g.y() - target.y()) > 8
+                or abs(g.width() - target.width()) > 8
+                or abs(g.height() - target.height()) > 8):
             win.setGeometry(target)
+    except RuntimeError:
+        pass
+
+
+def unmaximize(win, target: QRect = None):
+    """把最大化/最小化窗口还原成普通态（瞬时），并保证几何真正回到普通尺寸。
+
+    关键点：
+    1. **优先 Win32 ShowWindow(SW_RESTORE)**：非阻塞路径，实测 ~106ms；Qt 的
+       `setWindowState` 实测 ~430ms、首次 `showNormal` 可达 1400ms（都是「还原卡死」
+       的直接来源），只在 Win32 失败时兜底。
+    2. **状态清了不代表几何跟随**：若窗口的「还原矩形」本身就是满屏尺寸（被拖到
+       满屏、或热区拉满过），还原后窗口仍是 1920x1032 但状态是普通态 —— 之后点最大化
+       会因「没有可放大的空间」直接空操作，按钮从此按了没反应。所以 target 与实测
+       几何明显不符时要补一次 setGeometry —— 但**延后一拍**，避开点击响应路径。
+    """
+    try:
+        ok = _win32_restore(win)
+        if not ok:
+            # Win32 不可用（句柄异常/被系统策略拦下）：退回 Qt 原生路径
+            win.setWindowState(Qt.WindowState.WindowNoState)
+            if win.isMaximized():
+                win.showNormal()
+        if target is not None and not target.isEmpty():
+            QTimer.singleShot(0, lambda w=win, t=QRect(target): _pin_geometry(w, t))
     except Exception:
         pass
 
@@ -392,12 +434,11 @@ class WindowFoldAnimator(QObject):
         self._anim = None
         self._guard = None
         self._busy = False
-        self._mode = None       # 正在播的方向：conceal / reveal / morph
+        self._mode = None       # 正在播的方向：conceal / reveal
         self._pending = None    # 动画期间收到的反向请求（收尾后接着播）
         self._defer = None      # 排队动作的延时器（独立 QTimer，见 _finish）
         self._progress = 0.0    # 当前帧进度（反向接播时据此换算起点）
         self._target_rect = QRect()   # 窗口在「展开态」的几何（反向接播的锚点）
-        self._pre_max_rect = QRect()  # 最大化前的几何（还原动画的目标）
         self._on_done = None
         self._end_state = None
         self._restore_max = False
@@ -553,66 +594,6 @@ class WindowFoldAnimator(QObject):
         self._play(pix, dock, target, "reveal", self._restore_window)
         return True
 
-    def start_maximize(self) -> bool:
-        """普通 → 最大化：浮层先放大到整屏，动画结束后再真正最大化。
-
-        真实窗口在整个动画期间保持原尺寸（被浮层完全覆盖），所以放大过程不会有
-        「窗口先跳成整屏、浮层再补动画」的穿帮；`showMaximized` 的同步重排
-        （resizeEvent 里的布局/气泡重算，100ms 量级）也发生在浮层遮满屏幕之后，
-        用户看不到。
-        """
-        w = self._win
-        try:
-            if self._busy or w.isMaximized() or w.isFullScreen():
-                return False
-        except RuntimeError:
-            return False
-        start = QRect(w.geometry())
-        pix = grab_window(w)
-        if pix is None:
-            return False
-        screen = _screen_for(w)
-        end = QRect(screen.availableGeometry())
-        if end.width() <= start.width() and end.height() <= start.height():
-            return False   # 已经是「最大」尺寸，没有可动画的空间
-        self._pre_max_rect = QRect(start)   # 记下还原目标，normalGeometry 不可靠
-        self._busy = True
-        self._disable_transitions()        # 收尾的 showMaximized 不再播系统放大动画
-        self._play(pix, start, end, "morph", w.showMaximized)
-        return True
-
-    def start_restore_size(self) -> bool:
-        """最大化 → 普通：先真正还原（被满屏浮层遮住），再让浮层收缩到位。"""
-        w = self._win
-        try:
-            if self._busy or not w.isMaximized():
-                return False
-        except RuntimeError:
-            return False
-        start = QRect(w.geometry())
-        # 还原目标优先用「最大化前记下的几何」：无边框窗口在最大化态下
-        # normalGeometry() 常常直接返回最大化矩形（实测如此），动画会退化成零位移。
-        end = QRect(self._pre_max_rect)
-        if end.width() < 200 or end.height() < 150:
-            try:
-                end = QRect(w.normalGeometry())
-            except Exception:
-                return False
-        if end.width() < 200 or end.height() < 150:
-            return False
-        if end == start:
-            return False   # 拿不到有效目标：交给调用方的原生还原
-        pix = grab_window(w)
-        if pix is None:
-            return False
-        self._busy = True
-        self._disable_transitions()
-        # before 阶段做真实还原（此时满屏浮层还盖着，重排多久都看不见）；
-        # target 显式传入：setWindowState 不保证把几何带回普通尺寸（见 unmaximize）。
-        self._play(pix, start, end, "morph", None,
-                   before=lambda: unmaximize(w, QRect(end)))
-        return True
-
     def cancel(self):
         """立即收尾（关闭窗口/退出时调用）：只收浮层，不再触发还原回调 ——
         窗口正在关闭，此时把最小化的窗口还原出来只会多闪一下。"""
@@ -753,7 +734,7 @@ class WindowFoldAnimator(QObject):
 
     # ---------- 内部 ----------
     def _play(self, pix, start: QRect, end: QRect, mode: str, on_done, before=None):
-        """mode：reveal（折叠展开）/ conceal（折叠收起）/ morph（最大化·还原）。
+        """mode：reveal（折叠展开）/ conceal（折叠收起）。
 
         `before` 在浮层已经显示、动画开始之前执行：用来做「先切窗口状态、再播动画」的
         动作（如 showNormal）。它内部的重排耗时被浮层遮住，不会露出桌面。
@@ -825,7 +806,7 @@ class WindowFoldAnimator(QObject):
 
     def _run(self, sprite, start: QRect, end: QRect, mode: str, on_done, e0: float):
         """在既有浮层上跑一段时间轴。`e0` 为起始进度（0=正常播，>0=反向接播）。"""
-        base = {"reveal": REVEAL_MS, "conceal": CONCEAL_MS}.get(mode, MORPH_MS)
+        base = {"reveal": REVEAL_MS, "conceal": CONCEAL_MS}[mode]
         # 反向时按剩余行程折算时长；但给一个下限，保证至少能出 6~7 帧，
         # 否则「折叠到一半就点回来」会变成一次瞬移。
         floor = 110 if e0 > 1e-6 else 70
@@ -879,12 +860,9 @@ class WindowFoldAnimator(QObject):
         if mode == "reveal":
             sprite.set_alpha(min(1.0, e / _FADE_PORTION))
             sprite.set_fold(e)
-        elif mode == "conceal":
+        else:
             sprite.set_alpha(min(1.0, (1.0 - e) / _FADE_PORTION))
             sprite.set_fold(1.0 - e)
-        else:
-            sprite.set_alpha(1.0)     # 最大化/还原不做淡入淡出，只做尺寸过渡
-            sprite.set_fold(1.0)
 
     def _finish(self):
         if not self._busy:

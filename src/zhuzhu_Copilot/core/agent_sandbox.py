@@ -382,7 +382,7 @@ def assess_tool(name: str, args: dict) -> tuple:
     # 必须由用户显式确认，禁止 AI 无确认静默注入。
     if name in ("create_workflow", "delete_workflow", "edit_agent_file", "switch_workflow",
                 "use_workflow_agent",
-                "create_plugin", "create_plugin_from_nl",
+                "create_plugin", "plugin_register",
                 "create_copilot_plugin", "apply_copilot_plugin"):
         return ("risky", f"{name} 涉及工作流/插件核心代码写入或加载，需用户确认")
     return "safe", ""

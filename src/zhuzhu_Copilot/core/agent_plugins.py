@@ -27,10 +27,14 @@ icon 插件图标（包内图标文件名）/ description / kind / enabled 等�
 安全引擎位于 PROTECTED_CORE_FILES，任何插件不得改动，plugin.json 也没有
 任何字段可以跳过校验。
 
-生成链路（`create_plugin_from_nl`）：AI 设计 → 落盘 → **插件校验**（guard，危险即
-强制删除并告知）→ **冒烟自检**（py_compile → web 打 HTTP 端点 / mcp 走 stdio
-tools/list）→ 未过则把错误回灌给模型自修（有界轮数）→ 复检 → 通过才登记
-MCP（避免坏 server 进注册表，每次会话都拉起报错）。
+对话内生成链路（**由主 Agent 自己实现，工具内不调用任何大模型**）：
+  1) `scaffold_plugin`：落骨架（plugin.json / SKILL.md 模板 / 可运行 server.py 示例 /
+     README 规范）；
+  2) 模型按 README 与 plugin-create 技能规范用 write_file / edit_file 写实现；
+  3) `register_plugin`：**插件校验**（危险即删除）→ **冒烟自检**（py_compile →
+     web 打 HTTP 端点 / mcp 走 stdio tools/list）→ 通过才登记 MCP（避免坏 server 进
+     注册表）→ 登记技能 → 返回结果，由引擎热加载（脚本 mtime 变化会自动重连）。
+设置页「AI 创建」按钮仍走 `create_plugin_from_nl`（用户显式点击的辅助生成）。
 
 MCP 传输由 plugin.json 声明（可组合「远程 MCP server + 本地 SKILL.md 技能」的市场插件）：
   mcp_type = stdio（默认，命令跑 server.py / deploy.py）| sse（远程，需 mcp_url）
@@ -54,22 +58,28 @@ from zhuzhu_Copilot.core import agent_runtime, agent_skills
 
 PLUGINS_DIR = app_identity.data_root() / "plugins"
 
+
+#: 插件目录里的用户数据文件：随包升级时**不覆盖**（配置由用户在设置页填写）
+_USER_DATA_FILE = "config.json"
+
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
 
 
 def _shipped_plugins_dir() -> Path:
     """随应用分发的内置插件资源目录：
     - 开发模式：src/zhuzhu_Copilot/plugins
-    - 打包（onedir/onefile）：依次尝试 _MEIPASS/plugins、<exe>/_internal/plugins、<exe>/plugins"""
+    - 打包（onedir/onefile）：优先 plugins_seed（scripts/prepare_assets_seed.py 在
+      构建期生成的「仓库内置 + 用户现有插件」快照），其次仓库内置 plugins；
+      基目录依次尝试 _MEIPASS、<exe>/_internal、<exe>"""
     if getattr(sys, "frozen", False):
-        for base in (getattr(sys, "_MEIPASS", None),
-                     str(Path(sys.executable).parent / "_internal"),
-                     str(Path(sys.executable).parent)):
-            if not base:
-                continue
-            cand = Path(base) / "plugins"
-            if cand.is_dir():
-                return cand
+        bases = [b for b in (getattr(sys, "_MEIPASS", None),
+                             str(Path(sys.executable).parent / "_internal"),
+                             str(Path(sys.executable).parent)) if b]
+        for name in ("plugins_seed", "plugins"):
+            for base in bases:
+                cand = Path(base) / name
+                if cand.is_dir():
+                    return cand
         return Path()
     return Path(__file__).resolve().parent.parent / "plugins"
 
@@ -102,7 +112,9 @@ def ensure_shipped_plugins() -> None:
 def _plugin_meta(d: Path) -> dict:
     """读插件目录的 plugin.json（缺失/损坏返回空 dict）。"""
     try:
-        data = json.loads((d / "plugin.json").read_text(encoding="utf-8"))
+        # utf-8-sig：带 BOM 的 plugin.json（Windows 记事本/PowerShell 写出的）用 utf-8
+        # 解码会在开头留 \ufeff 导致 json 解析失败，插件被静默判为「无元数据」。
+        data = json.loads((d / "plugin.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -122,16 +134,23 @@ def _update_shipped_plugin(src: Path, dst: Path) -> bool:
     覆盖随包提供的文件，不碰用户自己加的文件；再删除 plugin.json 的
     obsolete_files 里声明的历史文件（例如已并入 server.py 的 uia.py），
     并清掉 __pycache__，避免旧模块的字节码继续被加载。
+
+    **config.json 是用户数据，永不被覆盖**：它是插件配置（含密钥/路径），
+    随包同名文件只是首次安装时的默认值。历史上按 revision 覆盖时会把用户
+    填好的配置清空 —— 升级插件不该让用户重新配置一遍。
     """
     new, old = _plugin_meta(src), _plugin_meta(dst)
     if _plugin_revision(new) <= _plugin_revision(old):
         return False
     changed = False
     for f in src.iterdir():
-        if not f.is_file():
+        if not f.is_file() or f.name == _USER_DATA_FILE:
             continue
         try:
             shutil.copy2(f, dst / f.name)
+            # copy2 会保留**源文件旧 mtime**；MCP 热加载按「脚本指纹(mtime,size)」判断
+            # 代码是否变化，mtime 不变就会漏检 → 同步完必须把目标 mtime 刷新成当前时间。
+            os.utime(dst / f.name, None)
             changed = True
         except OSError:
             continue
@@ -215,7 +234,7 @@ def _read_meta(name: str) -> dict:
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的文件
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -404,6 +423,25 @@ def plugin_skill_names_of(names: list) -> list:
     return out
 
 
+def plugin_mcp_servers_of(names: list) -> list:
+    """这些插件登记的 MCP 服务器名（引擎据此放行其工具）。
+
+    服务器名固定为 ``{插件名}-mcp``，以 plugin.json 的 mcp_name 为准；无 MCP 构件的
+    插件不返回名字。命名约定只在这里定义（MCP_SUFFIX），调用方不要自行拼串。
+    """
+    idx = plugin_index()["plugins"]
+    out = []
+    for raw in names or []:
+        n = str(raw or "").strip()
+        meta = idx.get(n) or {}
+        if not meta or not meta.get("has_mcp"):
+            continue
+        srv = str(meta.get("mcp_name") or f"{n}{MCP_SUFFIX}").strip()
+        if srv and srv not in out:
+            out.append(srv)
+    return out
+
+
 def plugin_skill_md(name: str) -> str:
     """插件自带 SKILL.md 正文（无则空串）"""
     try:
@@ -551,7 +589,7 @@ def get_plugin_config(name: str) -> dict:
     if not f.is_file():
         return {}
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))   # 兼容带 BOM 的配置
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
@@ -901,6 +939,279 @@ def _read_skill_desc(md_path: Path) -> str:
 
 
 # ---------- 工具：AI 生成插件 ----------
+
+# ══════════════ 骨架 / 登记：由主 Agent 自己实现插件（工具内不调用任何大模型） ══════════
+#
+# 设计变更（用户要求）：对话里生成插件不再走「工具内部再请求一次大模型」的链路 ——
+# 那会让同一次任务变成 AI 调 AI（二次生成、二次自修），既慢又不可控。
+# 现在拆成两步，模型按 skill 规范与示例自己写文件：
+#   1) create_plugin(name, kind, description) → 建骨架（plugin.json / SKILL.md /
+#      server.py 可运行示例 / README 规范），**不生成业务实现**；
+#   2) 模型用 read_file / write_file / edit_file 按 README 与 skill 规范实现；
+#   3) plugin_register(name) → 冒烟自检 + 登记 MCP/技能 + 返回 reload_extensions，
+#      由引擎在同一任务下一轮热加载（无需重启应用）。
+# 旧的自然语言 AI 生成链路（create_plugin_from_nl）仅供设置页「AI 创建」按钮使用。
+
+_SCAFFOLD_TOOL = {
+    "name": "run",
+    "description": "TODO：替换为插件真实能力（动作/查询粒度；参数 schema 按实际改写）",
+    "input_schema": {"type": "object",
+                     "properties": {"text": {"type": "string",
+                                             "description": "输入文本（按需改名/增删）"}},
+                     "required": []},
+    "implementation": 'return "TODO: 尚未实现，请按 README 规范实现本工具"',
+}
+
+_SCAFFOLD_WEB_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__NAME__</title>
+<style>
+body{font-family:system-ui,"Microsoft YaHei UI",sans-serif;margin:0;background:#f7f8fb;color:#1b2433}
+main{max-width:720px;margin:32px auto;padding:24px;background:#fff;border-radius:12px;
+box-shadow:0 6px 24px rgba(15,23,42,.08)}
+h1{font-size:20px;margin:0 0 8px}p{color:#5f6b7e;font-size:13px}
+textarea{width:100%;height:96px;box-sizing:border-box;border:1px solid #e3e8f0;border-radius:8px;
+padding:8px;font:inherit}
+button{margin-top:8px;padding:8px 16px;border:0;border-radius:8px;background:#1e40af;color:#fff;
+font:inherit;cursor:pointer}
+#state{margin-top:12px;font-size:13px;color:#334155;white-space:pre-wrap}
+</style></head>
+<body><main>
+<h1>__NAME__</h1>
+<p>TODO：把这里换成插件真正的浏览器界面（全部内联，禁止外网 CDN）。</p>
+<textarea id="note" placeholder="示例输入（TODO 替换为真实交互控件）"></textarea>
+<button id="send">提交</button>
+<div id="state">加载中…</div>
+</main>
+<script>
+async function refresh(){
+  const r = await fetch('/api/state'); const d = await r.json();
+  document.getElementById('state').textContent = JSON.stringify(d.state || d, null, 2);
+}
+document.getElementById('send').onclick = async () => {
+  const note = document.getElementById('note').value;
+  const r = await fetch('/api/set_note', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({note: note})});
+  const d = await r.json();
+  document.getElementById('state').textContent = d.ok ? ('已保存：' + (d.note || '')) : ('失败：' + d.error);
+  refresh();
+};
+refresh();
+</script></body></html>"""
+
+_SCAFFOLD_API = [
+    {"name": "state", "description": "读取当前状态", "method": "GET", "args": [],
+     "implementation": 'return json.dumps({"ok": True, "state": _STATE}, ensure_ascii=False)'},
+    {"name": "set_note", "description": "写入备注（示例动作，TODO 替换为真实动作）",
+     "method": "POST",
+     "args": [{"name": "note", "type": "string", "description": "备注文本"}],
+     "implementation": ('note = str(args.get("note") or "")\n'
+                        '_STATE["note"] = note\n'
+                        'return json.dumps({"ok": True, "note": note}, ensure_ascii=False)')},
+]
+
+
+def _scaffold_skill_md(name: str, description: str) -> str:
+    """骨架 SKILL.md：给出市场标准章节（触发条件/流程/参数契约/禁用约束），正文留 TODO。"""
+    return (f"---\nname: {name}\ndescription: {description}\n---\n\n"
+            f"# {name}\n\n"
+            "## 何时使用（触发条件）\n- TODO：用户说「……」时使用本技能。\n\n"
+            "## 流程\n1. TODO：第一步调用哪个工具、传什么参数。\n"
+            "2. TODO：第二步……\n"
+            "3. 完成前按「参数契约」校验，失败要说明原因并停止，不得编造结果。\n\n"
+            "## 参数契约\n- TODO：每个工具的参数名 / 类型 / 必填 / 取值范围。\n\n"
+            "## 禁用约束\n- 不得跳步、不得伪造执行结果；工具报错时如实告知并给出修正建议。\n")
+
+
+def _scaffold_readme(name: str, kind: str) -> str:
+    """骨架 README：给模型看的「规范 + 示例 + 下一步」，是实现阶段的唯一依据。"""
+    lines = [
+        f"# 插件 {name}（{kind} 型）实现说明",
+        "",
+        "> 本插件由**主 Agent 自己实现**：按本文件的规范用 read_file / write_file / edit_file",
+        "> 修改代码，然后调用 `plugin_register(name=\"" + name + "\")` 做自检并登记。",
+        "> 禁止再调用任何「AI 生成插件」类工具或把实现外包给子 Agent。",
+        "",
+        "## 文件职责",
+        "- `plugin.json`：插件元数据（name / kind / description / icon / enabled）。",
+    ]
+    if kind in ("mcp", "combined"):
+        lines += ["- `server.py`：MCP stdio 服务器（JSON-RPC 2.0，换行分隔）。"
+                  "**只需改** `TOOLS` 与 `_HANDLERS` 两块，协议骨架不要动。",
+                  "- `config.json`：用户可编辑的键值（MCP 型以大写环境变量注入子进程）。"]
+    if kind == "web":
+        lines += ["- `server.py`：本地 HTTP(S) 页面 + /api/<端点> + MCP 工具，二者共用 `_STATE`。",
+                  "- 页面 `_PAGE` 必须全部内联（禁止外网 CDN），首屏 fetch('/api/state')。",
+                  "- 必须保留 `state`（GET）端点；其余端点为动作/查询粒度，2~6 个。"]
+    if kind in ("skill", "combined", "web"):
+        lines += ["- `SKILL.md`：技能规范，必含「触发条件 / 流程 / 参数契约 / 禁用约束」四节。"]
+    lines += [
+        "",
+        "## 工具实现写法（server.py）",
+        "```python",
+        "def tool_do_something(args):      # 函数名任意；返回可读文本",
+        "    value = str(args.get('text') or '').strip()",
+        "    if not value:",
+        "        return '缺少 text 参数'",
+        "    return f'已处理：{value}'",
+        "```",
+        "然后在 TOOLS 里声明 `name / description / inputSchema`，在 _HANDLERS 里登记",
+        "`\"do_something\": tool_do_something`。异常自行捕获并返回错误说明文本，不要抛出。",
+        "",
+        "## 自检与生效",
+        "`plugin_register` 会：语法编译 → 真跑一次（MCP tools/list 握手；web 型起本地服务拉页面并",
+        "逐个调 /api 端点）→ 通过后登记 MCP 与技能 → 触发运行中引擎热加载（同一任务下一轮即可调用，",
+        "**无需重启应用**）。自检失败会返回具体错误，改完再调一次即可。",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def scaffold_plugin(name: str, kind: str = "combined", description: str = "") -> tuple:
+    """创建插件骨架（不调用任何 AI）：写元数据 / SKILL.md 模板 / 可运行 server.py 示例 / README。
+
+    返回 (ok, message)。成功文案包含文件路径、规范摘要与下一步动作，供模型据此自行实现。
+    """
+    name = str(name or "").strip().lower()
+    if not _NAME_RE.match(name or ""):
+        return False, "插件名仅支持小写字母 / 数字 / 下划线 / 连字符（≤50 字符）"
+    if plugin_dir(name).exists():
+        return False, f"插件「{name}」已存在：直接改文件后调用 plugin_register 即可"
+    kind = str(kind or "combined").strip().lower()
+    if kind not in ("mcp", "skill", "combined", "web"):
+        kind = "combined"
+    desc = str(description or "").strip() or f"{name}（待实现）"
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    meta = {"name": name, "kind": kind, "enabled": True, "description": desc,
+            "author": "", "created_at": now, "updated_at": now, "icon": "",
+            "verified": False, "verify_detail": ""}
+    d = plugin_dir(name)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        _write_meta(name, meta)
+        made = [str(d / "plugin.json")]
+        has_skill = kind in ("skill", "combined", "web")
+        has_mcp = kind in ("mcp", "combined", "web")
+        if has_skill:
+            (d / "SKILL.md").write_text(_scaffold_skill_md(name, desc), encoding="utf-8")
+            made.append(str(d / "SKILL.md"))
+        if has_mcp:
+            if kind == "web":
+                src = _assemble_web_server_py(
+                    name, _SCAFFOLD_WEB_PAGE.replace("__NAME__", name),
+                    [dict(x) for x in _SCAFFOLD_API])
+            else:
+                src = _assemble_server_py(name, [dict(_SCAFFOLD_TOOL)])
+            if not src:
+                return False, "server.py 骨架组装失败（内部模板异常）"
+            (d / "server.py").write_text(src, encoding="utf-8")
+            made.append(str(d / "server.py"))
+            (d / "config.json").write_text("{}\n", encoding="utf-8")
+            made.append(str(d / "config.json"))
+        (d / "README.md").write_text(_scaffold_readme(name, kind), encoding="utf-8")
+        made.append(str(d / "README.md"))
+        invalidate_index()
+    except OSError as e:
+        return False, f"创建插件骨架失败: {e}"
+    lines = [f"已创建插件骨架「{name}」（{kind} 型）：",
+             "\n".join(f"- {p}" for p in made),
+             "",
+             "下一步（必须由你自己完成，不要再调用任何 AI 生成类工具/子 Agent）：",
+             f"1) read_file(\"{d / 'README.md'}\") 读实现规范与示例；",
+             "2) 用 write_file / edit_file 按规范实现 server.py（TOOLS / _HANDLERS 或页面与 "
+             "/api 端点），并补齐 SKILL.md 的四个章节；",
+             f"3) 调 plugin_register(name=\"{name}\") 自检 + 登记 + 热加载。",
+             "登记成功后同一任务下一轮即可调用，无需重启应用。"]
+    return True, "\n".join(lines)
+
+
+def _detect_plugin_kind(d: Path) -> str:
+    """按包内文件推断类型（plugin.json 缺 kind 时兜底）。"""
+    has_skill = (d / "SKILL.md").is_file()
+    has_mcp = (d / "server.py").is_file()
+    if has_skill and has_mcp:
+        return "combined"
+    if has_mcp:
+        return "mcp"
+    if has_skill:
+        return "skill"
+    return "combined"
+
+
+def register_plugin(name: str, workflow: str = "") -> tuple:
+    """自检 + 登记插件（MCP 服务器 / 技能 / 工作流绑定），返回 (ok, message)。
+
+    幂等：改完 server.py / SKILL.md 后再调一次即可重新自检并登记；
+    调用方据返回值追加 `reload_extensions`，让运行中引擎热加载（含脚本 mtime 变化重连）。
+    """
+    name = str(name or "").strip()
+    d = plugin_dir(name)
+    if not name or not d.is_dir():
+        return False, f"插件「{name}」不存在（先用 create_plugin 建骨架）"
+    meta = _read_meta(name) or {}
+    kind = str(meta.get("kind") or "").strip().lower()
+    if kind not in ("mcp", "skill", "combined", "web"):
+        kind = _detect_plugin_kind(d)
+    # 插件校验系统（内置唯一、不可替换）：危险代码会在这一步被强制删除
+    from zhuzhu_Copilot.core import plugin_guard
+    gok, gmsg = plugin_guard.guard_plugin(name)
+    if not gok:
+        return False, gmsg
+    verified, detail = _verify_plugin(name, kind)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    has_skill = (d / "SKILL.md").is_file() and kind in ("skill", "combined", "web")
+    has_mcp = (d / "server.py").is_file() and kind in ("mcp", "combined", "web")
+    meta.update({"name": name, "kind": kind, "enabled": True, "updated_at": now,
+                 "verified": bool(verified), "verify_detail": detail})
+    # 登记 MCP：**只在自检通过时登记**（坏 server 进注册表会每次会话拉起并报错刷屏）
+    if has_mcp and verified:
+        cfg = _mcp_config_for(meta)
+        if cfg:
+            try:
+                servers = agent_skills.load_mcp_servers()
+                servers[:] = [s for s in servers if s.get("name") != cfg["name"]]
+                servers.append(cfg)
+                agent_skills.save_mcp_servers(servers)
+                meta["mcp_name"] = cfg["name"]
+            except Exception as e:
+                detail = f"{detail}；MCP 登记失败: {e}"
+    # 登记技能：SKILL.md → 技能目录（create_md_skill 自动剥离重复 frontmatter）
+    if has_skill:
+        try:
+            body = (d / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+            ok_s, _msg = agent_skills.create_md_skill(
+                name, str(meta.get("description") or name), body)
+            if ok_s:
+                meta["skill_name"] = name
+        except OSError:
+            pass
+    _write_meta(name, meta)
+    # 非默认工作流：插件 + 技能 + MCP 一并绑定并启用（与旧 AI 生成链路一致）
+    wf = str(workflow or "").strip()
+    bind_msg = ""
+    if wf:
+        try:
+            from zhuzhu_Copilot.core import agent_workflow as _awf
+            if wf != _awf.DEFAULT_WORKFLOW:
+                bok, _bmsg = set_plugin_workflows(name, [wf])
+                if bok:
+                    bind_msg = f"；已绑定工作流「{wf}」"
+                if has_skill:
+                    _awf.set_skill_state(wf, name, True)
+        except Exception:
+            pass
+    lines = [f"已登记插件「{name}」（{kind} 型）{bind_msg}"]
+    if has_mcp and verified:
+        lines.append(f"MCP: 本地 stdio {d / 'server.py'}（已登记，热加载即时生效）")
+    elif has_mcp:
+        lines.append("⚠️ 冒烟自检未通过，**未登记 MCP**（避免坏服务器进注册表）：" + detail
+                     + "。按错误修正 server.py 后再调一次 plugin_register。")
+    if has_skill:
+        lines.append(f"技能: /{name} 或对话描述即可调用")
+    if verified:
+        lines.append(f"✅ 冒烟自检通过：{detail}")
+    return True, "\n".join(lines)
+
 
 def create_plugin_from_nl(description: str, kind: str = "combined", on_status=None,
                           workflow: str = "") -> tuple:

@@ -387,6 +387,13 @@ def _preload_agent_panel_ready():
         agent_llm.load_model_config()         # 填充模型配置解密缓存
     except Exception:
         pass
+    # 随包 Copilot 插件首启落盘（技能/Agent 插件各自由 ensure_* 在首次读取时同步）：
+    # 只在用户目录缺失同名插件时复制，已安装/已修改的插件不受影响。
+    try:
+        from zhuzhu_Copilot.core import copilot_plugins
+        copilot_plugins.ensure_shipped_copilot_plugins()
+    except Exception:
+        pass
 
 
 def _open_agent_panel(app):
@@ -562,6 +569,14 @@ def main():
     # 面板就绪后淡出（界面不再"空白卡顿"）。
     splash = SplashWindow()
     splash.start()
+
+    # 桌宠 3D 预加载（导入 GL 渲染模块 ~1.1s + 解析烘焙资产 ~0.15s）交给后台线程，
+    # 与 2 秒启动动画并行；面板打开时直接建窗口，桌宠不再等这段同步开销。
+    try:
+        from zhuzhu_Copilot.ui.desktop_pet import preload_pet3d
+        preload_pet3d()
+    except Exception:
+        pass
 
     def _open_panel():
         panel = _open_agent_panel(app)

@@ -146,7 +146,7 @@ Skill handbook (optional reference): the skills below contain standard procedure
 - git-commit: commit, push and pull repositories following the Conventional Commits standard; standardize commit message format, check status and handle pull conflicts
 - image-gen: call the Agnes Image 2.1 Flash API for text-to-image and image-to-image generation, auto-downloading results to the desktop
 - memory: long-term memory - save_memory appends user preferences, important conclusions, conventions and paths to local memory, load_memory reads all memory
-- plugin-create: plugin creation - automatically generate a runnable plugin from a natural-language description (the three-piece set of MCP server + SKILL.md skill + web-type local HTTP UI) and load it, with an automatic smoke self-check after generation
+- plugin-create: plugin creation - create a plugin skeleton first, then the main agent implements the MCP tools / SKILL.md / web page itself following the spec and README, and finally plugin_register runs the smoke self-check, registers and hot-loads it (no restart)
 - skill-create: skill creation - automatically generate a market-standard SKILL.md skill from a natural-language description and load it
 - skill-mgmt: skill creation - create_skill automatically generates a market-standard SKILL.md skill from a natural-language description and loads it immediately
 - sub-agent: subtask scheduling - dispatch_sub_agents dispatches independent subtasks in parallel, explore_project gets up to speed on a new project quickly, search_large searches across directories at scale

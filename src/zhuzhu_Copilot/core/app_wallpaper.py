@@ -229,10 +229,11 @@ def _clear_caches() -> None:
     """丢弃解码/模糊/亮度缓存：换图、清图、切换数据目录都必须调用，
     否则会拿旧图的模糊/亮度结果画（或配）在新设置上。"""
     _source_cache.clear()
-    for cache in (_fit_cache, _blur_cache):
+    for cache in (_fit_cache, _blur_cache, _render_src_cache):
         cache["key"] = None
         cache["value"] = None
-        cache["src"] = None
+        if "src" in cache:
+            cache["src"] = None
     _lum_cache["key"] = None
     _lum_cache["value"] = None
 
@@ -376,7 +377,10 @@ def paint(painter: QPainter, rect: QRect, scrim: str = _SCRIM_FALLBACK) -> bool:
     size = QSize(max(1, rect.width()), max(1, rect.height()))
     try:
         painter.save()
-        painter.setClipRect(rect)
+        # 必须 IntersectClip 而不是默认的 ReplaceClip：主面板 paintEvent 已用圆角路径
+        # 裁剪窗口，壁纸若把裁剪区替换成矩形，四角就会画出直角（用户反馈的「自定义
+        # 背景模式下窗口变直角」）。求交后壁纸仍铺满 rect，同时保留外层圆角。
+        painter.setClipRect(rect, Qt.ClipOperation.IntersectClip)
         # 先按适配方式摆进「与绘制区同尺寸」的画布再模糊 —— 顺序很关键，见 _fitted
         painter.drawPixmap(rect, _blurred(_fitted(pm, size, fit, scrim), blur))
         painter.fillRect(rect, _scrim_color(scrim, p.bg_dim))
@@ -398,6 +402,37 @@ def paint(painter: QPainter, rect: QRect, scrim: str = _SCRIM_FALLBACK) -> bool:
 # 只存 key 不存源，会拿上一张图的缓存画在这一张上。
 _fit_cache: dict = {"key": None, "value": None, "src": None}
 _blur_cache: dict = {"key": None, "value": None, "src": None}
+
+# 渲染用源图的最大长边（px）。壁纸最终要被高斯模糊并铺满屏幕，原图 4608×3456
+# 缩到 1920 宽实测 142ms（每次窗口尺寸变化都要付一次，最大化/还原时就是明显卡顿）；
+# 先缓存一版 ≤2560 的源图（一次性 ~120ms），之后每次摆版只需 ~40ms。模糊半径语义
+# 与显示分辨率一致，细节在多半径模糊下不可见（不同于「先降采样再模糊」的画质损失，
+# 那条路已明确废弃，见 _gaussian_blur 的说明）。
+_RENDER_MAX_EDGE = 2560
+_render_src_cache: dict = {"key": None, "value": None}
+
+
+def _render_source(src: QPixmap) -> QPixmap:
+    """返回「摆版用」的源图：长边超过 `_RENDER_MAX_EDGE` 时缓存一版缩小图。"""
+    try:
+        if src.isNull():
+            return src
+        if max(src.width(), src.height()) <= _RENDER_MAX_EDGE:
+            return src
+        key = src.cacheKey()
+        cached = _render_src_cache["value"]
+        if _render_src_cache["key"] == key and cached is not None and not cached.isNull():
+            return cached
+        small = src.scaled(src.size().scaled(_RENDER_MAX_EDGE, _RENDER_MAX_EDGE,
+                                            Qt.AspectRatioMode.KeepAspectRatio),
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        if small.isNull():
+            return src
+        _render_src_cache.update(key=key, value=small)
+        return small
+    except Exception:
+        return src
 
 
 def _draw_fitted(painter: QPainter, src: QPixmap, size: QSize,
@@ -441,7 +476,7 @@ def _fitted(src: QPixmap, size: QSize, fit: str, backdrop: str) -> QPixmap:
     base.fill(_c if _c.isValid() else QColor(_SCRIM_FALLBACK))
     painter = QPainter(base)
     try:
-        _draw_fitted(painter, src, size, fit, backdrop)
+        _draw_fitted(painter, _render_source(src), size, fit, backdrop)
     finally:
         painter.end()
     _fit_cache.update(key=key, value=base, src=src)

@@ -51,6 +51,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAbstractTextDocumentLayout,
+    QBrush,
     QColor,
     QCursor,
     QDragEnterEvent,
@@ -257,14 +258,14 @@ def _scrollbar_handle() -> str:
     直接取会得到「黑透明」滑块（浅色模式下呈纯黑残留）。"""
     c = QColor(_base_color("BORDER"))
     c.setAlphaF(_SCROLLBAR_OPACITY)
-    # 原 return f"rgba(...)" 已移除（回退方案见本函数文档）
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
 
 def _scrollbar_handle_hover() -> str:
     """滚动条滑块悬停色：提亮到 55%，保持可辨又不喧宾夺主（原始色板，见上）。"""
     c = QColor(_base_color("BORDER_SOFT"))
     c.setAlphaF(_SCROLLBAR_HOVER_OPACITY)
-    # 原 QColor 70% 白底托取值已移除，回退方案见本函数文档
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
 
 def _scrollbar_qss() -> str:
@@ -2621,6 +2622,426 @@ def _hot_apply_plugins() -> None:
         pass
 
 
+def _slider_tick_step(top: int) -> int:
+    """胶囊滑杆的档位圆点间隔：小量程一档一点，量程越大间隔越疏。
+
+    圆点按「每一档」铺满会在 0-100 的压暗滑杆上糊成一条虚线，
+    故按量程分三档：≤10 每档一个点、≤40 每 5、其余每 10。"""
+    if top <= 10:
+        return 1
+    if top <= 40:
+        return 5
+    return 10
+
+
+class _CapsuleSlider(QSlider):
+    """胶囊滑杆（自绘）：深蓝已覆盖区 / 淡白未覆盖区 / 纯白圆形滑块（内含淡灰圆环）/
+    档位圆点；满档时胶囊内上百颗小白点从同一左端出发，各自在随机行上水平向右流动。
+
+    档位圆点两副面孔：默认「灰点，只画在未覆盖区」（背景页模糊 / 压暗）；
+    `tick_style="level"` 为「淡蓝点，每个挡位都画」（思考强度）。
+    自绘而非 QSS：圆点、圆环与粒子需要逐帧绘制，样式表无法表达。
+    """
+
+    TRACK_H = 16         # 轨道胶囊高度（px）
+    VALUE_PAD = 7.0      # 数值端点（圆点 / 滑块）距胶囊端点的余量：固定不动
+    CAPSULE_EXTEND = 7.0  # 胶囊两端再各延长的长度（圆点位置不受影响）
+    THUMB_R = 12.8       # 滑块圆半径（px）：比轨道高一档缩小 20%，收进胶囊里
+    TICK_R = 3.0         # 档位圆点半径（px）
+    RING_RATIO = 0.55    # 滑块内淡灰圆环的半径占比（与外圆同心）
+    TICK_STYLE_MUTED = "muted"   # 灰点 + 只画未覆盖区
+    TICK_STYLE_LEVEL = "level"   # 淡蓝点 + 每个挡位都画
+    PARTICLE_SPEED = 0.4032        # 0.576 再降 30%（每秒扫过的轨道比例）
+    PARTICLE_COUNT = 100
+    PARTICLE_R = 1.6               # 小白点半径（px）
+    PARTICLE_FADE = 0.025          # 两端淡入淡出占轨道的比例（越小，左侧遮罩区越小）
+    ALPHA_LEVELS = 8               # 粒子亮度分级（预渲染贴图档数，避免逐颗改 opacity）
+    GRADIENT_FROM = "#4C1D95"      # 满档特效态：深紫渐变起点
+    GRADIENT_TO = "#6D28D9"        # 满档特效态：深紫渐变终点
+
+    def __init__(self, parent=None, *, tick_step: int = 0,
+                 particles_on_max: bool = False,
+                 tick_style: str = TICK_STYLE_MUTED):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._tick_step = max(0, int(tick_step))
+        self._particles = bool(particles_on_max)
+        self._tick_style = tick_style
+        # 每颗粒子的初始参数（固定伪随机、可复现）：出发点都是左端同一 x，
+        # 初始 y 随机（胶囊内任意一行），之后**永不改变** —— 全程水平直线运动。
+        n = self.PARTICLE_COUNT
+        self._offs0 = [self._rand(i, 2) for i in range(n)]
+        self._ys = [self._rand(i, 1) for i in range(n)]      # 固定行号，不再变动
+        self._speeds = [0.82 + 0.36 * self._rand(i, 3) for i in range(n)]
+        self._offs = list(self._offs0)              # 运行中的横向进度（0..1）
+        self._cache = None                          # 静态层缓存（轨道 + 覆盖区 + 圆点）
+        self._cache_key = None
+        self._dots = None                           # 粒子白点贴图缓存（按亮度分级）
+        self._dot_key = None
+        self._anim = QTimer(self)
+        self._anim.setInterval(16)                  # ≈60fps
+        self._anim.timeout.connect(self._on_tick)
+        self.setFixedHeight(48)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setTracking(True)                      # 拖动中持续发 valueChanged
+
+    @staticmethod
+    def _rand(i: int, salt: int) -> float:
+        """确定性伪随机 0..1：每颗粒子的路径参数各不相同，且每次运行都一致。"""
+        x = (i * 2654435761 + salt * 40503) & 0xFFFFFFFF
+        x ^= x >> 15
+        x = (x * 2246822519) & 0xFFFFFFFF
+        return ((x ^ (x >> 13)) & 0xFFFF) / 65536.0
+
+    def _reset_particles(self):
+        """回到初始状态：同一批天然分散的出发点，保证每次起播观感一致。"""
+        self._offs = list(self._offs0)
+
+    def setValue(self, v: int):
+        """改值统一入口：即使调用方 blockSignals，粒子动画也随档位即时启停。"""
+        super().setValue(v)
+        self._sync_anim()
+
+    # ---- 档位圆点 ----
+    @property
+    def tick_step(self) -> int:
+        return self._tick_step
+
+    @property
+    def tick_style(self) -> str:
+        return self._tick_style
+
+    def set_tick_step(self, step: int):
+        self._tick_step = max(0, int(step))
+        self.update()
+
+    # ---- 配色（深色：淡白轨道；浅色：淡灰白轨道，否则白底上不可见）----
+    @staticmethod
+    def _colors():
+        """(覆盖区蓝色, 未覆盖淡白, 滑块纯白, 灰点, 淡蓝点, 滑块描边, 圆环淡灰)"""
+        ring = QColor(203, 213, 225)                # 淡灰圆环：白圆上仍可辨认
+        fill = QColor(ACCENT).lighter(112)          # 覆盖区：比主题深蓝更淡一点
+        if _resolve_theme() == "dark":
+            return (fill, QColor(255, 255, 255, 44), QColor("#FFFFFF"),
+                    QColor(154, 163, 175, 205), QColor(147, 197, 253),
+                    QColor(0, 0, 0, 70), ring)
+        return (fill, QColor(27, 36, 51, 42), QColor("#FFFFFF"),
+                QColor(140, 148, 160, 190), QColor(147, 197, 253),
+                QColor(27, 36, 51, 45), ring)
+
+    def _track_span(self):
+        """数值端点（滑块圆心可达范围）：留出滑块半径与端点余量，与胶囊长度解耦。"""
+        m = self.THUMB_R + 1 + self.VALUE_PAD
+        return m, max(m, self.width() - m)
+
+    def _capsule_span(self):
+        """胶囊两端：比数值端点再各外延 VALUE_PAD + CAPSULE_EXTEND（圆点位置不受影响）。"""
+        x0, x1 = self._track_span()
+        pad = self.VALUE_PAD + self.CAPSULE_EXTEND
+        return x0 - pad, x1 + pad
+
+    def _value_at(self, x: float) -> int:
+        x0, x1 = self._track_span()
+        if x1 <= x0:
+            return self.minimum()
+        frac = min(1.0, max(0.0, (x - x0) / (x1 - x0)))
+        return self.minimum() + round(frac * (self.maximum() - self.minimum()))
+
+    # ---- 绘制 ----
+    @staticmethod
+    def _capsule(x0: float, x1: float, cy: float, height: float) -> QPainterPath:
+        """真胶囊路径：两端用「半径 = 高度一半」的圆头。
+
+        不要用 Qt.SizeMode.RelativeSize 传 50%：相对模式下 x 半径按**宽度**算，
+        会画出横跨半条轨道的超扁椭圆角（锥形），必须用等半径的绝对圆角。"""
+        r = height / 2.0
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(x0, cy - r, max(0.0, x1 - x0), height), r, r)
+        return path
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        colors = self._colors()
+        cy = self.height() / 2.0
+        x0, x1 = self._track_span()
+        tx = self._thumb_x()
+        animating = self._particles and self._anim.isActive()
+
+        if animating:
+            # 特效帧只重绘滑块与粒子：轨道/覆盖区走缓存（渐变底色 + 隐去档位点）
+            p.drawPixmap(0, 0, self._static_layer(effect_on=True))
+        else:
+            self._paint_static(p, x0, x1, cy, colors)
+
+        self._paint_thumb(p, tx, cy, colors)
+        if animating:
+            # 粒子最后画：任何元素（滑块 / 圆环 / 圆点）都不会遮住流动
+            self._paint_particles(p, cy)
+        p.end()
+
+    def _paint_thumb(self, p, tx, cy, colors):
+        """纯白圆滑块 + 与外圆同心的淡灰圆环。"""
+        p.setPen(QPen(colors[5], 1))
+        p.setBrush(colors[2])
+        p.drawEllipse(QPointF(tx, cy), self.THUMB_R, self.THUMB_R)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(colors[6], 2))
+        ring_r = self.THUMB_R * self.RING_RATIO
+        p.drawEllipse(QPointF(tx, cy), ring_r, ring_r)
+
+    def _thumb_x(self) -> float:
+        x0, x1 = self._track_span()
+        span_v = max(1, self.maximum() - self.minimum())
+        return x0 + (x1 - x0) * ((self.value() - self.minimum()) / span_v)
+
+    def _paint_static(self, p, x0, x1, cy, colors=None, effect_on: bool = False):
+        """轨道（两端含外延）+ 覆盖区 + 档位圆点。
+
+        effect_on（满档粒子特效态）：覆盖区改用「淡蓝 → 蓝紫」横向渐变并把整条胶囊铺满，
+        同时不画档位圆点。
+        """
+        colors = colors or self._colors()
+        fill, track = colors[0], colors[1]
+        tick = colors[4] if self._tick_style == self.TICK_STYLE_LEVEL else colors[3]
+        h = float(self.TRACK_H)
+        cx0, cx1 = self._capsule_span()             # 胶囊比数值端点更长
+        capsule = self._capsule(cx0, cx1, cy, h)
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track)                          # 未覆盖区：淡白胶囊
+        p.drawPath(capsule)
+
+        tx = self._thumb_x()
+        if effect_on:
+            grad = QLinearGradient(cx0, cy, cx1, cy)
+            grad.setColorAt(0.0, QColor(self.GRADIENT_FROM))
+            grad.setColorAt(1.0, QColor(self.GRADIENT_TO))
+            p.setBrush(QBrush(grad))               # 特效态：整条胶囊铺渐变
+            p.drawPath(capsule)
+        elif self.value() > self.minimum():
+            p.setBrush(fill)                       # 覆盖区：深蓝胶囊
+            p.drawPath(self._capsule(cx0, tx, cy, h))
+
+        if self._tick_step > 0 and not effect_on:
+            p.save()
+            p.setClipPath(capsule)                 # 圆点一律不越出胶囊
+            p.setBrush(tick)
+            span_v = max(1, self.maximum() - self.minimum())
+            all_levels = self._tick_style == self.TICK_STYLE_LEVEL
+            for v in range(self.minimum(), self.maximum() + 1, self._tick_step):
+                dx = x0 + (x1 - x0) * ((v - self.minimum()) / span_v)
+                if dx <= tx and not all_levels:    # 灰点样式：已覆盖区域不画
+                    continue
+                p.drawEllipse(QPointF(dx, cy), self.TICK_R, self.TICK_R)
+            p.restore()
+
+    def _static_layer(self, effect_on: bool = False) -> QPixmap:
+        """缓存「轨道 + 覆盖区 + 圆点」：键含尺寸/数值/档位/主题，任一变化自动重建。"""
+        key = (self.width(), self.height(), self.value(), self.minimum(),
+               self.maximum(), self._tick_step, self._tick_style, effect_on,
+               _resolve_theme(), round(self.devicePixelRatioF(), 2))
+        if self._cache is not None and self._cache_key == key:
+            return self._cache
+        dpr = max(1.0, self.devicePixelRatioF())
+        pm = QPixmap(max(1, round(self.width() * dpr)),
+                     max(1, round(self.height() * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        x0, x1 = self._track_span()
+        self._paint_static(p, x0, x1, self.height() / 2.0, effect_on=effect_on)
+        p.end()
+        self._cache, self._cache_key = pm, key
+        return pm
+
+    def _dot_sprites(self):
+        """按透明度分级预渲染的小白点贴图（元组，索引越大越亮）。
+
+        这样逐颗绘制时不必改 opacity（每改一次都要重建画笔状态），
+        200 颗/帧下帧耗时约降一半。
+        """
+        dpr = max(1.0, self.devicePixelRatioF())
+        key = (self.PARTICLE_R, round(dpr, 2))
+        if self._dots is not None and self._dot_key == key:
+            return self._dots
+        side = (self.PARTICLE_R + 1.0) * 2
+        px = max(1, round(side * dpr))
+        out = []
+        for k in range(self.ALPHA_LEVELS):
+            pm = QPixmap(px, px)
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            qp = QPainter(pm)
+            qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(QColor(255, 255, 255,
+                               round(255 * (k + 1) / self.ALPHA_LEVELS)))
+            qp.drawEllipse(QPointF(side / 2, side / 2), self.PARTICLE_R, self.PARTICLE_R)
+            qp.end()
+            out.append(pm)
+        self._dots, self._dot_key = tuple(out), key
+        return self._dots
+
+    def _paint_particles(self, p, cy):
+        """满档粒子：整条胶囊内的小白点，起点 x 一致、全程水平直线向右。
+
+        每颗的初始 y 随机（胶囊内任意一行）且此后恒定不变，因此画面上
+        只有左右位移、没有任何上下晃动；整体裁进胶囊，两端仅极窄一段淡入淡出。
+        """
+        cx0, cx1 = self._capsule_span()
+        r = self.PARTICLE_R
+        sx0, sx1 = cx0 + r, cx1 - r              # 覆盖整条胶囊
+        span = max(1.0, sx1 - sx0)
+        spread = max(0.0, self.TRACK_H / 2.0 - r)
+        fade = max(1e-3, self.PARTICLE_FADE)
+        sprites = self._dot_sprites()
+        last = self.ALPHA_LEVELS - 1
+        p.save()
+        p.setClipPath(self._capsule(cx0, cx1, cy, float(self.TRACK_H)))
+        for i in range(self.PARTICLE_COUNT):
+            u = self._offs[i]
+            alpha = min(1.0, u / fade, (1.0 - u) / fade)   # 0..1
+            if alpha < 0.04:
+                continue
+            y = cy + (self._ys[i] * 2.0 - 1.0) * spread     # 行号固定：纯水平直线
+            lvl = min(last, int(alpha * (last + 1)))
+            p.drawPixmap(QPointF(sx0 + span * u - r - 1.0, y - r - 1.0), sprites[lvl])
+        p.restore()
+
+    # ---- 粒子动画 ----
+    def _on_tick(self):
+        step = self.PARTICLE_SPEED * self._anim.interval() / 1000.0
+        for i, u in enumerate(self._offs):
+            u += step * self._speeds[i]
+            if u >= 1.0:                         # 跑完整条：回左端同一行继续向右
+                u -= 1.0
+            self._offs[i] = u
+        self.update()
+
+    def _sync_anim(self, *_):
+        """仅「满档 + 可见 + 启用」时跑动画，其余情况停表省 CPU。"""
+        on = (self._particles and self.isVisible() and self.isEnabled()
+              and self.maximum() > self.minimum()
+              and self.value() >= self.maximum())
+        if on and not self._anim.isActive():
+            self._reset_particles()                 # 每次起播都从同一初始状态开始
+            self._anim.start()
+        elif not on and self._anim.isActive():
+            self._anim.stop()
+        self.update()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._sync_anim()
+
+    def hideEvent(self, ev):
+        self._anim.stop()
+        super().hideEvent(ev)
+
+    # ---- 鼠标：点哪跳哪，按住跟手（拖动语义仍由 sliderPressed/Released 标记）----
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            self.setSliderDown(True)               # 先发 sliderPressed，再改值
+            self.setValue(self._value_at(ev.position().x()))
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self.isSliderDown():
+            self.setValue(self._value_at(ev.position().x()))
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            self.setValue(self._value_at(ev.position().x()))
+            self.setSliderDown(False)              # 发 sliderReleased → 提交 / 收尾
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+
+class _BgAdjustStrip(QWidget):
+    """背景调节浮条：拖动模糊 / 压暗时，设置对话框整体隐去，屏幕上只留这一条
+    「项名 + 胶囊滑杆 + 调节参数」，让用户直接观察壁纸变化。
+
+    浮条不接收鼠标（WindowTransparentForInput）：按住的那根滑杆仍在（不可见的）
+    对话框里继续跟手，浮条只做数值镜像，不会抢走拖动。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowTransparentForInput
+            | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._unit = ""
+        self._src = None
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(26, 16, 26, 16)
+        lay.setSpacing(18)
+        self.title = QLabel("")
+        self.title.setStyleSheet("background: transparent;")
+        lay.addWidget(self.title)
+        self.slider = _CapsuleSlider(tick_step=0)
+        self.slider.setFixedWidth(600)
+        lay.addWidget(self.slider, 1)
+        self.value = QLabel("")
+        self.value.setFixedWidth(56)
+        self.value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value.setStyleSheet("background: transparent;")
+        lay.addWidget(self.value)
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        dark = _resolve_theme() == "dark"
+        p.setPen(QPen(QColor(255, 255, 255, 36) if dark else QColor(0, 0, 0, 24), 1))
+        p.setBrush(QColor(10, 12, 16, 226) if dark else QColor(255, 255, 255, 236))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 24, 24)
+        p.end()
+
+    def show_for(self, title: str, unit: str, slider, tick_step: int):
+        """绑定到某根背景滑杆：显示项名 / 单位，并把其改值镜像到浮条。"""
+        dark = _resolve_theme() == "dark"
+        text = "#F3F5F9" if dark else "#1B2433"
+        accent = "#8AB4F8" if dark else "#1E40AF"
+        self.title.setText(title)
+        self.title.setStyleSheet(
+            f"background: transparent; color: {text};"
+            " font-size: 13px; font-weight: 700;")
+        self.value.setStyleSheet(
+            f"background: transparent; color: {accent};"
+            " font-size: 14px; font-weight: 800;")
+        self._unit = unit
+        self.slider.set_tick_step(tick_step)
+        self.slider.blockSignals(True)
+        self.slider.setRange(slider.minimum(), slider.maximum())
+        self.slider.setValue(slider.value())
+        self.slider.blockSignals(False)
+        self.value.setText(f"{slider.value()}{unit}")
+        if self._src is not None:
+            try:
+                self._src.valueChanged.disconnect(self._mirror)
+            except TypeError:
+                pass
+        self._src = slider
+        slider.valueChanged.connect(self._mirror)
+
+    def _mirror(self, v):
+        self.slider.blockSignals(True)
+        self.slider.setValue(int(v))
+        self.slider.blockSignals(False)
+        self.value.setText(f"{int(v)}{self._unit}")
+
+
 class _TypingDots(QWidget):
     """任务执行中 AI 气泡下方的打字指示器动画（iMessage 风格：三点依次弹起，
     相位错开 1/3 循环，随消息流滚动，无 emoji）"""
@@ -2653,6 +3074,160 @@ class _TypingDots(QWidget):
             p.drawEllipse(QPointF(5 + i * 13, 8), r, r)
         p.setOpacity(1.0)
         p.end()
+
+
+class _ActionFeedback(QWidget):
+    """按钮内的动作反馈层：执行中「小圆点转圈」，完成后「自下而上打勾」。
+
+    作为按钮的子控件铺满按钮，用按钮同色底盖住文字，结束后自动隐藏；
+    不进布局、不改按钮文字，按钮尺寸/样式完全不受影响。
+    """
+
+    SPIN_MS = 40                # 转圈帧间隔（约 25fps）
+    CHECK_MS = 16               # 打勾帧间隔
+    CHECK_DRAW_MS = 620         # 对勾从左下笔尖画到右上收笔的时长
+    HOLD_MS = 900               # 对勾画完后停留时长
+    DOTS = 6                    # 绕圈小圆点数量
+    _DOT_R = 1.9                # 小圆点半径
+    _ORBIT_R = 8.0              # 小圆点绕行半径
+
+    def __init__(self, button: QPushButton, bg: str, fg: str):
+        super().__init__(button)
+        self._button = button
+        self._bg = QColor(bg)
+        self._fg = QColor(fg)
+        self._mode = ""          # "" / "spin" / "check"
+        self._angle = 0.0
+        self._progress = 0.0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.timeout.connect(self._tick_spin)
+        self._check_timer = QTimer(self)
+        self._check_timer.timeout.connect(self._tick_check)
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.timeout.connect(self.reset)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        button.installEventFilter(self)
+        self.hide()
+
+    # ---------- 状态控制 ----------
+    def start_spin(self):
+        self._stop_timers()
+        self._mode = "spin"
+        self._angle = 0.0
+        self._progress = 0.0
+        self.setGeometry(self._button.rect())
+        self.show()
+        self.raise_()
+        self._spin_timer.start(self.SPIN_MS)
+        self.update()
+
+    def finish(self, ok: bool = True):
+        self._spin_timer.stop()
+        if not ok:
+            self.reset()
+            return
+        self._mode = "check"
+        self._progress = 0.0
+        self.setGeometry(self._button.rect())
+        self.show()
+        self.raise_()
+        self._check_timer.start(self.CHECK_MS)
+        self.update()
+
+    def reset(self):
+        self._stop_timers()
+        self._mode = ""
+        self._progress = 0.0
+        self.hide()
+        self.update()
+
+    def _stop_timers(self):
+        self._spin_timer.stop()
+        self._check_timer.stop()
+        self._hold_timer.stop()
+
+    def _tick_spin(self):
+        self._angle = (self._angle + 28.0) % 360.0
+        self.update()
+
+    def _tick_check(self):
+        self._progress = min(1.0, self._progress + self.CHECK_MS / float(self.CHECK_DRAW_MS))
+        self.update()
+        if self._progress >= 1.0:
+            self._check_timer.stop()
+            self._hold_timer.start(self.HOLD_MS)
+
+    def eventFilter(self, obj, ev):
+        if obj is self._button and ev.type() == QEvent.Type.Resize:
+            self.setGeometry(self._button.rect())
+        return False
+
+    # ---------- 绘制 ----------
+    def paintEvent(self, event):
+        if not self._mode:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # 按钮同色底：盖住原文字，避免「转圈 + 文字」叠在一起
+        bg_path = QPainterPath()
+        bg_path.addRoundedRect(QRectF(self.rect()), 8, 8)
+        p.fillPath(bg_path, self._bg)
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        if self._mode == "spin":
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(self._fg)
+            for i in range(self.DOTS):
+                ang = math.radians(self._angle + i * (360.0 / self.DOTS))
+                # 沿绕行方向依次变亮：视觉上是一串圆点在追着转
+                p.setOpacity(0.22 + 0.78 * (i / float(self.DOTS - 1)))
+                p.drawEllipse(QPointF(cx + math.cos(ang) * self._ORBIT_R,
+                                      cy + math.sin(ang) * self._ORBIT_R),
+                              self._DOT_R, self._DOT_R)
+            p.setOpacity(1.0)
+        else:
+            # 像人手动打勾：笔尖从左下起笔 → 下探到底部转折 → 向右上收笔。
+            # 按折线**长度**逐步绘制（不是整图遮罩上移），所以笔迹是"长出来"的。
+            s = min(self.width(), self.height()) * 0.30
+            pts = [QPointF(cx - s, cy + s * 0.18),
+                   QPointF(cx - s * 0.20, cy + s * 0.92),
+                   QPointF(cx + s, cy - s * 0.92)]
+            drawn = self._polyline_until(pts, self._progress)
+            if len(drawn) >= 2:
+                pen = QPen(self._fg, 2.6)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                path = QPainterPath()
+                path.moveTo(drawn[0])
+                for pt in drawn[1:]:
+                    path.lineTo(pt)
+                p.drawPath(path)
+        p.end()
+
+    @staticmethod
+    def _polyline_until(pts: list, t: float) -> list:
+        """取折线从头起累计长度为 `t`（0~1）比例的那一段，返回点列。
+
+        这是「手写打勾」的关键：按路径长度推进，笔尖严格沿 A→B→C 走，
+        而不是整块图形一起淡入/上移。
+        """
+        total = sum(math.hypot(b.x() - a.x(), b.y() - a.y())
+                    for a, b in zip(pts, pts[1:]))
+        remain = max(0.0, min(1.0, float(t))) * total
+        out = [pts[0]]
+        for a, b in zip(pts, pts[1:]):
+            seg = math.hypot(b.x() - a.x(), b.y() - a.y())
+            if remain <= 0.0:
+                break
+            if remain >= seg:
+                out.append(b)
+                remain -= seg
+            else:
+                k = (remain / seg) if seg else 1.0
+                out.append(QPointF(a.x() + (b.x() - a.x()) * k,
+                                   a.y() + (b.y() - a.y()) * k))
+                remain = 0.0
+        return out
 
 
 # 写入类操作：确认弹窗隐藏具体内容，仅提示目标
@@ -4513,6 +5088,8 @@ class _AgentSettingsDialog(QDialog):
     # 收款码对话框属于本设置对话框（会员页），故信号也声明在这里；不能在后台线程直接
     # 操作控件，否则切换支付方式时更新可能静默失效（见 _memb_show_pay_dialog / _on_pay_qr）。
     pay_qr_signal = pyqtSignal(int, object, str, str)
+    # MCP 重启完成（ok, message）：主面板后台线程 → 本对话框（转圈 → 打勾动画收尾）
+    restart_done = pyqtSignal(bool, str)
 
     # 极简配色：纯黑 / 淡黑 / 白 / 深蓝
     _BG = "#000000"
@@ -4558,6 +5135,16 @@ class _AgentSettingsDialog(QDialog):
         self._pbar = None
         self._pbar_timer = None
         self._pbar_val = 0
+        # 背景页拖动调节：浮条（项名 + 滑杆 + 数值）与「对话框隐去」的兜底计时器
+        self._bg_strip = None
+        self._bg_adjust_meta = None
+        self._bg_hide_timer = QTimer(self)      # 按住片刻才隐去：单纯点一下不闪
+        self._bg_hide_timer.setSingleShot(True)
+        self._bg_hide_timer.setInterval(150)
+        self._bg_hide_timer.timeout.connect(self._bg_hide_now)
+        self._bg_adjust_guard = QTimer(self)
+        self._bg_adjust_guard.setInterval(200)
+        self._bg_adjust_guard.timeout.connect(self._bg_adjust_watch)
         self.setWindowTitle(_ui("AI 设置"))
         # objectName 用于限定透明背景规则只作用于设置对话框自身，不级联到其子弹窗
         # （QMessageBox/QInputDialog 等也是 QDialog 子类，若规则用裸 QDialog 选择器，
@@ -4717,6 +5304,12 @@ class _AgentSettingsDialog(QDialog):
                 "padding: 8px 24px; font-size: 13px; font-weight: 600;")
 
     def done(self, code: int):
+        # 拖动中被关闭时对话框可能仍是透明的：先恢复并收起浮条，避免下次打开不可见
+        self._bg_adjust_end()
+        strip = getattr(self, "_bg_strip", None)
+        if strip is not None:
+            strip.deleteLater()
+            self._bg_strip = None
         super().done(code)
 
     # ---------- 各分组页面 ----------
@@ -5031,10 +5624,6 @@ class _AgentSettingsDialog(QDialog):
         _mode_row.addWidget(self.panel_mode_combo, 3)
         _mode_row.addStretch(2)
         lay.addLayout(_mode_row)
-        pref_sub = QLabel(_ui("融入：子面板嵌入主面板左右栏，作为同一窗口的一部分；贴附：子面板悬浮在主面板外侧，可各自拖动位置与调整大小。工作树 / Git / 任务清单跟随此项设置，预览面板固定融入主面板右侧。设置保存后立即生效。"))
-        pref_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        pref_sub.setWordWrap(True)
-        lay.addWidget(pref_sub)
         # 能力开关：分别控制 MCP / 技能 / 插件，关闭后 AI 不再加载对应能力（settings cap_*）
         lay.addWidget(self._section_label(_ui("能力开关")))
         self.cap_mcp_check = QCheckBox(_ui("启用 MCP 服务器（外部工具）"))
@@ -5060,10 +5649,6 @@ class _AgentSettingsDialog(QDialog):
         self.disable_all_check.setToolTip(_ui("开启后 AI 无法调用任何工具（含 grep/read_file/web_search 等），只能以文本对话作答"))
         self.disable_all_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.disable_all_check)
-        dis_sub = QLabel(_ui("在下面的清单里取消勾选即可禁用某个工具：禁用后它**不会出现在发给模型的服务商请求里**（schema 直接不发，省 token），执行层也会硬拒绝。"))
-        dis_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        dis_sub.setWordWrap(True)
-        lay.addWidget(dis_sub)
         # 工具清单：逐项勾选（比手敲工具名可靠），与下方文本框双向同步
         self.tool_filter_edit = QLineEdit()
         self.tool_filter_edit.setPlaceholderText(_ui("搜索工具名…"))
@@ -5118,13 +5703,6 @@ class _AgentSettingsDialog(QDialog):
             "回退模式：仅本应用的网络请求在直连失败时经 SSH 隧道重试"))
         self.proxy_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         lay.addWidget(self.proxy_check)
-        proxy_sub = QLabel(_ui(
-            "填入 SSH 服务器的 IP、端口、用户名与密码。全局模式下系统代理将指向"
-            "本机转发器（浏览器等应用生效）；回退模式仅影响本应用。"))
-        proxy_sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        proxy_sub.setWordWrap(True)
-        lay.addWidget(proxy_sub)
-
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
         mode_lbl = QLabel(_ui("模式"))
@@ -5252,9 +5830,6 @@ class _AgentSettingsDialog(QDialog):
         lay.addLayout(mode_row)
         # 工作目录已迁移到「对话流」页按会话设置（删除通用设置里的全局入口，
         # 避免两处入口语义冲突；会话未设置时仍回退历史全局默认值 agent_workdir）
-        tip = QLabel(_ui("记忆：AI 可将重要信息写入 memory.md 并在后续任务中读取。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        lay.addWidget(tip)
         lay.addStretch(1)
         return w
 
@@ -5262,10 +5837,6 @@ class _AgentSettingsDialog(QDialog):
         """对话流页面：为每个对话分配独立工作目录（新建对话自动沿用上一对话目录）"""
         w = self._page(_ui("对话流"))
         lay = self._page_body(w)
-        tip = QLabel(_ui("为每个对话分配独立的工作目录；新建对话会自动沿用上一个对话的工作目录。留空表示该对话沿用全局工作目录。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -5548,9 +6119,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_rules_page(self, s) -> QWidget:
         w = self._page(_ui("自定义规则"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("每行一条，追加到系统提示词末尾，约束 AI 行为"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        lay.addWidget(sub)
         self.rules_edit = QPlainTextEdit()
         self.rules_edit.setPlaceholderText(_uim(
             "如：\n操作注册表前必须先 ask_user 确认\n不要移动正在运行的应用"))
@@ -5561,9 +6129,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_prompt_page(self, s) -> QWidget:
         w = self._page(_ui("系统提示词"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("追加到默认人设之后，不覆盖内置角色设定"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        lay.addWidget(sub)
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setPlaceholderText(_ui("补充的提示词…"))
         self.prompt_edit.setPlainText(str(s.get("custom_system_prompt") or ""))
@@ -5576,10 +6141,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_bash_page(self, s) -> QWidget:
         w = self._page(_ui("bash 命令白名单"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("每行一条，命中前缀即免确认（如填 git push 可匹配 git push origin main；单命令词如 python 需整条完全一致，防止 -c 注入被放行）"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         self.safe_edit = QPlainTextEdit()
         self.safe_edit.setPlaceholderText(_uim("如：\nnpm\npip\npython\ngit"))
         self.safe_edit.setPlainText(
@@ -5593,10 +6154,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_model_page(self, s) -> QWidget:
         w = self._page(_ui("模型接入"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("每个服务商一张卡片：单击选中，双击编辑。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         m = s.get("model") or {}
         if not isinstance(m, dict):
             m = {}
@@ -5671,21 +6228,17 @@ class _AgentSettingsDialog(QDialog):
         eff_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         eff_lbl.setFixedWidth(self._label_col_w())
         eff_row.addWidget(eff_lbl)
-        self.effort_slider = QSlider(Qt.Orientation.Horizontal)
+        # 胶囊滑杆：每个挡位一颗淡蓝小圆点（覆盖区内也显示）；满档时多行小白点流动
+        self.effort_slider = _CapsuleSlider(
+            tick_step=1, particles_on_max=True,
+            tick_style=_CapsuleSlider.TICK_STYLE_LEVEL)
         self.effort_slider.setRange(0, len(agent_llm.EFFORTS) - 1)
-        self.effort_slider.setFixedWidth(180)
+        self.effort_slider.setFixedWidth(360)
         self.effort_slider.setPageStep(1)
         _eff_lv = [_ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS]
         self.effort_slider.setToolTip(
             _ui("思考强度（工作力度）：决定思考档位与所用模型，")
             + " / ".join(_eff_lv))
-        self.effort_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
-            "border-radius: 2px; }}"
-            f"QSlider::sub-page:horizontal {{ background: {self._ACCENT}; border-radius: 2px; }}"
-            f"QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;"
-            f"background: {self._ACCENT}; border: 2px solid {self._BG}; border-radius: 7px; }}"
-            f"QSlider::handle:horizontal:hover {{ background: {self._ACCENT_HOVER}; }}")
         self.effort_slider.valueChanged.connect(self._on_effort_slider)
         eff_row.addWidget(self.effort_slider)
         self.effort_label = QLabel(_ui(agent_llm.effort_label(self._effort)))
@@ -5791,10 +6344,6 @@ class _AgentSettingsDialog(QDialog):
         self.efficient_check.blockSignals(False)
         lay.addWidget(self.efficient_check)
         self._sync_context_hint()
-        tip = QLabel(_ui("思考模式按上方开关手动控制。开启「始终思考」后，思考强度取当前「思考强度」滑块档位并自动映射：DeepSeek V4 仅 high/max、GLM-5.2 全档、OpenAI o 系列 reasoning_effort、Agnes reasoning_effort 等"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
         lay.addStretch(1)
         return w
 
@@ -5864,11 +6413,6 @@ class _AgentSettingsDialog(QDialog):
         lay = self._page_body(w)
         from zhuzhu_Copilot.core import music_player as agent_music
         self._music = player = agent_music.get_player()
-
-        tip = QLabel(_ui("上传 MP3 / WAV 等音频到本地库，支持播放进度记忆、音量调节、顺序 / 随机 / 单曲循环切换以及打开 AI 面板自动播放。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
 
         # 当前曲目 + 状态
         self.music_now = QLabel(_ui("未在播放"))
@@ -6246,11 +6790,6 @@ class _AgentSettingsDialog(QDialog):
     def _build_skill_page(self) -> QWidget:
         w = self._page(_ui("技能"))
         lay = self._page_body(w)
-        sub = QLabel(
-            _ui("技能按工作流隔离：切换到/激活某工作流时，只加载该工作流启用的技能。选择下方工作流作用域后，可逐项启用/禁用内置与用户私有技能（即时生效）；导入/删除同样在技能目录即时生效。"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
         # 工作流作用域选择
         scope = QHBoxLayout()
         scope.setSpacing(8)
@@ -6425,10 +6964,9 @@ class _AgentSettingsDialog(QDialog):
     def _build_mcp_page(self) -> QWidget:
         w = self._page(_ui("MCP 服务器"))
         lay = self._page_body(w)
-        sub = QLabel(_ui("配置外部工具服务器（stdio 本地命令 / sse 远程 URL），保存后自动重连。取消勾选即停用：服务器不再启动，其工具也不会发给模型（省 token）"))
-        sub.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
+        self._mcp_fx_active = None
+        self._mcp_fx_pending = None
+        self._mcp_fx_t0 = 0.0
         self.mcp_list = QListWidget()
         self.mcp_list.setStyleSheet(
             f"QListWidget {{ background: {self._PANEL}; color: {self._TEXT};"
@@ -6438,6 +6976,9 @@ class _AgentSettingsDialog(QDialog):
             f"color: {self._ACCENT_HOVER}; }}")
         self._mcp_sync_guard = False
         self.mcp_list.itemChanged.connect(self._on_mcp_item_changed)
+        # 每行快捷操作：右键「重启此服务器 / 复制此服务器配置」（无需改列表控件）
+        self.mcp_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.mcp_list.customContextMenuRequested.connect(self._on_mcp_context_menu)
         lay.addWidget(self.mcp_list, 1)
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -6463,6 +7004,34 @@ class _AgentSettingsDialog(QDialog):
         row.addWidget(del_b)
         row.addStretch(1)
         lay.addLayout(row)
+        # 重启与导出：单个（选中/右键）/ 全部 / 复制配置（接入其他 Agent）
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        restart_b = QPushButton(_ui("重启选中"))
+        restart_b.setStyleSheet(self._btn_qss("ghost"))
+        restart_b.setAutoDefault(False)
+        restart_b.setToolTip(_ui("强制断开并重连当前选中的服务器（使用已保存的配置）"))
+        restart_b.clicked.connect(self._on_mcp_restart_selected)
+        restart_all_b = QPushButton(_ui("全部重启"))
+        restart_all_b.setStyleSheet(self._btn_qss("ghost"))
+        restart_all_b.setAutoDefault(False)
+        restart_all_b.setToolTip(_ui("强制重连所有已启用的服务器（其余连接不受影响）"))
+        restart_all_b.clicked.connect(self._on_mcp_restart_all)
+        copy_b = QPushButton(_ui("复制配置"))
+        copy_b.setStyleSheet(self._btn_qss("ghost"))
+        copy_b.setAutoDefault(False)
+        copy_b.setToolTip(_ui("只导出当前选中服务器的标准 mcpServers JSON"))
+        copy_b.clicked.connect(self._on_mcp_copy_selected)
+        row2.addWidget(restart_b)
+        row2.addWidget(restart_all_b)
+        row2.addWidget(copy_b)
+        row2.addStretch(1)
+        lay.addLayout(row2)
+        # 重启反馈动画：执行中转圈，成功后自下而上打勾（两个按钮各自独立）
+        self._mcp_fx_one = _ActionFeedback(restart_b, self._PANEL, self._ACCENT)
+        self._mcp_fx_all = _ActionFeedback(restart_all_b, self._PANEL, self._ACCENT)
+        self._mcp_restart_btns = (restart_b, restart_all_b)
+        self.restart_done.connect(self._on_mcp_restart_done)
         self._reload_mcp_list()
         return w
 
@@ -7473,6 +8042,7 @@ class _AgentSettingsDialog(QDialog):
             from zhuzhu_Copilot.core import agent_skills
             self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
             self._reload_mcp_list()
+            self._reconnect_mcp()   # 新插件登记的 MCP 服务器需重连才生效
         except Exception:
             pass
 
@@ -7689,12 +8259,24 @@ class _AgentSettingsDialog(QDialog):
         dlg.config_saved.connect(self._on_coplugin_config_saved)
         dlg.exec()
 
+    def _reconnect_mcp(self):
+        """请求重连 MCP（后台线程）。
+
+        设置对话框只持有配置表（`_mcp_servers`），MCP 客户端与 `_init_mcp` 属于
+        AgentPanel：重连必须委托给父面板，不能就地 `self._init_mcp`（对话框没有
+        该属性，曾导致导入插件后抛 AttributeError）。面板不可用时静默跳过。
+        """
+        owner = self.parent()
+        fn = getattr(owner, "_reconnect_mcp", None)
+        if callable(fn):
+            fn()
+
     def _on_coplugin_config_saved(self, *_):
         """配置已保存：刷新列表与 MCP 服务器，并重连使 env 注入生效"""
         self._reload_coplugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
-        threading.Thread(target=self._init_mcp, daemon=True).start()
+        self._reconnect_mcp()
 
     def _on_plugin_create(self, *_):
         """自然语言描述 → 后台线程 AI 生成插件（真实 API），生成期间显示百分比进度"""
@@ -7742,7 +8324,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
-        threading.Thread(target=self._init_mcp, daemon=True).start()
+        self._reconnect_mcp()
 
     def _on_plugin_progress(self, pct: int, text: str):
         """生成期间更新进度百分比与文案"""
@@ -7757,6 +8339,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
+        self._reconnect_mcp()   # 新插件登记的 MCP 必须增量重连后才可用（无需重启应用）
 
     def _on_plugin_import_zip(self, *_):
         """导入插件 zip 包（含 plugin.json）：导入后自动登记技能/MCP，刷新并重连"""
@@ -7773,7 +8356,7 @@ class _AgentSettingsDialog(QDialog):
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
         if ok:
-            threading.Thread(target=self._init_mcp, daemon=True).start()
+            self._reconnect_mcp()
 
     def _on_plugin_import_skill(self, *_):
         """导入标准技能为 skill 型插件"""
@@ -7804,6 +8387,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
+        self._reconnect_mcp()   # 启停会增删 MCP 登记 → 立即增量重连
 
     def _on_plugin_call(self, *_):
         """插件列表「调用」：关闭设置并回到对话页，输入框预填 `/插件名 `（回车即调用）。
@@ -7848,6 +8432,7 @@ class _AgentSettingsDialog(QDialog):
         self._reload_plugin_list()
         self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
         self._reload_mcp_list()
+        self._reconnect_mcp()   # 删除插件同时解绑 MCP → 立即断开
 
     def _on_plugin_workflows(self, *_):
         """指定插件可用的工作流（多选/逗号分隔；空=全局）"""
@@ -7900,11 +8485,6 @@ class _AgentSettingsDialog(QDialog):
         """
         w = self._page(_ui("背景"))
         lay = self._page_body(w)
-
-        tip = QLabel(_ui("选择一张图片作为 AI 面板背景：png / jpg / jpeg / bmp / webp。图片会收进应用数据目录，重启后仍然有效。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
 
         self.wallpaper_now = QLabel("")
         self.wallpaper_now.setStyleSheet(
@@ -7973,11 +8553,6 @@ class _AgentSettingsDialog(QDialog):
         from zhuzhu_Copilot.core.wechat_bridge import get_bridge
         w = self._page(_ui("微信 ClawBot"))
         lay = self._page_body(w)
-
-        tip = QLabel(_ui("用手机微信扫码绑定 ClawBot，在微信中直接给 agent 发消息、接收回复和文件，也可直接把 PPT / Word / Excel / 图片 / 代码等文件发给 agent 读取。基于微信官方 iLink 协议，无需公网 IP。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
 
         # 绑定状态
         self.wechat_status = QLabel("")
@@ -8087,12 +8662,6 @@ class _AgentSettingsDialog(QDialog):
         w = self._page(_ui("会员与积分"))
         lay = self._page_body(w)
 
-        tip = QLabel(_ui("登录账号后可使用内置模型（agnes）；内置模型按 token 消耗积分，"
-                         "下方可订阅会员或购买积分包。"))
-        tip.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
-
         # ---- 每日签到宣传（签到按钮在个人信息面板用户名右侧）----
         self._memb_checkin_banner = QLabel("")
         self._memb_checkin_banner.setObjectName("membCheckinBanner")
@@ -8107,12 +8676,7 @@ class _AgentSettingsDialog(QDialog):
         cbox.setSpacing(3)
         c_title = QLabel(_ui("每日签到领积分"))
         c_title.setObjectName("membCheckinTitle")
-        c_sub = QLabel(_ui("每日凌晨 00:00 刷新：免费版 +50 / Pro +100 / Max +200 积分。"
-                           "点击个人信息面板中用户名右侧的「签到」按钮即可领取。"))
-        c_sub.setObjectName("membCheckinDim")
-        c_sub.setWordWrap(True)
         cbox.addWidget(c_title)
-        cbox.addWidget(c_sub)
         lay.addWidget(self._memb_checkin_banner)
 
         # ---- 当前状态：积分大数字 + 会员类型标签 ----
@@ -8957,20 +9521,13 @@ class _AgentSettingsDialog(QDialog):
         lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         lbl.setFixedWidth(70)
         row.addWidget(lbl)
-        sl = QSlider(Qt.Orientation.Horizontal)
-        sl.setRange(0, int(top))
-        sl.setValue(int(round(cur)))
+        _top = int(top)
+        sl = _CapsuleSlider(tick_step=_slider_tick_step(_top))
+        sl.setRange(0, _top)
+        sl.setValue(round(cur))
         sl.setPageStep(1)
         sl.setToolTip(tip)
-        sl.setStyleSheet(
-            f"QSlider::groove:horizontal {{ height: 4px; background: {self._BORDER};"
-            "border-radius: 2px; }}"
-            f"QSlider::sub-page:horizontal {{ background: {self._ACCENT}; border-radius: 2px; }}"
-            f"QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;"
-            f"background: {self._ACCENT}; border: 2px solid {self._BG};"
-            "border-radius: 7px; }}"
-            f"QSlider::handle:horizontal:hover {{ background: {self._ACCENT_HOVER}; }}")
-        val = QLabel(f"{int(round(cur))}{unit}")
+        val = QLabel(f"{round(cur)}{unit}")
         val.setStyleSheet(f"color: {self._ACCENT}; font-size: 14px; font-weight: 800;")
         val.setAlignment(Qt.AlignmentFlag.AlignCenter)
         val.setFixedWidth(56)
@@ -8984,10 +9541,14 @@ class _AgentSettingsDialog(QDialog):
 
         def _on_release():
             sl._dragging = False
-            commit(sl.value())
+            commit(sl.value())                        # 松手才提交一次重算
+            self._bg_adjust_end()                     # 恢复设置对话框、收起浮条
 
         sl._dragging = False
         sl.sliderPressed.connect(lambda: setattr(sl, "_dragging", True))
+        # 按住：隐去对话框，屏幕上只留「项名 + 滑杆 + 数值」，直接看壁纸效果
+        sl.sliderPressed.connect(
+            lambda: self._bg_adjust_begin(title, unit, sl, sl.tick_step))
         sl.valueChanged.connect(_on_value)
         sl.sliderReleased.connect(_on_release)
         return (row, sl, val)
@@ -9009,6 +9570,56 @@ class _AgentSettingsDialog(QDialog):
 
     def _wallpaper_dim_changed(self, value):
         app_wallpaper.set_fields(bg_dim=float(value))
+
+    # ---------- 背景页：拖动模糊 / 压暗时隐去对话框，只留浮条 ----------
+    def _bg_adjust_begin(self, title: str, unit: str, slider, tick_step: int):
+        """按住模糊 / 压暗滑杆：稍后隐去设置对话框，屏幕上只留「项名 + 滑杆 + 数值」。
+
+        隐去用**窗口透明度 0** 而不是 hide()：正在按住拖动的那根滑杆仍要接收鼠标，
+        hide() 会中断 Qt 的鼠标抓取，拖动会当场断掉。延时 150ms 再隐去，
+        让「只点一下滑杆」不闪一下白屏。
+        """
+        if slider is None or not self.isVisible():
+            return
+        self._bg_adjust_meta = (title, unit, slider, tick_step)
+        self._bg_hide_timer.start()
+
+    def _bg_hide_now(self):
+        """真正隐去对话框并把浮条摆到屏幕下方中间。"""
+        meta = self._bg_adjust_meta
+        if meta is None or not self.isVisible():
+            return
+        title, unit, slider, tick_step = meta
+        strip = self._bg_strip
+        if strip is None:
+            strip = _BgAdjustStrip(self)
+            self._bg_strip = strip
+        strip.show_for(title, unit, slider, tick_step)
+        strip.adjustSize()
+        screen = self.screen() or QApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        strip.move(geo.center().x() - strip.width() // 2,
+                   geo.bottom() - strip.height() - 96)
+        strip.show()
+        strip.raise_()
+        self.setWindowOpacity(0.0)
+        self._bg_adjust_guard.start()
+
+    def _bg_adjust_end(self, *_):
+        """松手：恢复对话框，收起浮条。"""
+        self._bg_hide_timer.stop()
+        self._bg_adjust_guard.stop()
+        self._bg_adjust_meta = None
+        strip = getattr(self, "_bg_strip", None)
+        if strip is not None:
+            strip.hide()
+        if self.windowOpacity() < 1.0:
+            self.setWindowOpacity(1.0)
+
+    def _bg_adjust_watch(self):
+        """兜底：拖动被系统打断（收不到 sliderReleased）时，鼠标键已松开就恢复。"""
+        if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+            self._bg_adjust_end()
 
     def _wallpaper_pick(self, *_):
         path, _ = QFileDialog.getOpenFileName(
@@ -9395,6 +10006,120 @@ class _AgentSettingsDialog(QDialog):
             if name:
                 agent_skills.remove_workflow_binding("mcp", name)
             self._reload_mcp_list()
+
+    # ---------- MCP 重启 / 配置导出 ----------
+    def _current_mcp_name(self) -> str:
+        row = self.mcp_list.currentRow()
+        if 0 <= row < len(self._mcp_servers):
+            return str(self._mcp_servers[row].get("name") or "")
+        return ""
+
+    def _on_mcp_context_menu(self, pos):
+        """列表行右键：只针对被点中的那一行做重启/导出。"""
+        item = self.mcp_list.itemAt(pos)
+        if item is None:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(idx, int) or not (0 <= idx < len(self._mcp_servers)):
+            return
+        name = str(self._mcp_servers[idx].get("name") or "")
+        menu = QMenu(self)
+        restart_act = menu.addAction(_ui("重启此服务器"))
+        copy_act = menu.addAction(_ui("复制此服务器配置"))
+        act = menu.exec(self.mcp_list.mapToGlobal(pos))
+        if act is restart_act:
+            self._start_mcp_restart(name, self._mcp_fx_one)
+        elif act is copy_act:
+            self._on_mcp_copy([name])
+
+    def _on_mcp_restart_selected(self, *_):
+        name = self._current_mcp_name()
+        if not name:
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个服务器"))
+            return
+        self._start_mcp_restart(name, self._mcp_fx_one)
+
+    def _on_mcp_restart_all(self, *_):
+        if not self._mcp_servers:
+            QMessageBox.information(self, _ui("提示"), _ui("还没有 MCP 服务器"))
+            return
+        self._start_mcp_restart("", self._mcp_fx_all)
+
+    def _mcp_entry_changed(self, saved_cfg: dict) -> bool:
+        """内存配置是否与已保存配置不同（重启会按已保存配置执行，需先提示）。"""
+        name = str(saved_cfg.get("name") or "")
+        for s in self._mcp_servers:
+            if str(s.get("name") or "") == name:
+                return s != saved_cfg
+        return True
+
+    def _start_mcp_restart(self, name: str, fx):
+        """发起重启：按钮进入转圈态，结果回来后由 `_on_mcp_restart_done` 收尾。"""
+        if self._mcp_fx_active is not None:
+            return                    # 已有重启在进行，避免并发重复重连
+        saved = {str(s.get("name") or ""): s
+                 for s in agent_skills.load_mcp_servers(include_disabled=True)}
+        if name and name in saved and self._mcp_entry_changed(saved[name]):
+            QMessageBox.information(
+                self, _ui("重启 MCP"),
+                _ui("该服务器有未保存的修改：本次重启按已保存的配置执行，保存后会自动重连。"))
+        p = self.parent()
+        fn = getattr(p, "_restart_mcp", None)
+        if not callable(fn):
+            QMessageBox.warning(self, _ui("操作失败"),
+                                _ui("无法重启 MCP：请在主面板中操作。"))
+            return
+        self._mcp_fx_active = fx
+        self._mcp_fx_t0 = time.time()
+        for b in self._mcp_restart_btns:
+            b.setEnabled(False)
+        fx.start_spin()
+        try:
+            fn(name or None, self.restart_done.emit)
+        except TypeError:
+            # 兼容只接受单个参数的实现：立即按“已完成”收尾，动画照常播放
+            fn(name or None)
+            QTimer.singleShot(0, lambda: self.restart_done.emit(True, ""))
+
+    def _on_mcp_restart_done(self, ok: bool, _msg: str = ""):
+        """重启结束：恢复按钮，至少展示 550ms 转圈后播放打勾动画。"""
+        for b in self._mcp_restart_btns:
+            b.setEnabled(True)
+        fx = self._mcp_fx_active
+        self._mcp_fx_active = None
+        if fx is None:
+            return
+        self._mcp_fx_pending = (fx, bool(ok))
+        remain = max(0, 550 - int((time.time() - self._mcp_fx_t0) * 1000))
+        QTimer.singleShot(remain, self._finish_mcp_fx)
+
+    def _finish_mcp_fx(self):
+        pending = self._mcp_fx_pending or (None, False)
+        self._mcp_fx_pending = None
+        fx, ok = pending
+        if fx is not None:
+            try:
+                fx.finish(ok)
+            except RuntimeError:
+                pass              # 对话框已销毁
+
+    def _on_mcp_copy_selected(self, *_):
+        """工具条「复制配置」：只导出当前选中的那一个服务器。"""
+        name = self._current_mcp_name()
+        if not name:
+            QMessageBox.information(self, _ui("提示"), _ui("请先选择一个服务器"))
+            return
+        self._on_mcp_copy([name])
+
+    def _on_mcp_copy(self, names):
+        """导出**指定**服务器的配置（绝不回退成全部）。"""
+        cfg_list = _mcp_export_subset(self._mcp_servers, names)
+        if not any(s.get("enabled", True) is not False for s in cfg_list):
+            QMessageBox.information(
+                self, _ui("提示"),
+                _ui("选中的服务器已停用，无法导出；请先启用它。"))
+            return
+        _McpConfigDialog(cfg_list, parent=self).exec()
 
     def _on_mode_changed(self, idx):
         """切换执行模式：切到 YOLO 需二次确认，防止误开。
@@ -9805,6 +10530,79 @@ class _AgentSettingsDialog(QDialog):
             self._reload_skill_list(self._current_skill_workflow())
         else:
             QMessageBox.warning(self, _ui("删除失败"), msg)
+
+
+def _mcp_export_subset(servers: list, names) -> list:
+    """按名字挑出要导出的服务器；names 为空/None 时返回空列表。
+
+    为什么要独立成函数：设置页「复制配置」必须只导出**当前选中**的那一个，
+    曾经按钮回调把 Qt 的 checked=False 当成 names 传入，代码再回退成「全部」，
+    结果复制出所有服务器的配置。这里把「只按名单过滤、绝不回退」固化成纯逻辑。
+    """
+    want = set(names or ())
+    return [s for s in (servers or []) if str((s or {}).get("name") or "") in want]
+
+
+class _McpConfigDialog(QDialog):
+    """导出 MCP 配置：标准 mcpServers JSON（默认脱敏，可勾选明文），一键复制。"""
+
+    def __init__(self, servers: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_ui("复制 MCP 配置"))
+        self.setMinimumWidth(600)
+        self._servers = list(servers or [])
+        _bg, _panel, _bd = (_base_color("BG"), _base_color("PANEL"),
+                            _base_color("BORDER"))
+        self.setStyleSheet(
+            f"QDialog {{ background: {_bg}; }}"
+            f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
+            f"QPlainTextEdit {{ background: {_panel}; color: {TEXT};"
+            f"border: 1px solid {_bd}; border-radius: 6px; padding: 8px; }}"
+            f"QCheckBox {{ color: {TEXT}; font-size: 13px; spacing: 8px; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        hint = QLabel(_ui("标准 mcpServers 配置：可直接粘贴到其他 Agent（Claude Desktop / "
+                          "Cursor / agnes 等）。停用的服务器不会导出；默认不含密钥明文。"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        lay.addWidget(hint)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        lay.addWidget(self.text, 1)
+        self.plain_check = QCheckBox(_ui("包含密钥明文（仅自己使用）"))
+        self.plain_check.stateChanged.connect(self._refresh)
+        lay.addWidget(self.plain_check)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        self.copy_btn = QPushButton(_ui("复制到剪贴板"))
+        self.copy_btn.setStyleSheet(
+            f"background: {_base_color('ACCENT', '#2F6BFF')}; color: #FFFFFF;"
+            "border: none; border-radius: 8px; padding: 7px 16px; font-weight: 700;")
+        self.copy_btn.setAutoDefault(False)
+        self.copy_btn.clicked.connect(self._copy)
+        close_btn = QPushButton(_ui("关闭"))
+        close_btn.setStyleSheet(
+            f"background: {_panel}; color: {TEXT}; border: 1px solid {_bd};"
+            "border-radius: 8px; padding: 7px 16px; font-weight: 600;")
+        close_btn.setAutoDefault(False)
+        close_btn.clicked.connect(self.accept)
+        row.addWidget(self.copy_btn)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+        self._refresh()
+
+    def _refresh(self, *_):
+        self.text.setPlainText(agent_skills.mcp_servers_json(
+            self._servers, include_secrets=self.plain_check.isChecked()))
+        self.copy_btn.setText(_ui("复制到剪贴板"))
+
+    def _copy(self):
+        QApplication.clipboard().setText(self.text.toPlainText())
+        self.copy_btn.setText(_ui("已复制"))
+
 
 class _McpServerDialog(QDialog):
     """单个 MCP 服务器配置：stdio（命令+参数）或 SSE（URL）"""
@@ -14949,6 +15747,28 @@ class CodePreviewWindow(QWidget):
             b = getattr(self, name, None)
             if b is not None:
                 b.setIcon(_svg_icon(svg, 15, TEXT))
+        # 图标按钮的**底色**也必须重设：`_BTN_ICON` 的填充取自模块级 CARD/BORDER，
+        # 壁纸透明态翻转后旧字符串仍带着实色填充 → 切换背景前构建的按钮会留下
+        # 一坨黑色圆角块（用户反馈的「撤销/重做按钮底色是黑色」）。
+        for name in ("undo_btn", "redo_btn", "media_play", "media_full"):
+            b = getattr(self, name, None)
+            if b is not None:
+                try:
+                    b.setStyleSheet(_BTN_ICON)
+                except RuntimeError:
+                    pass
+        # 「打开…」主按钮：强调色随主题变化，一并重设（构建期在 _apply_surface_qss
+        # 之后才设置，故此处用 getattr 兜底）。
+        ob = getattr(self, "open_btn", None)
+        if ob is not None:
+            try:
+                ob.setStyleSheet(
+                    f"QPushButton {{ background: {ACCENT}; color: #FFFFFF;"
+                    "border: none; border-radius: 6px; padding: 2px 10px;"
+                    "font-size: 12px; font-weight: 600; }"
+                    f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}")
+            except RuntimeError:
+                pass
 
     def apply_surface_theme(self):
         """按当前表面色就地刷新本面板（主题/壁纸透明态变化时由主面板快路径调用，**不重建**）。
@@ -18360,33 +19180,52 @@ class _TitleBar(QWidget):
         icon.setToolTip(_ui("zhuzhu Copilot"))
         lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        name = QLabel("zhuzhu Copilot", self)
-        # 招 2：字重随主题降档（暗色 600，浅色 700）
-        name.setStyleSheet(
-            f"color: {TEXT}; font-size: 12px; font-weight: {_W_TITLE};"
-            " background: transparent;")
-        lay.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._name = QLabel("zhuzhu Copilot", self)
+        lay.addWidget(self._name, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # Agent 徽章：沿用启动页样式，深浅色自动反色（深色白底黑字 / 浅色黑底白字）。
         # 字体显式用 Segoe UI：默认中文字体的拉丁字形在 12px 下偏扁宽，看起来像被横向
         # 拉伸；尺寸按字形实际宽度 + 对称内边距固定，文字必然水平/垂直居中。
-        if _resolve_theme() == "dark":
-            bg, fg = "#F5F5F5", "#000000"
-        else:
-            bg, fg = "#000000", "#FFFFFF"
         badge_font = QFont("Segoe UI")
         badge_font.setPixelSize(self.BADGE_FONT_PX)
         badge_font.setWeight(QFont.Weight.Bold)
-        badge = QLabel("Agent", self)
-        badge.setFont(badge_font)
-        badge.setFixedSize(
+        self._badge = QLabel("Agent", self)
+        self._badge.setFont(badge_font)
+        self._badge.setFixedSize(
             QFontMetrics(badge_font).horizontalAdvance("Agent") + self.BADGE_PAD_X * 2,
             self.BADGE_H)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        badge.setStyleSheet(
-            f"color: {fg}; background: {bg};"
-            f"border-radius: {round(self.BADGE_H / 2 * 0.63)}px;")
-        lay.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.apply_surface_theme()
+
+    def apply_surface_theme(self) -> None:
+        """就地刷新标题栏配色（主题切换 / 壁纸透明态翻转时由主面板快路径调用）。
+
+        为什么必须单独刷：名称与徽章的 QSS 是构建期用模块级色板拼死的字符串，
+        改常量不会落到已存在的控件上 —— 首次设置自定义背景后徽章会保留
+        「白底/黑底」实色块（用户反馈的「部分组件底色是黑/白而不是透明」）。
+        """
+        try:
+            self._name.setStyleSheet(
+                f"color: {TEXT}; font-size: 12px; font-weight: {_W_TITLE};"
+                " background: transparent;")
+        except (AttributeError, RuntimeError):
+            pass
+        # 徽章：普通模式沿用启动页反色；自定义背景模式不填底（底透明让壁纸透出），
+        # 文字按壁纸实测亮度取黑/白，保证任意壁纸下都可读。
+        if _feedback_boosted():
+            bg = "transparent"
+            fg = "#000000" if _input_fg_dark() else _CURSOR_COLOR_ON_WALLPAPER_INVERTED
+        elif _resolve_theme() == "dark":
+            bg, fg = "#F5F5F5", "#000000"
+        else:
+            bg, fg = "#000000", "#FFFFFF"
+        try:
+            self._badge.setStyleSheet(
+                f"color: {fg}; background: {bg}; border: none;"
+                f"border-radius: {round(self.BADGE_H / 2 * 0.63)}px;")
+        except (AttributeError, RuntimeError):
+            pass
 
     def sync_window_state(self):
         """最大化/还原后更新黄点提示（图标本身保持三枚实心圆）"""
@@ -18634,6 +19473,15 @@ class AgentPanel(QDialog):
                             | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("agentMainPanel")
+        # 任务栏图标必须在窗口**首次 show 之前**绑定到原生窗口：任务栏按钮是 shell 在
+        # 首次显示时创建的，显示后再 WM_SETICON 往往只刷新已存在的按钮 —— 于是启动后
+        # 一直显示系统占位图标，直到最小化/还原重建按钮才更新（用户反馈的启动问题）。
+        # 这里提前创建 HWND、补 WS_EX_APPWINDOW 并写入大/小图标，按钮一创建就带专属图标。
+        try:
+            self._ensure_taskbar_entry()
+            set_native_window_icon(self, _app_icon_path())
+        except Exception:
+            pass
         self._drag_press = None   # 顶部区域拖窗起点（全局坐标）
         self._drag_local = QPoint()   # 按下点在窗口内的位置（最大化拖出时按比例还原）
         self._drag_origin = QPoint()  # 拖窗开始时窗口左上角
@@ -18654,6 +19502,9 @@ class AgentPanel(QDialog):
         # 后需放宽最小宽，保证聊天/输入内容区不被挤压（_apply_panel_mode 动态切换）
         self.setMinimumSize(1074, 692)
         self.resize(1074, 692)
+        # 普通态几何快照：最大化状态下 normalGeometry() 不可靠（常直接返回最大化
+        # 矩形），还原的目标几何只能自己记（见 _normal_window_rect）。
+        self._last_normal_geometry = QRect(self.geometry())
         self.setFont(QFont("Microsoft YaHei UI", 10))
         # 取原始色板：本规则会级联到面板的各个子弹窗（祖先样式表优先于应用级），
         # 壁纸透出模式下 BG/BG_BOTTOM 被覆写为 transparent —— 子弹窗拿到透明底
@@ -19471,16 +20322,15 @@ class AgentPanel(QDialog):
         self.token_btn.clicked.connect(self.toggle_token_stats)
         top.addWidget(self.token_btn)
 
-        clear_btn = QPushButton(_line_icon("trash", color=TEXT_DIM), "")
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.setAutoDefault(False)
-        clear_btn.setFixedSize(34, 34)
-        clear_btn.setIconSize(QSize(18, 18))
-        clear_btn.setToolTip(_ui("清空上下文并永久删除该对话（二次弹窗确认，不可恢复）"))
-        clear_btn.setAutoDefault(False)
-        clear_btn.setStyleSheet(_BTN_GHOST_FRAMED)   # 删除类入口：固定淡灰描边（见皮肤注释）
-        clear_btn.clicked.connect(self._clear_chat)
-        top.addWidget(clear_btn)
+        self.clear_btn = QPushButton(_line_icon("trash", color=TEXT_DIM), "")
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.setAutoDefault(False)
+        self.clear_btn.setFixedSize(34, 34)
+        self.clear_btn.setIconSize(QSize(18, 18))
+        self.clear_btn.setToolTip(_ui("清空上下文并永久删除该对话（二次弹窗确认，不可恢复）"))
+        self.clear_btn.setStyleSheet(_BTN_GHOST_FRAMED)   # 删除类入口：固定淡灰描边（见皮肤注释）
+        self.clear_btn.clicked.connect(self._clear_chat)
+        top.addWidget(self.clear_btn)
 
         root.addLayout(top)
 
@@ -21612,38 +22462,52 @@ class AgentPanel(QDialog):
     def _toggle_max_restore(self):
         """黄点/双击顶部区域：最大化与还原切换（不进入全屏）。
 
-        走快照尺寸过渡（与最小化同一套浮层机制）：先抓当前画面，最大化/还原的真实
-        重排被浮层遮住，屏幕上是平滑的缩放，不会「瞬间跳变」。
+        **不做快照缩放过渡**。原因：快照是静态位图，最大化/还原只能整图拉伸，
+        内容必然被压扁或拉长（用户反馈「被强制拉伸、十分影响美观」）；而且过渡期间
+        还要在背后同步 showMaximized / 改窗口状态（实测主线程阻塞 200~400ms），
+        「点了不动」的卡顿感正来自这里。改为直接切换，动效交给 Windows 自己的
+        最大化过渡：无失真、无额外阻塞。
 
-        动画进行中的点击**直接忽略**：此时真实窗口状态正被动画接管（最大化动画一开场
-        就调 showMaximized），再插一次原生 showMaximized/showNormal 会和动画收尾互相
-        打架 —— 轻则状态错乱（几何满屏但状态普通，之后按钮全部失灵），重则连点的每
-        一次都各自阻塞主线程数百毫秒并排队叠加，观感就是「应用假死、点什么都没反应」。
+        还原走 `window_fx.unmaximize`（Win32 ShowWindow(SW_RESTORE)），实测 ~106ms；
+        旧的 setWindowState 路径实测 ~430ms、首次 showNormal 可达 1.4s，是「还原卡死、
+        无法交互」的根因。
         """
         try:
             if self._fx.busy():
-                return
-            if self.isMaximized():
-                if self._fx.start_restore_size():
-                    return
-                # 动画不可用时，用 unmaximize 替代 showNormal：
-                # 无边框窗口首次 showNormal() 实测阻塞 ~1400ms（Qt 重建 backing store + DWM 切换），
-                # 而 setWindowState(WindowNoState) 语义等价且实测 ~1ms。
+                return   # 折叠动画在播：等它收尾（见 window_fx 的排队机制）
+            if self.isMaximized() or self.isFullScreen():
                 from .window_fx import unmaximize
-                unmaximize(self, self._fx._pre_max_rect if hasattr(self._fx, '_pre_max_rect') else None)
+                unmaximize(self, self._normal_window_rect())
             else:
-                if self._fx.start_maximize():
-                    return
                 self.showMaximized()
         except Exception:
             try:
-                if self.isMaximized():
+                if self.isMaximized() or self.isFullScreen():
                     from .window_fx import unmaximize
                     unmaximize(self)
                 else:
                     self.showMaximized()
             except Exception:
                 pass
+
+    def _normal_window_rect(self) -> QRect:
+        """普通态窗口矩形（最大化/还原的目标几何）。
+
+        必须自己记：无边框窗口在最大化态下 `normalGeometry()` 常常直接返回最大化
+        矩形（实测如此），拿它做还原目标等于「原地不动」—— 用户看到的就是「点还原
+        没反应」。`_last_normal_geometry` 在每次非最大化/非全屏的 resize/move 时更新。
+        """
+        g = getattr(self, "_last_normal_geometry", None)
+        if isinstance(g, QRect) and not g.isEmpty() \
+                and g.width() >= 200 and g.height() >= 150:
+            return QRect(g)
+        try:
+            ng = QRect(self.normalGeometry())
+            if ng.width() >= 200 and ng.height() >= 150:
+                return ng
+        except Exception:
+            pass
+        return QRect()   # 交给 unmaximize 自行兜底
 
     # ---------- 任务栏折叠动画（最小化 / 恢复） ----------
     def _animate_minimize(self):
@@ -21745,9 +22609,15 @@ class AgentPanel(QDialog):
         并把光标在最大化窗口里的相对位置保留到还原后的窗口上，避免窗口跳走。"""
         self._dragging = True
         if self.isMaximized() or self.isFullScreen():
-            ng = self.normalGeometry()
+            ng = self._normal_window_rect()
+            if ng.isEmpty():
+                ng = QRect(0, 0, self.minimumWidth(), self.minimumHeight())
             ratio = self._drag_local.x() / max(1, self.width())
-            self.showNormal()
+            from .window_fx import unmaximize
+            # 不用 showNormal()：首次实测阻塞 ~1.4s（拖动一开始就假死）。
+            # 传 None：随后本方法会按光标位置 setGeometry，别让 unmaximize 的
+            # 延后几何校正跟拖动抢同一个窗口。
+            unmaximize(self)
             self.setGeometry(int(self._drag_press.x() - ng.width() * ratio),
                              max(0, self._drag_press.y() - self._drag_local.y()),
                              ng.width(), ng.height())
@@ -21806,24 +22676,12 @@ class AgentPanel(QDialog):
         super().mouseDoubleClickEvent(e)
 
     def _sync_window_chrome(self):
-        """最大化/还原后同步自绘窗口饰件：圆角半径、黄点提示、缩放热区。
+        """最大化/还原后同步自绘窗口饰件：黄点提示、缩放热区。
 
-        圆角 QSS 的落地时机分两路（`setStyleSheet` 会重算整棵子树样式，
-        面板级实测 65~135ms，挂在还原的同步路径上就是「点一下先白等 67ms」）：
-        - **变为方角（最大化/全屏）**：立即落地 —— 否则满屏窗口还带着 12px 圆角，
-          四角会露出透明缺口（蒙版此时已被清掉，没人替它裁）。
-        - **变为圆角（还原）**：延后一拍再落地 —— 窗口圆角本来就由 SetWindowRgn
-          蒙版负责（resizeEvent 里已同步套上），QSS 这层只补渐变底的抗锯齿，
-          晚一帧应用肉眼无差别，却把 67ms 移出了点击响应路径。
+        **不再重刷根样式表**：方角/圆角由 `paintEvent` 按 `_is_fullscreen()` 自绘
+        裁剪，QSS 里的 border-radius 只是冗余兜底；而 `setStyleSheet` 会对整棵子树
+        重新 polish（实测 150~330ms），挂在窗口状态切换后就是一次可见的整屏卡顿。
         """
-        r_new = 0 if self._is_fullscreen() else self._WINDOW_RADIUS
-        if r_new <= 0:
-            try:
-                _set_qss_once(self, self._panel_root_qss())
-            except Exception:
-                pass
-        else:
-            self._schedule_root_qss()
         tb = self.__dict__.get("_title_bar")
         if tb is not None:
             try:
@@ -21837,30 +22695,6 @@ class AgentPanel(QDialog):
             except RuntimeError:
                 pass
         self.update()
-
-    def _schedule_root_qss(self):
-        """延后应用根样式表（合并同一轮里的多次请求，见 _sync_window_chrome）。
-
-        延时取「尺寸过渡动画时长 + 余量」：动画期间每 16ms 要出一帧，若把 67ms 的
-        全量重算塞进去，动画本身就会卡一下 —— 那比圆角晚一帧更明显。动画期间窗口
-        圆角由 SetWindowRgn 蒙版负责，QSS 这层等动画结束再补上即可。
-        """
-        t = self.__dict__.get("_root_qss_timer")
-        if t is None:
-            from PyQt6.QtCore import QTimer as _QTimer
-            from . import window_fx as _fx
-            t = _QTimer(self)
-            t.setSingleShot(True)
-            t.setInterval(int(_fx.MORPH_MS) + 80)
-            t.timeout.connect(self._apply_root_qss)
-            self._root_qss_timer = t
-        t.start()
-
-    def _apply_root_qss(self):
-        try:
-            _set_qss_once(self, self._panel_root_qss())
-        except Exception:
-            pass
 
     def _bubble_min_width(self) -> int:
         """聊天气泡最小宽度：全屏时至少覆盖半页宽（不超过最大宽度）"""
@@ -22026,6 +22860,9 @@ class AgentPanel(QDialog):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        # 非最大化/全屏时的几何才是「还原目标」（见 _normal_window_rect）
+        if not (self.isMaximized() or self.isFullScreen()):
+            self._last_normal_geometry = QRect(self.geometry())
         # 无边框模式：窗口本身切圆角；系统标题栏模式不清蒙版（setMask 会破坏
         # 原生标题栏/阴影/缩放，需由系统圆角承载）。
         self._apply_window_round()
@@ -23039,8 +23876,10 @@ class AgentPanel(QDialog):
         # 用户第一次点「最小化」上（表现为点了没反应半秒）。放在首帧与首轮子面板归位
         # 之后（600ms）消化掉，既不影响启动，也把「刚打开就点最小化」的窗口期压到很小。
         QTimer.singleShot(600, self._prewarm_window_fx)
-        # 原生窗口显示后强制设置任务栏大/小图标，修复安装后任务栏显示默认图标
+        # 原生窗口显示后再次强制设置任务栏大/小图标；再补一次延迟刷新，
+        # 覆盖「任务栏按钮刚创建、shell 还在用缓存图标」的短暂窗口期。
         set_native_window_icon(self, _app_icon_path())
+        QTimer.singleShot(120, lambda: set_native_window_icon(self, _app_icon_path()))
         # 打开面板时同步显示左侧停靠面板（worktree→git→todos 自上而下堆叠）；
         # 先 sync worktree 再 git，避免 git 先放锚点、worktree 随后压住 git 顶部。
         # 延迟再同步一次兜底面板完全就绪前的时序问题
@@ -23139,6 +23978,9 @@ class AgentPanel(QDialog):
 
     def moveEvent(self, e):
         super().moveEvent(e)
+        # 非最大化/全屏时的位置同样属于「还原目标」
+        if not (self.isMaximized() or self.isFullScreen()):
+            self._last_normal_geometry = QRect(self.geometry())
         # 自绘拖动（见 mouseMoveEvent）期间每帧都 move()：逐帧同步 4 个子面板会反复
         # move()+raise_() 多个圆角 + 阴影窗口，拖动严重卡顿 → 拖动期间跳过，
         # 松手后由 _end_window_drag 一次性归位。
@@ -25528,8 +26370,21 @@ class AgentPanel(QDialog):
              f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
         _set(getattr(self, "new_btn", None), _BTN_ICON)
         _set(getattr(self, "settings_btn", None), _BTN_ICON)
+        _set(getattr(self, "preview_btn", None), _BTN_GHOST)
         _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
         _set(getattr(self, "token_btn", None), _BTN_GHOST)
+        # 顶栏「清空对话」（删除类 ghost）：漏掉这一步会残留旧主题的实色块
+        # （用户反馈的「设背景后清空按钮底是黑色」）。
+        _set(getattr(self, "clear_btn", None), _BTN_GHOST_FRAMED)
+        _set(getattr(self, "_auth_login_btn", None), _BTN_GHOST)
+        # 自绘标题栏（名称 / Agent 徽章）：构建期写死的实色底，必须就地重刷
+        tb = self.__dict__.get("_title_bar")
+        _tb_fn = getattr(tb, "apply_surface_theme", None)
+        if callable(_tb_fn):
+            try:
+                _tb_fn()
+            except RuntimeError:
+                pass
         _apply_input_style(getattr(self, "input", None))
         # 光标宽度 / 闪烁周期随壁纸状态走：输入框在快路径下不重建，
         # 不在这里补一刀就会残留旧档位（壁纸下光标仍细得看不见）。
@@ -25927,7 +26782,9 @@ class AgentPanel(QDialog):
             except Exception as e:
                 self._notify_blocked(f"控制子 Agent 失败: {e}")
             return
-        url = _html.unescape(url)
+        # 注意：本模块的 `_html` 是 i18n 文案函数（from core.i18n import html），
+        # 不是标准库 html 模块；标准库在这里的别名是 `_htmlmod`（见文件头 import）。
+        url = _htmlmod.unescape(url)
         try:
             if url.startswith(("http://", "https://")):
                 webbrowser.open(url)
@@ -26247,6 +27104,15 @@ class AgentPanel(QDialog):
     def _init_mcp(self):
         try:
             self._mcp.close_all()   # 重连前关闭旧连接
+            # 连接前先把随包插件同步到本地（revision 更高才覆盖）：
+            # 不在这里做，「应用已修复但跑的是旧插件代码」会长期存在 —— 历史教训：
+            # 电脑操控插件的死锁修复（SendMessageTimeoutW / SWP_ASYNCWINDOWPOS）早已
+            # 进随包目录，但本地副本 revision 没变、从未同步，用户侧一直是全工具超时。
+            try:
+                from zhuzhu_Copilot.core import agent_plugins
+                agent_plugins.ensure_shipped_plugins()
+            except Exception:
+                pass
             # 这里**必须**用默认过滤（不含已停用）：停用的服务器连进程都不该起，
             # 更不该把工具暴露给上游。设置页读全量是为了能改回启用。
             servers = agent_skills.load_mcp_servers()
@@ -27424,7 +28290,74 @@ class AgentPanel(QDialog):
         # 切换模型不清空上下文：当前对话历史继续沿用，仅后续轮次使用新模型
 
     def _reconnect_mcp(self):
-        threading.Thread(target=self._init_mcp, daemon=True).start()
+        """请求重连 MCP（后台**增量**重连：只重建新增/配置变更/脚本被改写的服务器）。
+
+        为什么不再走 `_init_mcp`（close_all + connect_all）：全量重连会把正在被运行中
+        任务使用的服务器一起断掉（丢进程内状态），而插件导入/启用/改配置只需要连
+        变化的那一个。增量重连也让「改完插件代码 / 改完 config.json 的 env」无需重启。
+        """
+        threading.Thread(target=self._mcp_reload_worker, daemon=True).start()
+
+    def _mcp_reload_worker(self):
+        """后台线程：同步随包插件 → 增量重连 → 把结果发回状态行。"""
+        try:
+            from zhuzhu_Copilot.core import agent_plugins
+            agent_plugins.ensure_shipped_plugins()
+        except Exception:
+            pass
+        try:
+            tools = self._mcp.reload(agent_skills.load_mcp_servers())
+            act = getattr(self._mcp, "last_reload", {}) or {}
+            parts = []
+            for key, label in (("added", "新增"), ("updated", "更新"), ("removed", "移除")):
+                names = act.get(key) or []
+                if names:
+                    parts.append(f"{label} {len(names)}")
+            errs = "；".join(getattr(self._mcp, "errors", None) or [])
+            msg = f"MCP: 已重连 {len(tools)} 个工具"
+            if parts:
+                msg += "（" + "、".join(parts) + "）"
+            if errs:
+                msg += f"；失败: {errs}"
+        except Exception as e:
+            msg = f"MCP: 重连失败 {e}"
+        self.mcp_signal.emit(msg)
+
+    def _restart_mcp(self, name=None, done=None):
+        """后台**强制**重启单个 MCP 服务器（name=None 时重启全部启用项）。
+
+        与 `_reconnect_mcp` 的区别：它只重建变化过的服务器，这里按用户显式意图
+        无条件断开重连，用于「服务器卡死/改了外部环境」时的单点恢复。
+        `done(ok, msg)` 用于设置页收尾动画（信号 emit 可从后台线程安全调用）。
+        """
+        threading.Thread(target=self._mcp_restart_worker, args=(name, done),
+                         daemon=True).start()
+
+    def _mcp_restart_worker(self, name=None, done=None):
+        ok = False
+        try:
+            servers = agent_skills.load_mcp_servers()
+            names = {str(s.get("name") or "mcp") for s in servers}
+            if name and str(name) not in names:
+                msg = f"MCP: 服务器「{name}」已停用，未重启"
+            else:
+                force = {str(name)} if name else names
+                tools = self._mcp.reload(servers, force=force)
+                errs = [e for e in (getattr(self._mcp, "errors", None) or [])
+                        if not name or f"[{name}]" in e]
+                label = f"「{name}」" if name else f"全部（{len(force)} 个服务器）"
+                msg = f"MCP: 已重启{label}，共 {len(tools)} 个工具"
+                ok = not errs
+                if errs:
+                    msg += "；失败: " + "；".join(errs)
+        except Exception as e:
+            msg = f"MCP: 重启失败 {e}"
+        self.mcp_signal.emit(msg)
+        if done is not None:
+            try:
+                done(ok, msg)
+            except Exception:
+                pass
 
     # ---------- 命令补全（/ 展示全部命令 + 内联预测） ----------
     def _invalidate_cmd_cache(self):
@@ -28899,13 +29832,12 @@ class AgentPanel(QDialog):
                 if ok:
                     _hot_apply_plugins()   # 对话页导入：立即生效，设置页下次打开即为最新
             else:
-                from zhuzhu_Copilot.core import agent_plugins, agent_skills
+                from zhuzhu_Copilot.core import agent_plugins
                 ok, msg = agent_plugins.import_plugin_zip(path)
-                self._mcp_servers = agent_skills.load_mcp_servers(include_disabled=True)
-                if hasattr(self, "_reload_mcp_list"):
-                    self._reload_mcp_list()
+                # 面板本身没有 MCP 列表控件（列表归设置对话框），这里只需重连，
+                # 让插件登记的服务器立即起来（原先的 hasattr(_reload_mcp_list) 恒为 False）
                 if ok:
-                    threading.Thread(target=self._init_mcp, daemon=True).start()
+                    self._reconnect_mcp()
         except Exception as e:
             ok, msg = False, f"导入失败: {e}"
         if ok:

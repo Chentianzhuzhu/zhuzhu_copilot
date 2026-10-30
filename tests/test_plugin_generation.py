@@ -87,13 +87,13 @@ def _mcp_names() -> list:
 # ══════════════ 1. 超时：生成类不设「放弃等待」上限 ══════════════
 
 def test_generation_tools_have_no_abandon_timeout():
-    """create_plugin 内部是完整 LLM 往返（设计+自检+自修），40s 放弃会让结果与上下文错位。"""
-    assert agent_engine._tool_wait_timeout("create_plugin") is None
+    """plugin_register 会真跑自检子进程（最长 30s），40s 放弃会让结果与上下文错位。"""
+    assert agent_engine._tool_wait_timeout("plugin_register") is None
     assert agent_engine._tool_wait_timeout("run_command") is None
     assert agent_engine._tool_wait_timeout("fast_download") == \
         agent_engine._DOWNLOAD_WAIT_TIMEOUT_S
-    # 其余工具仍是 40s 上限：不能因为放开生成类而让所有工具都能无限阻塞
-    for name in ("web_fetch", "read_file", "search_files", "create_skill"):
+    # 其余工具仍是 40s 上限：create_plugin 现在只建骨架（毫秒级），同样走默认上限
+    for name in ("web_fetch", "read_file", "search_files", "create_skill", "create_plugin"):
         assert agent_engine._tool_wait_timeout(name) == \
             agent_engine._DEFAULT_WAIT_TIMEOUT_S, name
 
@@ -315,22 +315,23 @@ def test_create_plugin_missing_web_parts_triggers_repair(iso, monkeypatch):
 
 # ══════════════ 6. 文档/描述守卫（防止约束随版本漂移） ══════════════
 
-def test_tool_and_skill_docs_promise_trio_and_selftest():
+def test_tool_and_skill_docs_promise_scaffold_and_selftest():
     desc = {t["function"]["name"]: t["function"]["description"] for t in agent_tools.TOOLS}
     cp = desc["create_plugin"]
-    for kw in ("三件套", "自检", "本地 HTTP", "127.0.0.1"):
+    for kw in ("骨架", "plugin_register", "自检", "本地 HTTP"):
         assert kw in cp, f"create_plugin 描述缺少「{kw}」，模型不会按新约束执行"
+    assert "name" in desc["plugin_register"] or "登记" in desc["plugin_register"]
     assert "127.0.0.1" in desc["web_fetch"], "web_fetch 描述应写明支持本地地址"
 
     inst = agent_skills._BUILTIN_MD_SKILLS["plugin-create"]["instruction"]
-    for kw in ("三件套", "冒烟自检", "state", "web_fetch"):
+    for kw in ("骨架", "plugin_register", "自检", "state", "web_fetch"):
         assert kw in inst, f"plugin-create 技能缺少「{kw}」"
     import os
     root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "src", "zhuzhu_Copilot", "skills", "plugin-create", "SKILL.md")
     with open(root, encoding="utf-8") as f:
         md = f.read()
-    for kw in ("三件套", "冒烟自检", "state", "web_fetch"):
+    for kw in ("骨架", "plugin_register", "自检", "state", "web_fetch"):
         assert kw in md, f"随包 plugin-create/SKILL.md 缺少「{kw}」（两份副本必须同步）"
 
 

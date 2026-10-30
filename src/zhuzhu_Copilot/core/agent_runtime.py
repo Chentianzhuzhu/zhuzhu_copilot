@@ -1,16 +1,25 @@
-"""沙盒专属内置运行时（Node.js / Python）
+"""内置运行时（Node.js / Python）——应用自带的一体化运行环境
 
-- 存放于 ~/.zhuzhu_Copilot/runtime/，与用户层环境完全隔离
-- 首次使用自动下载官方便携版并解压/引导，绝不写入系统 PATH（仅子进程级 PATH 前置）
-- npm/pip 缓存与依赖均落在沙盒目录内，不污染用户环境
-- run_command 透明拦截：把沙盒 bin 前置到子进程 PATH，AI 直接输入
-  node/npm/npx、python/py/pip 即命中沙盒运行时
+存放于 ~/.zhuzhu_Copilot/runtime/（安装包内置便携版，首次使用从安装目录本地复制），
+**只承担以下三类用途**：
+
+  1) **内置 MCP / 工具 / 插件 server 的依赖运行环境**：由 `python_interpreter()` /
+     `ensure_runtime()` 显式选中它启动子进程 —— 调用内置工具与 MCP 完全不依赖
+     用户系统里的 python / node；
+  2) **简单的 python / node 脚本**：run_command 里首 token 是 python/py/node/npm/
+     npx 的命令默认使用本运行时（见 `command_env()`）；
+  3) **依赖已满足的脚本**：随包已装好工具/插件依赖（如 blender/bpy、librosa 等），
+     用到这些依赖的脚本都可直接在本环境运行；需要新依赖时装进本环境即可
+     （`python -m pip install …` / `npm install …` 命中本运行时的 pip/npm）。
+
+边界：不写系统 PATH（只在子进程 env 里前置）；与 python/node 无关的系统命令不接管；
+需要项目自带 venv / 整套构建工具链时，在命令里写**显式路径**（如 .venv\\Scripts\\python.exe），
+这类命令不会命中本模块，仍按用户本机环境执行。
 """
 
 from zhuzhu_Copilot import app_identity
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -96,17 +105,13 @@ def bundled_runtime_root() -> Path:
 
 
 def python_interpreter() -> str:
-    """返回适合运行本地脚本（如 MCP stdio server.py）的真实 Python 解释器路径。
+    """内置工具的 Python 解释器（MCP stdio server / 插件 server.py 等）。
 
-    开发/源码模式返回 sys.executable（此时是真实 Python）；
-    打包（frozen）模式下 sys.executable 是应用自身 exe，用它启动子进程脚本会
-    递归拉起应用导致「无限打开程序自己」，必须替换为：
-    1) 沙盒 Python（~/.zhuzhu_Copilot/runtime/python/python.exe，已部署优先）
-    2) 安装目录内置运行时（_MEIPASS/runtime 或 exe 同级 runtime）
-    3) PATH 中的 python（兜底，绝不回退到应用自身 exe）
+    优先顺序：已部署的运行时（~/.zhuzhu_Copilot/runtime/python，含随包插件依赖）
+    → 安装目录内置运行时（_MEIPASS/runtime 或 exe 同级 runtime）
+    → 开发/源码模式回退当前解释器（运行时尚未部署时便于调试）
+    → PATH 中的 python（绝不用应用自身 exe：frozen 下那是应用本体，会递归拉起自己）。
     """
-    if not getattr(sys, "frozen", False):
-        return sys.executable
     exe = python_exe()
     if exe.is_file():
         return str(exe)
@@ -115,6 +120,8 @@ def python_interpreter() -> str:
         cand = root / "python" / "python.exe"
         if cand.is_file():
             return str(cand)
+    if not getattr(sys, "frozen", False):
+        return sys.executable
     return "python"
 
 
@@ -128,54 +135,51 @@ def bin_dirs(name: str) -> list:
     return [str(d), str(d / "Scripts")]
 
 
-_INSTALL_HINT = (
-    "pip install", "pip3 install",
-    " -m pip install",
-    "npm install", "npm i ", "npm add", "npm ci",
-    "yarn add", "yarn install", "pnpm add", "pnpm install", "bun add", "bun install",
-)
+def _first_token(command: str) -> str:
+    """命令首个 token（仅当它是**裸命令名**时返回；显式路径返回空串）。
 
-
-def is_dep_install(command: str) -> bool:
-    """判断是否为依赖安装类命令（pip/npm/yarn/pnpm 等 install/add）。
-
-    命中时禁止依赖落入内置沙箱虚拟环境，改走用户本机全局环境：
-    不命中沙盒运行时、不注入沙盒 npm 前缀/pip 缓存。"""
-    low = (command or "").strip().lower().replace("\\", "/")
+    显式路径（`.venv\\Scripts\\python.exe`、`C:/Tools/node.exe`）不属于内置运行时
+    管辖范围 —— 它们代表项目自带 venv / 用户自己的工具链，必须走本机环境。
+    """
+    low = (command or "").strip().lower()
     if not low:
-        return False
-    return any(kw in low for kw in _INSTALL_HINT)
+        return ""
+    tok = low.split()[0].strip('"')
+    if "/" in tok or "\\" in tok:
+        return ""
+    return tok[:-4] if tok.endswith(".exe") else tok
+
+
+#: 命中内置运行时的命令首 token（脚本 / 包管理都算：装进内置运行时才有意义）
+_TOKEN_RUNTIME = {
+    "node": "node", "npm": "node", "npx": "node",
+    "python": "python", "py": "python", "python3": "python",
+    "pip": "python", "pip3": "python",
+}
 
 
 def needed_runtimes(command: str) -> list:
-    """按命令首个 token 判断命中的沙盒运行时（node/npm/npx → node；python/py/pip → python）。
-    依赖安装类命令（pip/npm install、add 等）不落沙箱虚拟环境，一律走用户本机全局环境。"""
-    if is_dep_install(command):
-        return []
-    low = (command or "").strip().lower().replace("\\", "/")
-    if not low:
-        return []
-    tok = os.path.basename(low.split()[0].strip("\""))
-    tok = tok[:-4] if tok.lower().endswith(".exe") else tok
-    if tok in ("node", "npm", "npx"):
-        return ["node"]
-    if tok in ("python", "py", "python3", "pip", "pip3"):
-        return ["python"]
-    return []
+    """按命令首个 token 判断需要哪个内置运行时（node / python）。
+
+    只看**裸命令名**：写显式路径（`.venv\\Scripts\\python.exe`、`C:\\...\\node.exe`）
+    时首 token 是路径，返回空 → 走用户本机环境（复杂工程的正确落点）。
+    """
+    name = _TOKEN_RUNTIME.get(_first_token(command))
+    return [name] if name else []
 
 
 # ------------------------------------------------------------
 # 进程级环境注入（绝不写系统 PATH）
 # ------------------------------------------------------------
-def sandbox_env(command: str = "") -> dict:
-    """返回进程级 env：把已安装沙盒 bin 前置到 PATH + 隔离 npm/pip 缓存。
-    仅作用于本次子进程，不修改 os.environ / 系统 PATH。
-    依赖安装命令（pip/npm install 等）不注入沙盒 npm 前缀/pip 缓存，改走用户本机全局环境。"""
+def sandbox_env(command: str = "", names=None) -> dict:
+    """返回把内置运行时前置到 PATH 的子进程环境（不改 os.environ）。
+
+    names：已知需要的运行时（由 `command_env()` 传入）；缺省时按 command 推断。
+    npm/pip 缓存与全局安装目录都落在内置目录内，不污染用户环境。
+    """
     env = dict(os.environ)
-    if is_dep_install(command):
-        return env
     extra = []
-    for name in needed_runtimes(command):
+    for name in (names if names is not None else needed_runtimes(command)):
         extra += bin_dirs(name)
     if extra:
         env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
@@ -185,6 +189,31 @@ def sandbox_env(command: str = "") -> dict:
     if is_installed("python"):
         env["PIP_CACHE_DIR"] = str(python_bin() / ".pip-cache")    # pip 缓存进沙盒
     return env
+
+
+def command_env(command: str) -> tuple:
+    """按命令挑选运行环境：返回 (env 或 None, 提示语)。
+
+    - 命令首 token 是 python/py/node/npm/npx/pip → 确保内置运行时就绪并前置到 PATH；
+    - 不是 → (None, "")：交给本机环境（系统命令、显式路径的工程工具链都不接管）。
+    内置运行时确实不可用时不阻断命令，回退本机环境并返回提示语（如实告知模型/用户）。
+    """
+    names = needed_runtimes(command)
+    if not names:
+        return None, ""
+    ready = []
+    for name in names:
+        if is_installed(name):
+            ready.append(name)
+            continue
+        try:
+            if ensure_runtime(name)[0]:
+                ready.append(name)
+        except Exception:
+            pass
+    if not ready:
+        return None, "（内置运行时不可用，已回退本机环境）"
+    return sandbox_env(command, names=ready), ""
 
 
 # ------------------------------------------------------------

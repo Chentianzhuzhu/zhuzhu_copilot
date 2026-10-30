@@ -29,6 +29,7 @@
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -96,6 +97,32 @@ _RULES = [
 
 _COMPILED = [(rid, re.compile(pat), sev, desc, exts)
              for rid, pat, sev, desc, exts in _RULES]
+
+#: 规则的廉价前置关键词（**任一**出现才需要跑对应正则）。
+#: 纯性能优化，不改变判定：关键词都是该正则命中时必然出现的字面量（取其分支字面量
+#: 的并集，任一命中即可继续用正则精确判定）。大型插件（1~2MB）静态扫描因此从
+#: 秒级降到几十毫秒——大部分规则在普通代码里连关键词都不出现，直接被跳过。
+_RULE_HINTS = {
+    "dynamic_exec": ("eval", "exec"),
+    "import_hook": ("__import__",),
+    "os_system": ("os.system",),
+    "shell_true": ("shell",),
+    "registry": ("winreg", "reg.", "reg ", "regsetvalue", "regdeletekey",
+                 "regdeletevalue", "regsavekey"),
+    "system_path": ("windows", "etc/passwd", "etc/shadow", "etc/sudoers"),
+    "persistence": ("schtasks", "currentversion", "startup", "startupapproved"),
+    "credential": ("login data", "keylog", "pynput", "keyboard.hook",
+                   "getkeyboardstate"),
+    "mass_delete": ("rmtree", "format", "del ", "rm "),
+    "defender_off": ("set-mppreference", "advfirewall", "disableantispyware"),
+    "guard_tamper": ("plugin_guard", "plugin_source", "copilot_plugins", "hot_reload",
+                     "security_engine", "quarantine", "yara_engine", "overlay_hook",
+                     "source_overlay"),
+    "obfuscation": ("b64decode", "codecs.decode", "fromhex", "marshal.loads"),
+    "raw_socket": ("socket",),
+    "external_http": ("requests.post", "urlopen"),
+    "ctypes_api": ("ctypes",),
+}
 
 _LLM_TIMEOUT_S = 60.0        # 单次 LLM 源码评审超时（区别于生成类的长超时档）
 _MAX_FILE_CHARS = 6000       # 单文件送审上限
@@ -173,15 +200,27 @@ def _scannable_files(d: Path) -> list:
 
 
 def static_scan(text: str, filename: str = "") -> list:
-    """静态规则扫描，返回命中列表 [{rule, severity, desc, line, snippet}]。"""
+    """静态规则扫描，返回命中列表 [{rule, severity, desc, line, snippet}]。
+
+    先按 `_RULE_HINTS` 做一次廉价关键词过滤（大小写不敏感），命不中关键词的规则
+    根本不跑正则——这是大型插件（1~2MB）静态扫描的主要提速点。
+    """
     findings = []
+    text = text or ""
     ext = Path(filename).suffix.lower()
+    low = text.lower()          # 只算一次（所有关键词都是小写字面量）
+    lines = None
     for rid, rx, sev, desc, exts in _COMPILED:
         if exts and ext not in exts:
             continue
-        for m in rx.finditer(text or ""):
+        hints = _RULE_HINTS.get(rid)
+        if hints and not any(h in low for h in hints):
+            continue
+        for m in rx.finditer(text):
             line_no = text.count("\n", 0, m.start()) + 1
-            ln = text.splitlines()[line_no - 1] if text else ""
+            if lines is None:
+                lines = text.splitlines()   # 仅在真的有命中时才切行（大文件也便宜）
+            ln = lines[line_no - 1] if 0 <= line_no - 1 < len(lines) else ""
             findings.append({"rule": rid, "severity": sev, "desc": desc,
                              "line": line_no, "snippet": ln.strip()[:120]})
     return findings
@@ -405,43 +444,126 @@ def guard_source_package(pkg_dir, name: str, llm_review=None) -> tuple:
 
     在 apply 之前调用；危险 → 强制删除整个插件包并提示（Copilot 插件源码级变更的
     全部价值就是要落到转译层，任何危险内容都不可容忍）。
+
+    同步版本：静态规则与 LLM 深审依次执行。apply 链路用 `SourceReview` 走并行版
+    （LLM 网络往返与本地写入/编译重叠），本函数保留给「必须一次拿到结论」的调用方。
     """
+    review = SourceReview(pkg_dir, name, llm_review=llm_review)
+    blocked = review.blocked()
+    return (False, blocked) if blocked else review.finish()
+
+
+class SourceReview:
+    """源码插件校验事务：静态规则同步判定，LLM 深审在后台线程并行。
+
+    为什么要并行：LLM 往返是 1~3s 的网络耗时，而写入转译层 + 编译是纯本地 CPU 工作，
+    两者互不依赖（LLM 只看待写入的内容，不看落盘结果），并行后总耗时 ≈ max(两者)，
+    大型插件插入才可能稳定在 3s 内。
+
+    安全性不变：LLM 结论出来之前**不会热加载**（不做任何 exec）；判危则调用方回滚
+    已写入的变更、本对象删除整个插件包——危险代码永远不会被执行。
+    """
+
+    def __init__(self, pkg_dir, name: str, llm_review=None):
+        self.pkg_dir = Path(pkg_dir)
+        self.name = str(name)
+        self.detail = {"dangerous_files": {}, "llm_used": False, "llm": {},
+                       "llm_state": "skipped", "static": {}}
+        self._review = llm_review or _llm_review
+        self._llm = {}
+        self._thread = None
+        self.blobs = _source_package_blobs(self.pkg_dir)
+
+    def blocked(self) -> str:
+        """静态阶段：返回非空提示 = 已判危并处置（调用方立即返回，不写盘）。
+
+        安全时**启动后台 LLM 评审**并返回空串，调用方可在评审期间写盘/编译。
+        """
+        if not self.pkg_dir.is_dir():
+            return f"插件「{self.name}」不存在，无法校验"
+        for rel, text in self.blobs.items():
+            findings = static_scan(text, rel)
+            self.detail["static"][rel] = findings
+            hard = [f for f in findings if f["severity"] == "danger"]
+            if hard:
+                self.detail["dangerous_files"][rel] = "静态规则命中：" + _findings_reason(hard)
+        if self.detail["dangerous_files"]:
+            return self._reject()
+        if self.blobs:
+            self._thread = threading.Thread(target=self._run_llm,
+                                            name="plugin-guard-llm", daemon=True)
+            self._thread.start()
+        return ""
+
+    def _run_llm(self) -> None:
+        try:
+            self._llm = self._review(dict(self.blobs)) or {}
+        except Exception:
+            self._llm = {}
+
+    def finish(self, timeout: float | None = None) -> tuple:
+        """等 LLM 结论并处置（静态阶段已拒绝时不要调用）。返回 (ok, message)。"""
+        if self._thread is not None:
+            self._thread.join(timeout if timeout is not None else _LLM_TIMEOUT_S + 10)
+        llm = self._llm if isinstance(self._llm, dict) else {}
+        used = bool(llm)
+        self.detail.update({"llm": llm, "llm_used": used,
+                            "llm_state": "used" if used else
+                            ("unavailable" if self.blobs else "skipped")})
+        if llm.get("verdict") == "dangerous":
+            for rel in self.blobs:
+                self.detail["dangerous_files"].setdefault(
+                    rel, "LLM 源码评审判定危险：" + str(llm.get("reason") or "未给出理由"))
+        if self.detail["dangerous_files"]:
+            return False, self._reject()
+        _log_event({"plugin": self.name, "action": "pass_source",
+                    "ops": len(self.blobs), "llm_used": used})
+        msg = f"插件「{self.name}」通过插件校验系统"
+        msg += ("（静态规则 + LLM 源码评审）" if used
+                else "（静态规则；LLM 不可用未做深度评审）")
+        return True, msg
+
+    def _reject(self) -> str:
+        """处置：整体删除插件包 + 写校验日志，返回给用户的提示语。"""
+        dangerous = self.detail["dangerous_files"]
+        removed = _force_remove(self.pkg_dir)
+        _log_event({"plugin": self.name, "action": "force_delete_source_plugin",
+                    "whole_plugin_removed": removed, "reasons": dangerous,
+                    "llm_used": self.detail.get("llm_used"),
+                    "llm_reason": (self.detail.get("llm") or {}).get("reason", "")})
+        files = "、".join(sorted(dangerous))
+        why = "；".join(f"{k}: {v}" for k, v in sorted(dangerous.items()))
+        parts = [f"插件校验系统：源码插件「{self.name}」包含危险代码，"
+                 "已强制删除整个插件包并提示用户。",
+                 f"危险内容：{files}。原因：{why}"]
+        if (self.detail.get("llm") or {}).get("verdict") == "dangerous":
+            parts.append("LLM 复审：" + str(self.detail["llm"].get("reason") or "判定危险"))
+        parts.append(f"校验日志：{_guard_log_path()}")
+        parts.append("插件校验系统为内置唯一程序，不可跳过、不可替换。")
+        return "\n".join(parts)
+
+
+def _source_package_blobs(pkg_dir: Path) -> dict:
+    """源码插件送审内容：source_ops 待写入代码 + 包内辅助文件（跳过元数据/清单）。"""
     from zhuzhu_Copilot.core import plugin_source
-    d = Path(pkg_dir)
-    if not d.is_dir():
-        return False, f"插件「{name}」不存在，无法校验"
-    try:
-        ops = plugin_source.load_source_ops_from(d)
-    except Exception as e:
-        return False, f"读取源码变更清单失败：{e}"
     blobs = {}
+    try:
+        ops = plugin_source.load_source_ops_from(pkg_dir)
+    except Exception:
+        ops = []
     for i, op in enumerate(ops):
         content = str(op.get("content") or "")
         if content.strip():
             blobs[f"source_ops[{i}].{op.get('op')}:{op.get('path') or ''}"] = content
-    # 插件自带的辅助文件一并送审（server.py / 页面模块 / 服务模块等）
-    for f in _scannable_files(d):
-        rel = str(f.relative_to(d))
+    for f in _scannable_files(pkg_dir):
+        rel = str(f.relative_to(pkg_dir))
         if rel in ("plugin.json", "source_ops.json"):
             continue
         try:
             blobs[rel] = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-    ok, msg, detail = guard_blobs(blobs, plugin=name, llm_review=llm_review)
-    if not ok:
-        _force_remove(d)
-        _log_event({"plugin": name, "action": "force_delete_source_plugin",
-                    "whole_plugin_removed": True,
-                    "reasons": detail.get("dangerous_files"),
-                    "llm_used": detail.get("llm_used"),
-                    "llm_reason": (detail.get("llm") or {}).get("reason", "")})
-        return False, (f"插件校验系统：源码插件「{name}」包含危险代码，已强制删除整个插件包并提示用户。\n"
-                       f"原因：{msg}\n校验日志：{_guard_log_path()}\n"
-                       "插件校验系统为内置唯一程序，不可跳过、不可替换。")
-    _log_event({"plugin": name, "action": "pass_source", "ops": len(ops),
-                "llm_used": detail.get("llm_used")})
-    return True, msg
+    return blobs
 
 
 def guard_plugin(name: str, llm_review=None) -> tuple:

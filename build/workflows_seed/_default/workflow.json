@@ -1,0 +1,33 @@
+{
+  "skill_states": {
+    "brainstorming": true,
+    "browser-control": true,
+    "complex-task": true,
+    "code-review": true,
+    "cmd-ops": true,
+    "client-uiux-design": true,
+    "create-cordis": true,
+    "computer-control": true,
+    "custom-ui-ux": true,
+    "deep-customize": true,
+    "doc-gen": true,
+    "download-skill": true,
+    "evil": true,
+    "feature-panel": true,
+    "file-ops": true,
+    "frontend-design-pro": true,
+    "git-commit": true,
+    "image-gen": true,
+    "memory": true,
+    "plugin-create": true,
+    "skill-create": true,
+    "skill-mgmt": true,
+    "sub-agent": true,
+    "system-admin": true,
+    "systematic-debugging": true,
+    "test-driven-development": true,
+    "web-search": true,
+    "writing-plans": true
+  },
+  "updated": "2026-10-27 01:22"
+}

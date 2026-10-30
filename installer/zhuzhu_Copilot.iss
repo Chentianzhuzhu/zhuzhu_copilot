@@ -25,7 +25,12 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
-PrivilegesRequired=admin
+; 安装范围二选一：默认「仅为我安装」（无需 UAC），安装前弹窗让用户选择
+; 「为所有用户安装」（自动提权、装到 Program Files）。
+; {autopf} 会随安装模式自动解析：当前用户 = {localappdata}\Programs，
+; 所有用户 = {commonpf}；快捷方式 {autoprograms}/{autodesktop} 同理。
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist
 OutputBaseFilename=zhuzhu Copilot Setup
 SetupIconFile=..\assets\icon.ico
@@ -84,7 +89,9 @@ chinesesimplified.TInstallTrustedPublisher=正在安装受信任发布者...
 chinesesimplified.TInstallVCx64=正在安装 VC++ 运行库 (x64)...
 chinesesimplified.TInstallVCx86=正在安装 VC++ 运行库 (x86)...
 chinesesimplified.TInstallD3D=正在补装 d3dcompiler_47.dll...
-chinesesimplified.TLaunchApp=立即启动 %(app)s
+; 自定义消息的参数占位符是 Inno 的 %1（由 {cm:TLaunchApp,参数} 传入），
+; 不是 Python 风格的 %(app)s —— 后者不会被替换，完成页会露出半截占位符。
+chinesesimplified.TLaunchApp=立即启动 %1
 english.TWizardLanguagePrompt=Select the interface language for %(app)s:
 english.TWizardLanguageSubPrompt=The chosen language is used for the %(app)s interface. You can change it later in Settings.
 english.TWizardLanguageTitle=Interface Language
@@ -97,7 +104,7 @@ english.TInstallTrustedPublisher=Installing trusted publisher certificate...
 english.TInstallVCx64=Installing VC++ runtime (x64)...
 english.TInstallVCx86=Installing VC++ runtime (x86)...
 english.TInstallD3D=Installing d3dcompiler_47.dll...
-english.TLaunchApp=Launch %(app)s now
+english.TLaunchApp=Launch %1 now
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:TDesktopIcon}"; GroupDescription: "{cm:TAdditionalIcons}"
@@ -136,14 +143,17 @@ Root: HKCU; Subkey: "Software\{#MyLegacySlug}"; Flags: uninsdeletekey
 ;    由 zhutianliang 签名的程序。注意必须用 -machine（LocalMachine 存储）：
 ;    UAC 弹窗（consent.exe 提升上下文）验证签名时只读取 LocalMachine 信任，
 ;    certutil 默认装入 CurrentUser，UAC 读不到 → 弹窗显示"签名失效/发布者未知"。
-Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore Root ""{tmp}\zhutianliang.cer"""; StatusMsg: "{cm:TInstallRootCert}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer')
-Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore TrustedPublisher ""{tmp}\zhutianliang.cer"""; StatusMsg: "{cm:TInstallTrustedPublisher}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer')
+; 机器级步骤（受信任根证书 / VC++ 运行库 / System32 补 dll）只在「为所有用户安装」
+; （管理员模式）下执行；「仅为我安装」不提权，这些操作会失败，直接跳过。
+Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore Root ""{tmp}\zhutianliang.cer"""; StatusMsg: "{cm:TInstallRootCert}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer'); Check: IsAdminInstallMode
+Filename: "{sys}\certutil.exe"; Parameters: "-f -machine -addstore TrustedPublisher ""{tmp}\zhutianliang.cer"""; StatusMsg: "{cm:TInstallTrustedPublisher}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('zhutianliang.cer'); Check: IsAdminInstallMode
 ; 2. 系统缺 VC++ 运行库时自动静默安装，保证主程序/卸载器正常加载（x64 + x86）
-Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx64}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x64.exe'); Check: not VCInstalled64
-Filename: "{tmp}\vc_redist.x86.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx86}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x86.exe'); Check: not VCInstalled32
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx64}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x64.exe'); Check: IsAdminInstallMode and not VCInstalled64
+Filename: "{tmp}\vc_redist.x86.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "{cm:TInstallVCx86}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('vc_redist.x86.exe'); Check: IsAdminInstallMode and not VCInstalled32
 ; 3. 系统缺 d3dcompiler_47.dll 时补装到 System32（Qt D3D11 渲染必需）
-Filename: "{sys}\cmd.exe"; Parameters: "/c copy /y ""{tmp}\d3dcompiler_47.dll"" ""{sysnative}\d3dcompiler_47.dll"""; StatusMsg: "{cm:TInstallD3D}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('d3dcompiler_47.dll'); Check: not D3DCompilerInstalled
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:TLaunchApp}"; Flags: nowait postinstall skipifsilent runascurrentuser
+Filename: "{sys}\cmd.exe"; Parameters: "/c copy /y ""{tmp}\d3dcompiler_47.dll"" ""{sysnative}\d3dcompiler_47.dll"""; StatusMsg: "{cm:TInstallD3D}"; Flags: runhidden; BeforeInstall: ExtractTemporaryFile('d3dcompiler_47.dll'); Check: IsAdminInstallMode and not D3DCompilerInstalled
+; 完成页「启动」勾选项：应用名通过 %1 参数传入，两种语言都显示真正的应用名
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:TLaunchApp,{#MyAppName}}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 ; 卸载时先结束主程序进程，避免安装目录文件被占用
 ;（旧版进程名一并结束：卸载发生在运行中的旧版程序上时，文件同样会被占用）

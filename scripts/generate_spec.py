@@ -61,14 +61,23 @@ _d3d_datas = [(_d3d_path, '.')] if _os.path.isfile(_d3d_path) else []
 # 工作流到用户目录，做到「安装完成即 @ 调用」。目录不存在时跳过（源码直跑无种子）。
 _seed_dir = _os.path.join(_root, 'build/workflows_seed')
 _seed_datas = [(_seed_dir, 'workflows_seed')] if _os.path.isdir(_seed_dir) else []
+# 现成技能 / Agent 插件种子：由 scripts/prepare_assets_seed.py 在构建期把「仓库内置 +
+# 用户目录现有」合并快照到 build/assets_seed/，安装后运行时首启同步到用户目录，
+# 做到「装完即拥有现有全部技能与插件」。种子已含仓库内置资源，存在时替代内置目录
+# （避免同一份资源进包两次）；缺失时回退内置，未跑准备脚本也能构建。
+_assets_seed = _os.path.join(_root, 'build/assets_seed')
+_skills_datas = ([(_os.path.join(_assets_seed, 'skills'), 'skills_seed')]
+                 if _os.path.isdir(_os.path.join(_assets_seed, 'skills'))
+                 else [(_os.path.join(_root, 'src/zhuzhu_Copilot/skills'), 'skills')])
+_plugins_datas = ([(_os.path.join(_assets_seed, 'plugins'), 'plugins_seed')]
+                  if _os.path.isdir(_os.path.join(_assets_seed, 'plugins'))
+                  else [(_os.path.join(_root, 'src/zhuzhu_Copilot/plugins'), 'plugins')])
 
 a = Analysis(
     [_os.path.join(_root, 'src/main.py')],
     pathex=[_src],
     binaries=[],
     datas=[(_os.path.join(_root, 'assets'), 'assets'),
-           (_os.path.join(_root, 'src/zhuzhu_Copilot/skills'), 'skills'),
-           (_os.path.join(_root, 'src/zhuzhu_Copilot/plugins'), 'plugins'),
            # 语言包（i18n）：不打包则英文界面在发布版里全部回退成中文。
            # core/i18n.py 的 _locales_dir() 会同时探测 <root>/locales 与
            # _MEIPASS/locales，故按 skills/plugins 同款平铺方式注入即可。
@@ -77,6 +86,7 @@ a = Analysis(
            # 安全引擎数据文件（config/security.json、security_rules.json、yara/ 规则库）：
            # 引擎在打包态按 _MEIPASS/config 解析，缺失则回退内置默认导致规则库/特征库不生效
            (_os.path.join(_root, 'config'), 'config')]
+           + _skills_datas + _plugins_datas
            + _runtime_datas + _d3d_datas + _seed_datas,
     hiddenimports=[
         # agent_tools 通过 importlib 动态导入 core 子模块（agent_find/agent_tts/
@@ -158,6 +168,18 @@ a = Analysis(
         *collect_submodules('win32com'),
         # 三件套图片依赖：docx/pptx/openpyxl 的 add_picture/add_image 运行时 import PIL，显式声明确保随包
         'PIL',
+        # 3D 桌宠（ui/pet3d）：QOpenGLWidget 直渲 + numpy。pet3d 是 PEP 562 懒加载包，
+        # PyInstaller 静态分析看不到 `from . import window` 里的 QtOpenGL 导入，必须显式声明，
+        # 否则打包版会静默回退成 GIF 桌宠（用户侧就是「怎么还是那只 gif」）。
+        'PyQt6.QtOpenGLWidgets',
+        'PyQt6.QtOpenGL',
+        'numpy',
+        # pet3d 的类是通过模块级 __getattr__ 暴露的（PEP 562 懒加载），
+        # 静态分析拿不到 `from ... import Pet3DWindow` 的落点，四个模块显式声明。
+        'zhuzhu_Copilot.ui.pet3d',
+        'zhuzhu_Copilot.ui.pet3d.rig',
+        'zhuzhu_Copilot.ui.pet3d.view',
+        'zhuzhu_Copilot.ui.pet3d.window',
     ],
     hookspath=[],
     hooksconfig={},
@@ -173,7 +195,9 @@ a = Analysis(
         'PyQt6.QtSql', 'PyQt6.QtXml', 'PyQt6.QtTest', 'PyQt6.QtDBus',
         'PyQt6.QtWebEngineCore', 'PyQt6.QtWebEngineWidgets', 'PyQt6.QtWebEngineQuick',
         'PyQt6.QtWebChannel', 'PyQt6.QtPositioning',
-        'numpy', 'pandas', 'scipy', 'matplotlib', 'sklearn', 'torch',
+        # numpy 不能进 excludes：3D 桌宠（ui/pet3d）依赖它，且在 hiddenimports 里显式声明；
+        # 同时列入 excludes 会让 PyInstaller 把它剔除 → 打包版静默回退 GIF 桌宠。
+        'pandas', 'scipy', 'matplotlib', 'sklearn', 'torch',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

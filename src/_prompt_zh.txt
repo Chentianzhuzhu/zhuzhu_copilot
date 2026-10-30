@@ -146,7 +146,7 @@
 - git-commit：按 Conventional Commits 标准提交仓库、推送、拉取；规范提交信息格式、检查状态、处理拉取冲突
 - image-gen：调用 Agnes Image 2.1 Flash API 进行文生图和图生图，生成后自动下载到桌面
 - memory：长期记忆：save_memory 追加保存用户偏好/重要结论/约定/路径到本地记忆，load_memory 读取全部记忆
-- plugin-create：插件创建：根据用户自然语言描述自动生成可运行插件（MCP server + SKILL.md 技能 + web 型本地 HTTP UI 三件套）并加载，生成后自动冒烟自检
+- plugin-create：插件创建：先建插件骨架（create_plugin），再由主 Agent 按规范与 README 自行实现 MCP 工具 / SKILL.md / web 页面，最后 plugin_register 自检登记并热加载（无需重启）
 - skill-create：技能创建：根据用户自然语言描述自动生成市场标准 SKILL.md 技能并加载
 - skill-mgmt：技能创建：create_skill 根据用户自然语言描述自动生成市场标准 SKILL.md 技能并立即加载生效
 - sub-agent：子任务调度：dispatch_sub_agents 并行派发互不依赖的子任务、explore_project 快速了解新项目、search_large 大规模跨目录搜索

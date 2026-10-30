@@ -3,8 +3,8 @@
     zhuzhu Copilot 发布流水线（重构版 · 单一入口 · 全 PowerShell）
 
 .DESCRIPTION
-    一条命令完成：版本号同步 → 运行时/依赖组件准备 → 工作流种子 → 清理 → 打包 →
-    签名主程序 → 生成 Inno Setup 安装包（安装包与卸载器在编译期一并签名）→ 产物自检。
+    一条命令完成：版本号同步 → 运行时/依赖组件准备 → 工作流/技能/插件种子 → 清理 →
+    打包 → 签名主程序 → 生成 Inno Setup 安装包（安装包与卸载器在编译期一并签名）→ 产物自检。
 
     相对旧脚本的改进：
       1. 单一入口：旧的独立打包脚本已删除，installer\build_setup.bat 退化为薄壳只调本脚本，
@@ -336,6 +336,7 @@ try {
     if (-not $SkipRuntime)   { $stages += '沙盒运行时打包' }
     if (-not $SkipRuntime)   { $stages += '依赖组件准备（VC++/d3dcompiler）' }
     if (-not $SkipSeed)      { $stages += '工作流种子快照' }
+    if (-not $SkipSeed)      { $stages += '技能/插件种子快照' }
     if (-not $SkipApp)       { $stages += '清理旧产物' }
     if (-not $SkipApp)       { $stages += '生成 spec + 打包主程序' }
     if (-not $SkipApp -and -not $NoSign) { $stages += '签名主程序' }
@@ -424,6 +425,14 @@ try {
         if ($rc -ne 0) { Fail "prepare_workflow_seed.py 失败（退出码 $rc）" }
         Write-Ok '工作流种子就绪'
     } else { Write-Warn '已跳过：工作流种子快照' }
+
+    # ---- 5.5 技能 / Agent 插件种子 --------------------------------------
+    if (-not $SkipSeed) {
+        Write-Stage '技能 / Agent 插件 / Copilot 插件种子快照（现有全部资产，安装即用）'
+        $rc = Invoke-Exe -Exe $PyInfo.Exe -Arguments (@($PyInfo.Pre) + @('scripts\prepare_assets_seed.py'))
+        if ($rc -ne 0) { Fail "prepare_assets_seed.py 失败（退出码 $rc）" }
+        Write-Ok '技能 / Agent 插件 / Copilot 插件种子就绪'
+    } else { Write-Warn '已跳过：技能 / 插件种子快照' }
 
     # ---- 6. 清理 -------------------------------------------------------
     if (-not $SkipApp) {
@@ -530,12 +539,21 @@ try {
         }
         Write-Ok "exe 版本号校验通过（$Version）"
 
-        # 11.2 关键模块随包自检（曾漏打包导致对应功能静默失效）
+        # 11.2 随包资产种子必须进入 dist：否则新机安装后没有技能 / Agent 插件 / Copilot 插件
+        if (-not $SkipSeed) {
+            foreach ($n in @('skills_seed', 'plugins_seed', 'copilot_plugins_seed')) {
+                $p = Join-Path $ProjectDir "dist\zhuzhu Copilot\$n"
+                if (-not (Test-Path $p)) { Fail "随包资产未进入 dist：$n" }
+            }
+            Write-Ok '随包资产种子校验通过（skills / plugins / copilot_plugins）'
+        }
+
+        # 11.3 关键模块随包自检（曾漏打包导致对应功能静默失效）
         $rc = Invoke-Exe -Exe $PyInfo.Exe -Arguments (@($PyInfo.Pre) +
             @('scripts\verify_release_artifact.py', $mainExe))
         if ($rc -ne 0) { Fail '产物自检未通过：关键模块缺失（详见上方输出）' }
 
-        # 11.3 签名状态汇总
+        # 11.4 签名状态汇总
         foreach ($f in @($mainExe, $setup)) {
             if (Test-Path $f) {
                 $sig = Get-AuthenticodeSignature $f

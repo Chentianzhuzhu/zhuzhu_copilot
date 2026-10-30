@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 MCP_VERSION = "2024-11-05"
 # 建连/握手阶段的最长等待：只覆盖 initialize、tools/list 这类「本该瞬时」的请求。
@@ -182,10 +183,16 @@ class _StdioTransport:
             except Exception as e:
                 raise McpError(f"MCP 发送失败: {e}")
 
+    #: 允许自动重试的方法：全部是**只读/幂等**的协议请求。
+    #: tools/call 绝不能重试 —— 请求发出后写管道失败并不代表服务端没执行，
+    #: 重试会让 click / type_text 这类动作**执行两次**（用户侧就是「点了两下」）。
+    _RETRY_SAFE = frozenset({"initialize", "tools/list", "ping", "notifications/initialized"})
+
     def call(self, method: str, params: dict, timeout=None) -> dict:
         """带一次重试的请求：管道抖动 / 子进程刚就绪时不该直接失败。
 
-        连接已断开不重试（重试没意义）—— 直接抛给上层，让 McpManager 自愈重连。
+        只对幂等方法重试（见 `_RETRY_SAFE`）；连接已断开、超时、以及**工具调用**
+        一律不重试：重试要么再排一次队把界面搅乱，要么让动作执行两次。
         工具调用默认不设超时（见 `_tool_timeout`）。
         """
         last = None
@@ -194,8 +201,8 @@ class _StdioTransport:
                 return self.request(method, params, timeout=timeout)
             except McpError as e:
                 last = e
-                # 超时/已断开都不重试：重试会再排一次队，把界面状态搅得更乱
-                if "已断开" in str(e) or "超时" in str(e) or attempt:
+                if (attempt or method not in self._RETRY_SAFE
+                        or "已断开" in str(e) or "超时" in str(e)):
                     raise
                 time.sleep(0.12)
         raise last
@@ -403,14 +410,17 @@ class McpManager:
     调用时按原始工具名路由到对应服务器。"""
 
     def __init__(self):
+        self._lock = threading.RLock()   # 并发保护：UI 后台重连与引擎热加载可能同时发生
         self._clients: dict = {}
         self._configs: dict = {}      # 服务器名 -> 建连时所用配置（增量热加载据此判断「新增/变更」）
+        self._stamps: dict = {}       # 服务器名 -> stdio 脚本指纹（脚本改写 → 判定为变更）
         self._schemas: dict = {}      # 服务器名 -> 建连时抓到的工具 schema
         self._name_to_server: dict = {}
         self._tool_raw: dict = {}      # 聚合工具名 -> 服务器原始工具名
         self._tools: list = []
         self._last_servers: list = []   # 最近一次成功/尝试的服务器配置（自愈用）
         self._healing = False           # 自愈进行中：避免并发重复重连
+        self._reloading = False         # 自动热加载进行中：避免并发重复重连
         self.errors: list = []   # 各服务器连接失败信息
         # 最近一次 reload 的动作摘要（热加载后回填进工具结果文案，让模型知道新增了什么）
         self.last_reload: dict = {"added": [], "updated": [], "removed": []}
@@ -432,15 +442,38 @@ class McpManager:
             return False
         self._clients[name] = client
         self._configs[name] = dict(cfg)
+        self._stamps[name] = self._script_stamp(cfg)
         # 工具清单必须在这里抓一次并缓存：McpClient.list_tools 每次调用都会往内部去重表
         # 写名字，再调一次会把同一工具返回成「带前缀」的另一种形态（名字漂移 + 重复）。
         self._schemas[name] = schemas
         return True
 
+    @staticmethod
+    def _script_stamp(cfg: dict):
+        """stdio 服务器的脚本指纹 (路径, mtime_ns, 字节数)；非 stdio 返回 None。
+
+        为什么需要它：增量 reload 原来只比较「配置字典」——插件 server.py 被改写后
+        配置完全相同，于是进程保持旧代码，用户必须重启应用才生效。把脚本指纹纳入
+        变更判定后，任何人改完文件再触发一次扩展热加载（plugin_register / create_skill
+        等工具都会触发），就会自动重连并拿到新工具清单。
+        """
+        if str(cfg.get("type") or "stdio").strip().lower() != "stdio":
+            return None
+        for arg in (cfg.get("args") or []):
+            try:
+                p = Path(str(arg))
+                if p.is_file():
+                    st = p.stat()
+                    return (str(p.resolve()), st.st_mtime_ns, st.st_size)
+            except OSError:
+                continue
+        return None
+
     def _drop(self, name: str) -> None:
         """断开并移除单个服务器的连接与缓存"""
         client = self._clients.pop(name, None)
         self._configs.pop(name, None)
+        self._stamps.pop(name, None)
         self._schemas.pop(name, None)
         if client is not None:
             try:
@@ -471,60 +504,102 @@ class McpManager:
 
     def connect_all(self, servers: list) -> list:
         """servers: [{"name","type","command","args"|"url"}]，返回聚合后的工具 schema（全量重建）"""
-        self.close_all()
-        self.errors = []
-        self.last_reload = {"added": [str(c.get("name") or "mcp") for c in servers],
-                            "updated": [], "removed": []}
-        self._last_servers = [dict(c) for c in servers]
-        for cfg in servers:
-            self._connect(cfg)
-        return self._rebuild_aggregate()
+        with self._lock:
+            self.close_all()
+            self.errors = []
+            self.last_reload = {"added": [str(c.get("name") or "mcp") for c in servers],
+                                "updated": [], "removed": []}
+            self._last_servers = [dict(c) for c in servers]
+            for cfg in servers:
+                self._connect(cfg)
+            return self._rebuild_aggregate()
 
-    def reload(self, servers: list) -> list:
+    def reload(self, servers: list, force=()) -> list:
         """**增量**热加载：只重建「新增或配置变更」的服务器，断开已移除的，未变的连接原样保留。
 
         为什么不一律 close_all + connect_all：每个服务器都是一次真实建连（stdio 要起子进程、
         sse 要握手），全量重连会把与本次变更无关的服务器一起打断 —— 正在用的服务器会莫名断线
         （丢掉进程内状态），耗时也随服务器数量线性增长。增量只付「真正变了的那几个」的成本。
+
+        `force`：服务器名集合，命中的即使配置未变也强制断开重连 —— 这是设置页「重启」
+        按钮的实现：只影响被点名的服务器，其余连接保持不动。名字若已不在 `servers`
+        （被停用/删除），仍按「移除」处理，不会复活。
         """
+        forced = {str(n) for n in (force or ())}
         want: dict = {}
         for cfg in servers:
             want[str(cfg.get("name") or "mcp")] = cfg
-        added: list = []
-        updated: list = []
-        removed: list = []
-        for name in list(self._clients):
-            if name not in want:
-                self._drop(name)
-                removed.append(name)
-            elif self._configs.get(name) != want[name]:
-                self._drop(name)
-                updated.append(name)
-        self.errors = []
-        for cfg in servers:
-            name = str(cfg.get("name") or "mcp")
-            if name in self._clients:
-                continue                      # 未变：连接与工具清单都原样保留
-            # 建连失败只进 errors（会重试），不得混进 added 让摘要谎报「新增成功」
-            if self._connect(cfg) and name not in updated:
-                added.append(name)
-        self.last_reload = {"added": added, "updated": updated, "removed": removed}
-        self._last_servers = [want[k] for k in want]
-        return self._rebuild_aggregate()
+        with self._lock:
+            added: list = []
+            updated: list = []
+            removed: list = []
+            for name in list(self._clients):
+                if name not in want:
+                    self._drop(name)
+                    removed.append(name)
+                elif (name in forced
+                      or self._configs.get(name) != want[name]
+                      or self._stamps.get(name) != self._script_stamp(want[name])):
+                    # 配置变了**或脚本文件被改写**都要重连：后者是「改完插件代码不重启」
+                    # 的关键（只比配置时进程会一直跑旧代码）。force 则是用户显式重启。
+                    self._drop(name)
+                    updated.append(name)
+            self.errors = []
+            for cfg in servers:
+                name = str(cfg.get("name") or "mcp")
+                if name in self._clients:
+                    continue                      # 未变：连接与工具清单都原样保留
+                # 建连失败只进 errors（会重试），不得混进 added 让摘要谎报「新增成功」
+                if self._connect(cfg) and name not in updated:
+                    added.append(name)
+            self.last_reload = {"added": added, "updated": updated, "removed": removed}
+            self._last_servers = [want[k] for k in want]
+            return self._rebuild_aggregate()
+
+    def reload_if_stale(self) -> bool:
+        """脚本指纹变化时**自动**增量重连（插件代码更新后不用重启应用、也不用手动热加载）。
+
+        为什么放在每轮取工具清单时做：模型每一轮都要 `tool_schemas()`；这里只对已连接的
+        服务器做几次 `stat`（微秒级），发现 server.py / deploy.py 被改写才真正重连。
+        用户侧效果：升级插件（随包同步/手动改文件）→ 下一轮对话立即用上新代码。
+
+        并发保护 `_reloading`：重连要起子进程（秒级），避免多个调用同时触发重复重连。
+        """
+        with self._lock:
+            if self._reloading:
+                return False
+            stale = [n for n, cfg in self._configs.items()
+                     if self._stamps.get(n) != self._script_stamp(cfg)]
+            if not stale:
+                return False
+            self._reloading = True
+        try:
+            servers = list(self._last_servers) or list(self._configs.values())
+            self.reload(servers)
+            return True
+        finally:
+            with self._lock:
+                self._reloading = False
 
     def tool_schemas(self) -> list:
-        return self._tools
+        # 插件文件被改写 → 自动重连后再返回工具表（否则会一直调旧进程里的旧工具）
+        self.reload_if_stale()
+        with self._lock:
+            return list(self._tools)
 
     def tool_schemas_for(self, allowed_servers) -> list:
         """按允许的服务器名过滤聚合工具（工作流 MCP 隔离：未绑定服务器的工具不暴露）"""
         if not allowed_servers:
             return []
-        return [t for t in self._tools
-                if self._name_to_server.get(t["function"]["name"]) in allowed_servers]
+        self.reload_if_stale()
+        with self._lock:
+            return [t for t in self._tools
+                    if self._name_to_server.get(t["function"]["name"]) in allowed_servers]
 
     def server_for_tool(self, name: str) -> str:
         """工具所属服务器名（空 = 未知/非 MCP 工具）"""
-        return self._name_to_server.get(name, "")
+        with self._lock:
+            return self._name_to_server.get(name, "")
 
     def _self_heal(self) -> bool:
         """工具表为空时按上次的配置重连一次（有界：不并发、只此一次）。

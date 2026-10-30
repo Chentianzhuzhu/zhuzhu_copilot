@@ -724,12 +724,14 @@ class CopilotPanel(QFrame):
         self.toast = ToastNotification(None)
         self._setup_tray()
         self._check_admin()
-        # 桌宠随程序启动（资源缺失时静默跳过）
+        # 桌宠随程序启动（异步：主窗口先显示，3D 资产生成放到后台线程，
+        # 资源缺失或加载失败时静默回退 GIF，不阻塞启动路径）
+        self._pet = None
         try:
-            from zhuzhu_Copilot.ui.desktop_pet import ensure_pet
-            self._pet = ensure_pet(self)
+            from zhuzhu_Copilot.ui.desktop_pet import start_pet_async
+            start_pet_async(self)
         except Exception:
-            self._pet = None
+            pass
         # 记忆上次选择：开启过防护则下次启动自动开启
         if self._settings.value("security_auto", False, type=bool) and is_admin():
             QTimer.singleShot(0, self._start_security)

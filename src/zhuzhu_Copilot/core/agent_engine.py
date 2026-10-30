@@ -372,8 +372,9 @@ _TASK_GROUPS = [
                 "list_workflow_agents", "use_workflow_agent",
                 "inspect_customization", "list_sub_agents", "register_sub_agent",
                 "list_builtin_workflows", "shared_context",
-                # 插件生成：自定义任务裁剪后仍需可用（自然语言生成/手动管理）
-                "create_plugin", "create_copilot_plugin", "apply_copilot_plugin",
+                # 插件生成/登记：自定义任务裁剪后仍需可用（骨架 → 自实现 → 登记热加载）
+                "create_plugin", "plugin_register",
+                "create_copilot_plugin", "apply_copilot_plugin",
                 "revert_copilot_plugin", "use_skill"})),
 ]
 _TASK_GROUP_TOOLS = {g: tools for g, _kw, tools in _TASK_GROUPS}
@@ -530,17 +531,35 @@ def _context_image(data_url: str) -> str:
     - 已在硬上限内的图零开销直通（治理后的历史帧/小截图不重复编码，性能优先）；
     - http(s) 网络图片无法本地重编码，原样返回。
     """
+    return _context_image_ex(data_url)[0]
+
+
+def _context_image_ex(data_url: str) -> tuple:
+    """治理图片并返回 `(data_url, note)`；note 只在**发生缩宽**时非空。
+
+    为什么要随图带一句提示：服务商/网关一旦拿到缩宽后的图，模型读到的像素就与
+    插件声明的截图尺寸不一致，绝对坐标会整体偏移（越靠右下越偏）。此前只有插件端
+    的「所见尺寸自校准」，上下文这一侧没有任何提示，模型根本不知道自己看的是压缩图。
+    """
     if not isinstance(data_url, str) or not data_url.startswith("data:image"):
-        return data_url
+        return data_url, ""
     if len(data_url) <= _CTX_IMAGE_MAX_B64:
-        return data_url
+        return data_url, ""
     import base64 as _b64
     try:
         _, _, b64 = data_url.partition(",")
         src = QImage.fromData(_b64.b64decode(b64))
         if src.isNull():
-            return data_url
-        last = data_url
+            return data_url, ""
+        def _note(img) -> str:
+            if img.width() >= src.width():
+                return ""
+            return (f"⚠ 本图已被压缩为 {img.width()}×{img.height()}（原始 "
+                    f"{src.width()}×{src.height()}）：你读到的是压缩后像素，坐标请改用 "
+                    f"nx/ny（0~1）或同时传 seen_w={img.width()}、seen_h={img.height()}，"
+                    "否则会整体偏移。")
+
+        last, last_img = data_url, None
         for quality, max_w in _CTX_IMAGE_LADDER:
             if max_w <= 0 or src.width() <= max_w:
                 img = src
@@ -552,12 +571,13 @@ def _context_image(data_url: str) -> str:
             if not img.save(buf, "JPEG", quality):
                 continue
             out = "data:image/jpeg;base64," + _b64.b64encode(bytes(ba)).decode()
-            last = out
+            last, last_img = out, img
             if len(out) <= _CTX_IMAGE_MAX_B64:
-                return out
-        return last   # 最小档兜底（噪声帧实测 ~87K，必入上限）
+                return out, _note(img)
+        # 最小档兜底（噪声帧实测 ~87K，必入上限）
+        return last, (_note(last_img) if last_img is not None else "")
     except Exception:
-        return data_url
+        return data_url, ""
 
 
 # ══════════════ 内置工具的「等待上限」 ══════════════
@@ -565,8 +585,7 @@ def _context_image(data_url: str) -> str:
 # 后台线程仍在跑 —— 于是超时后模型拿到的是「已停止等待」而非真实结果，上下文与实际进度错位。
 _NO_WAIT_TIMEOUT_TOOLS = frozenset({
     "run_command",      # 长命令（构建/训练/长脚本）天然无上限，由停止按钮取消
-    "create_plugin",    # 生成类：内部是完整 LLM 往返（设计 + 自检 + 可能自修），远超 40s
-    "create_copilot_plugin",  # 生成类：完整 LLM 往返（source_ops + 扩展清单设计 + 校验）
+    "plugin_register",  # 自检会真跑子进程（MCP 握手 / web 端点，上限 30s），超 40s 放弃会与真实结果错位
     "apply_copilot_plugin",   # 源码应用：备份 + 多文件写入 + 逐文件编译检查，可超 40s
     "revert_copilot_plugin",  # 源码回滚：多文件还原，可超 40s
     "send_file_to_wechat",   # 微信推送：大文件 CDN 上传可超 40s，超时放弃会与真实结果错位
@@ -765,6 +784,8 @@ class AgentEngine:
         self._skills_read = set()       # 已注入/已读取规范流程的技能名
         self._skill_consulted = set()   # 已注入规范流程的技能名（每技能最多注入一次，减少拦截频率）
         self._auto_skills = []          # 按用户提示词自动匹配并注入的技能名
+        self._manual_skills = []        # 用户手动 /技能名 调用的技能名（高效模式下也照常注入）
+        self._manual_plugins = []       # 用户手动 /插件名 调用的插件名（高效模式下也照常注入）
         self._task_skills = set()       # 当前任务相关的技能名（自动匹配 + 手动指定，技能规范拦截仅限这些）
         # 任务开始时的技能集快照：热加载时据此找出「刚生成/刚导入」的技能（见 reload_extensions）
         self._skills_at_start: set = set()
@@ -1328,18 +1349,58 @@ class AgentEngine:
         return tools
 
     def _efficient_tools(self, tools: list) -> list:
-        """高效模式工具集：仅保留 _EFFICIENT_TOOLS 白名单内的内置工具。
+        """高效模式工具集：最小内置工具集 + **用户显式调用**的技能/插件工具。
 
-        与能力开关/系统管控的关系：系统层面「禁用全部工具 / 禁用指定工具」优先级更高
-        （用户显式禁用必须生效），故此处先按白名单过滤，再套用同一套禁用规则。
+        `_EFFICIENT_TOOLS` 是自动执行时的最小集；但用户手动 /技能名 /插件名 属于显式
+        意图，只注入规范却把对应工具砍掉，模型只能空谈流程或反复调用不存在的工具。
+        故此处按「手动技能覆盖的工具 + 手动插件的 MCP 工具」精确增量放行，不放开整套
+        工具表（保住高效模式的 token 收益）。系统层面禁用工具的优先级仍最高。
         """
-        out = [t for t in tools if t["function"]["name"] in _EFFICIENT_TOOLS]
+        keep = set(_EFFICIENT_TOOLS) | self._manual_skill_tool_names(
+            [t["function"]["name"] for t in tools])
+        out = [t for t in tools if t["function"]["name"] in keep]
+        seen = {t["function"]["name"] for t in out}
+        for t in self._manual_plugin_mcp_tools():
+            name = t["function"]["name"]
+            if name and name not in seen:
+                out.append(t)
+                seen.add(name)
         if getattr(self, "_disabled_all", False):
             return []
         if getattr(self, "_disabled_tools", None):
             out = [t for t in out
                    if t["function"]["name"].lower() not in self._disabled_tools]
         return out
+
+    def _manual_skill_tool_names(self, tool_names: list) -> set:
+        """手动调用技能所覆盖的底层工具名（高效模式的放行清单）。"""
+        if not self._task_skills:
+            return set()
+        try:
+            cov = agent_skills.skills_covering_tools(tool_names)
+            return {tool for tool, skills in cov.items()
+                    if any(s in self._task_skills for s in skills)}
+        except Exception:
+            return set()
+
+    def _manual_plugin_mcp_tools(self) -> list:
+        """手动调用插件登记的 MCP 工具（高效模式的放行清单）。
+
+        服务器名与工作流隔离都由 core 侧判定（agent_plugins / agent_workflow），这里不
+        重复拼 "{名}-mcp"，也不自行放松工作流绑定。
+        """
+        if not self.mcp or not self._manual_plugins:
+            return []
+        try:
+            from zhuzhu_Copilot.core import agent_plugins
+            servers = set(agent_plugins.plugin_mcp_servers_of(self._manual_plugins))
+            if servers:
+                servers &= agent_workflow.allowed_mcp_servers(self.workflow)
+            if not servers:
+                return []
+            return list(self.mcp.tool_schemas_for(servers))
+        except Exception:
+            return []
 
     def plugin_of_tool(self, name: str) -> str:
         """该工具是否由插件提供 → 归属插件名（内置工具/普通 MCP 工具返回空串）。
@@ -1604,12 +1665,15 @@ class AgentEngine:
                         if self.on_engine_rebuild:
                             self.on_engine_rebuild(self.workflow or "")
                 # use_skill：按名调用技能 → 并入本任务技能集（_task_skills 让路由硬拦截
-                # 覆盖它；_auto_skills 让 _sync_skill_msg 后续轮次持续注入规范正文）。
+                # 覆盖它；_manual_skills 让 _sync_skill_msg 后续轮次持续注入规范正文）。
                 # 规范正文已由工具结果直接返回（当轮即可照做），这里只做「持续生效」。
+                # 记入 _manual_skills 而非 _auto_skills：这是显式激活，高效模式下也应注入。
                 if isinstance(res, dict) and res.get("__activate_skill__"):
                     sk = str(res.pop("__activate_skill__") or "").strip()
                     if sk:
                         self._task_skills.add(sk)
+                        if sk not in (self._manual_skills or []):
+                            self._manual_skills = list(self._manual_skills or []) + [sk]
                         if sk not in (self._auto_skills or []):
                             self._auto_skills = list(self._auto_skills or []) + [sk]
                         # 已由工具结果完整给出规范：标记为已读，避免路由硬拦截
@@ -2269,6 +2333,25 @@ class AgentEngine:
 
     # ---------- 主循环 ----------
     def _system_prompt(self, agent_name: str = "") -> str:
+        """系统提示词 = 基础提示词 + （高效模式下）手动调用的例外说明。
+
+        例外说明必须单独追加：高效模式的基础提示词写死了「本次只有最小工具集、不要调用
+        插件/技能工具」，而用户 /插件名 手动点名时引擎确实放行了这些工具 —— 不自相矛盾
+        才能让模型真正去调用它。
+        """
+        prompt = self._system_prompt_base(agent_name)
+        # 运行环境约定对所有 agent 成立（内置人设 / @agent 自定义人格 / 工作流 SYSTEM_PROMPT
+        # 都能命中）：统一在这里追加，避免只在某一分支写而漏掉「整体替换型」提示词。
+        prompt += agent_skills.runtime_env_notice()
+        if getattr(self, "efficient_mode", False):
+            manual = bool(getattr(self, "_manual_plugins", None))
+            if not manual:
+                manual = bool(getattr(self, "_manual_skills", None))
+            if manual:
+                prompt = prompt + "\n\n" + agent_skills.efficient_manual_notice()
+        return prompt
+
+    def _system_prompt_base(self, agent_name: str = "") -> str:
         """构建系统提示词：每次都重新读取 settings.json，
         用户中途新增/修改的自定义规则在下一轮立即生效。
         工作目录绝对路径强制注入 system（每轮必然发送给 AI），设置后整段保持
@@ -2444,15 +2527,9 @@ class AgentEngine:
         （「必须严格…不得跳过…」）—— 只给名字或只给正文时，模型常常按自己的理解自由发挥，
         表现为「调用了但没按技能流程走」。
 
-        （高效模式 efficient_mode=True 时不调用本方法：技能/插件规范不注入上游。）"""
-        # 兜底：高效模式即便被调用也不注入技能/插件规范，并清掉历史里可能残留的
-        # 那一条（用户中途开启高效模式时，旧技能消息不该继续占用上下文）。
-        if self.efficient_mode:
-            _idx = self._skill_mark_index()
-            if _idx is not None:
-                del self._messages[_idx]
-            return
-        merged = list(self._auto_skills or [])
+        （高效模式 efficient_mode=True 时只关闭**自动匹配**的技能注入；用户手动
+        /技能名 /插件名 的规范仍然注入 —— 显式点名却没有规范，等于点了没反应。）"""
+        merged = [] if self.efficient_mode else list(self._auto_skills or [])
         for s in (agent_skills.filter_enabled_skills(manual_skills) or []):
             if s not in merged:
                 merged.append(s)
@@ -2723,14 +2800,18 @@ class AgentEngine:
                 self.allow_subagents))
         # 当前任务相关技能 = 自动匹配 + 手动指定（技能规范硬拦截仅限这些技能覆盖的工具，
         # 避免无关技能 instruction 顺带提及的基础工具被误拦截）
+        self._manual_skills = []
         self._task_skills = set(self._auto_skills or [])
         for _s in (agent_skills.filter_subagent_skills(
                 agent_skills.filter_enabled_skills(skills), self.allow_subagents) or []):
             self._task_skills.add(_s)
+            if _s not in self._manual_skills:
+                self._manual_skills.append(_s)
         # 用户手动调用的插件（/插件名）：插件对模型是黑盒，必须把「插件说明 + SKILL.md +
         # 调用规范」直接注入上下文（见 _sync_skill_msg），并把插件登记的技能并入本任务
         # 技能集 —— 其覆盖的底层工具走技能路由硬拦截，模型无法绕过技能乱调工具。
         self._manual_plugins = []
+        _plugin_skills = []
         try:
             from zhuzhu_Copilot.core import agent_plugins
             self._manual_plugins = agent_plugins.filter_enabled_plugins(plugins)
@@ -2738,14 +2819,15 @@ class AgentEngine:
                     agent_skills.filter_enabled_skills(
                         agent_plugins.plugin_skill_names_of(self._manual_plugins)),
                     self.allow_subagents) or []):
+                _plugin_skills.append(_s)
                 self._task_skills.add(_s)
         except Exception:
             self._manual_plugins = []
         if self.efficient_mode:
-            # 高效模式：技能集整体置空 —— 不注入技能/插件规范，也不做技能路由硬拦截
-            # （规范里教的是被剔除的那些工具，注入只会诱导模型调用不可用工具）。
-            self._task_skills = set()
-            self._manual_plugins = []
+            # 高效模式只关「自动匹配」：用户显式 /技能名 /插件名 必须照常生效 ——
+            # 显式点名却既无规范也无工具，用户侧看到的就是「插件点了没反应」。
+            # 对应工具由 _efficient_tools 精确放行（最小集 + 手动调用的工具）。
+            self._task_skills = set(self._manual_skills) | set(_plugin_skills)
         self._task_groups = _detect_task_groups(user_input)
         # 系统层面（sandbox 级）工具硬拦截状态：每任务开始时读取一次，
         # 设置变更下个任务生效；schema 与执行层同时生效，提示词干预无法绕过
@@ -2768,13 +2850,13 @@ class AgentEngine:
             if _s not in _invoked:
                 _invoked.append(_s)
         if self.efficient_mode:
-            # 高效模式：技能/插件规范一律不注入 —— 用户用 /技能名、/插件名 手动点名时
-            # 必须明确告知（否则界面显示"已调用技能"却毫无规范注入，用户会以为技能失效）。
-            if _invoked or plugins:
-                if self.on_status:
-                    self.on_status("高效模式已开启：技能/插件规范不注入上游（请在设置页"
-                                   "关闭高效模式后再使用技能与插件）")
-            _invoked = []
+            # 高效模式：自动匹配关闭，但手动 /技能名 /插件名 照常注入规范与工具。
+            # 必须明说放行了什么，否则用户看到「已调用」会以为高效模式把一切关掉了。
+            _manual_all = list(_invoked) + list(self._manual_plugins)
+            if _manual_all and self.on_status:
+                self.on_status(
+                    "高效模式：自动匹配已关闭，手动调用的 "
+                    + ", ".join(_manual_all) + " 照常注入规范与工具")
         if _invoked and self.on_status:
             self.on_status(f"正在调用技能: {', '.join(_invoked)}")
             self.on_status(f"技能已调用: {', '.join(_invoked)}")
@@ -2885,7 +2967,9 @@ class AgentEngine:
                 if self._messages[0].get("content") != new_prompt:
                     self._messages[0]["content"] = new_prompt
                 # 任务技能 / 插件规范 + 任务清单同步为末尾独立消息（原位替换，不污染 system 前缀缓存）
-                self._sync_skill_msg(skills, self._manual_plugins)
+                # 手动技能取 self._manual_skills（含 /技能名 与运行中 use_skill 激活），
+                # 插件取 self._manual_plugins；高效模式下两者同样注入（见 _sync_skill_msg）
+                self._sync_skill_msg(self._manual_skills, self._manual_plugins)
                 self._sync_todo_msg()
                 if self.on_status:
                     self.on_status("正在思考…")
@@ -3236,7 +3320,13 @@ class AgentEngine:
                     # 入库前统一体积治理（MCP 电脑操控/浏览器截图等所有图片来源）：
                     # 原始 PNG 一帧 base64 可达数十~上百万字符，兼容网关按文本粗计时
                     # 几步即冲破窗口；治理为有界 JPEG 后 tool 消息与轮末视觉消息共用同一份。
-                    imgs = [_context_image(u) for u in imgs]
+                    # 缩宽治理会改变图片像素尺寸 → 把提示拼进同一 tool 文本，模型先读
+                    # 提示再看图，才会改用 nx/ny 或 seen_w/seen_h（否则整体偏移）。
+                    slim = [_context_image_ex(u) for u in imgs]
+                    imgs = [u for u, _ in slim]
+                    _img_notes = [n for _, n in slim if n]
+                    if _img_notes:
+                        text += "\n" + "\n".join(_img_notes)
                     # 工作团监督：主 Agent 工具轨迹写入 ContextLedger（look_context 数据源）
                     if self._control is not None:
                         try:

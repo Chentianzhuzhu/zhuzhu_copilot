@@ -1,0 +1,205 @@
+---
+name: blender-modeler
+description: Blender 低模建模技能：真实驱动本机 Blender（headless 常驻实例 + bpy，无 mock），产出高质量低模——Q 版桌宠（猫/熊/兔）与电路板实物图；基础 PBR 材质、三点布光与深色棚拍、自动取景、Cycles/EEVEE 渲染并直接回图校对；支持 .blend 保存与 glb/fbx/obj/stl 导出。模板与调色板全部数据驱动（presets/*.json），可叠加、可改色、可加新模板。
+---
+
+# blender-modeler：Blender 低模建模
+
+本插件把本机 Blender 变成可被 AI 逐步驱动的建模器：`server.py`（MCP stdio）负责发现
+`blender.exe` 并拉起**常驻** `blender --background` 进程，所有建模/材质/灯光/渲染都是
+**真实 bpy 调用**，没有 mock、没有假预览图。
+
+> **铁律：改完必须渲染看图再交付。** `render_image` 会把 PNG 直接返回给你，
+> 用眼睛核对比例、穿模、丝印方向、材质观感。不许「按想象描述结果」。
+
+## 最短路径（先读这里）
+
+| 想做的事 | 一步到位的做法 |
+| --- | --- |
+| 开工前确认环境 | `blender_status`（只读；`auto_start=true` 顺带拉起后台实例） |
+| 从零开始一个干净场景 | `scene_new`（默认纯黑世界背景，符合交付风格） |
+| 要一只桌宠 | `template_apply(template="pet", style="cat"/"bear"/"rabbit")` |
+| 要一块电路板实物图 | `template_apply(template="pcb")` |
+| 不知道模板有什么可调 | `template_list` |
+| 加/改一个体块 | `object_add(kind=..., size=..., location=..., shade="flat")` |
+| 批量挪/缩放/旋转 | `object_transform(names=[...], relative=true, ...)` |
+| 左右对称部件 | `object_duplicate(name=..., mirror="X")` |
+| 低模硬表面倒角 | `object_modifier(name=..., modifier="bevel", width=0.01~0.03, segments=2, apply=true)` |
+| 电路板开孔、零件挖槽 | `object_boolean(target=..., operand=..., op="DIFFERENCE")` |
+| 做材质 | `material_create` → `material_assign(targets=[...], material=...)` |
+| 丝印 / 铭牌 | `text_add(body="U1", size=..., location=...)`（自动转网格，导出不丢） |
+| 一键布光 | `light_rig(preset="product")` / `preset="dramatic"` |
+| 摆相机 | `camera_frame(view="hero")`；渲染时 `render_image(view=...)` 会自己取景 |
+| 看图 | `render_image(name=..., resolution=..., samples=...)` |
+| 让用户实时看建模过程 | **自动**：建模时开预览页并在浏览器打开，之后每步自动刷一帧实时图 |
+| 用户关掉后要重开 | `preview_start`（返回本机 + 局域网地址；`open=false` 只起服务） |
+| 想在手机/别的电脑上看 | `preview_start` 返回的局域网地址（同 Wi-Fi，页面 2 秒刷新） |
+| 关掉预览页 | `preview_stop`（下次建模会自动重开） |
+| 存工程 | `scene_save(name=...)`（同时记为工作文件，重启后自动接续） |
+| 接续上一次的工作 | 什么都不用做：实例重启/闲置退出后 `blender_start` 自动恢复上次场景 |
+| 找有哪些 .blend 可接手 | `blend_list`（输出目录，含工作文件/恢复文件/是否有未保存改动） |
+| 接手一个现成 .blend | `scene_open(path=...)` **替换**当前场景（想接着上次做就别用这个） |
+| 把别的文件里的零件搬进来 | `scene_import(path=..., names=[...])` 追加进当前场景，保留现有进度 |
+| 交付给应用/游戏引擎 | `export_model(format="glb")`（通用）/ `format="fbx"`（Unity/Unreal） |
+| 交付模型 | `export_model(name=..., format="glb")` |
+| 任务结束 | `blender_stop`（释放内存；未保存改动会存成恢复文件，闲置 30 分钟也会自动退出并保存） |
+
+## 标准流程
+
+1. `blender_status(auto_start=true)` —— 确认版本与输出目录。
+2. `scene_new` —— 干净场景（纯黑背景），避免继承残留对象。
+3. 建模：`template_apply` 打底（桌宠/电路板），再 `object_add` / `object_transform` /
+   `object_modifier` / `object_boolean` 精修；每改 3~5 步就 `scene_info(detail="brief")`
+   核对对象名、尺寸、三角面数，不要凭记忆。
+4. 材质：`material_create` → `material_assign`。
+5. 灯光 + 渲染：`light_rig` → `render_image` → **读图** → 修 → 再渲染。
+6. 交付：`scene_save`（.blend 工程）+ `export_model(format="glb")`。
+7. `blender_stop`（可选，闲置会自动退出）。
+
+**不要每一步都 `blender_start(restart=true)`**：常驻实例保留场景、材质、相机与渲染缓存，
+重启一次就丢全部进度；`restart` 只在确实要推倒重来时用。
+
+## 实时预览页（用户要能看着你建模）
+
+- **建模开始时自动打开**：第一次会改场景的调用（`blender_start` / `scene_new` / 任意建模或
+  渲染工具）之前，插件会自动起预览服务并在默认浏览器打开本机地址
+  `http://127.0.0.1:<port>/`，页面每 1 秒刷新。工具结果首行会带一行
+  「预览页已自动打开：…」——**把它转述给用户**（含局域网地址，手机同 Wi-Fi 可看）。
+- **一步一帧**：每次真正改动场景的调用（`object_add` / `object_transform` / `material_*` /
+  `light_*` / `camera_*` / `text_add` / `template_apply` …）返回前，插件会自动补一张
+  360px Workbench 实时图（约 0.4 秒），所以用户看到的是**逐步推进的建模过程**，
+  不是只有最后一张成品。你**不需要**为此调用任何额外工具，也**不要**因此改自己的渲染设置。
+- 页面内容：顶部大图 = 最新的一张（建模中是「实时视图」，正式渲染后切到「最新渲染」）
+  + 场景统计（对象/三角面/材质/引擎/分辨率/相机）+ 最近 60 张正式渲染。只读，不占用
+  Blender 调用锁、不改场景。实时图落在 `输出目录/_live/view.png`，不进正式渲染列表。
+- 不要在每一步都调 `preview_start`（会重复开标签页）；用户说「没看到预览」时才用它重开，
+  或用 `preview_stop` 关掉后再 `preview_start`。
+- 建模期间**每改完一轮就 `render_image`**：实时图是 360px 快速预览（颜色近似、无景深/降噪），
+  交判定还是要看正式渲染图；预览页也会把最新正式渲染切到顶部大图。
+
+## 工作文件的接续与交接
+
+**重启不丢活**（用户最容易踩的坑）：
+- `scene_save` 会把文件记为「工作文件」；实例**闲置退出 / 显式 restart / 应用退出**前，
+  插件会把未保存的改动另存为 `输出目录/_live/recovery.blend`。
+- 新实例启动时自动恢复：恢复文件比工作文件新 → 用它（连未保存改动一起回来）；
+  否则打开工作文件；都没有才空场景。`blender_start` 的返回里会说明恢复了什么。
+- 因此：**恢复出场景后不要用 `scene_new`**（那是"清空重来"），直接在现有对象上改；
+  想另存一个版本用 `scene_save(name="xxx_v2")`。
+- 多轮建模中途不做保存也没关系，但正式交付前仍应 `scene_save` 一次。
+
+**接手别人/以前的文件**：
+- `blend_list` 先看有哪些文件（含大小、时间、当前工作文件与恢复文件、dirty 状态）。
+- `scene_open(path)` = **换掉**当前场景（当前未保存的改动会问都不问就没了，谨慎）。
+- `scene_import(path, names=[...])` = 把对方文件里的对象**追加**进当前场景，
+  材质/贴图依赖一起带进来；`names` 留空 = 全部（最多 `limit` 个）。
+  这是"在既有素材上继续做"的正解：既有进度全保留。
+
+**导出给应用/游戏引擎**（`export_model`）：
+- `format="glb"`：单文件、自带材质与贴图，Three.js / Godot / Unity(glTFast) 首选。
+- `format="fbx"`：Unity / Unreal 传统流程首选，用 `FBX_SCALE_ALL`，引擎里不再手调 import scale。
+- 默认 `apply_modifiers=true`：倒角/布尔/镜像等修改器会被真实烘进网格
+  —— 忘记应用是"引擎里模型变样"的最常见原因。只想保留修改器可传 false。
+- 单位是**米**、Z 轴朝上（FBX 导出会按引擎约定转 Y 轴）；导出前用 `scene_info` 核对包围盒尺寸，
+  一个"2 米高的桌宠"多半是单位搞错了。
+- 导出会返回对象数/三角面数/文件大小；场景里没有网格时会直接报错（不会产出 0KB 空文件）。
+
+## 低模建模要点
+
+- 单位是**米**，**Z 轴朝上**；`size` 是整体最大尺寸（球=直径、立方体=边长、圆柱=高度）。
+- 低模用**低分段**：球 `segments` 12~16、圆柱 `vertices` 12~16、圆环 `segments` 16~20。
+- 默认 `shade="flat"` 保持硬朗的低模面感；只有曲面零件（球体、圆环）才考虑 `smooth`。
+- 硬表面边角加 `bevel`（宽 0.01~0.03 m、2 段），轮廓立刻干净不刮眼。
+- 命名用英文短名并统一前缀（如 `pet_`、`pcb_`），后续 `object_transform` / `object_join`
+  才好按名批量操作。
+- 交付前把同材质的多块合并（`object_join`）能显著降低导出文件的对象数与 draw call。
+- 丝印文字**平放在板面**（z 比板面高 0.005~0.01，避免 z-fighting），**不要绕 Z 轴转 180°**
+  —— 那会让文字从正面反读；`top` / `hero` 视角本来就是正向的。
+- 用 `scene_info(detail="full")` 看包围盒；相机/灯光别手动猜位置，优先 `camera_frame` +
+  `light_rig`，它们按包围盒自动缩放。
+
+## 材质（Principled BSDF）
+
+- 颜色一律 `#RRGGBB`；整体色板走**纯黑背景 + 淡灰/白主体 + 深蓝点缀**，禁止 emoji 装饰。
+- 哑光塑料/皮肤：`metallic=0`，`roughness=0.55~0.7`。
+- 金手指/焊锡：`metallic=1.0`，`roughness=0.25~0.35`。
+- 阻焊板：`roughness≈0.5`，深绿 `#123D2B` 一类低饱和色。
+- 发光件（LED、屏幕）：`emission_color` + `emission_strength` 3~8，别开太高以免过曝。
+- 需要渐变/贴图时才用多材质分区，低模优先「一块一色」。
+
+## 灯光与渲染
+
+- `light_rig(preset="product")`：柔和产品图（三点布光 + 深色哑光地面），默认就用它。
+  `dramatic` 是硬边高对比，适合强调轮廓。
+- 迭代阶段**低分辨率快出图**：`render_image(resolution=480~640, samples=16)`，
+  十几秒一张，看形体和构图。
+- 定稿再 `resolution=960~1280, samples=32~64`。
+- 默认 `CYCLES`（CPU）+ 降噪；要更快可以 `engine="BLENDER_EEVEE"`。
+- 视角：`hero`（右前上方，产品图默认）/ `iso` / `front` / `back` / `left` / `right` /
+  `top` / `bottom`；`current` 表示沿用当前相机不动。
+- 背景要透明就 `transparent=true`（PNG 带 alpha）。
+- 渲染慢时先降采样与分辨率，不要靠模糊去掩盖模型问题。
+
+## 模板：数据驱动，不写死
+
+模板 = `presets/<name>.json`，`template_apply` 的 `template` 参数就是文件名。新增模板
+**只加 JSON，不改代码**：
+
+```json
+{
+  "name": "cup",
+  "description": "低模马克杯",
+  "root": "CupRoot",
+  "scale": 1.0,
+  "palette": {"body": "#D8DDE4", "accent": "#1F3A5F"},
+  "materials": {"body": {"roughness": 0.65}, "accent": {"roughness": 0.4}},
+  "parts": [
+    {"name": "body", "kind": "cylinder", "size": 1.0, "loc": [0, 0, 0.5],
+     "segments": 16, "bevel": {"width": 0.02, "segments": 2}, "mat": "body"},
+    {"name": "handle", "kind": "torus", "size": 0.45, "loc": [0.55, 0, 0.55],
+     "rotation": [90, 0, 0], "segments": 16, "mat": "body"},
+    {"name": "logo", "kind": "text", "body": "ZHIZHU", "size": 0.12,
+     "loc": [0, -0.5, 0.55], "rotation": [90, 0, 0], "mat": "accent"}
+  ],
+  "styles": {
+    "tall": {"parts": [{"name": "extra", "kind": "cylinder", "size": 0.8,
+                        "loc": [0, 0, 1.0], "segments": 16, "mat": "body"}]}
+  }
+}
+```
+
+- 支持的 `kind`：`cube / uv_sphere / ico_sphere / cylinder / cone / torus / plane / capsule / text / empty`。
+- `repeat: {count, step:[dx,dy,dz]}` 阵列复制（引脚、排针）；`bevel` 倒角；
+  `boolean: {target, op}` 开孔/挖槽（operand 用完即删）；`scale` 非等比压扁。
+- `styles.<name>.parts` 追加在基础 `parts` 之后；`template_apply(style=...)` 选风格。
+- `template_apply(colors={"body": "#8899AA"})` 覆盖调色板；`size` 整体缩放；
+  `prefix` 给对象名加前缀（同场景放两只桌宠时必用，否则根对象重名会被顶掉）。
+- 内置模板：`pet`（styles: cat / bear / rabbit）、`pcb`。
+
+## 局域网实时预览
+
+- `preview_start` 起一个**只读** HTTP 服务（默认 `0.0.0.0:8787`），返回两组地址：
+  `本机 http://127.0.0.1:8787/`、`局域网 http://<本机IP>:8787/`；手机连同一 Wi-Fi 直接打开。
+- 页面每 2 秒拉 `/api/state`，显示最近 60 张渲染图（按时间倒序）、渲染实例状态与场景摘要
+  （对象/三角面/材质/引擎/分辨率/相机）。图片地址带 `?v=<mtime>`，新图自动替换，无需手动刷新。
+- 它不占用 Blender 调用锁、不改场景，可以全程开着；只在读缓存，不影响渲染速度。
+- 场景摘要来自最近的 `scene_info` / `render_image`；想让统计立刻更新，渲染一次即可。
+- 监听端口/地址可用插件配置 `blender_preview_port` / `blender_preview_bind` 覆盖。
+  Windows 首次监听会弹防火墙提示，需允许「专用网络」，否则局域网设备访问不到。
+
+## 交付与验收
+
+- 输出目录默认 `<桌面>/zhuzhu Copilot/blender`（可用插件配置 `blender_output_dir` 改）。
+- 一次完整交付 = 渲染图（看效果）+ `.blend`（可继续改）+ `.glb` / `.fbx`（可直接进引擎/网页）。
+- 引擎用哪份：Three.js / Godot / 网页 → `glb`；Unity / Unreal 传统资产管线 → `fbx`。
+  两份都给最省事，体积都不大。
+- 验收清单：比例协调、无穿模、无悬空、丝印正向、材质不过曝、主体在画面内且留白合适；
+  导出后再用 `scene_info` 核对一次三角面数与包围盒（单位米）。
+- 三角面数用 `scene_info` 看；低模单个道具控制在几千面以内，别用 `subsurf` 堆面数。
+
+## 禁则
+
+- 不许伪造渲染结果、不许用文字描述代替看图。
+- 不许为了好看堆高模细节（性能 > 美观）：优先低分段、flat 着色、倒角代替细分。
+- 不许在脚本/模板里写死路径与颜色（路径走配置，颜色走 `palette`）。
+- 不许留 emoji 或装饰性贴图；风格统一为纯黑 + 淡灰 + 白 + 深蓝的简素质感。

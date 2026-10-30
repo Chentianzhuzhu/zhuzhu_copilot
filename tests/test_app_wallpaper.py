@@ -8,8 +8,8 @@
 
 import pytest
 
-from PyQt6.QtCore import QRect
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
+from PyQt6.QtCore import QRect, QRectF
+from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 from zhuzhu_Copilot.core import app_wallpaper as w
@@ -63,6 +63,32 @@ def _solid_png(tmp_path, color: str = "#2F52D8", size: int = 64) -> str:
     path = tmp_path / "wall.png"
     assert pm.save(str(path), "PNG")
     return str(path)
+
+
+# ══════════════ 绘制：不得破坏外层圆角裁剪 ══════════════
+
+def test_paint_preserves_outer_rounded_clip(monkeypatch, tmp_path):
+    """自定义背景模式下窗口四角必须仍是圆角：壁纸绘制只能「求交」裁剪区。
+
+    主面板 paintEvent 已用圆角路径裁剪窗口；旧实现用 setClipRect 把裁剪区
+    替换成矩形，于是壁纸铺满四角 → 窗口视觉上变成直角。
+    """
+    img_path = _solid_png(tmp_path, "#2F52D8", 64)
+    monkeypatch.setattr(w, "load", lambda: w.WallpaperParams(
+        bg_image=img_path, bg_fit="cover", bg_blur=0.0, bg_dim=0.0))
+
+    target = QImage(80, 60, QImage.Format.Format_ARGB32)
+    target.fill(QColor(0, 0, 0, 0))
+    p = QPainter(target)
+    clip = QPainterPath()
+    clip.addRoundedRect(QRectF(0, 0, 80, 60), 12, 12)
+    p.setClipPath(clip)
+    assert w.paint(p, QRect(0, 0, 80, 60), "#000000") is True
+    p.end()
+
+    assert target.pixelColor(0, 0).alpha() == 0, "圆角外像素必须保持透明"
+    assert target.pixelColor(79, 59).alpha() == 0, "右下圆角外同样不得被壁纸填成直角"
+    assert target.pixelColor(40, 30).alpha() > 0, "窗口内部仍要有壁纸"
 
 
 # ══════════════ 高斯模糊 ══════════════
@@ -560,6 +586,48 @@ def test_wallpaper_page_exposes_blur_and_dim_controls():
         dlg.deleteLater()
 
 
+def test_wallpaper_sliders_are_capsule_with_step_dots():
+    """背景页模糊 / 压暗滑杆：胶囊自绘样式 + 按量程铺灰色档位圆点。
+
+    灰点样式只画未覆盖区；胶囊两端比数值端点外延，端点圆点才有冗余空间。
+    """
+    from zhuzhu_Copilot.ui import agent_panel as ap
+    dlg = ap._AgentSettingsDialog()
+    try:
+        dlg._stash_page = dlg._build_wallpaper_page()
+        blur, dim = dlg.wallpaper_blur, dlg.wallpaper_dim
+        assert isinstance(blur, ap._CapsuleSlider), "模糊滑杆必须是胶囊滑杆"
+        assert isinstance(dim, ap._CapsuleSlider), "压暗滑杆必须是胶囊滑杆"
+        assert blur.tick_step == ap._slider_tick_step(int(w.BLUR_MAX)) == 5
+        assert dim.tick_step == ap._slider_tick_step(int(w.DIM_MAX)) == 10
+        assert blur.tick_style == ap._CapsuleSlider.TICK_STYLE_MUTED
+        # 胶囊两端比数值端点外延：端点灰点才有冗余空间
+        blur.resize(400, 48)
+        x0, x1 = blur._track_span()
+        cx0, cx1 = blur._capsule_span()
+        assert cx0 < x0 and cx1 > x1, "胶囊两端应比数值端点外延"
+    finally:
+        dlg.deleteLater()
+
+
+def test_bg_adjust_strip_mirrors_slider_value():
+    """拖动浮条：项名 / 数值 / 滑杆都跟真滑杆同步（对话框隐去后用户只看这条）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+    dlg = ap._AgentSettingsDialog()
+    try:
+        dlg._stash_page = dlg._build_wallpaper_page()
+        src = dlg.wallpaper_blur
+        strip = ap._BgAdjustStrip(dlg)
+        strip.show_for("模糊程度", " px", src, src.tick_step)
+        assert strip.title.text() == "模糊程度"
+        src._dragging = True          # 只验证镜像，不触发落地提交（不改全局背景参数）
+        src.setValue(23)
+        assert strip.value.text() == "23 px" and strip.slider.value() == 23
+        assert strip.slider.tick_step == src.tick_step
+    finally:
+        dlg.deleteLater()
+
+
 def test_slider_commit_only_on_release():
     """拖动中不得提交：每一格都重算一次高斯模糊会明显掉帧。
 
@@ -809,6 +877,39 @@ def test_side_panels_translucent_on_wallpaper(tmp_path):
         for win in (wt, git, code, todos):
             win.close()
             win.deleteLater()
+
+
+def test_preview_icon_buttons_reskin_to_transparent_on_wallpaper(tmp_path):
+    """首次设背景后，预览面板「撤销/重做」等图标按钮的实色底必须就地刷成透明。
+
+    回归（用户反馈）：第一次设置自定义背景时，部分 UI/UX 组件（预览撤销/重做、
+    顶栏清空、标题栏 Agent 徽章）仍是黑色/白色实色块而不是透明。
+    根因：它们的 QSS 是构建期拼死的字符串，透明态翻转走的是 `_retheme` 快路径
+    （不拆树），只有 `apply_surface_theme` 显式重设才会生效。
+    """
+    from zhuzhu_Copilot.ui import agent_panel as ap
+
+    w.set_fields(bg_image="", persist=False)
+    ap.refresh_surface_mode()
+    code = ap.CodePreviewWindow()       # 先在「无壁纸」下构建：按钮底是实色
+    try:
+        assert "transparent" not in code.undo_btn.styleSheet()
+
+        w.set_fields(bg_image=_solid_png(tmp_path), persist=False)
+        ap.refresh_surface_mode()
+        code.apply_surface_theme()      # 透明态翻转时就地换肤（不重建控件）
+
+        for name in ("undo_btn", "redo_btn"):
+            qss = getattr(code, name).styleSheet()
+            assert "background: transparent" in qss, f"{name} 未透明化：{qss}"
+        # 根底与模式下拉同样必须让位给壁纸
+        assert "transparent" in code.styleSheet()
+        assert "transparent" in code.mode.styleSheet()
+    finally:
+        code.close()
+        code.deleteLater()
+        w.set_fields(bg_image="", persist=False)
+        ap.refresh_surface_mode()
 
 
 def test_side_panels_fall_back_to_solid_without_wallpaper():

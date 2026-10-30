@@ -54,7 +54,7 @@ MCP_VERSION = "2024-11-05"
 _CONTROL_TOOLS = frozenset({
     "click", "long_press", "drag", "swipe", "select", "scroll", "type_text",
     "key_press", "copy", "paste", "open_virtual_desktop",
-    "manage_window", "click_window", "verify_point", "open_app", "taskbar_open",
+    "manage_window", "click_window", "verify_point", "open_app",
 })
 
 # ---- 可调参数（集中在此，便于扩展/调优） ----
@@ -67,10 +67,23 @@ SESSION_TTL_S = 45.0         # 操控会话滑动有效期：期内真人输入�
                               # 鼠标就会被判接管 → 任务直接卡死（用户看到的是「MCP
                               # 超时、5 分钟没完成」）。45s 足够覆盖「下一次工具
                               # 调用」的间隔，又不会误伤。
+ACTION_SETTLE_S = 1.0         # 操作后**截图前**的最短等待（秒）：点击/输入刚落完就抓，
+                              # 很容易抓到过渡帧（菜单还没弹出、列表还没滚动、文字重绘到一半）→
+                              # 模型按旧画面判断，随后乱点。默认 1s，界面稳定后再出图。
+SHOT_WAIT_MAX_MS = 60000      # screen_shot(wait_ms) 上限：长任务一次等待后截图，避免轮询烧 token
+WINDOW_SWITCH_SETTLE_S = 0.25 # Alt+Tab / Alt+Esc 后等前台切换落定的时长
 MOVE_TAKEOVER_PX = 160        # 鼠标移动累计位移阈值：低于它不算「用户接管」。
                               # 40 太敏感 —— 用户正常挪一下鼠标就超了，AI 会被踢下线、
                               # 任务直接卡住（实测：用户在旁边用电脑时必现）。按键/点击
                               # 仍然立即判定接管（那是明确的抢回意图）。
+MOVE_ACC_WINDOW_S = 1.5       # 累计位移的**时间窗**：只在连续操作的一小段时间内累加。
+                              # 没有时间窗时，触控板噪声/手抖/桌面震动会跨几分钟慢慢
+                              # 累到阈值，用户什么都没做却被判「正在操控电脑」（实测误报）。
+INTERRUPT_STALE_S = SESSION_TTL_S   # 接管标记的陈腐时间：与操控会话有效期一致。
+                              # MCP 子进程跨任务常驻，上个任务遗留的「已接管」会污染新任务
+                              # （每个工具都回「用户已接管」，用户其实不在操作），故过期自动失效。
+READBACK_SETTLE_S = 0.02      # 注入绝对移动后、回读光标前的等待：SendInput 返回≠光标
+                              # 已就位，立刻读会读到旧位置，被误判成「被真实鼠标覆盖」。
 WM_MOUSEMOVE = 0x0200        # 低级鼠标钩子里的「移动」事件
 INJECT_SIGNATURE = 0x5A5A5A5A       # SendInput dwExtraInfo 签名：标记 AI 自身注入
 INJECT_GRACE_S = 0.35       # 注入后抑制窗口：钩子在此窗口内不把事件判为真人输入
@@ -90,6 +103,7 @@ WHEEL_TICK_MAX = 12         # 一次滚轮调用最多拆成几个 tick（防止
 DRAG_SETTLE_S = 0.12        # 拖拽落点后等待时间：让目标控件完成响应再截图验证
 DRAG_MIN_STEPS = 12         # 拖拽最少分步数：步数太少会被系统判定为瞬移（非拖拽）
 LONG_PRESS_MAX_S = 5.0      # 长按时长上限（秒），防止模型传入过大值卡住流程
+TYPE_TEXT_MAX_CHARS = 2000  # 单次文字注入上限；超限明确拒绝，绝不静默截断只发半段
 SETTLE_AFTER_CLICK_S = 0.06  # 点击后最小稳定时间：先等界面响应再返回，减少无效重试
 FUZZY_MIN_SCORE = 0.62      # 控件名近似匹配的最低相似度：低于此值宁可报「找不到」，也别点错控件
 CLICK_INSET_RATIO = 0.22    # 元素落点内缩比例（仅在中心被遮挡时用于采样，避开边框/圆角）
@@ -348,21 +362,33 @@ def _bind_win32():
 _bind_win32()
 
 
-def _init_dpi_awareness():
-    """每显示器 DPI 感知：保证屏幕尺寸/窗口矩形/注入坐标统一为物理像素，杜绝缩放偏移。"""
+def _init_dpi_awareness() -> bool:
+    """每显示器 DPI 感知：保证屏幕尺寸/窗口矩形/注入坐标统一为物理像素，杜绝缩放偏移。
+
+    返回是否成功。任何分辨率/DPI（100%/125%/150%/200%、单屏/多屏混合 DPI）下，
+    `GetSystemMetrics`、`GetWindowRect`、`SendInput` 都必须用同一套**物理像素**，
+    否则点击会按系统缩放比整体偏移。
+    """
     for ctx in (-4, -3):        # PER_MONITOR_AWARE_V2 / PER_MONITOR_AWARE
         try:
             if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(ctx)):
-                return
+                return True
         except Exception:
             pass
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return True
     except Exception:
         try:
             user32.SetProcessDPIAware()
+            return True
         except Exception:
-            pass
+            return False
+
+
+# 导入即启用 DPI 感知（不依赖 main() 何时被调用）：screen_info / 截图 / 注入的坐标
+# 必须从第一个工具调用起就是物理像素，否则 125%/150% 缩放下会整体偏移。
+_DPI_AWARE = _init_dpi_awareness()
 
 
 # ============================================================================
@@ -602,8 +628,9 @@ def _no_overlay():
 
     提示层是**给用户看的**，绝不能被截进给模型的图里 —— 光带糊在屏幕边缘会污染
     「任务栏 / 窗口边框」这类贴边目标的像素分析，胶囊窗更是直接压住顶部内容。
-    正常情况走 `WDA_EXCLUDEFROMCAPTURE`（窗口照常显示，捕获 API 里没有它），
-    这是零开销的空操作；系统不支持时才退化成"截前隐藏、截后恢复"。
+    默认策略是**截前临时隐藏、截后恢复**（几十 ms）：不永久把窗口从所有捕获接口中
+    抹掉，远程桌面/录屏/投屏里用户始终看得见提示层；把 `aura.AURA_CAPTURE_EXCLUDE`
+    设为 True 时才改走 `WDA_EXCLUDEFROMCAPTURE`（零开销，但所有人/所有录屏都看不到）。
     """
     if aura is None:
         return contextlib.nullcontext()
@@ -635,177 +662,6 @@ def grab_screen(max_w: int = MODEL_MAX_W, grid: bool = False, cursor: bool = Fal
         return png, iw, ih, ox, oy, w, h
     finally:
         user32.ReleaseDC(0, dc)
-
-
-def _ensure_window_capturable(hwnd: int) -> str:
-    """窗口截图前确保窗口处于「可抓取」状态：最小化就先恢复，仍不可用则**拒绝**。
-
-    为什么必须做（实测踩过的坑）：窗口最小化后 `GetWindowRect` 会返回
-    `(-32000,-32000,160,28)` 这种哨兵值，PrintWindow 也只给出一张 160×28 的废图 ——
-    但调用方看起来「截图成功了」，于是照着这张废图算出来的坐标全都在屏幕外，
-    点击永远落不到目标上。宁可明确拒绝，也不要交出一张会让模型算出错误坐标的图。
-    """
-    if not hwnd or not user32.IsWindow(hwnd):
-        raise RuntimeError("目标窗口不存在（句柄可能已失效），请重新 list_windows 取最新句柄")
-    note = ""
-    if user32.IsIconic(hwnd):
-        user32.ShowWindow(int(hwnd), SW_RESTORE)
-        time.sleep(0.3)
-        note = (f"注意：目标窗口「{window_title(hwnd) or hwnd}」原本是最小化的，"
-                f"已先恢复它再截图（否则截图是废图、算出来的坐标全在屏幕外）。")
-    r = window_rect(hwnd)
-    w, h = r.right - r.left, r.bottom - r.top
-    if r.left <= -30000 or r.top <= -30000 or w <= 8 or h <= 8:
-        raise RuntimeError(
-            f"无法截取窗口「{window_title(hwnd) or hwnd}」：它仍是最小化/不可见状态"
-            f"（窗口矩形 {r.left},{r.top} {w}×{h}）。请先 "
-            f"manage_window(action=\"restore\", hwnd={hwnd}) 或 action=\"activate\" "
-            f"把它显示出来再操作 —— 否则截图是废图，坐标会全错。")
-    return note
-
-
-def grab_window(hwnd: int, max_w: int = MODEL_MAX_W, grid: bool = False,
-                cursor: bool = False, capture: str = "auto") -> tuple:
-    """指定窗口抓图。返回 (png, img_w, img_h, x, y, w, h)。
-
-    两条路径，`capture` 决定用哪条：
-      * printwindow —— PrintWindow(PW_RENDERFULLCONTENT)，**不受遮挡影响**，首选；
-      * screen      —— 把窗口提到最前，再从屏幕 DC 拷贝窗口所在区域（兜底）。
-      * auto        —— 先用 printwindow；**抓到空图（全黑/全同色）就自动改走 screen**。
-
-    为什么需要兜底：GPU 渲染的窗口（OpenGL/DirectX/Vulkan，如 Blender、各类 3D/剪辑
-    软件）对 PrintWindow 的支持并不一致 —— 有的应用（自绘且不处理 WM_PRINTCLIENT、
-    或走独占/硬件叠加层）会返回全黑或空白。此时若直接把黑图喂给模型，模型会「看不见
-    界面」，所有点击都成了盲点。这里检测到空图就换成屏幕抓取，并在返回值里如实说明。
-
-    注意：screen 路径要求窗口真的在最上层（会被其他窗口遮挡），所以会先激活并置顶它。
-    """
-    note = _ensure_window_capturable(hwnd)
-    _GRAB_INFO["note"] = note
-    rect = window_rect(hwnd)
-    w, h = rect.right - rect.left, rect.bottom - rect.top
-    if w <= 0 or h <= 0:
-        raise RuntimeError("窗口尺寸无效")
-    strategy = str(capture or "auto").strip().lower()
-    if strategy not in ("auto", "printwindow", "screen"):
-        strategy = "auto"
-    used = ""
-    png = None
-    if strategy in ("auto", "printwindow"):
-        png, used = _grab_window_printwindow(hwnd, w, h, max_w, grid, cursor, rect)
-    if png is None and strategy in ("auto", "screen"):
-        png, used = _grab_window_screen(hwnd, rect, w, h, max_w, grid, cursor)
-    if png is None:
-        raise RuntimeError("窗口抓图失败：PrintWindow 与屏幕抓取都没能取到画面")
-    _GRAB_INFO["strategy"] = used
-    return png, _GRAB_INFO["img_w"], _GRAB_INFO["img_h"], rect.left, rect.top, w, h
-
-
-# 记录最近一次窗口抓图的元信息（供工具文案如实说明用了哪条路径、有没有踩到空图）
-_GRAB_INFO = {"strategy": "", "blank": False, "note": ""}
-
-
-def _grab_window_printwindow(hwnd, w, h, max_w, grid, cursor, rect):
-    """PrintWindow 路径：抓到空图（全黑/全同色）时返回 (None, 原因) 让调用方兜底。"""
-    scr = user32.GetDC(0)
-    mem = gdi32.CreateCompatibleDC(scr)
-    bmp = gdi32.CreateCompatibleBitmap(scr, w, h)
-    old = gdi32.SelectObject(mem, bmp)
-    try:
-        if not user32.PrintWindow(hwnd, mem, 2):    # PW_RENDERFULLCONTENT
-            return None, "PrintWindow 返回失败"
-        if _bits_are_blank(_dib_bits(mem, bmp, w, h), w, h):
-            return None, "PrintWindow 抓到的是空白画面"
-        cx, cy = _cursor_pos()
-        png, iw, ih = _capture_scaled(mem, 0, 0, w, h, min(max_w, w),
-                                      GRID_CELLS if grid else 0,
-                                      (cx - rect.left, cy - rect.top) if cursor else None)
-        _GRAB_INFO.update({"img_w": iw, "img_h": ih, "blank": False})
-        return png, "PrintWindow"
-    finally:
-        gdi32.SelectObject(mem, old)
-        gdi32.DeleteObject(bmp)
-        gdi32.DeleteDC(mem)
-        user32.ReleaseDC(0, scr)
-
-
-def _grab_window_screen(hwnd, rect, w, h, max_w, grid, cursor):
-    """屏幕区域路径：先把窗口提到最前，再从屏幕 DC 拷贝它覆盖的区域。
-
-    裁剪要点：窗口可能部分在屏外（最大化窗口的隐形边框会让 rect 超出屏幕），
-    这里把抓取区域裁到虚拟屏内，并把**裁剪后的实际区域**写进 _GRAB_INFO，
-    保证图像像素 ↔ 物理坐标的映射依然精确（否则落点会整体偏移）。
-    """
-    activate_window(hwnd)
-    time.sleep(0.25)
-    vx, vy, vw, vh = _virtual_screen()
-    sx, sy = max(vx, rect.left), max(vy, rect.top)
-    ex, ey = min(vx + vw, rect.right), min(vy + vh, rect.bottom)
-    cw, ch = ex - sx, ey - sy
-    if cw <= 0 or ch <= 0:
-        return None, ""
-    scr = user32.GetDC(0)
-    mem = gdi32.CreateCompatibleDC(scr)
-    bmp = gdi32.CreateCompatibleBitmap(scr, cw, ch)
-    old = gdi32.SelectObject(mem, bmp)
-    try:
-        with _no_overlay():
-            if not gdi32.BitBlt(int(mem), 0, 0, cw, ch, int(scr), sx, sy, SRCCOPY):
-                return None, ""
-        cx, cy = _cursor_pos()
-        png, iw, ih = _capture_scaled(mem, 0, 0, cw, ch, min(max_w, cw),
-                                      GRID_CELLS if grid else 0,
-                                      (cx - sx, cy - sy) if cursor else None)
-        _GRAB_INFO.update({"img_w": iw, "img_h": ih, "blank": False,
-                           "offset": (sx - rect.left, sy - rect.top)})
-        return png, "屏幕抓取"
-    finally:
-        gdi32.SelectObject(mem, old)
-        gdi32.DeleteObject(bmp)
-        gdi32.DeleteDC(mem)
-        user32.ReleaseDC(0, scr)
-
-
-def _bits_are_blank(bits: bytes, w: int, h: int) -> bool:
-    """判断位图是不是「空白」—— GPU 窗口抓取失败的典型特征。
-
-    两条判据（都要保守，宁可多跑一次屏幕抓取，也不能把正常界面误判成空白）：
-      ① 98% 以上是近黑（各通道 < 8）→ 抓取失败；
-      ② 99.5% 以上同色，且该颜色是「近黑（< 24）或近白（> 240）」→ 整块空表面。
-    刻意**不**把中等深色当成空白：Blender 这类软件本身就是深色主题
-    （主背景约 #303030 = 48），若把「均匀深色」判成空白，每次截图都会白跑一次
-    屏幕抓取，还会平白把窗口抢到最前打扰用户。
-
-    抽样步长按面积自适应（最多看约 2 万个像素），大图也不会拖慢。
-    """
-    total = w * h
-    if total <= 0 or len(bits) < total * 4:
-        return True
-    step = max(1, total // 20000)
-    dark = 0
-    n = 0
-    first = None
-    first_raw = None
-    same = 0
-    for p in range(0, total, step):
-        i = p * 4
-        b, g, r = bits[i], bits[i + 1], bits[i + 2]
-        n += 1
-        if r < 8 and g < 8 and b < 8:
-            dark += 1
-        cur = (r >> 4, g >> 4, b >> 4)
-        if first is None:
-            first = cur
-            first_raw = (r, g, b)
-        elif cur == first:
-            same += 1
-    if n == 0:
-        return True
-    if dark >= n * 0.98:
-        return True
-    if same >= n * 0.995 and first_raw is not None:
-        return max(first_raw) < 24 or min(first_raw) > 240
-    return False
 
 
 def _region_snapshot_at(x: int, y: int, radius: int = 48) -> tuple:
@@ -931,6 +787,11 @@ SNAP_MERGE_GAP = 2          # 相邻碎片间距 ≤ 它就并成同一个目标
                             # 又远小于并排按钮之间的间距（一般 ≥6px），不会误并隔壁按钮
 SNAP_MERGE_OVERLAP = 2      # 合并时另一轴至少要重叠这么多像素：只合并“同一块”的碎片，
                             # 避免斜对角的两个噪点被并成一个假大块
+SNAP_MIN_FILL_RATIO = 0.10  # 大块的前景填充率低于此值 ⇒ 边框环/阴影/空心框，不是可点元素。
+                            # 阴影在色差阈值下只剩一圈淡淡的边，填充率通常 <0.1；正常按钮
+                            # （含图标按钮）填充率远高于它。淘汰它们，避免吸附到「框」上。
+SNAP_HOLLOW_MIN_SIDE = 20   # 只对两边都 ≥20px 的大块判填充率：小控件（16px 复选框边框）
+                            # 填充率天然低，但它整块都可点，不能淘汰。
 SNAP_NEAR_MIN = 10          # 「估计点到候选元素外接框」的距离上限（估计点在元素外时）：
 SNAP_NEAR_MAX = 20          # 取 clamp(reach/5, MIN, MAX)。以前按 reach/2 放行（默认 44px、
                             # 扩大半径后 70px），真机出事：在**空输入框**里点，最近的控件
@@ -1378,7 +1239,7 @@ def _fill_candidates(out: list, comps: list, bands: list, usable, x, y, lx, ly,
 def _mode_mean(bits: bytes, offs) -> tuple:
     """采样像素里众数桶的**真实均值**：(众数像素数, (r,g,b))。
 
-    为什么要均值而不是桶中心：`_row_modal` / `_area_modal` 给的是 8 级量化后的
+    为什么要均值而不是桶中心：区域背景色给的是 8 级量化后的
     **桶中心**，它每通道最多偏 7 级、三通道加起来能到 21 —— 已经超过 SNAP_BG_DIST(18)。
     拿它当背景色，整块面板都会被判成前景（实测：面板底色 215，桶中心 208，三通道差 21）。
     有了均值，误差回到 1 级以内。
@@ -1625,6 +1486,49 @@ def _adaptive_fg_mask(bits: bytes, w: int, h: int, mask: bytearray, bg) -> bytea
     return best[1] if best is not None else mask
 
 
+def _component_usable(c: dict, w: int, h: int) -> bool:
+    """连通域是否「像控件」：面积、边长合适，没被区域边界截断，且不是空心框/阴影环。
+
+    最后一条（填充率）是新增的：窗口边框、投影、圆角描边在色差阈值下只剩一圈，
+    外接框很大但前景像素很少。吸附到它上面，落点是那圈边线，点下去要么打空、
+    要么点到窗口阴影上 —— 现象就是「明明点在按钮上却偏了」。小控件（复选框边框）
+    豁免：它整块都可点，只是边框细。
+    """
+    bw = c["maxx"] - c["minx"] + 1
+    bh = c["maxy"] - c["miny"] + 1
+    if c["area"] < SNAP_MIN_AREA or bw < SNAP_MIN_SPAN or bh < SNAP_MIN_SPAN:
+        return False
+    if c["area"] > SNAP_MAX_AREA_RATIO * w * h:
+        return False
+    # 触到区域边界 ⇒ 元素被截断，真实中心在区域之外，不能作为吸附目标
+    if c["minx"] <= 0 or c["miny"] <= 0 or c["maxx"] >= w - 1 or c["maxy"] >= h - 1:
+        return False
+    if min(bw, bh) >= SNAP_HOLLOW_MIN_SIDE:
+        if c["area"] / float(bw * bh) < SNAP_MIN_FILL_RATIO:
+            return False
+    return True
+
+
+def _snap_rank_key(c: dict, lx: int, ly: int, inside: bool, dist: float) -> tuple:
+    """候选可信度排序键（纯函数，便于单测）。
+
+    `dist`（估计点到候选外接框的距离）先按 **2px 分桶**，而不是直接比小数点后三位：
+    密排工具条上，估计点常落在两个图标之间，左右候选的 dist 往往只差 0.2~0.9px ——
+    直接比 dist 会被这点噪声决定，吸到「稍近的隔壁」。分桶后两者同档，再由
+    `cdist`（估计点到候选**中心**的距离）决胜：中心更近的那个才是视觉上「你要的」。
+    2px 之外的差异仍按 dist 优先，不会把远处的候选拉进来。
+    """
+    bw = c["maxx"] - c["minx"] + 1
+    bh = c["maxy"] - c["miny"] + 1
+    cx = (c["minx"] + c["maxx"]) / 2.0
+    cy = (c["miny"] + c["maxy"]) / 2.0
+    cdist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
+    # 细长块惩罚：分隔线/滚动条/边框是一维的，同档时必须让位于按钮块
+    slender = 1 if (bw > 5 * bh or bh > 5 * bw) else 0
+    return (0 if inside else 1, int(dist // 2), slender, round(cdist, 2),
+            -(bw * bh), c["miny"], c["minx"])
+
+
 def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
                  max_shift=None, cands=None) -> tuple:
     """单次吸附（固定搜索半径）：把 (x,y) 吸附到附近最可信的元素中心。
@@ -1690,17 +1594,7 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
     lx, ly = int(x) - x0, int(y) - y0          # 估计点在区域内的局部坐标
 
     def _usable(c):
-        """连通域是否「像控件」：面积、边长合适，且没有被区域边界截断。"""
-        bw = c["maxx"] - c["minx"] + 1
-        bh = c["maxy"] - c["miny"] + 1
-        if c["area"] < SNAP_MIN_AREA or bw < SNAP_MIN_SPAN or bh < SNAP_MIN_SPAN:
-            return False
-        if c["area"] > SNAP_MAX_AREA_RATIO * w * h:
-            return False
-        # 触到区域边界 ⇒ 元素被截断，真实中心在区域之外，不能作为吸附目标
-        if c["minx"] <= 0 or c["miny"] <= 0 or c["maxx"] >= w - 1 or c["maxy"] >= h - 1:
-            return False
-        return True
+        return _component_usable(c, w, h)
 
     # 掩码只构造一次，连通域与行带共用（区域 176×176 时这是最大的一笔可省开销）
     mask = _fg_mask(bits, w, h, bg, SNAP_BG_DIST)
@@ -1721,6 +1615,33 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
     if cands is not None:
         _fill_candidates(cands, comps, bands, _usable, x, y, lx, ly, x0, y0, w, h, mask)
 
+    # 0) 「小而具体」优先：估计点已经落在某个可用连通域里 → 直接吸到它的落点。
+    #    为什么要抢在行/带模式前面：列表行内常有复选框/开关/小按钮，带模式会把 y
+    #    拉到整行中心（往往正好落在这个小控件之外），点下去变成「选中整行 /没反应」。
+    hits = [c for c in comps
+            if _usable(c) and c["minx"] <= lx <= c["maxx"]
+            and c["miny"] <= ly <= c["maxy"]]
+    band_h = (band["ymax"] - band["ymin"] + 1) if band else 0
+    if hits:
+        # 取面积最小的那个：它就是估计点所在的最具体控件（大背景块只是容器）
+        small = min(hits, key=lambda c: (c["area"], c["miny"], c["minx"]))
+        small_h = small["maxy"] - small["miny"] + 1
+        # 只在它是「行内的小控件」时才抢先：若这个块本身就撑满整行（列表里的文字/
+        # 头像），按行中心对齐仍是更稳的行为（垂直容差 = 半行高，而不是半个字高）。
+        if band_h > 0 and small_h > 0.6 * band_h:
+            small = None
+        if small is not None:
+            px, py = _landing_point(small, mask, w, h)
+            sx, sy = x0 + px, y0 + py
+            shift = ((sx - int(x)) ** 2 + (sy - int(y)) ** 2) ** 0.5
+            if shift <= shift_cap and (sx, sy) != (int(x), int(y)):
+                return sx, sy, (
+                    f"已吸附到估计点所在的控件落点：{small['maxx'] - small['minx'] + 1}×"
+                    f"{small['maxy'] - small['miny'] + 1}px 连通域（落点已校验在元素上），"
+                    f"由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。"), ruler
+            if (sx, sy) == (int(x), int(y)):
+                return sx, sy, "", ruler
+
     if band is not None:
         # ---- 行/带模式：y 对齐到这一条带的中心 ----
         sy = y0 + (band["ymin"] + band["ymax"] + 1) // 2
@@ -1732,8 +1653,14 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         pick = None
         for c in inband:
             dx = max(c["minx"] - lx, 0, lx - c["maxx"])
-            if dx <= near_cap and (pick is None or dx < pick[0]):
-                pick = (dx, c)
+            if dx > near_cap:
+                continue
+            # 同 2px 距离档内按「中心 x 距离」决胜：横向密排的条目里，
+            # 估计点落在两者之间的空白处时，中心更近的那个才是视觉上要点的。
+            cx = (c["minx"] + c["maxx"]) / 2.0
+            key = (int(dx // 2), abs(cx - lx), c["miny"], c["minx"])
+            if pick is None or key < pick[0]:
+                pick = (key, c)
         if pick is not None:
             c = pick[1]
             # 落点取质心（不对称形状/凹形元素的视觉质量中心，见 _landing_point），
@@ -1741,7 +1668,14 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
             px, _py = _landing_point(c, mask, w, h)
             sx = x0 + px
         else:
-            sx = int(x)
+            # x 落在该行内容之外（常见：模型把整行中点估到了右侧空白/滚动条/隔壁面板）。
+            # 只有**内容足够宽、像列表行**（内容横向跨度 ≥ 60% 区域）才把 x 收进内容范围；
+            # 窄工具条保持原 x —— 那里收紧反而会点到隔壁按钮。
+            bx0, bx1 = int(band.get("xmin", 0)), int(band.get("xmax", w - 1))
+            if (bx1 - bx0) >= 0.6 * w and not (bx0 + 2 <= lx <= bx1 - 2):
+                sx = x0 + min(max(lx, bx0 + 2), bx1 - 2)
+            else:
+                sx = int(x)
         shift = ((sx - int(x)) ** 2 + (sy - int(y)) ** 2) ** 0.5
         if shift > shift_cap:
             return x, y, "", ruler
@@ -1754,7 +1688,9 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
             how += (f"；x 取同行最近的 {c['maxx'] - c['minx'] + 1}×"
                     f"{c['maxy'] - c['miny'] + 1}px 连通域落点（质心，已校验落在元素上）")
         else:
-            how += "；该行内容离估计点较远，x 保持你给的位置（整行都可点，这是安全的）"
+            how += ("；该行内容离估计点较远，x 保持你给的位置（整行都可点，这是安全的）"
+                    if sx == int(x) else
+                    "；估计点落在该行内容之外，x 已收进该行内容范围（避免点到空白/滚动条）")
         return sx, sy, f"{how}。由 ({x},{y}) 修正为 ({sx},{sy})，位移 {shift:.1f}px。", ruler
 
     # ---- 连通域模式：没有像样的「行」时（按钮、图标、视口内元素）按可信度吸附 ----
@@ -1771,21 +1707,9 @@ def _snap_region(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
         if dist > near_cap:
             continue
         inside = (c["minx"] <= lx <= c["maxx"] and c["miny"] <= ly <= c["maxy"])
-        cx = (c["minx"] + c["maxx"]) / 2.0
-        cy = (c["miny"] + c["maxy"]) / 2.0
-        cdist = ((cx - lx) ** 2 + (cy - ly) ** 2) ** 0.5
-        area = (c["maxx"] - c["minx"] + 1) * (c["maxy"] - c["miny"] + 1)
-        # 细长块惩罚：分隔线/滚动条/边框是一维的，并排按钮之间夹着的常常就是它们。
-        # 旧行为只比「离框距离 + 中心距离 + 面积」，一根 5×60 的细线中心距离往往
-        # 比 nearby 的按钮更近，会把点击拽到线上。同距离时按钮块必须胜过细条。
-        bw = c["maxx"] - c["minx"] + 1
-        bh = c["maxy"] - c["miny"] + 1
-        slender = 1 if (bw > 5 * bh or bh > 5 * bw) else 0
-        # 排序键：点在候选内优先；其次离外接矩形近；同距离时非细长块优先；再其次
-        # 中心近；再大块优先（按钮整体胜过按钮上零碎的文字笔画）；最后用坐标兜底，
-        # 保证确定性。
-        key = (0 if inside else 1, round(dist, 3), slender, round(cdist, 3), -area,
-               c["miny"], c["minx"])
+        # 排序键见 _snap_rank_key：dist 分 2px 档 → 同档按中心距离决胜 → 非细长块优先
+        # → 大块优先（按钮整体胜过按钮上零碎的文字笔画）→ 坐标兜底（保证确定性）。
+        key = _snap_rank_key(c, lx, ly, inside, dist)
         if best is None or key < best[0]:
             best = (key, c, inside)
     if best is None:
@@ -1843,820 +1767,6 @@ def _snap_to_element(x: int, y: int, reach: int = SNAP_REACH_DEFAULT,
     return sx, sy, note
 
 
-# ============================================================================
-# 任务栏图标定位：把「屏幕底部那条通栏」里的一个个应用图标量出来
-# ============================================================================
-# 为什么要有这一层（这是「打开/切换应用」最常见的入口）：
-# 用户说「打开微信」时，微信**往往已经在跑**，只是窗口在后台 —— 此时最快的路径不是去
-# 开始菜单重新启动一个实例，而是**点任务栏上那个图标**（一次点击 = 切到它的窗口，
-# 已在运行的应用不会再启动第二个）。可任务栏是 explorer.exe 自绘的，同样没有任何
-# 可读的控件信息，只能靠像素定位。于是这里做三件事：
-#   ① 认出任务栏那一条通栏在哪；② 把通栏里的图标切成一个个槽位并**编号**；
-#   ③ 按编号点击，并回读落点 + 校验前台窗口是否真的换了。
-#
-# 实测（本机 1920×1080 / 125% DPI / Win11，全部为真机测量）：
-#   * 任务栏是**竖向渐变**背景：底行众数色 (40,32,24)，往上逐渐变亮（(29,34,44) 一类）；
-#     整条带里**没有一个像素**与底行众数色的色差小于 18 —— 所以「单一背景色 + 色差
-#     阈值」的模型在任务栏上必然失效（实测只能抓到零星碎片）。必须**按行取背景色**。
-#   * 通栏的判据因此是「逐行众数色 + 该行众数色的覆盖率」：任务栏行的覆盖率实测
-#     ≈0.52~0.58，而紧邻的壁纸行 ≈0.35 且众数色跳变 —— 两者一起判，边界干净利落。
-#   * 任务栏图标会被高光/抗锯齿**切成好几块**（实测「英/拼」切成 8 块、时钟数字逐字
-#     分开），所以要先按 x 邻近合并成槽位，不能拿连通域直接当图标。
-TASKBAR_STRIP_H = 200       # 探任务栏时抓屏幕底部多高（任务栏一般 40~64px，留足余量）
-TASKBAR_MIN_H = 24          # 通栏最小高度：低于它多半不是任务栏（壁纸色带/窗口标题栏）
-TASKBAR_MAX_H = 140         # 通栏最大高度：再高就不是任务栏了（防止把整片壁纸认成通栏）
-TASKBAR_MIN_COVER = 0.45    # 某行的众数色覆盖率下限（任务栏是通栏，背景占满整行）
-TASKBAR_COLOR_TOL = 90      # 该行众数色与「底行众数色」的最大色差（竖向渐变会拉开几十级）
-TASKBAR_BG_TOL = 24         # 图标前景判定：与**本行背景色**的色差阈值
-TASKBAR_PART_MIN_AREA = 10  # 连通域碎片的最小面积（比元素吸附宽松：图标会被高光切碎）
-TASKBAR_PART_MIN_SPAN = 3   # 碎片的最小边长（1~2px 的细线是分隔线/阴影，不是图标）
-TASKBAR_MERGE_GAP = 12      # 水平间距 ≤ 它就把碎片并成**同一个图标**（笔画/数字之间的缝）
-TASKBAR_SLOT_MAX_W = 280    # 合并后的槽位最大宽度（搜索框/小组件按钮天生很宽，要放行）
-TASKBAR_SLOT_MIN_W = 6      # 槽位最小宽度
-TASKBAR_SLOT_MIN_H = 6      # 槽位最小高度（「↑」这种小字形只有 7px 高，别再抬高）
-TASKBAR_RIGHT_ZONE = 360    # 中心 x ≥ 宽-360 视为**右侧托盘/状态区**（输入法/音量/时钟/↑）
-TASKBAR_LEFT_ZONE = 150     # 中心 x ≤ 150 视为**最左区**（开始菜单/小组件/搜索）
-TASKBAR_IND_MAX_H = 8       # 「已启动指示条」的最大高度（图标下方那条小横条）
-TASKBAR_IND_MIN_W = 8
-TASKBAR_IND_MAX_W = 60
-TASKBAR_IND_BOTTOM = 12     # 指示条距通栏底边的最大距离
-TASKBAR_CTX_TOP = 28        # 出图时在通栏上方多带一点上下文（能看到窗口底边，便于对号）
-TASKBAR_IMG_MAX_W = 1440    # 通栏出图的目标宽度（1920 宽屏缩一点，图标仍可辨认）
-TASKBAR_PANEL_W = 380       # 「↑ 隐藏图标/后台应用面板」的搜索矩形宽
-TASKBAR_PANEL_H = 480       # 同上，高
-TASKBAR_PANEL_CHANGE_MIN = 0.004  # 面板区域像素变化比例下限：低于它说明面板没弹出来
-TASKBAR_PANEL_MAX_SLOTS = 16      # 面板里最多报告几个槽位（多了模型会挑花眼）
-TASKBAR_CHEVRON_MAX_W = 44  # 「↑」按钮的宽度上限（用它把 ↑ 与输入法/时钟/音量区分开）
-TASKBAR_BASE_ROWS = 2       # 逐列背景色取条带**顶部**几行的中位数（图标垂直居中，顶行是纯背景）
-TASKBAR_BASE_FILT = 5       # 逐列背景再做 5 宽中值滤波（顶行万一被图标/窗口边缘污染能盖回来）
-TASKBAR_SPLIT_GAP = 3       # 连续「零活动列」宽度 ≥ 它就切开：图标之间的缝 ~8px，字形内的缝 1~2px
-TASKBAR_COL_MIN_PX = 1      # 一列至少这么多前景像素才算「有活动」
-TASKBAR_IND_ROWS = 4        # 「已启动指示条」只在条带**最底 4 行**里找（实测指示条厚 2~3px）
-TASKBAR_IND_MIN_PX = 6      # 这 4 行里至少这么多前景像素才算有指示条
-TASKBAR_IND_MIN_W = 6       # 指示条的最小宽度（窄于它多半是图标底边的抗锯齿）
-
-
-def _row_modal(bits: bytes, w: int, y: int, tol: int = 30):
-    """某一行的背景色与它的覆盖率：返回 ((r,g,b), 覆盖率)。
-
-    背景色取该行**众数色**（8 级量化后取桶中心）。任务栏是竖向渐变，只有「按行取背景」
-    才能把图标从背景里分出来（见上方实测说明）。
-    """
-    from collections import Counter
-    base = y * w
-    cnt = Counter()
-    for x in range(w):
-        o = (base + x) * 4
-        cnt[(bits[o] >> 3, bits[o + 1] >> 3, bits[o + 2] >> 3)] += 1
-    if not cnt:
-        return None, 0.0
-    key = cnt.most_common(1)[0][0]
-    col = (key[0] << 3, key[1] << 3, key[2] << 3)
-    near = 0
-    for x in range(w):
-        o = (base + x) * 4
-        if (abs(bits[o] - col[0]) + abs(bits[o + 1] - col[1])
-                + abs(bits[o + 2] - col[2])) <= tol:
-            near += 1
-    return col, near / max(1, w)
-
-
-def _area_modal(bits: bytes, w: int, h: int):
-    """整块区域的主色（众数色）——用于「面板背景」这种整块同色的情形。"""
-    from collections import Counter
-    cnt = Counter()
-    for i in range(w * h):
-        o = i * 4
-        cnt[(bits[o] >> 3, bits[o + 1] >> 3, bits[o + 2] >> 3)] += 1
-    if not cnt:
-        return None
-    key = cnt.most_common(1)[0][0]
-    return (key[0] << 3, key[1] << 3, key[2] << 3)
-
-
-def _detect_taskbar_band(bits: bytes, w: int, h: int):
-    """从底部往上找出任务栏那条通栏，返回 (y_top, y_bottom, 背景色, 每行背景色列表)。
-
-    判据两条**必须同时成立**（缺一不可）：
-      * 该行众数色的覆盖率 ≥ TASKBAR_MIN_COVER —— 任务栏是**通栏**，背景铺满整行；
-      * 该行众数色与「底行众数色」的色差 ≤ TASKBAR_COLOR_TOL —— 挡住「壁纸恰好也有
-        一条纯色横带」这种巧合。
-    从底行往上连续走，遇到第一个不满足的行就停：它上面那一行就是通栏的上边界。
-    找不到（或高度不合常理）返回 None —— 此时要如实告诉模型「没找到任务栏」，
-    而不是硬按一个假想的任务栏去点。
-    """
-    if w <= 0 or h <= 0 or len(bits) < w * h * 4:
-        return None
-    base_col, base_cov = _row_modal(bits, w, h - 1)
-    if base_col is None or base_cov < TASKBAR_MIN_COVER:
-        return None
-    row_bgs = [None] * h
-    row_bgs[h - 1] = base_col
-    top = 0
-    for y in range(h - 2, -1, -1):
-        col, cov = _row_modal(bits, w, y)
-        if col is None:
-            top = y + 1
-            break
-        d = abs(col[0] - base_col[0]) + abs(col[1] - base_col[1]) + abs(col[2] - base_col[2])
-        if cov < TASKBAR_MIN_COVER or d > TASKBAR_COLOR_TOL:
-            top = y + 1
-            break
-        row_bgs[y] = col
-    band_h = h - top
-    if band_h < TASKBAR_MIN_H or band_h > TASKBAR_MAX_H:
-        return None
-    return top, h - 1, base_col, row_bgs
-
-
-def _taskbar_parts(bits: bytes, w: int, h: int, row_bgs: list) -> list:
-    """按**每行自己的背景色**取前景掩码并做连通域标记，返回碎片列表。
-
-    这就是任务栏版本与通用元素吸附的关键差别：通用吸附用「区域四条边的众数色」当背景，
-    而任务栏背景是竖向渐变，单一背景色会把整条带都判成前景（实测 100% 像素「像前景」）。
-    """
-    mask = bytearray(w * h)
-    for y in range(h):
-        bg = row_bgs[y] if y < len(row_bgs) else None
-        if bg is None:
-            continue
-        base = y * w
-        br, bgc, bb = bg
-        for x in range(w):
-            o = (base + x) * 4
-            if (abs(bits[o] - br) + abs(bits[o + 1] - bgc)
-                    + abs(bits[o + 2] - bb)) > TASKBAR_BG_TOL:
-                mask[base + x] = 1
-    return _components_from_mask(mask, w, h)
-
-
-def _band_base_cols(bits: bytes, w: int, h: int,
-                    rows: int = TASKBAR_BASE_ROWS,
-                    filt: int = TASKBAR_BASE_FILT) -> list:
-    """逐列背景色 base(x)：取条带**顶部**几行的中位数，再做一次水平中值滤波。
-
-    为什么不能只按行取众数色：真实任务栏背景是**双向渐变** —— 竖向由深到浅，横向还会
-    因为壁纸/亚克力透出来而整体偏色（实测本机左侧 (80,38,22)、右侧 (43,35,31)，差 40+
-    级）。单色模型会把左半条整片判成前景（实测 100% 像素「像前景」，图标全丢）。
-
-    可分离模型 bg(x,y) = base(x) + vdelta(y) 把两个方向拆开：
-      * base(x) 从**顶行**取 —— 任务栏图标垂直居中，顶行一定是纯背景；
-      * vdelta(y) 从每行众数色取 —— 同一行内，背景的竖向偏移处处相同。
-    中值滤波是为兜底：万一某个图标顶到了条带上沿（或窗口边缘压在顶行），
-    那一列的 base 会被图标色污染、整列被判成背景，中值滤波会用左右邻居把它盖回来。
-    """
-    if w <= 0 or h <= 0 or len(bits) < w * h * 4:
-        return []
-    n = max(1, min(int(rows), h))
-    raw = []
-    for x in range(w):
-        ch = ([], [], [])
-        for y in range(n):
-            o = (y * w + x) * 4
-            ch[0].append(bits[o])
-            ch[1].append(bits[o + 1])
-            ch[2].append(bits[o + 2])
-        raw.append([sorted(c)[len(c) // 2] for c in ch])
-    half = max(0, int(filt) // 2)
-    if half == 0:
-        return [tuple(c) for c in raw]
-    out = []
-    for x in range(w):
-        win = raw[max(0, x - half):min(w, x + half + 1)]
-        out.append(tuple(sorted(c[k] for c in win)[len(win) // 2] for k in range(3)))
-    return out
-
-
-def _band_vdelta(row_bgs: list) -> list:
-    """每行的竖向偏移 vdelta(y) = 该行众数色 − 顶行众数色（三通道各自算）。"""
-    if not row_bgs:
-        return []
-    top = row_bgs[0]
-    return [(c[0] - top[0], c[1] - top[1], c[2] - top[2]) for c in row_bgs]
-
-
-def _band_fg(bits: bytes, w: int, h: int, base: list, vdelta: list,
-             tol: int = TASKBAR_BG_TOL):
-    """按可分离渐变模型取前景掩码，同时返回**逐列活动度** act[x]。
-
-    列活动度是任务栏分段的依据：任务栏是**一行**图标，相邻按钮之间一定有整列纯背景；
-    而一个图标内部（哪怕是被抗锯齿切碎的字形）几乎不可能出现整列纯背景。
-    """
-    mask = bytearray(w * h)
-    act = [0] * w
-    if not base:
-        return mask, act
-    for y in range(h):
-        dy = vdelta[y] if y < len(vdelta) else (0, 0, 0)
-        row = y * w
-        for x in range(w):
-            b = base[x]
-            o = (row + x) * 4
-            if (abs(bits[o] - (b[0] + dy[0])) + abs(bits[o + 1] - (b[1] + dy[1]))
-                    + abs(bits[o + 2] - (b[2] + dy[2]))) > tol:
-                mask[row + x] = 1
-                act[x] += 1
-    return mask, act
-
-
-def _band_runs(act: list, w: int) -> list:
-    """列活动度 → 连续的「有内容」列区间 [(x0, x1), ...]。
-
-    切开条件：连续 TASKBAR_SPLIT_GAP 列**零活动**。这个阈值是实测出来的分界线 ——
-    相邻任务栏按钮之间是 6~10px 的纯背景缝，而一个字形（如「拼」）内部的缝只有 1~2px。
-    用「连通域 + 间隙合并」反而会把两个相邻按钮并成一个（那样落点落在两图标之间，
-    就是最典型的「点了没反应」）。
-    """
-    runs = []
-    x = 0
-    while x < w:
-        if act[x] < TASKBAR_COL_MIN_PX:
-            x += 1
-            continue
-        s = x
-        zero = 0
-        while x < w:
-            if act[x] < TASKBAR_COL_MIN_PX:
-                zero += 1
-                if zero >= TASKBAR_SPLIT_GAP:
-                    break
-            else:
-                zero = 0
-            x += 1
-        e = min(w - 1, x - zero)
-        if e >= s:
-            runs.append((s, e))
-        x = e + 1
-    return runs
-
-
-def _band_slots(bits: bytes, w: int, h: int, x0: int, y0: int,
-                base: list, vdelta: list) -> list:
-    """任务栏通栏内的图标槽位（单行）：列分段 → 每段的 y 范围 → 编号（1 起）。
-
-    每个槽位给出屏幕物理坐标中心 (x,y)、尺寸 (w,h)、外接矩形 box、running
-    （图标下方带「已启动指示条」= 该应用已在运行，点它等于切到它的窗口）。
-
-    中心 y 用该段前景像素的**中位 y**，不用外框中心：外框会把下方那条指示条算进去，
-    外框中心因此比图标本体低 3~5px（在大图标上足以把落点压到图标边缘）。
-    """
-    mask, act = _band_fg(bits, w, h, base, vdelta)
-    slots = []
-    for s, e in _band_runs(act, w):
-        sw = e - s + 1
-        if sw < TASKBAR_SLOT_MIN_W:
-            continue
-        ys = []
-        for y in range(h):
-            row = y * w
-            for x in range(s, e + 1):
-                if mask[row + x]:
-                    ys.append(y)
-                    break
-        if not ys:
-            continue
-        sh = ys[-1] - ys[0] + 1
-        if sh < TASKBAR_SLOT_MIN_H:
-            continue
-        # 「已启动」指示条：只在最底几行找，且它必须明显比图标本体窄（否则那是图标本身）
-        bar = []
-        for y in range(max(0, h - TASKBAR_IND_ROWS), h):
-            row = y * w
-            for x in range(s, e + 1):
-                if mask[row + x]:
-                    bar.append(x)
-        running = False
-        if len(bar) >= TASKBAR_IND_MIN_PX:
-            bspan = max(bar) - min(bar) + 1
-            running = (TASKBAR_IND_MIN_W <= bspan <= min(TASKBAR_IND_MAX_W, max(6, sw - 2)))
-        slots.append({
-            "x": x0 + (s + e + 1) // 2,
-            "y": y0 + ys[len(ys) // 2],
-            "w": sw,
-            "h": sh,
-            "box": (x0 + s, y0 + ys[0], x0 + e, y0 + ys[-1]),
-            "running": running,
-        })
-    slots = _sort_slots(slots)
-    for i, s in enumerate(slots, 1):
-        s["i"] = i
-    return slots
-
-
-def _merge_parts(parts: list, w: int, h: int) -> list:
-    """把碎片按 x 邻近合并成**图标槽位**（图标被高光/抗锯齿切成几块是常态）。
-
-    合并规则：按左边缘排序后贪心扫描，与当前槽位的水平间距 ≤ TASKBAR_MERGE_GAP 就并
-    进来；但并进来会超过 TASKBAR_SLOT_MAX_W 时**不并** —— 宁可把它当成两个候选（让模型
-    在图上认），也绝不把相邻的两个任务栏按钮并成一个（那样落点会落在两个图标之间的缝上，
-    是最典型的「点了没反应」）。
-    触到区域边界的碎片一律淘汰：真实尺寸未知（被截断），中心不可信。
-    """
-    keep = []
-    for c in parts:
-        bw = c["maxx"] - c["minx"] + 1
-        bh = c["maxy"] - c["miny"] + 1
-        if c["area"] < TASKBAR_PART_MIN_AREA or bw < TASKBAR_PART_MIN_SPAN \
-                or bh < TASKBAR_PART_MIN_SPAN:
-            continue
-        if c["minx"] <= 0 or c["miny"] <= 0 or c["maxx"] >= w - 1 or c["maxy"] >= h - 1:
-            continue
-        keep.append(c)
-    keep.sort(key=lambda c: c["minx"])
-    merged = []
-    for c in keep:
-        if merged:
-            s = merged[-1]
-            gap = c["minx"] - s["maxx"] - 1
-            if gap <= TASKBAR_MERGE_GAP and (c["maxx"] - s["minx"] + 1) <= TASKBAR_SLOT_MAX_W:
-                s["minx"] = min(s["minx"], c["minx"])
-                s["maxx"] = max(s["maxx"], c["maxx"])
-                s["miny"] = min(s["miny"], c["miny"])
-                s["maxy"] = max(s["maxy"], c["maxy"])
-                s["area"] += c["area"]
-                continue
-        merged.append({"minx": c["minx"], "maxx": c["maxx"],
-                       "miny": c["miny"], "maxy": c["maxy"], "area": c["area"]})
-    out = []
-    for s in merged:
-        if (s["maxx"] - s["minx"] + 1) < TASKBAR_SLOT_MIN_W \
-                or (s["maxy"] - s["miny"] + 1) < TASKBAR_SLOT_MIN_H:
-            continue
-        out.append(s)
-    return out
-
-
-def _sort_slots(slots: list, grid: bool = False) -> list:
-    """槽位排序：任务栏是**一行**，按 x 从左到右即可；面板是**网格**，先按行再按列。
-
-    面板（隐藏图标/后台应用面板）里图标是几行几列排的，只按 x 排会把不同行的图标
-    交错编号，模型对照坐标表就找不到对应关系了。
-    """
-    if not grid:
-        return sorted(slots, key=lambda s: s["x"])
-    rows = []                       # [(行中心 y, [槽位...])]
-    for s in sorted(slots, key=lambda s: s["y"]):
-        placed = False
-        for row in rows:
-            if abs(s["y"] - row[0]) <= max(10, s["h"] // 2):
-                row[1].append(s)
-                placed = True
-                break
-        if not placed:
-            rows.append([s["y"], [s]])
-    rows.sort(key=lambda r: r[0])
-    out = []
-    for _cy, group in rows:
-        out.extend(sorted(group, key=lambda s: s["x"]))
-    return out
-
-
-def _taskbar_slots(bits: bytes, w: int, h: int, x0: int, y0: int,
-                   row_bgs: list, parts=None, grid: bool = False) -> list:
-    """通栏/面板内的**图标槽位**：碎片 → 合并 → 过滤 → 编号（1 起）。
-
-    每个槽位给出屏幕物理坐标中心 (x,y)、尺寸 (w,h)、外接矩形 box，以及 running
-    （图标下方带「已启动指示条」= 该应用已在运行，点它等于切到它的窗口）。
-    """
-    parts = _taskbar_parts(bits, w, h, row_bgs) if parts is None else parts
-    merged = _merge_parts(parts, w, h)
-    indicators = [c for c in parts
-                  if (c["maxy"] - c["miny"] + 1) <= TASKBAR_IND_MAX_H
-                  and TASKBAR_IND_MIN_W <= (c["maxx"] - c["minx"] + 1) <= TASKBAR_IND_MAX_W
-                  and c["maxy"] >= h - TASKBAR_IND_BOTTOM]
-    slots = []
-    for s in merged:
-        scx = (s["minx"] + s["maxx"]) // 2
-        slots.append({
-            "x": x0 + (s["minx"] + s["maxx"] + 1) // 2,
-            "y": y0 + (s["miny"] + s["maxy"] + 1) // 2,
-            "w": s["maxx"] - s["minx"] + 1,
-            "h": s["maxy"] - s["miny"] + 1,
-            "box": (x0 + s["minx"], y0 + s["miny"], x0 + s["maxx"], y0 + s["maxy"]),
-            "running": any(abs((i["minx"] + i["maxx"]) // 2 - scx) <= 14 for i in indicators),
-        })
-    slots = _sort_slots(slots, grid=grid)
-    for i, s in enumerate(slots, 1):
-        s["i"] = i
-    return slots
-
-
-def _taskbar_zone(cx: int, gx: int, gw: int) -> str:
-    """槽位落在任务栏的哪个区域（纯几何分区，便于模型对号入座）。"""
-    rel = cx - gx
-    if rel <= TASKBAR_LEFT_ZONE:
-        return "最左区（开始菜单/小组件/搜索）"
-    if rel >= gw - TASKBAR_RIGHT_ZONE:
-        return "右侧托盘区（输入法/音量/网络/时钟/↑隐藏图标）"
-    return "应用区"
-
-
-def _taskbar_scan(strip_h: int = 0) -> dict:
-    """抓屏幕底部条带 → 找任务栏通栏 → 切图标槽位。返回 dict（失败时带 reason）。"""
-    vx, vy, vw, vh = _virtual_screen()
-    sh = max(TASKBAR_MIN_H + 8, min(int(strip_h or TASKBAR_STRIP_H), vh))
-    bits, gx, gy, gw, gh = _grab_rect_bits(vx, vy + vh - sh, vw, sh)
-    if not bits:
-        return {"ok": False, "reason": "capture",
-                "msg": "抓取屏幕底部失败（截图不可用）"}
-    band = _detect_taskbar_band(bits, gw, gh)
-    if band is None:
-        return {"ok": False, "reason": "no_band", "gx": gx, "gy": gy, "gw": gw, "gh": gh}
-    top, bottom, bg, row_bgs = band
-    bh = bottom - top + 1
-    band_bits = bits[top * gw * 4:(bottom + 1) * gw * 4]
-    band_row_bgs = row_bgs[top:bottom + 1]
-    base = _band_base_cols(band_bits, gw, bh)
-    vdelta = _band_vdelta(band_row_bgs)
-    slots = _band_slots(band_bits, gw, bh, gx, gy + top, base, vdelta)
-    return {"ok": True, "gx": gx, "gy": gy, "gw": gw, "gh": gh,
-            "top": top, "bottom": bottom, "bg": bg, "row_bgs": band_row_bgs,
-            "band_bits": band_bits, "base": base, "vdelta": vdelta, "slots": slots}
-
-
-def _taskbar_click(x: int, y: int, what: str, wait_ms: int = 900) -> str:
-    """点任务栏槽位中心并自证：回读落点 + 比对点击前后的前台窗口。
-
-    为什么要点完立刻比前台窗口：任务栏图标点击的**唯一目的**就是让某个应用到前台。
-    不比对的话，「点了没反应」（图标是未启动的固定项、或落点偏了）会被当成成功，
-    模型就会带着错误前提继续往下走 —— 这正是「疯狂找位置」的开始。
-    """
-    before = foreground_window()
-    if not do_click(int(x), int(y), "left", 1, mode="mouse"):
-        return (f"⚠ **没有完成点击**{what}：光标无法稳定停在 ({x},{y})（当前在 {_cursor_pos()}）。"
-                f"通常是**用户正在用真实鼠标**，注入被实时覆盖 —— 硬点会落到别处。"
-                f"请先请用户停手，再重试；**不要对着同一坐标反复点**。")
-    ax, ay = _cursor_pos()
-    land = (f"落点回读：({ax},{ay})，与请求完全一致（注入链路 0 偏差）"
-            if (ax, ay) == (int(x), int(y)) else
-            f"⚠ 落点回读：光标实际在 ({ax},{ay})，与请求的 ({x},{y}) 相差 "
-            f"({ax - int(x):+d},{ay - int(y):+d})px")
-    # 轮询等前台切换，而不是「睡死一段时间再只看一眼」：
-    # 任务栏图标的点击分两类 —— 切到已在运行的应用（几十毫秒就换前台）与
-    # 启动未运行的应用（要 1~3 秒）。固定 sleep 250ms 再看一眼，慢启动的必定被判成
-    # 「点了没反应」，模型于是反复点同一个图标，整体耗时越积越长（用户看到的就是超时）。
-    # 轮询的好处：快的立刻返回（不浪费时间），慢的也能等到，且总时长仍有上限。
-    budget = max(0.12, min(3.0, wait_ms / 1000.0))
-    deadline = time.time() + budget
-    after = before
-    waited = 0.0
-    while time.time() < deadline:
-        time.sleep(0.06)
-        waited += 0.06
-        after = foreground_window()
-        if after and after != before:
-            break
-    if after and after != before:
-        return (f"已点击{what}（{x},{y}）。{land}。前台窗口已切换（等了 {waited*1000:.0f}ms）："
-                f"「{window_title(before) or '（无）'}」→「{window_title(after) or after}」"
-                f"—— 应用已到前台，可以继续操作（先 screen_shot 建立坐标基准）。")
-    who = window_title(after) or after or "（无）"
-    return (f"已点击{what}（{x},{y}）。{land}。等了 {waited*1000:.0f}ms，前台窗口**仍未变化**"
-            f"（仍是「{who}」）：可能 ① 这是**未启动**的固定图标，应用还在启动（可再给它 "
-            f"2~3 秒，然后 screen_shot 看有没有新窗口，**不要重复点同一个图标**）；"
-            f"② 它本来就是前台、或只是把同一应用的另一个窗口提到前台；"
-            f"③ 落点没落在图标上（对照上表中心坐标核对）。"
-            f"想等更久可传 timeout=3000。")
-
-
-def _taskbar_no_band_msg(scan: dict) -> str:
-    """没找到任务栏通栏时的说明（如实告知 + 给出可行的下一步）。"""
-    gw = scan.get("gw") or 0
-    return (
-        "没在屏幕底部找到任务栏那条通栏（底部这一带不是「通栏纯色带」）。常见原因：\n"
-        "  · 任务栏设成了**自动隐藏** —— 把鼠标移到屏幕最下沿停一下它就会浮出来，"
-        "之后重新调用本工具；\n"
-        "  · 当前有**全屏窗口**盖住了任务栏（游戏/播放器/全屏演示）；\n"
-        "  · 任务栏被挪到了屏幕的上边或侧边（本工具只认底部通栏）。\n"
-        "下一步：先 screen_shot 看一眼屏幕底部到底有什么；若图标确实不在任务栏上，"
-        "直接用 open_app(name=\"应用名\") 启动/切换（它会自己找窗口并置顶）。"
-        + (f"\n（已抓取的底部区域为 {gw}px 宽，里面没有找到连续通栏。）" if gw else ""))
-
-
-def _taskbar_slot_lines(slots: list, gx: int, gw: int, pick: int = 0,
-                        show_zone: bool = True, running_note: bool = True) -> list:
-    """把槽位表渲染成给模型看的文字（含可直接照抄的 click 调用）。"""
-    if not slots:
-        return ["（没识别到任何图标槽位 —— 这一带可能只有背景，或者任务栏是空的。）"]
-    lines = []
-    for s in slots:
-        sel = "   ← 本次点击" if s["i"] == pick else ""
-        zone = f"  {_taskbar_zone(s['x'], gx, gw)}" if show_zone else ""
-        run = "  [已启动：图标下方有指示条]" if (running_note and s.get("running")) else ""
-        lines.append(f"  {s['i']}. 中心({s['x']},{s['y']})  尺寸 {s['w']}×{s['h']}"
-                     f"{zone}{run}{sel}")
-    return lines
-
-
-def _taskbar_strip_png(gx: int, sy: int, gw: int, sh: int, tw: int, boxes: list,
-                       marks=None) -> tuple:
-    """把条带区域出成一张（可缩放的）图。
-
-    boxes/marks 参数保留给人工调试用；**任务栏与面板流程一律传 None**——
-    返给模型的图必须是纯净原图（不画编号框/准星/任何标记），槽位信息全部走文字表。
-    """
-    dc = user32.GetDC(0)
-    try:
-        return _capture_scaled(dc, gx, sy, gw, sh, tw, 0, None, smooth=True,
-                               marks=marks, boxes=boxes)
-    finally:
-        user32.ReleaseDC(0, dc)
-
-
-def _app_state_hint(name: str) -> str:
-    """按应用名判断它当前处于什么状态，给出一句话行动建议。
-
-    目的很直接：**别让模型为了「切到某个应用」反复调 open_app / manage_window 置顶**。
-    已经在前台就直说「不用再切」，在后台就说「点任务栏图标一步到位」。
-    """
-    if not name:
-        return ""
-    hwnd, title, how = _find_app_window(_app_keys(name))
-    if not hwnd:
-        return (f"「{name}」当前**没有运行中的窗口** —— 任务栏上它的图标是未启动的固定图标，"
-                f"点下去会启动（要等 1~2 秒再截图）；也可以直接用 open_app(name=\"{name}\")。")
-    label = f"窗口 [{hwnd}] {title or '（无标题）'}"
-    if foreground_window() == hwnd:
-        return (f"「{name}」**已经在最前**（{label}）—— 不要再调 open_app / manage_window "
-                f"去置顶，直接 screen_shot 开始操作即可。")
-    if window_state(hwnd).get("minimized"):
-        return (f"「{name}」**正在运行但已最小化**（{label}）—— 点它的任务栏图标就能一步恢复，"
-                f"不要用 open_app / manage_window 反复置顶。")
-    return (f"「{name}」**正在运行但在后台**（{label}）—— 直接点它的任务栏图标切过去即可，"
-            f"不要反复调 open_app / manage_window 置顶。")
-
-
-def _taskbar_band_flow(args: dict) -> list:
-    """任务栏本体：扫描 → 编号 → （可选）按编号点击。"""
-    index = _num(args.get("index"), 0)
-    name = str(args.get("name") or "").strip()
-    scan = _taskbar_scan()
-    if not scan.get("ok"):
-        if scan.get("reason") == "no_band":
-            return [{"type": "text", "text": _taskbar_no_band_msg(scan)}]
-        return [{"type": "text", "text": scan.get("msg") or "抓取屏幕底部失败。"}]
-    gx, gy, gw, gh = scan["gx"], scan["gy"], scan["gw"], scan["gh"]
-    top, bottom = scan["top"], scan["bottom"]
-    slots = scan["slots"]
-    band_y0 = gy + top
-    band_h = bottom - top + 1
-    target = next((s for s in slots if s["i"] == index), None) if index else None
-    if index and target is None:
-        return [{"type": "text",
-                 "text": f"任务栏里只识别到 {len(slots)} 个图标槽位，没有编号 {index}。"
-                         f"请用下面列出的编号重试（不填 index 就是只扫描）。\n"
-                         + "\n".join(_taskbar_slot_lines(slots, gx, gw))}]
-
-    head = (f"任务栏（屏幕物理坐标）：检测到通栏 y {band_y0}~{band_y0 + band_h - 1}"
-            f"（高 {band_h}px），屏幕底部 {gw}px 宽。"
-            + (f"你要找的是「{name}」——" if name else "")
-            + f"共识别出 {len(slots)} 个图标槽位（**下图是任务栏原图，无任何标记**；"
-              f"编号、中心坐标与尺寸见上表，按编号或坐标点）：")
-    lines = [head] + _taskbar_slot_lines(slots, gx, gw, pick=index)
-    hint = _app_state_hint(name)
-    if hint:
-        lines.append("")
-        lines.append("状态：" + hint)
-    lines.append("")
-    lines.append("怎么用：")
-    lines.append("  ① 按上表编号/中心坐标认图标（图是任务栏原图，无任何标记）→ "
-                 "click(x=它的中心x, y=它的中心y, space=\"screen\", snap=false)")
-    lines.append("  ② 或一步到位：taskbar_open(index=N) —— 直接点第 N 个，"
-                 "并回读落点、校验前台窗口是否真的切过去了")
-    lines.append("说明：带「已启动」指示条的图标 = 该应用**正在运行**，点它等于"
-                 "切到它的窗口（不会重开一个）；没有指示条的多是未启动的固定图标，"
-                 "点它会启动该应用（要等一两秒再截图确认）。")
-    lines.append("注意：右侧托盘区（输入法/音量/网络/时钟）和最左区（开始菜单/小组件）"
-                 "也在编号里 —— 别点错区域。")
-    lines.append("下一步：确认图标不在任务栏上时，用 taskbar_open(where=\"panel\") 展开"
-                 "右侧「↑」面板找（后台运行的图标常藏在那里）；"
-                 "只有确认应用**根本没在运行**才用 open_app(name=\"…\")。")
-
-    click_note = ""
-    if target is not None:
-        reason = _guard("click")
-        if reason:
-            return [{"type": "text", "text": reason}]
-        click_note = _taskbar_click(target["x"], target["y"],
-                                    f"任务栏第 {target['i']} 个槽位", 
-                                    _num(args.get("timeout"), 900))
-        _log("ai", f"任务栏点击 #{target['i']} ({target['x']},{target['y']})")
-    _refresh_env()
-    ctx_top = TASKBAR_CTX_TOP if top >= TASKBAR_CTX_TOP else 0
-    sy = gy + top - ctx_top
-    sh = band_h + ctx_top
-    tw = max(640, min(TASKBAR_IMG_MAX_W, gw))
-    # 任务栏图**一律纯净原图**：不画编号框、不画准星、不画任何标记（用户明确要求）。
-    # 槽位信息全部走文字表（编号/中心坐标/尺寸/区域/是否已启动），模型按坐标对图认图标。
-    png, iw, ih = _taskbar_strip_png(gx, sy, gw, sh, tw, None)
-    _set_view(gx, sy, gw, sh, iw, ih, "full")
-    text = "\n".join(lines)
-    if click_note:
-        text = text + "\n\n" + click_note
-    text += (f"\n（本图 {iw}×{ih}，覆盖屏幕区域 ({gx},{sy}) {gw}×{sh}；"
-             f"{_transform_line()}）")
-    return [{"type": "text", "text": text},
-            {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}]
-
-
-def _change_bbox(a: bytes, b: bytes, w: int, h: int, tol: int = 24):
-    """两份同尺寸快照的**变化外接矩形**（用于把「刚弹出来的面板」框出来）。"""
-    if not a or not b or len(a) != len(b):
-        return None, 0
-    minx, miny, maxx, maxy = w, h, -1, -1
-    changed = 0
-    stride = w * 4
-    for y in range(h):
-        base = y * stride
-        # 先整行做一次 bytes 比较（C 层）：任务栏面板弹出时上下大片区域根本没变，
-        # 整行跳过能把最常见的「没弹出」判定从 ~150ms 压到 ~2ms —— 面板没弹出来时
-        # 模型会反复调用，这条快速路径正是避免调用整体越拖越久的关键。
-        ra = a[base:base + stride]
-        rb = b[base:base + stride]
-        if ra == rb:
-            continue
-        for x in range(w):
-            o = x * 4
-            if (abs(ra[o] - rb[o]) + abs(ra[o + 1] - rb[o + 1])
-                    + abs(ra[o + 2] - rb[o + 2])) > tol:
-                changed += 1
-                if x < minx:
-                    minx = x
-                if x > maxx:
-                    maxx = x
-                if y < miny:
-                    miny = y
-                if y > maxy:
-                    maxy = y
-    if maxx < 0:
-        return None, 0
-    return (minx, miny, maxx, maxy), changed
-
-
-def _panel_row_bgs(bits: bytes, w: int, h: int, fallback) -> list:
-    """面板裁剪图的逐行背景色：行内主色覆盖率够就用它，否则退回整块主色。
-
-    面板边缘会带上桌面内容/阴影，那些行的「众数色」不是面板背景；用覆盖率兜住。
-    """
-    out = []
-    for y in range(h):
-        col, cov = _row_modal(bits, w, y)
-        out.append(col if (col is not None and cov >= 0.40) else fallback)
-    return out
-
-
-def _taskbar_panel_flow(args: dict) -> list:
-    """右侧「↑」面板（隐藏图标 / 后台运行的应用）：先展开，再把面板里的图标编号。"""
-    index = _num(args.get("index"), 0)
-    chev = _num(args.get("chevron"), 0)
-    name = str(args.get("name") or "").strip()
-    scan = _taskbar_scan()
-    if not scan.get("ok"):
-        if scan.get("reason") == "no_band":
-            return [{"type": "text", "text": _taskbar_no_band_msg(scan)}]
-        return [{"type": "text", "text": scan.get("msg") or "抓取屏幕底部失败。"}]
-    gx, gy, gw = scan["gx"], scan["gy"], scan["gw"]
-    top, bottom = scan["top"], scan["bottom"]
-    band_y0 = gy + top
-    band_h = bottom - top + 1
-    slots = scan["slots"]
-
-    # 「↑ 显示隐藏图标」的定位：托盘区里**最左的那个小图标**（实测它就在输入法/时钟左边）
-    if chev:
-        target = next((s for s in slots if s["i"] == chev), None)
-        how = f"按你指定的 #{chev}"
-    else:
-        right = [s for s in slots
-                 if (s["x"] - gx) >= gw - TASKBAR_RIGHT_ZONE and s["w"] <= TASKBAR_CHEVRON_MAX_W]
-        target = right[0] if right else None
-        how = "自动认作「↑ 显示隐藏图标」（右侧托盘区里最左的那个小图标）"
-    if target is not None:
-        cx, cy = target["x"], target["y"]
-    else:
-        cx = gx + gw - 120
-        cy = band_y0 + band_h // 2
-        how = ("没能在托盘区认出「↑」（任务栏布局特殊），按常见位置 x=屏宽-120 试一下")
-
-    reason = _guard("click")
-    if reason:
-        return [{"type": "text", "text": reason}]
-    pw = max(160, min(TASKBAR_PANEL_W, gw))
-    # 面板高度要按**虚拟桌面顶部**算，不能按抓取条带的高度算：
-    # 条带只有 200px（TASKBAR_STRIP_H），而「↑」面板有 300~500px 高，
-    # 按条带高度截会只看到面板最下面一小条，变化量判定直接失败。
-    _vx, vy_top, _vw2, _vh2 = _virtual_screen()
-    ph = max(160, min(TASKBAR_PANEL_H, band_y0 - vy_top))
-    px0 = max(gx, min(gx + gw - pw, cx - pw // 2))
-    py0 = max(vy_top, band_y0 - ph - 6)
-    before, bx, by, bw2, bh2 = _grab_rect_bits(px0, py0, pw, ph)
-    if not before:
-        return [{"type": "text", "text": "抓取任务栏上方区域失败，无法展开面板。"}]
-    click_note = _taskbar_click(cx, cy, f"「↑ 隐藏图标」按钮（{how}）",
-                                _num(args.get("timeout"), 900))
-    after, _x, _y, _w, _h = _grab_rect_bits(px0, py0, pw, ph)
-    bb, changed = _change_bbox(before, after, bw2, bh2)
-    total = bw2 * bh2
-    if bb is None or changed < TASKBAR_PANEL_CHANGE_MIN * total:
-        _refresh_env()
-        return [{"type": "text",
-                 "text": (f"点完「↑」后，任务栏上方这一片**没有弹出任何面板**"
-                          f"（{bw2}×{bh2} 区域里只变了 {changed} 个像素）。\n{click_note}\n"
-                          f"说明刚才那一下没点在「↑」上（或本机没有隐藏图标）。请：\n"
-                          f"  · 先 screen_shot 看任务栏右侧到底有没有「↑」，"
-                          f"再用 taskbar_open(where=\"taskbar\") 拿到编号，"
-                          f"用 taskbar_open(where=\"panel\", chevron=N) 指定它；\n"
-                          f"  · 图标若本来就在任务栏上，直接 taskbar_open(index=N) 点它最快；\n"
-                          f"  · 都没有就用 open_app(name=\"…\")。")}]
-
-    # 只对「变化出来的那一块」做图标分割：面板的圆角/阴影不会混进来
-    cx0, cy0, cx1, cy1 = bb
-    cw, ch = cx1 - cx0 + 1, cy1 - cy0 + 1
-    crop = bytearray()
-    for y in range(cy0, cy1 + 1):
-        o = (y * bw2 + cx0) * 4
-        crop += after[o:o + cw * 4]
-    fallback = _area_modal(crop, cw, ch)
-    if fallback is None:
-        return [{"type": "text", "text": "面板区域取不到主色，无法识别图标。"}]
-    row_bgs = _panel_row_bgs(crop, cw, ch, fallback)
-    ox, oy = px0 + cx0, py0 + cy0
-    parts = _taskbar_parts(crop, cw, ch, row_bgs)
-    pslots = _taskbar_slots(crop, cw, ch, ox, oy, row_bgs, parts, grid=True)
-    target2 = next((s for s in pslots if s["i"] == index), None) if index else None
-    if index and target2 is None:
-        return [{"type": "text",
-                 "text": f"面板里只识别到 {len(pslots)} 个图标，没有编号 {index}。"
-                         f"请用下列编号重试。\n" + "\n".join(_taskbar_slot_lines(pslots, ox, cw))}]
-
-    shown = pslots[:TASKBAR_PANEL_MAX_SLOTS]
-    lines = [f"「↑」面板已展开（{how}）：面板区域在屏幕上 ({ox},{oy}) {cw}×{ch}，"
-             f"共识别出 {len(pslots)} 个图标（**下图是面板原图，无任何标记**；"
-             f"编号与中心坐标见上表）"
-             + (f"。你要找的是「{name}」——按上表坐标对图认图标。" if name else "。")]
-    lines += _taskbar_slot_lines(shown, ox, cw, pick=index, show_zone=False,
-                                 running_note=False)
-    hint = _app_state_hint(name)
-    if hint:
-        lines.append("")
-        lines.append("状态：" + hint)
-    if len(pslots) > len(shown):
-        lines.append(f"  （另有 {len(pslots) - len(shown)} 个未列出，"
-                     f"可用 zoom_in 放大面板区域后按坐标点。）")
-    lines.append("")
-    lines.append("怎么用：")
-    lines.append("  ① 认出编号后一步点掉：taskbar_open(where=\"panel\", index=N) "
-                 "（会重新展开面板并点第 N 个）")
-    lines.append("  ② 或直接点：click(x=中心x, y=中心y, space=\"screen\", snap=false) "
-                 "—— 点完面板会自动收起、应用会到前台")
-    lines.append("说明：面板里既有「隐藏的托盘图标」，也有**后台运行的应用**"
-                 "（Windows 会把它们列在这里）—— 想切回某个后台程序，这里往往比任务栏更全。")
-
-    click_note2 = ""
-    if target2 is not None:
-        click_note2 = _taskbar_click(target2["x"], target2["y"],
-                                     f"面板第 {target2['i']} 个图标",
-                                     _num(args.get("timeout"), 900))
-        _log("ai", f"面板点击 #{target2['i']} ({target2['x']},{target2['y']})")
-    _refresh_env()
-    tw = max(320, min(720, cw))
-    # 与任务栏一致：面板图也是纯净原图，不带任何编号框/标记
-    png, iw, ih = _taskbar_strip_png(ox, oy, cw, ch, tw, None)
-    _set_view(ox, oy, cw, ch, iw, ih, "full")
-    text = "\n".join(lines)
-    if click_note2:
-        text = text + "\n\n" + click_note2
-    text += (f"\n（本图 {iw}×{ih}，覆盖屏幕区域 ({ox},{oy}) {cw}×{ch}；"
-             f"{_transform_line()}）")
-    return [{"type": "text", "text": text},
-            {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}]
-
-
-def tool_taskbar_open(args: dict) -> list:
-    """从任务栏打开/切换应用：扫描 → 编号 → （可选）点击。
-
-    用户说「打开微信 / 切到微信 / 微信在后台」时的**第一选择**：先 screen_shot 看一眼
-    任务栏上有没有那个图标，有就 taskbar_open(index=N) 一步切过去 —— 应用已经在跑时，
-    点任务栏图标就是「切到它的窗口」，比重新启动一个实例快得多，也不会开出第二个窗口。
-
-    图标不在任务栏可见区时用 where="panel"：工具会先点右侧的「↑」把隐藏图标/后台应用
-    面板展开，再把面板里的图标编号列出，然后同样可以按编号点击。
-
-    where="taskbar"（默认）时的返回值：任务栏通栏位置 + 每个槽位的编号/中心/尺寸/区域
-    + **任务栏原图（图上无任何标记）**；带 index 时额外给出落点回读与**前台窗口是否真的
-    切换了**。全程不读控件树、不返回任何控件名 —— 坐标表让模型按坐标对图「认图标」，
-    坐标由几何算法量出来。
-    """
-    where = str(args.get("where") or "taskbar").strip().lower()
-    t0 = time.perf_counter()
-    try:
-        if where in ("panel", "overflow", "hidden", "background", "后台", "隐藏", "面板"):
-            return _taskbar_panel_flow(args)
-        return _taskbar_band_flow(args)
-    finally:
-        # 真实耗时进日志：这个工具是「超时」投诉最多的一条，没有耗时数据只能靠猜
-        _log("sys", f"taskbar_open({where}) 耗时 {(time.perf_counter() - t0) * 1000:.0f}ms")
-
-
 def grab_zoom(cx: int, cy: int, size: int, factor: int, grid: bool = False,
               cursor: bool = False, smooth: bool = False, marks=None,
               boxes=None) -> tuple:
@@ -2684,6 +1794,34 @@ def grab_zoom(cx: int, cy: int, size: int, factor: int, grid: bool = False,
                                       (cx, cy) if cursor else None,
                                       smooth=smooth, marks=marks, boxes=boxes)
         return png, iw, ih, x0, y0, size
+    finally:
+        user32.ReleaseDC(0, dc)
+
+
+def grab_region(x0: int, y0: int, w: int, h: int, factor: int = 1,
+                grid: bool = False, cursor: bool = False,
+                smooth: bool = False) -> tuple:
+    """抓取任意矩形区域并放大 factor 倍（按窗口查看局部细节）。
+
+    与 grab_zoom 的区别：宽高由调用方给出（通常是窗口矩形），所以能完整覆盖
+    目标程序的一整块面板；`grab_zoom` 只取中心附近的正方形，窗口一大就截不全。
+    返回 (png, img_w, img_h, x0, y0, w, h)，坐标基准仍是「源坐标 = 区域原点 + 图像像素×比例」。
+    """
+    vx, vy, vw, vh = _virtual_screen()
+    x0 = max(vx, min(vx + vw - 1, int(x0)))
+    y0 = max(vy, min(vy + vh - 1, int(y0)))
+    w = max(1, min(int(w), vx + vw - x0))
+    h = max(1, min(int(h), vy + vh - y0))
+    factor = max(1, min(int(factor), 8))
+    tw = max(w, min(w * factor, ZOOM_MAX_PX))
+    dc = user32.GetDC(0)
+    try:
+        # 超宽窗口会被压到 ZOOM_MAX_PX：缩小必须用 HALFTONE，最近邻降采样会丢像素
+        png, iw, ih = _capture_scaled(dc, x0, y0, w, h, tw,
+                                      GRID_CELLS if grid else 0,
+                                      (x0 + w // 2, y0 + h // 2) if cursor else None,
+                                      smooth=(smooth or tw < w))
+        return png, iw, ih, x0, y0, w, h
     finally:
         user32.ReleaseDC(0, dc)
 
@@ -2726,11 +1864,23 @@ class _Injecting:
         return False
 
 
+_last_send_ok = True        # 最近一次 SendInput 是否被系统接受（0 = 被 UIPI/安全策略拦截）
+
+
 def _send_mouse(flags: int, dx: int = 0, dy: int = 0, data: int = 0):
+    """发送一次鼠标事件，返回是否被系统接受。
+
+    为什么要看返回值：SendInput 返回实际插入的事件数，**0 表示被系统拒绝**
+    （目标应用权限更高 / UIPI 拦截 / 安全策略）。以前完全忽略它，注入被拒时
+    光标自然「停不到目标点」，却被归因成「用户正在用真实鼠标」——用户一脸懵。
+    """
+    global _last_send_ok
     inp = INPUT()
     inp.type = INPUT_MOUSE
     inp.u.mi = MOUSEINPUT(dx, dy, data, flags, 0, INJECT_SIGNATURE)
-    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    n = int(user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) or 0)
+    _last_send_ok = n > 0
+    return _last_send_ok
 
 
 def _send_key(vk: int, up: bool = False, scan: int = 0, unicode: bool = False):
@@ -2982,6 +2132,9 @@ def _settle_at(x: int, y: int, tries: int = 3) -> bool:
     """
     for _ in range(max(1, int(tries))):
         _move_absolute(x, y)
+        # SendInput 返回只代表「事件已插入队列」，光标未必立刻到位；立刻回读会读到
+        # 旧位置，被误判成「被真实鼠标覆盖」——用户根本没碰鼠标却被告知「你在操作」。
+        time.sleep(READBACK_SETTLE_S)
         if _cursor_pos() == (int(x), int(y)):
             return True
         time.sleep(0.012)
@@ -3470,7 +2623,7 @@ def _enum_top_hwnds() -> list:
     """枚举**全部**顶层窗口句柄（不做任何过滤，过滤交给调用方）。
 
     **这个函数绝不能返回空表** —— 它一旦为空，list_windows / find_window /
-    screen_shot(mode="window") / click_window(hwnd) / open_app 会集体静默失效，
+    click_window(hwnd) / open_app 会集体静默失效，
     模型只能看到「当前没有可见窗口」，然后开始瞎试；用户侧表现就是
     「有时能截屏、有时不能」。所以这里叠了三条互补路径：
 
@@ -3660,8 +2813,8 @@ def _window_not_found_hint(title: str, hwnd: int = 0) -> str:
     else:
         lines.append(_enum_health())
     lines.append("注意：title 匹配的是**窗口标题**，不是应用里的联系人/会话/标签页/按钮文字。"
-                 "想点界面里的某个条目，用 screen_shot 截图后按像素坐标点，"
-                 "或者先 list_windows 拿 hwnd 再 screen_shot(mode=\"window\", hwnd=…)。")
+                 "想点界面里的某个条目，用 screen_shot 截整屏后按像素坐标点；"
+                 "窗口会移动、需要相对坐标时，用 list_windows 拿 hwnd 再 click_window。")
     return "\n".join(lines)
 
 
@@ -3883,6 +3036,88 @@ def move_window(hwnd: int, x: int, y: int, w: int = 0, h: int = 0) -> str:
     time.sleep(0.12)
     return (f"窗口「{window_title(hwnd) or hwnd}」已移动到 ({x},{y})，"
             f"尺寸 {max(1, width)}×{max(1, height)}")
+
+
+def _fits_work_area(r, wx: int, wy: int, ww: int, wh: int) -> bool:
+    """窗口矩形是否完整落在可用桌面区域内（容差 4px，避免边框/阴影误判）。"""
+    return (r.left >= wx - 4 and r.top >= wy - 4
+            and r.right <= wx + ww + 4 and r.bottom <= wy + wh + 4)
+
+
+def _offscreen_parts(r, wx: int, wy: int, ww: int, wh: int) -> list:
+    """窗口相对屏幕可用区超出的部分（返回中文片段列表；空表示完整可见）。"""
+    parts = []
+    if r.left < wx:
+        parts.append(f"左侧超出 {wx - r.left}px")
+    if r.top < wy:
+        parts.append(f"顶部超出 {wy - r.top}px")
+    if r.right > wx + ww:
+        parts.append(f"右侧超出 {r.right - (wx + ww)}px")
+    if r.bottom > wy + wh:
+        parts.append(f"底部超出 {r.bottom - (wy + wh)}px")
+    if (r.right - r.left) > ww:
+        parts.append(f"宽度比屏幕可用区大 {r.right - r.left - ww}px")
+    if (r.bottom - r.top) > wh:
+        parts.append(f"高度比屏幕可用区大 {r.bottom - r.top - wh}px")
+    return parts
+
+
+def _window_fit_note(hwnd: int) -> str:
+    """窗口未完整显示时的提示（给模型：先 fit，再滚动，别点看不见的部分）。"""
+    try:
+        r = window_rect(hwnd)
+        wx, wy, ww, wh = aura._work_area()
+    except Exception:
+        return ""
+    if _fits_work_area(r, wx, wy, ww, wh):
+        return ""
+    parts = _offscreen_parts(r, wx, wy, ww, wh)
+    return ("。⚠ 该窗口**没有完整显示**（" + "、".join(parts) +
+            "）：先用 manage_window(action=\"fit\", hwnd=…) 最大化或移进屏幕；"
+            "内容仍超出可视区就在窗口内 scroll/swipe，**不要点击看不见的部分**")
+
+
+def fit_window(hwnd: int) -> str:
+    """把窗口完整放进屏幕：能最大化就最大化，否则缩放/平移进可用区域。
+
+    为什么需要（用户反馈：窗口显示不全时 Agent 不会最大化/移动/滚动，只会在看不见的
+    地方乱点）：模型没有「窗口超出屏幕」这个概念，也没有可靠的补救动作。这里给它一个
+    一键动作 —— 先 ShowWindow(SW_MAXIMIZE)；固定尺寸窗口最大化无效时，用 SetWindowPos
+    把尺寸压到可用区并平移进屏，结果如实回报实际矩形，便于模型接着截图/滚动。
+    """
+    hwnd = int(hwnd or 0)
+    if not hwnd or not user32.IsWindow(hwnd):
+        raise ValueError(f"窗口不存在（hwnd={hwnd}）")
+    wx, wy, ww, wh = aura._work_area()
+    r = window_rect(hwnd)
+    name = window_title(hwnd) or hwnd
+    if _fits_work_area(r, wx, wy, ww, wh):
+        return (f"窗口「{name}」已经完整显示（({r.left},{r.top}) "
+                f"{r.right - r.left}×{r.bottom - r.top}），不需要调整。")
+    with _Injecting():
+        user32.ShowWindow(hwnd, SW_MAXIMIZE)
+    time.sleep(0.2)
+    r2 = window_rect(hwnd)
+    if _fits_work_area(r2, wx, wy, ww, wh):
+        return (f"已最大化窗口「{name}」，完整显示（({r2.left},{r2.top}) "
+                f"{r2.right - r2.left}×{r2.bottom - r2.top}）。")
+    # 最大化无效（固定尺寸对话框 / 禁止最大化的窗口）：恢复后压缩+平移进可用区
+    with _Injecting():
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    time.sleep(0.15)
+    r = window_rect(hwnd)
+    w = min(max(1, r.right - r.left), ww)
+    h = min(max(1, r.bottom - r.top), wh)
+    x = min(max(int(r.left), wx), wx + max(0, ww - w))
+    y = min(max(int(r.top), wy), wy + max(0, wh - h))
+    with _Injecting():
+        user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE)
+    time.sleep(0.15)
+    r3 = window_rect(hwnd)
+    return (f"窗口「{name}」不能最大化，已缩放并移进屏幕：位置 ({x},{y})，"
+            f"尺寸 {w}×{h}（实际 ({r3.left},{r3.top}) "
+            f"{r3.right - r3.left}×{r3.bottom - r3.top}）。"
+            "内容仍超出可视区就在窗口内 scroll/swipe 查看，不要点看不见的部分。")
 
 
 def wait_for_window(title: str = "", hwnd: int = 0, timeout: float = 10.0,
@@ -4224,27 +3459,6 @@ def _process_running(keys: tuple) -> str:
     return ""
 
 
-def _taskbar_pick_hint(name: str, lead: str, where: str = "taskbar") -> list:
-    """返回「任务栏/后台面板原图 + 坐标表 + 一步点开指引」（open_app 唤不回窗口时的兜底）。
-
-    为什么不是自动点：任务栏图标是 explorer 自绘的，插件拿不到「这个图标是哪个应用」
-    —— 原图配坐标表交给模型认图标（认图是它擅长的），点哪个由它挑编号，
-    坐标仍由几何算法给出。这比盲目 SetForegroundWindow 成功率高得多。
-    """
-    out = tool_taskbar_open({"where": where, "name": name})
-    text = (f"{lead}\n"
-            f"请从下图**认出「{name}」的图标**（带「已启动」指示条的就是它）→ 直接 "
-            f"open_app(name=\"{name}\", index=编号) 一步点开（会自动校验前台窗口是否切过去）。"
-            if where == "taskbar" else
-            f"{lead}\n"
-            f"请从下图**认出「{name}」的图标** → open_app(name=\"{name}\", index=编号, "
-            f"where=\"panel\") 一步点开。")
-    if isinstance(out, list) and out and out[0].get("type") == "text":
-        out[0]["text"] = text + "\n\n" + str(out[0].get("text") or "")
-        return out
-    return [{"type": "text", "text": text + "\n\n" + str(out)}]
-
-
 # ---- 虚拟桌面容器 ----
 def switch_virtual_desktop(action: str) -> str:
     """Windows 虚拟桌面：new=新建并切入；back/prev=回到上一个；next=下一个。"""
@@ -4280,25 +3494,50 @@ class InputWatcher:
         self._key_hook = None
         self._mouse_cb = self.HOOKPROC(self._on_mouse)
         self._key_cb = self.HOOKPROC(self._on_key)
-        self._move_acc = 0          # 鼠标移动累计位移
+        self._move_acc = 0          # 鼠标移动累计位移（仅在 MOVE_ACC_WINDOW_S 时间窗内累加）
+        self._last_move_ts = 0.0    # 上一次移动事件的时间（时间窗起点）
         try:
             self._last_xy = _cursor_pos()
         except Exception:
             self._last_xy = (0, 0)    # 读不到光标不能拖垮整个打断检测
 
     # ---- 回调（钩子线程执行，必须轻量、绝不抛异常） ----
+    def _follow_cursor(self):
+        """把「参考位置」同步到当前光标，并清掉累计位移。
+
+        为什么每个**被忽略**的事件也要同步：累计位移是「相邻两个事件之差」，
+        参考点若停在会话开启之前（用户/注入早已把光标挪走几百像素），会话一开，
+        第一个移动事件的差值就是**那次旧位移** —— 用户明明没动，却立刻被判接管。
+        这正是「工具总报用户在操控电脑」的一个真凶。
+        """
+        try:
+            self._last_xy = _cursor_pos()
+        except Exception:
+            pass
+        self._move_acc = 0
+        self._last_move_ts = 0.0
+
     def _hit(self, extra: int, wparam: int = 0):
         try:
             if int(extra or 0) == INJECT_SIGNATURE or _injecting():
-                return                      # AI 自身注入 → 不算真人输入
+                self._follow_cursor()       # AI 自身注入 → 视为「参考点已跟上」
+                return
             if time.time() > _STATE["active_until"]:
-                return                      # 非操控会话期 → 不打扰（用户正常用电脑）
+                self._follow_cursor()       # 非操控会话期 → 不打扰（用户正常用电脑）
+                return
             if time.time() < (_STATE.get("ignore_input_until") or 0):
-                return                      # 用户已授权「这期间别理我的鼠标」
+                self._follow_cursor()       # 用户已授权「这期间别理我的鼠标」
+                return
             if wparam == WM_MOUSEMOVE:
                 # 鼠标**移动**不立即算接管：手抖、鼠标被桌宠蹭到、用户只是挪开
                 # 一下 —— 这些都不该把 AI 踢下线（踢了任务就卡住不动）。
-                # 改成「累计位移超过阈值」才算接管；点击/按键/滚轮照旧立即算。
+                # 改成「**短时间窗内**累计位移超过阈值」才算接管；点击/按键/滚轮照旧立即算。
+                # 时间窗是必须的：触控板噪声/手抖是零星的，若跨几分钟一直累加，
+                # 用户什么都没做也会突然被判「正在操控电脑」（实测误报）。
+                now = time.time()
+                if now - self._last_move_ts > MOVE_ACC_WINDOW_S:
+                    self._move_acc = 0          # 隔太久 → 上一次的位移不算数，重新开窗
+                self._last_move_ts = now
                 x, y = _cursor_pos()
                 self._move_acc += abs(x - self._last_xy[0]) + abs(y - self._last_xy[1])
                 self._last_xy = (x, y)
@@ -4366,7 +3605,8 @@ _STATE = {
     "container": "foreground",  # 操控容器：foreground=用户前台桌面 / virtual_desktop=独立虚拟桌面
     "active_until": 0.0,        # 操控会话滑动有效期
     "session_started": 0.0,
-    "view": "full",             # 当前视觉基准描述（full/window/zoom）
+    "interrupt_ts": 0.0,        # 最近一次被接管的时间（用于让过期标记自动失效）
+    "view": "full",             # 当前视觉基准描述（full/zoom）
     "input": "mouse",           # 实际输入方式：touch/mouse
     "screen": [0, 0],
     "cursor": [0, 0],
@@ -4382,6 +3622,85 @@ _STATE = {
 _LOG: list = []
 _LOG_LOCK = threading.Lock()
 
+#: 最近一次操控动作（点击/输入/滚动…）完成的时间。截图工具据此等界面稳定再抓图。
+_LAST_ACTION_TS = 0.0
+
+#: 列表行点击轨迹：用于识别「一条一条点开会话试探」这种乱点行为
+_LIST_SCAN_WIN_S = 25.0       # 统计窗口
+_LIST_SCAN_ROWS = 3           # 同一窗口内点开 ≥3 条不同行即告警（只提示一次）
+_LIST_DENY_S = 20.0           # 命中告警后的冷却时长：期间继续点列表行会被直接拒绝
+_ROW_SCAN = {"ts": 0.0, "ys": [], "warned": False, "blocked_until": 0.0}
+
+
+def _list_scan_note(hwnd: int, y: int, is_row: bool) -> str:
+    """识别「逐条点开列表试探」并给出一次性警告（不阻断，只纠正行为）。
+
+    为什么需要：用户反馈 Agent 点聊天列表**坐标很准**，但会一条一条点开会话"看看是哪个"。
+    这不是定位问题，而是把「点开看看」当成搜索手段 —— 会打开错误会话，发消息场景还可能
+    发错人。坐标再准也救不了这种策略，必须直接告诉模型换手段（看标题 / 用搜索框 / 问用户）。
+    """
+    if not is_row:
+        return ""
+    now = time.time()
+    if now - float(_ROW_SCAN.get("ts") or 0.0) > _LIST_SCAN_WIN_S:
+        _ROW_SCAN.update({"ts": now, "ys": [], "warned": False,
+                          "blocked_until": 0.0})
+    ys = _ROW_SCAN["ys"]
+    if not ys:
+        _ROW_SCAN["ts"] = now
+    if not ys or abs(ys[-1] - y) >= 8:      # 同一行重复点不算"换一条"
+        ys.append(int(y))
+    distinct = sorted(ys)
+    rows = 1 + sum(1 for a, b in zip(distinct, distinct[1:]) if b - a >= 12)
+    if rows >= _LIST_SCAN_ROWS and not _ROW_SCAN.get("warned"):
+        _ROW_SCAN["warned"] = True
+        _ROW_SCAN["blocked_until"] = now + _LIST_DENY_S
+        return ("\n⚠ **检测到你在连续点开列表里的不同条目**（同一窗口内第 3 条）。"
+                "找目标请先看截图上的标题/名字确认那一行，或点搜索框输入名字后点唯一结果；"
+                "**不要逐条点开试探** —— 这会打开错误会话，发消息场景还会发错人。"
+                f"接下来 {_LIST_DENY_S:.0f} 秒内继续点列表行会被**直接拒绝**。")
+    return ""
+
+
+def _list_scan_deny(is_row: bool) -> str:
+    """冷却期内再次点列表行 → 直接拒绝（硬拦，不只是提示）。
+
+    用户反馈：提示词／告警都写了「不要逐条点开试探」，模型还是会继续点。软提示对它无效，
+    所以改成硬拦：冷却期内点「行」直接返回拒绝，只有显式传 `allow_list_click=true`
+    （模型已确认目标）才放行。非「行」目标的点击不受影响。
+    """
+    if not is_row:
+        return ""
+    left = float(_ROW_SCAN.get("blocked_until") or 0.0) - time.time()
+    if left <= 0:
+        return ""
+    return (f"⚠ **已拒绝本次点击**：你刚在 {_LIST_SCAN_WIN_S:.0f} 秒内连续点开了 3 条不同的列表行"
+            f"（逐条点开试探）。冷却还剩 {left:.0f} 秒。\n"
+            "正确做法：① 看截图上的标题/名字，确认要的就是那一行再点；"
+            "② 列表里有搜索框就点搜索框 → type_text 名字 → 点唯一结果；"
+            "③ 实在需要点某一行且已确认目标，传 allow_list_click=true 重试。\n"
+            "**不要换一条又一条地试**。")
+
+
+def _mark_action_done():
+    """记录一次操控动作完成（供「操作后 1s 再截图」使用）。"""
+    global _LAST_ACTION_TS
+    _LAST_ACTION_TS = time.time()
+
+
+def _settle_after_action():
+    """如果刚操作过，截图前先等到界面稳定（最多 ACTION_SETTLE_S 秒）。
+
+    为什么需要：点击/输入刚落下就立即抓图，很容易抓到过渡帧 —— 菜单还没弹出、
+    列表还没滚动、输入法候选还没消失、文字重绘到一半。模型按这种画面判断，
+    很容易得出「没生效」并继续乱点。等 1s 后界面落定，截图与判断才可靠。
+    """
+    if _LAST_ACTION_TS <= 0:
+        return
+    left = ACTION_SETTLE_S - (time.time() - _LAST_ACTION_TS)
+    if left > 0:
+        time.sleep(min(left, ACTION_SETTLE_S))
+
 
 def _log(who: str, text: str):
     """写操作日志（环形，供 Web UI 展示）。who ∈ ai/user/sys。"""
@@ -4393,8 +3712,21 @@ def _log(who: str, text: str):
 
 
 def _touch_session():
-    """刷新操控会话有效期：每个工具调用都延长，期内真人输入才算接管。"""
+    """刷新操控会话有效期：每个工具调用都延长，期内真人输入才算接管。
+
+    同时清理**跨任务残留**的接管标记：MCP 子进程跨任务常驻，上个任务被接管后
+    若没人说「继续」，标记会一直粘着 —— 新任务的每个工具都被拒绝并回
+    「用户已接管/检测到真人鼠标键盘输入」，而用户此刻什么都没做（真实误报）。
+    只在「距上次操控调用已超过会话有效期」且「接管也已过去同样久」时才清，
+    同一任务内的接管照旧有效，不会被无意放行。
+    """
     now = time.time()
+    if (_STATE["interrupted"] and now > _STATE["active_until"]
+            and now - float(_STATE.get("interrupt_ts") or 0.0) > INTERRUPT_STALE_S):
+        _STATE["interrupted"] = False
+        _STATE["interrupt_reason"] = ""
+        _STATE["interrupt_ts"] = 0.0
+        _log("sys", "清除过期的接管标记（距上次接管已超时，按新任务处理）")
     if not _STATE["session_started"]:
         _STATE["session_started"] = now
     _STATE["active_until"] = now + SESSION_TTL_S
@@ -4402,13 +3734,32 @@ def _touch_session():
 
 def mark_interrupted(reason: str):
     """置「用户已接管」：后续操控工具一律拒绝，把控制权交还用户。"""
+    first = not _STATE["interrupted"]
     _STATE["interrupt_reason"] = reason
-    if not _STATE["interrupted"]:
-        _STATE["interrupted"] = True
+    _STATE["interrupted"] = True
+    if first:
+        _STATE["interrupt_ts"] = time.time()
         _log("user", f"接管操控（{reason}）")
-    else:
-        _STATE["interrupted"] = True
     _aura_off("用户接管")
+    if first:
+        _notify_user_takeover(reason)
+
+
+def _notify_user_takeover(reason: str):
+    """在屏幕上直接告诉用户「已暂停」——不依赖模型转述。
+
+    用户反馈：明明没碰鼠标键盘，工具却说「用户在操控电脑」，而且 Agent 也不提醒。
+    除了修误报源，这里再补一条**屏幕可见**的通知：接管发生时胶囊窗立刻弹出，
+    用户至少能从屏幕上看到发生了什么、以及怎么让 AI 继续。
+
+    只在「操控会话仍然有效」时弹（自检/纯查询阶段没有会话，不该打扰用户）。
+    """
+    if aura is None or time.time() > _STATE["active_until"]:
+        return
+    try:
+        aura.notify(f"已暂停操控（{reason}）· 如需 AI 继续，请对它说「继续」", 5.0)
+    except Exception as e:
+        _STATE["aura_error"] = f"接管提示窗失败：{type(e).__name__}: {e}"
 
 
 def _aura_on():
@@ -4437,6 +3788,32 @@ def _aura_status_line() -> str:
         return f"提示层状态读取失败：{type(e).__name__}: {e}"
 
 
+AURA_IDLE_GRACE_S = 3.0     # 操控会话过期后多久淡出提示层（给最后一次操作留收尾时间）
+
+
+def _aura_should_fade(now: float) -> bool:
+    """提示层是否该淡出：操控会话已过期。
+
+    为什么需要看门狗：光带只在**操控工具调用时**点亮，但以前没有任何地方在任务结束后
+    关掉它 —— 实测任务早已结束、会话过期很久，屏幕四边仍在呼吸闪烁，用户会以为
+    AI 还在操作而不敢动电脑。这里按会话有效期收尾。
+    """
+    return bool(_STATE["aura"] and _STATE["active_until"]
+                and now > _STATE["active_until"] + AURA_IDLE_GRACE_S)
+
+
+def _aura_watchdog():
+    """每秒检查一次：会话过期就淡出提示层（daemon 线程，异常不得中断循环）。"""
+    while True:
+        time.sleep(1.0)
+        try:
+            if _aura_should_fade(time.time()):
+                _log("sys", "操控会话已超时，提示层淡出")
+                _aura_off("会话超时")
+        except Exception:
+            pass
+
+
 def _aura_off(reason: str = ""):
     """操控结束/被接管：光带与胶囊窗一起淡出。"""
     if aura is None:
@@ -4453,13 +3830,17 @@ def _guard(action: str) -> str:
     if _STATE["paused"]:
         _log("sys", f"拒绝 {action}：用户已暂停操控")
         return ("[已被用户暂停] 用户在可视化界面上暂停了 AI 操控，本次操作未执行。"
-                "请立即停止操控，等待用户在界面点「恢复」或明确对你说「继续」后再调用 "
+                "**请立刻用一句话告诉用户这一点**（例如「你暂停了操控，我先停下」），"
+                "等待用户在界面点「恢复」或明确说「继续」后再调用 "
                 "control(action=\"resume\") 恢复。")
     if _STATE["interrupted"]:
         _log("sys", f"拒绝 {action}：用户已接管")
         return ("[用户已接管] 检测到真人鼠标/键盘输入（或用户点击了接管），控制权已交还用户，"
-                "本次操作未执行。请立即停止一切操控并向用户汇报当前进度与界面状态；"
-                "只有用户明确说「继续」后才可调用 control(action=\"resume\") 恢复。")
+                "本次操作未执行。\n"
+                "**必须先用一句话明确告知用户**，例如：「检测到你有鼠标/键盘操作，"
+                "我已暂停，当前停在第 N 步；如果是误触，回复『继续』我就接着做」。"
+                "然后停止一切操控，只有用户明确说「继续」后才可调用 "
+                "control(action=\"resume\") 恢复。")
     return ""
 
 
@@ -4468,7 +3849,10 @@ def _interrupted() -> bool:
 
 
 # ---- 视觉基准：AI 所见图 ↔ 屏幕物理坐标 ----
-_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0, "ts": 0.0}
+# fg / fg_rect：截图瞬间的前台窗口与其矩形。坐标动作前据此判断「画面是否已经变了」
+# （见 _shot_drift_note）—— 只做窗口一致性，不做像素指纹（后者误报多、开销大）。
+_VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0,
+         "ts": 0.0, "fg": 0, "fg_rect": None}
 
 # 截图基准的有效期（秒）：坐标点击必须建立在**刚看过的画面**上。
 # 界面是活的（窗口会移动、列表会滚动、弹窗会冒出来），拿几分钟前的截图算出来的
@@ -4477,13 +3861,23 @@ _VIEW = {"x0": 0.0, "y0": 0.0, "w": 0.0, "h": 0.0, "img_w": 0.0, "img_h": 0.0, "
 SHOT_MAX_AGE_S = 300.0
 
 
-def _set_view(x0, y0, w, h, img_w, img_h, kind: str, target_hwnd: int = 0):
+def _set_view(x0, y0, w, h, img_w, img_h, kind: str):
+    """记录当前视觉基准（整屏 / 局部放大）。坐标点击据此换算为屏幕物理像素。
+
+    同时记录截图瞬间的前台窗口（fg）与矩形（fg_rect）：后续坐标动作据此判断
+    「画面是否已经换了窗口/被最小化」，避免拿旧截图点新界面（见 _shot_drift_note）。
+    """
     _VIEW.update({"x0": float(x0), "y0": float(y0), "w": float(w), "h": float(h),
                   "img_w": float(img_w), "img_h": float(img_h), "ts": time.time()})
+    try:
+        fg = int(foreground_window() or 0)
+        r = window_rect(fg) if fg else None
+        _VIEW["fg"] = fg
+        _VIEW["fg_rect"] = ((r.left, r.top, r.right, r.bottom) if r else None)
+    except Exception:
+        _VIEW["fg"] = 0
+        _VIEW["fg_rect"] = None
     _STATE["view"] = kind
-    # 记住「这张截图是哪个窗口的」：坐标点击前据此把目标窗口提到最前，
-    # 避免「照着截图点」却点到盖在上面的别的窗口（见 _ensure_click_target）。
-    _STATE["view_target"] = int(target_hwnd or 0)
 
 
 def _ex_style(hwnd: int) -> int:
@@ -4529,7 +3923,7 @@ def _raise_topmost(hwnd: int) -> bool:
 
 
 def _input_target_hwnd(args: dict = None) -> int:
-    """当前「键盘输入该去哪个窗口」：显式 title/hwnd 优先，其次最近一次窗口截图的那个。"""
+    """当前「键盘输入该去哪个窗口」：显式 title/hwnd 优先，其次最近一次显式点击目标。"""
     explicit = 0
     if args:
         explicit = find_window(str(args.get("title") or ""), _num(args.get("hwnd"), 0))
@@ -4574,10 +3968,9 @@ def _ensure_input_target(args: dict, action: str) -> str:
 def _ensure_click_target(x: int, y: int, args: dict = None) -> str:
     """坐标点击前，确保「这一击真的会落到目标窗口上」；必要时把目标窗口提到最前。
 
-    为什么必须有这一步（实测踩过的坑）：窗口截图走 PrintWindow，**窗口被遮挡也照样
-    能截到内容**；但鼠标点击只会落到**该点最顶层的窗口**上。于是「照着截图点」时，
-    若目标窗口被别的窗口盖着，点击就打到了遮挡窗口上 —— 目标界面毫无变化，任务却
-    以为自己点过了（微信「点文件传输助手」就是这么失败的）。
+    为什么必须有这一步（实测踩过的坑）：**鼠标点击只会落到该点最顶层的窗口上**。
+    照着截图点时，若目标窗口被别的窗口盖着，点击就打到了遮挡窗口上 —— 目标界面毫无
+    变化，任务却以为自己点过了（微信「点文件传输助手」就是这么失败的）。
 
     提到最前分两步，且**每步都实测验证**：
       ① `activate_window`（正常路径）；
@@ -4594,8 +3987,8 @@ def _ensure_click_target(x: int, y: int, args: dict = None) -> str:
     if not (r.left <= x <= r.right and r.top <= y <= r.bottom):
         return ""                      # 落点不在目标窗口内 → 不擅自换窗口
     under = window_at(x, y)
-    if under == target:
-        return ""
+    if under == target or (under and _root_owner(under) == target):
+        return ""                      # 目标本身或其可见自有对话框：直接点，不预先切窗口
     cover = window_title(under) or under
     name = window_title(target) or target
     activate_window(target)
@@ -4631,6 +4024,32 @@ def to_physical(x, y) -> tuple:
             int(round(_VIEW["y0"] + y * _VIEW.get("h", 0.0) / ih)))
 
 
+def _screen_bounds_note(x, y, action: str = "点击") -> str:
+    """落点是否在虚拟屏幕内；屏外必然点不到，且几乎总是「坐标基准不对」。
+
+    典型场景（用户反馈「有时偏离大的离谱」）：照着一张过期的截图估算坐标，
+    系统会把注入坐标钳到屏幕边缘 → 点击落在完全无关的地方。这里直接拒绝并指回正确流程。
+    """
+    vx, vy, vw, vh = _virtual_screen()
+    if vx <= int(x) < vx + vw and vy <= int(y) < vy + vh:
+        return ""
+    return (f"⚠ **已拒绝本次{action}**：落点 ({x},{y}) 不在屏幕范围（虚拟桌面 {vx},{vy} "
+            f"{vw}×{vh}）。这说明坐标基准不对（窗口被拖出屏幕 / 截图后又换了基准图）。"
+            "请先 screen_shot 重新看图；窗口显示不全就先 "
+            "manage_window(action=\"fit\") 让它完整显示，再重新截图。")
+
+
+def _path_guard(x1: int, y1: int, x2: int, y2: int, action: str) -> str:
+    """拖拽/滑动/拖选的统一防呆：零距离无意义，任一端点出屏都拒绝注入。"""
+    if (int(x1), int(y1)) == (int(x2), int(y2)):
+        raise ValueError(f"{action}起点和终点相同，无法形成路径；请给出不同的终点坐标。")
+    for x, y in ((x1, y1), (x2, y2)):
+        note = _screen_bounds_note(x, y, action)
+        if note:
+            return note
+    return ""
+
+
 def _require_fresh_shot(what: str = "点击") -> None:
     """坐标动作的前置门槛：必须先有一张**新鲜**截图作为视觉基准。
 
@@ -4646,15 +4065,59 @@ def _require_fresh_shot(what: str = "点击") -> None:
             return
         raise ValueError(
             f"已拒绝{what}：当前截图基准是 {age:.0f}s 前的（有效期 {SHOT_MAX_AGE_S:.0f}s），"
-            f"界面很可能已经变了。请先 screen_shot 重新看一眼（只看目标窗口用 "
-            f"screen_shot(mode=\"window\")），再按新图上的坐标操作。"
+            f"界面很可能已经变了。请先 screen_shot 重新看一眼，再按新图上的坐标操作。"
             f"如果你手里是**屏幕物理坐标**（例如 list_windows 给的窗口位置），"
             f"传 space=\"screen\" 可直接使用。")
     raise ValueError(
         f"已拒绝{what}：还没有任何截图基准 —— 坐标无从换算，点下去只能靠猜。\n"
-        f"请按顺序：① screen_shot(mode=\"full\") 或 screen_shot(mode=\"window\", title=…) 先看图；"
+        f"请按顺序：① screen_shot 先看图；"
         f"② 小目标先 zoom_in 放大读数；③ 拿不准就 refine_point 挑候选编号；④ 再 click。\n"
         f"（若你手里是屏幕物理坐标，传 space=\"screen\" 可直接点击。）")
+
+
+def _shot_drift_note(x, y, target: int = 0, args: dict = None) -> str:
+    """截图之后画面已经变了（前台被关/最小化/换成别的窗口）→ 拒绝旧图坐标点击。
+
+    为什么必须拦：模型手里的坐标来自「它看过的那张图」。图里的窗口如果已经关掉或被
+    最小化，同一个像素现在落在桌面上（甚至是自己应用的窗口），点下去就是「乱点/乱切
+    窗口」。这里只做**窗口一致性**校验，不做像素指纹 —— 动画/时钟/光标都会让指纹变化，
+    误报会把正常操作也拦掉。
+
+    判据：截图时的前台窗口 fg 仍健在（未关闭/未最小化），当前前台仍是 fg → 放行；
+    前台换了，但落点上的顶层窗口仍是 fg（或其弹出菜单）或显式目标窗口 → 放行
+    （遮挡交给 _ensure_click_target 处理）；否则视为画面漂移。
+
+    `space="screen"`（物理坐标）不依赖截图基准，直接跳过。
+    """
+    space = str((args or {}).get("space") or "image").strip().lower()
+    if space in ("screen", "physical", "abs", "absolute", "物理", "绝对"):
+        return ""
+    fg = int(_VIEW.get("fg") or 0)
+    if not fg or _VIEW.get("img_w", 0.0) <= 0:
+        return ""
+    # 落点不在截图时前台窗口的矩形内 → 该处内容本来就不是这个窗口画的，
+    # 无从判断是否漂移；放行（多窗口并列时避免误报）。
+    rect = _VIEW.get("fg_rect")
+    if rect and not (rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]):
+        return ""
+    try:
+        if not user32.IsWindow(fg) or bool(user32.IsIconic(fg)):
+            return ("⚠ **已拒绝本次点击**：截图后前台窗口已关闭或最小化，画面已变。"
+                    "请先 screen_shot 重新看图，再按新图上的坐标操作。")
+        if foreground_window() == fg:
+            return ""      # 前台没换：看到的就是截图里的画面
+    except Exception:
+        return ""
+    under = window_at(x, y)
+    roots = {fg, int(target or 0)}
+    if not under or under in roots or _root_owner(under) in roots:
+        return ""
+    old = window_title(fg) or fg
+    new = window_title(under) or under
+    return (f"⚠ **已拒绝本次点击**：截图后该位置的顶层窗口已从「{old}」变成「{new}」。"
+            "旧图上的坐标对应的是旧窗口内容，继续点会落到别的应用上。"
+            "请先 screen_shot 重新看图；要操作某个窗口，先用 "
+            f"manage_window(action=\"activate\", hwnd=…) 切到它再截图。")
 
 
 def _resolve_cand(args: dict):
@@ -4716,11 +4179,55 @@ def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
 
     kx/ky 用于取不同键名（drag 用 x1/y1、x2/y2）。
     """
-    if str(args.get("space") or "image").strip().lower() in (
+    space = str(args.get("space") or "image").strip().lower()
+    # ---- 归一化坐标（对模型服务商的图片压缩/缩放天然免疫）----
+    # 部分服务商会把发给视觉模型的截图再压缩/裁剪，模型读到的"像素"就不是插件发出的
+    # 图像坐标，按绝对像素换算必然整体偏移。归一化坐标（图宽的百分比）与图片尺寸无关，
+    # 只要宽高比不变，压缩多少次换算结果都一样。
+    norm_keys = {"x": "nx", "y": "ny", "x1": "nx1", "y1": "ny1",
+                 "x2": "nx2", "y2": "ny2"}
+    nxk, nyk = norm_keys.get(kx), norm_keys.get(ky)
+    norm_src = (args.get(nxk) if nxk else None, args.get(nyk) if nyk else None)
+    use_norm = (space in ("norm", "normalized", "归一化", "比例")
+                or norm_src[0] not in (None, "") or norm_src[1] not in (None, "")
+                or str(args.get(kx) or "").strip().endswith("%")
+                or str(args.get(ky) or "").strip().endswith("%"))
+    if use_norm:
+        _require_fresh_shot()
+        iw = _VIEW.get("img_w") or 0.0
+        ih = _VIEW.get("img_h") or 0.0
+        if iw <= 0 or ih <= 0:
+            raise ValueError("归一化坐标需要一张截图基准；请先 screen_shot。")
+        vx = norm_src[0] if norm_src[0] not in (None, "") else args.get(kx)
+        vy = norm_src[1] if norm_src[1] not in (None, "") else args.get(ky)
+        rx, ry = _norm_ratio(vx), _norm_ratio(vy)
+        if rx is None or ry is None:
+            raise ValueError(
+                f"归一化坐标无法解析：({vx},{vy})。请传 nx/ny（0~1 小数，或 0~1000 千分比），"
+                "例如 nx=0.5, ny=0.5 表示图像正中心。")
+        _COORD_AUTOFIX["note"] = (
+            f"归一化坐标：({vx},{vy}) → 图像 ({rx * iw:.0f},{ry * ih:.0f}) "
+            f"（本图 {int(iw)}×{int(ih)}）。")
+        return to_physical(rx * iw, ry * ih)
+    if space in (
             "screen", "physical", "abs", "absolute", "物理", "绝对"):
         return _num(args.get(kx)), _num(args.get(ky))
     _require_fresh_shot()
     ix, iy = _num(args.get(kx)), _num(args.get(ky))
+    # ---- 所见尺寸自校准（治「服务商压缩图片 → 绝对像素整体偏移」）----
+    # 部分模型服务商会把截图等比缩放后再喂给模型。若模型回报它实际看到的图片尺寸
+    # （seen_w/seen_h），这里就能把「它图上的像素」换回插件发出的图像像素。
+    iw0 = _VIEW.get("img_w") or 0.0
+    ih0 = _VIEW.get("img_h") or 0.0
+    seen_w = _fnum(args.get("seen_w"), 0.0) or 0.0
+    seen_h = _fnum(args.get("seen_h"), 0.0) or 0.0
+    if seen_w > 0 and seen_h > 0 and iw0 > 0 and ih0 > 0:
+        kx_, ky_ = iw0 / seen_w, ih0 / seen_h
+        if abs(kx_ - 1) > 0.01 or abs(ky_ - 1) > 0.01:
+            ix, iy = ix * kx_, iy * ky_
+            _COORD_AUTOFIX["note"] = (
+                f"按所见尺寸校准：你认为图片是 {seen_w:g}×{seen_h:g}，插件实际发出 "
+                f"{int(iw0)}×{int(ih0)}，已按比例换算回图像坐标 ({ix:.0f},{iy:.0f})。")
     # ---- 坐标系防呆（治「点偏一大片」）----
     # 图像坐标**不可能**超出图像尺寸。超出只有一个解释：手里拿的是屏幕物理坐标
     # （最常见来源：refine_point / verify_point 的返回值、list_windows 的窗口位置、
@@ -4736,6 +4243,72 @@ def _resolve_point(args: dict, kx: str = "x", ky: str = "y") -> tuple:
             f"下次带上 space=\"screen\" 可省掉这次自动判断。")
         return ix, iy
     return to_physical(ix, iy)
+
+
+def _fnum(v, default=None):
+    """健壮浮点解析：容忍 '0.5' / '50%' / 'x=0.25' 等写法（保留小数）。"""
+    if isinstance(v, bool):
+        return float(int(v))
+    if isinstance(v, (int, float)):
+        return float(v)
+    for tok in re.findall(r"-?\d+(?:\.\d+)?", str(v or "")):
+        try:
+            return float(tok)
+        except ValueError:
+            continue
+    return default
+
+
+def _norm_ratio(v):
+    """把归一化坐标解析成 0~1 比例：支持 0~1 小数、0~1000 千分比、'50%'。"""
+    if v in (None, ""):
+        return None
+    s = str(v).strip()
+    if s.endswith("%"):
+        val = _fnum(s, None)
+        return None if val is None else max(0.0, min(1.0, val / 100.0))
+    val = _fnum(v, None)
+    if val is None or val < 0:
+        return None
+    if val <= 1.0:
+        return val
+    if val <= 1000.0:
+        return val / 1000.0
+    return None
+
+
+def _cand_gate(args: dict, cand, what: str = "点击") -> str:
+    """拦截「可能因服务商压缩而偏移」的图像坐标动作，逼迫走可校准/候选编号路径。
+
+    为什么默认拒绝：用户实测 agnes 等服务商会把截图压缩后再给模型，模型读到的
+    像素与插件发出的图像尺寸不一致，任何绝对像素换算都会整体偏移（越靠右下越偏）。
+    只靠吸附救不了 —— 估计点本身已经错了，吸附只会吸到旁边那个元素。
+
+    放行条件（任一）：
+      * 有 cand（候选编号）—— 坐标由插件按原始屏幕像素计算，完全免疫压缩；
+      * 传 seen_w/seen_h —— 模型报出它看到的图片尺寸，插件按比例校准；
+      * raw=true —— 模型明确要点精确像素（画布/空白处）；
+      * space=screen —— 模型明确给的是屏幕物理坐标；
+      * space=norm 或 nx/ny —— 归一化坐标本身与图片尺寸无关。
+    """
+    if cand:
+        return ""
+    space = str(args.get("space") or "image").strip().lower()
+    has_seen = (args.get("seen_w") not in (None, "") and args.get("seen_h") not in (None, ""))
+    norm_mode = (space in ("norm", "normalized", "归一化", "比例")
+                 or args.get("nx") not in (None, "") or args.get("ny") not in (None, ""))
+    if _bool(args.get("raw"), False) or has_seen or norm_mode or space in (
+            "screen", "physical", "abs", "absolute", "物理", "绝对"):
+        return ""
+    # 「没有截图基准 / 基准过期」是更根本的问题，优先按它报错
+    _require_fresh_shot()
+    return (f"⚠ **已拒绝本次{what}**：图像坐标可能因模型服务商压缩图片而整体偏移，已拦截。\n"
+            "改用任一方式后重试：\n"
+            "① **最稳**：`refine_point(x,y)` → 传 `cand=编号`（坐标由插件按原始屏幕像素计算）；\n"
+            "② 你知道自己看到的图片尺寸：同时传 `seen_w`/`seen_h`，插件按比例校准；\n"
+            "③ 改用**归一化坐标** `nx`/`ny`（0~1 或 0~1000，与图片尺寸无关）；\n"
+            "④ 确实要精确像素（画布/空白处）：传 `raw=true`；\n"
+            "⑤ 手里是屏幕物理坐标：传 `space=\"screen\"`。")
 
 
 def _num(v, default: int = 0) -> int:
@@ -4787,6 +4360,7 @@ def tool_screen_info(args: dict) -> str:
     remain = max(0, int(_STATE["active_until"] - time.time()))
     lines = [
         f"屏幕物理分辨率: {sw}×{sh}（主显示器；进程已做 DPI 感知，坐标即物理像素）",
+        f"DPI 感知: {'已启用（Per-Monitor V2）—— 任意缩放比例下所有尺寸/坐标均为物理像素' if _DPI_AWARE else '⚠ 未启用：系统缩放可能导致整体偏移'}",
         f"虚拟桌面: 原点 ({vx},{vy}) 尺寸 {vw}×{vh}"
         + ("　← 多显示器：截图覆盖整个虚拟桌面，原点不为 0 属正常" if multi else ""),
         f"输入方式: 鼠标注入（像素级精准，默认）"
@@ -4836,8 +4410,18 @@ def _shot_meta(desc: str, grid: bool = False) -> str:
     head = (f"{desc}。本图**按你的要求叠加了 {GRID_CELLS}×{GRID_CELLS} 坐标网格与像素刻度**，"
             "刻度数字即图像像素值；" if grid else
             f"{desc}。截图为**纯净原图**（不叠加坐标网格/刻度/准星），你直接看图判断目标位置即可；")
+    iw, ih = _VIEW.get("img_w", 0.0) or 0.0, _VIEW.get("img_h", 0.0) or 0.0
+    size_line = (f"本次图像真实像素尺寸 **{int(iw)}×{int(ih)}**；" if iw > 0 and ih > 0 else "")
     return (head + "所有工具的 x/y 一律用**图像像素坐标**（图像左上角为 0,0），"
             "插件自动换算为屏幕物理坐标，无需再乘缩放比例。"
+            + size_line
+            + "⚠ 部分模型服务商会把截图**压缩/缩放**后再给你看 —— 若你看到的图片尺寸与上面不一致，"
+              "绝对像素读数会整体偏移。此时：① 下一次调用同时传 `seen_w`/`seen_h`（你实际看到的宽高），"
+              "插件会按比例校准；② 或改用**归一化坐标** nx/ny（0~1 或 0~1000）；"
+              "③ 最稳是先 refine_point 再 click(cand=编号) —— 候选坐标由插件计算，完全不受压缩影响。\n"
+              "为防这次偏移，**未带 cand/seen_w/raw 的图像坐标点击与局部放大会被拦截**；"
+              "要点精确像素时传 raw=true。只想看某个窗口的细节时，直接 "
+              "`zoom_in(hwnd=…)`（按窗口放大，不需要你给像素）。"
             + _transform_line()
             + "点击默认会自动做元素吸附（把坐标修正到最近控件的中心，见 refine_point）；"
               "需要点精确像素时传 snap=false。"
@@ -4845,71 +4429,85 @@ def _shot_meta(desc: str, grid: bool = False) -> str:
 
 
 def tool_screen_shot(args: dict) -> list:
-    mode = str(args.get("mode") or "full").strip().lower()
+    # 操作后至少等 1s 再截图：界面落定前抓图会把模型带进「没生效→继续乱点」的坑
+    _settle_after_action()
+    # 长任务只等待一次、截图一次，不要让模型反复轮询多张图浪费 token。
+    wait_ms = max(0, min(_num(args.get("wait_ms"), 0), SHOT_WAIT_MAX_MS))
+    wait_note = ""
+    if wait_ms:
+        time.sleep(wait_ms / 1000.0)
+        wait_note = f"。已额外等待 {wait_ms / 1000.0:.1f}s 后截图"
     grid = _bool(args.get("grid"), False)      # 默认纯净截图：坐标轴不画，直接发图给模型
-    hwnd = _num(args.get("hwnd"), 0)
-    title = str(args.get("title") or "")
-    capture = str(args.get("capture") or "auto").strip().lower()
-    if mode == "window" or hwnd or title:
-        target = find_window(title, hwnd)
-        if not target:
-            raise ValueError(_window_not_found_hint(title, hwnd))
-        png, iw, ih, x, y, w, h = grab_window(target, grid=grid, capture=capture)
-        _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
-        # 屏幕抓取路径可能因窗口部分在屏外而裁剪，落点基准要跟着调整，否则会整体偏移
-        off = _GRAB_INFO.get("offset")
-        if off and (off[0] or off[1]):
-            x, y = x + off[0], y + off[1]
-            _set_view(x, y, w, h, iw, ih, "window", target_hwnd=target)
-        desc = (f"已截取窗口「{window_title(target)}」（区域 {w}×{h}），图像 {iw}×{ih}"
-                f"（窗口左上角对应屏幕 {x},{y}；抓取方式：{_GRAB_INFO['strategy'] or 'PrintWindow'}）"
-                + (_GRAB_INFO.get("note") or ""))
-        if _GRAB_INFO["strategy"] == "屏幕抓取":
-            desc += ("。注意：该窗口的 PrintWindow 抓到的是空白（常见于 GPU 渲染/独占表面的"
-                     "界面，如 Blender 一类 3D 软件），已改用屏幕抓取 —— 它会先激活并置顶"
-                     "该窗口，操作期间请勿让其他窗口盖住它")
-        _log("ai", f"截屏：窗口「{window_title(target)}」")
-    else:
-        png, iw, ih, ox, oy, vw, vh = grab_screen(grid=grid)
-        _set_view(ox, oy, vw, vh, iw, ih, "full")
-        scale = vw / iw
-        desc = (f"已截取整个桌面 {vw}×{vh}（虚拟桌面并集，含全部显示器；原点 {ox},{oy}），"
-                f"图像 {iw}×{ih}（缩放比 {scale:.2f}）")
-        if scale > 1.05:
-            desc += ("。注意：图像被缩小了，图上 1px 误差在屏幕上会被放大 "
-                     f"{scale:.2f} 倍；点小目标（工具栏按钮/菜单项）请先 zoom_in 放大到"
-                     "接近 1:1 再读数。")
-            # 缩放是点击误差的最大来源。若前台窗口比整屏小，直接引导改截窗口
-            # （缩放比更小、图更小更省 token）——比让模型在缩略图上硬估小目标高效得多。
-            fg = foreground_window()
-            if fg and not user32.IsIconic(int(fg)):
-                r = window_rect(fg)
-                fw, fh = r.right - r.left, r.bottom - r.top
-                if 0 < fw < vw and 0 < fh <= vh:
-                    desc += (f"\n更准更快的做法：screen_shot(mode=\"window\", hwnd={fg}) "
-                             f"只截前台窗口「{window_title(fg) or fg}」（{fw}×{fh}，"
-                             f"缩放比更小、误差放大更少，图也更小更省）")
-        _log("ai", "截屏：整个桌面")
+    png, iw, ih, ox, oy, vw, vh = grab_screen(grid=grid)
+    _set_view(ox, oy, vw, vh, iw, ih, "full")
+    scale = vw / iw
+    desc = (f"已截取整个桌面 {vw}×{vh}（虚拟桌面并集，含全部显示器；原点 {ox},{oy}），"
+            f"图像 {iw}×{ih}（缩放比 {scale:.2f}）")
+    if scale > 1.05:
+        desc += ("。注意：图像被缩小了，图上 1px 误差在屏幕上会被放大 "
+                 f"{scale:.2f} 倍；点小目标（工具栏按钮/菜单项）请先 zoom_in 放大到"
+                 "接近 1:1 再读数。")
+    _log("ai", "截屏：整个桌面")
+    # 前台窗口显示不全（被拖出屏/尺寸超出）时，把补救动作直接写进返回
+    fg = foreground_window()
+    if fg:
+        desc += _window_fit_note(fg)
     _refresh_env()
-    return [{"type": "text", "text": _shot_meta(desc, grid=grid)},
+    return [{"type": "text", "text": _shot_meta(desc + wait_note, grid=grid)},
             {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}]
 
 
 def tool_zoom_in(args: dict) -> list:
-    x, y = _resolve_point(args)
+    """放大局部细节。三种定位方式，按可靠性从高到低：
+
+    ① `hwnd`/`title`（可不带坐标）→ 直接放大整个窗口的可见矩形。**不需要模型给像素**，
+       天然免疫服务商压图 —— 「总是截到别的区域」时首选；
+    ② `cand=编号`（来自 refine_point）→ 坐标由插件按原始屏幕像素计算，同样免疫压图；
+    ③ `nx`/`ny`（归一化）或 `seen_w`/`seen_h` 校准后的像素 → 与图片尺寸无关。
+    未校准的绝对像素 x/y 会被 `_cand_gate` 拒绝（服务商压图后必然偏移，会截到别的区域）。
+    """
+    _settle_after_action()
     size = _num(args.get("size"), 400)
     factor = _num(args.get("factor"), 3)
     grid = _bool(args.get("grid"), False)
     cursor = _bool(args.get("cursor"), False)
     smooth = _bool(args.get("smooth"), False)
-    png, iw, ih, x0, y0, region = grab_zoom(x, y, size, factor, grid=grid,
-                                             cursor=cursor, smooth=smooth)
-    _set_view(x0, y0, region, region, iw, ih, "zoom")
-    _log("ai", f"放大查看 ({x},{y}) 区域 {region}px × {factor}")
+    cand = _resolve_cand(args)
+    hwnd = find_window(str(args.get("title") or ""), _num(args.get("hwnd"), 0))
+    has_coord = any(args.get(k) not in (None, "") for k in ("x", "y", "nx", "ny"))
+    note = ""
+    if cand:
+        dx, dy, note = cand
+        png, iw, ih, x0, y0, rw = grab_zoom(dx, dy, size, factor, grid=grid,
+                                            cursor=cursor, smooth=smooth)
+        rh = rw
+        desc = (f"已放大候选 #{_num(args.get('cand'), 0)} 附近 {rw}×{rh} 区域为 "
+                f"{iw}×{ih}（放大 {iw / rw:.1f} 倍）")
+    elif hwnd and not has_coord:
+        r = window_rect(hwnd)
+        x0, y0 = r.left, r.top
+        rw, rh = max(1, r.right - r.left), max(1, r.bottom - r.top)
+        # 窗口模式按 1:1 输出（factor 固定 1）：已经够大，再放大只会撑爆视觉输入
+        png, iw, ih, x0, y0, rw, rh = grab_region(x0, y0, rw, rh, factor=1,
+                                                   grid=grid, cursor=cursor, smooth=smooth)
+        _STATE["view_target"] = hwnd      # 后续 click 默认落在这个窗口上
+        desc = (f"已放大窗口「{window_title(hwnd) or hwnd}」的可见区域 {rw}×{rh} 为 "
+                f"{iw}×{ih}（1:1）；本图原点即窗口左上角，坐标按图像像素给即可")
+    else:
+        gate = _cand_gate(args, cand, "放大")
+        if gate:
+            _log("ai", "拒绝局部放大：图像坐标未校准")
+            return [{"type": "text", "text": gate}]
+        dx, dy = _resolve_point(args)
+        png, iw, ih, x0, y0, rw = grab_zoom(dx, dy, size, factor, grid=grid,
+                                            cursor=cursor, smooth=smooth)
+        rh = rw
+        desc = f"已放大屏幕 ({dx},{dy}) 附近 {rw}×{rh} 区域为 {iw}×{ih}（放大 {iw / rw:.1f} 倍）"
+    _set_view(x0, y0, rw, rh, iw, ih, "zoom")
+    _log("ai", f"放大查看 ({x0},{y0}) 区域 {rw}×{rh}")
     crisp = "" if smooth else "（最近邻放大：边缘是硬实的像素方块，可直接按像素读数）"
-    return [{"type": "text",
-             "text": _shot_meta(f"已放大屏幕 ({x},{y}) 附近 {region}×{region} 区域为 {iw}×{ih}"
-                                f"（放大 {iw / region:.1f} 倍）{crisp}", grid=grid)},
+    return [{"type": "text", "text": _shot_meta(desc + crisp + (f"\n{note}" if note else ""),
+                                               grid=grid)},
             {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}]
 
 
@@ -4966,49 +4564,34 @@ def tool_list_windows(args: dict) -> str:
               "要先恢复。"
               "\n**找某个应用时不要反复调本工具**：直接用 open_app(name=\"微信\")，"
               "它会把「没运行就启动 / 最小化就恢复 / 切到前台」一次做完并给出 hwnd。"
-              "\n用 screen_shot(mode=\"window\", title=\"标题片段\") 只看某一个窗口；"
               "kind=main/menu/overlay 可只看某一类。")
 
 
 def _window_rel_to_screen(hwnd: int, rel_x, rel_y) -> tuple:
-    """把「窗口截图的图像坐标」换算成屏幕物理坐标，返回 (x, y, note)。
+    """把「相对窗口外框左上角的像素」换算成屏幕物理坐标，返回 (x, y, note)。
 
-    为什么要有这一步：窗口截图（screen_shot(mode="window")）在窗口宽度超过
-    1280 时会**等比缩小**，模型从图上读到的坐标是**图像坐标**而不是窗口像素 ——
-    直接当窗口偏移用会整体偏掉。这里判断「当前视觉基准是否就是该窗口」：
-      * 是 → 走 to_physical，按截图缩放比精确换算；
-      * 否 → 按 1:1（相对窗口外框左上角）处理，并提示模型先截图刷新基准。
-
-    基准说明：窗口截图的 (0,0) 对应 `GetWindowRect` 的左上角（含标题栏与隐形
-    边框），所以 rel_x/rel_y 就是「在这张窗口截图上读到的像素位置」，无歧义。
+    rel_x/rel_y 是**物理像素**（不是截图图像像素）：从 list_windows 给出的窗口位置
+    或整屏截图算 `rel = 屏幕坐标 - 窗口左上角` 即可。窗口移动后用同一组 rel 再点，
+    落点仍跟着窗口走 —— 这是 click_window 唯一的价值。
     """
     r = window_rect(hwnd)
-    v = _VIEW
-    same_view = (v["w"] > 0 and v["img_w"] > 0
-                 and abs(v["x0"] - r.left) <= 2 and abs(v["y0"] - r.top) <= 2)
-    if same_view:
-        x, y = to_physical(rel_x, rel_y)
-        return x, y, ""
     x, y = r.left + int(rel_x), r.top + int(rel_y)
-    return x, y, \
-        ("注意：未检测到该窗口的最新截图基准，rel_x/rel_y 按「相对窗口外框左上角 1:1」"
-         "处理；窗口被缩放过时会有偏差，建议先 screen_shot(mode=\"window\") 刷新基准再点。")
+    return x, y, ""
 
 
 def tool_click_window(args: dict) -> str:
-    """窗口相对坐标点击：rel_x/rel_y 用**窗口截图上的像素坐标**。
+    """窗口相对坐标点击：rel_x/rel_y 是**相对窗口外框左上角的物理像素**。
 
-    适用场景：没有可访问性树的窗口（Blender 等 GPU 自绘界面、游戏、部分浮层）
-    只能用坐标点击，而屏幕绝对坐标会随窗口移动全部失效 —— 用「相对窗口截图」
-    的坐标，窗口挪了也不会点错。不传 rel_x/rel_y 时点窗口正中心。
-
-    精度保证：若刚截过这个窗口，会按截图缩放比精确换算（窗口 >1280px 被缩小时
-    也准）；否则按 1:1 处理并如实提示。
+    适用场景：屏幕绝对坐标会随窗口移动全部失效（Blender 等 GPU 自绘界面、游戏、
+    部分浮层）—— 用相对窗口的坐标，窗口挪了也不会点错。窗口位置可用 list_windows 查，
+    rel = 目标屏幕坐标 - 窗口左上角；不传 rel_x/rel_y 时点窗口正中心。
     """
     reason = _guard("click_window")
     if reason:
         return reason
     hwnd = _target_hwnd(args)
+    # 记住这个目标窗口：后续 type_text / key_press 不传 hwnd 也能沿用
+    _STATE["view_target"] = int(hwnd or 0)
     r = window_rect(hwnd)
     ww, wh = max(1, r.right - r.left), max(1, r.bottom - r.top)
     rx = _num(args.get("rel_x"), -1)
@@ -5160,15 +4743,15 @@ def _click_verify(x: int, y: int, before, hwnd: int = 0) -> str:
 
 def _alt_snap_point(est_x: int, est_y: int, used_x: int, used_y: int,
                     reach: int) -> tuple:
-    """吸附点没点中时，取「次优候选」的几何中心再试一次。
+    """吸附点没点中时，取「次优候选」再试一次 —— 但**只能在原目标附近**。
 
     为什么值得做：吸附偶尔会挑到隔壁那个连通域（密排列表里最常见 —— 估计点压在
-    两个条目之间，谁近谁被选中）。此时用户看到的现象是「点了没反应」，而这
-    恰好是**同一个目标、只差十几像素**，无需劳烦模型重新截图重新估坐标：
-    插件自己换第二候选再点一次，绝大多数情况一次就中。
+    两个条目之间，谁近谁被选中）。此时现象是「点了没反应」，而换第二候选一次多半就中。
 
-    约束：候选必须离已经点过的点至少 4px（同一块就别重复点）、且不超过 160px
-    （再远就说明不是同一个目标了，换候选只会点到无关的地方）。
+    为什么必须限制纵向位移（用户反馈「胡乱点击聊天列表」）：候选菜单里既有「行」
+    也有「块」，不加限制时第二候选可能是**另一行**（聊天列表另一条会话）——点击就
+    变成「乱点别人」。这里要求纵向差 ≤ 14px、曼哈顿距离 ≤ 80px：只换同一目标附近
+    的候选，绝不跨行。
     """
     cands = []
     try:
@@ -5185,7 +4768,9 @@ def _alt_snap_point(est_x: int, est_y: int, used_x: int, used_y: int,
         dx, dy = abs(cx - used_x), abs(cy - used_y)
         if dx <= 3 and dy <= 3:
             continue                       # 就是刚点的那个点，跳过
-        if dx + dy > 160:
+        if dy > ALT_RETRY_DY_MAX:
+            continue                       # 换行/换条目 = 点到别人，宁可不重试
+        if dx + dy > 80:
             continue                       # 离得太远，不是同一个目标
         return (cx, cy)
     return None
@@ -5263,6 +4848,7 @@ def tool_refine_point(args: dict) -> list:
     `click(x=…, y=…, space="screen", snap=false)` 点击（**带 snap=false**，
     否则 click 会再吸附一次，可能又挪到隔壁那个去）。
     """
+    _settle_after_action()
     x, y = _resolve_point(args)
     reach = _num(args.get("reach"), SNAP_REACH_DEFAULT)
     cands = []
@@ -5343,6 +4929,27 @@ def _apply_snap(args: dict, x: int, y: int, default_on: bool = True) -> tuple:
     return _snap_to_element(x, y, reach)
 
 
+def _guard_snap_target(args: dict, est, x: int, y: int, note: str) -> tuple:
+    """估计点在目标窗口内时，吸附点不得跨出该窗口（防止 QQ → Trae 的邻近误吸）。"""
+    if est is None or (int(x), int(y)) == (int(est[0]), int(est[1])):
+        return x, y, note
+    try:
+        target = _input_target_hwnd(args)
+        if not target:
+            return x, y, note
+        r = window_rect(target)
+        ex, ey = int(est[0]), int(est[1])
+        est_inside = r.left <= ex <= r.right and r.top <= ey <= r.bottom
+        snap_inside = r.left <= int(x) <= r.right and r.top <= int(y) <= r.bottom
+        if est_inside and not snap_inside:
+            extra = (f"吸附点 ({x},{y}) 跨出目标窗口，已保留原估计点 ({ex},{ey})，"
+                     "避免点到旁边应用的控件。")
+            return ex, ey, _join_notes(note, extra)
+    except Exception:
+        pass
+    return x, y, note
+
+
 _CLICK_ACTIONS = {
     "": "click", "click": "click", "tap": "click", "left": "click",
     "double": "double", "double_click": "double", "dblclick": "double",
@@ -5350,6 +4957,10 @@ _CLICK_ACTIONS = {
     "long": "long_press", "long_press": "long_press",
     "drag": "drag", "swipe": "swipe", "select": "select",
 }
+
+#: 换候选重试时允许的最大纵向位移（px）：超过它就是"另一行/另一个条目"，
+#: 重试会变成乱点聊天列表里的人，宁可放弃重试。
+ALT_RETRY_DY_MAX = 14
 
 
 def _click_action(args: dict) -> str:
@@ -5394,12 +5005,18 @@ def tool_click(args: dict) -> str:
         x, y, snap_note = cand
     est = None
     if not cand:
-        if args.get("x") in (None, "") or args.get("y") in (None, ""):
-            raise ValueError("click 需要坐标：传 x/y（截图基准）或 cand=编号"
-                             "（编号来自 refine_point）。两者都没给，无法定位目标。")
+        has_norm = (args.get("nx") not in (None, "") and args.get("ny") not in (None, ""))
+        if not has_norm and (args.get("x") in (None, "") or args.get("y") in (None, "")):
+            raise ValueError("click 需要坐标：传 x/y（截图基准）、nx/ny（归一化 0~1 或 0~1000）"
+                             "或 cand=编号（编号来自 refine_point）。三者都没给，无法定位目标。")
+        gate = _cand_gate(args, cand)
+        if gate:
+            _log("ai", f"拒绝图像坐标点击 ({args.get('x')},{args.get('y')})：需候选编号/校准")
+            return gate
         x, y = _resolve_point(args)
         est = (x, y)          # 吸附前的估计点：换候选重试要靠它重新枚举候选
         x, y, snap_note = _apply_snap(args, x, y)
+        x, y, snap_note = _guard_snap_target(args, est, x, y, snap_note)
     button = str(args.get("button") or "left").strip().lower()
     clicks = max(1, min(_num(args.get("clicks"), 1), 3))
     if action == "right":
@@ -5408,18 +5025,40 @@ def tool_click(args: dict) -> str:
     elif action == "double":
         button = "left"
         clicks = 2
-    verify = _bool(args.get("verify"), False)
-    pre = _ensure_click_target(x, y, args)
-    # 生效校验要拿目标窗口做「整窗指纹」：显式 hwnd 优先，其次最近一次窗口截图的那个
+    # 落点在屏幕外 → 坐标基准不对（窗口被拖出屏幕/基准过期），点了也只会落到屏幕边缘
+    bounds = _screen_bounds_note(x, y)
+    if bounds:
+        _log("ai", f"拒绝点击 ({x},{y})：落点不在屏幕范围内")
+        return bounds
+    # 默认开启效果校验（用户选择准确率优先）：服务商压图导致的点偏表现为
+    # 「点了但界面没有任何反应」；默认校验能把它如实回传，模型才不会以为点过了。
+    # 显式传 verify=false 可换回旧的低延迟行为。
+    verify_req = args.get("verify")
+    verify = _bool(verify_req, True)
+    verify_explicit = verify_req is not None and _bool(verify_req, False)
+    # 生效校验要拿目标窗口做「整窗指纹」：显式 hwnd 优先，其次最近一次显式点击目标
     hwnd = _num(args.get("hwnd"), 0) or int(_STATE.get("view_target") or 0)
+    if _num(args.get("hwnd"), 0):
+        # 记住最近一次显式目标窗口：后续 type_text / key_press 不传 hwnd 也能继续保护，
+        # 免得低质量模型点完输入框就忘了焦点该去哪儿。
+        _STATE["view_target"] = hwnd
+    # 截图后画面已换窗口/被最小化 → 旧图坐标作废（防「点偏一大片 / 乱切窗口」）
+    drift = _shot_drift_note(x, y, hwnd, args)
+    if drift:
+        _log("ai", f"拒绝点击 ({x},{y})：截图后画面已变")
+        return drift
+    # 「逐条点开列表试探」→ 冷却期内硬拒绝点列表行（allow_list_click=true 可显式放行）
+    is_row = "行" in (snap_note or "")
+    if is_row and not _bool(args.get("allow_list_click"), False):
+        deny = _list_scan_deny(True)
+        if deny:
+            _log("ai", f"拒绝点击 ({x},{y})：逐条点开列表试探，冷却中")
+            return deny
+    pre = _ensure_click_target(x, y, args)
     before = _pre_click_probe(x, y, hwnd) if verify else ()
     if not do_click(x, y, button, clicks, mode=_input_mode(args)):
         _refresh_env()
-        return (f"⚠ **没有完成点击**：光标无法稳定停在 ({x},{y})（连续回读不一致，"
-                f"当前在 {_cursor_pos()}）。这通常说明**用户正在用真实鼠标**，"
-                f"注入被实时覆盖了 —— 此时硬点会落到别的位置（可能误触删除/发送）。\n"
-                f"请先请用户停手，或 control(action=\"status\") 查看接管状态；"
-                f"**不要重复重试同一坐标**。")
+        return _inject_lost_note(x, y)
     # 落点回读：click 以前只报「请求的坐标」，一旦注入链路有偏差（多屏归一化/DPI 缩放）
     # 就是**静默点空**，模型还以为点对了。回读 GetCursorPos 让每一次点击都自证落点，
     # 偏差不再是猜出来的。
@@ -5430,12 +5069,19 @@ def tool_click(args: dict) -> str:
             f"({ax - x:+d},{ay - y:+d})px —— 注入链路有偏差（多屏归一化 / DPI 缩放），"
             f"请先用 verify_point 自检坐标链路，不要盲目重试。")
     changed, ratio, vtext = _click_verify_ex(x, y, before, hwnd) if verify else (True, 0.0, "")
+    if not verify_explicit and not changed:
+        # 默认校验（模型没主动要求）时，措辞不能吓人：点输入框/已聚焦控件不会有像素变化，
+        # 那是「已生效但无反馈」，不是「失败」。
+        vtext = ("未观察到可见变化（可能已生效但没有像素反馈，例如只是获得焦点）；"
+                 "请用 screen_shot 确认结果，不要重复点同一坐标。")
     retry_note = ""
     # 生效校验判定「没点中」时，自动换次优候选再点一次（一次为限）。
     # 只对「带吸附的普通左键单击」做：右键/双击/多击语义不同，重试可能弹两次菜单。
     # 只有「整窗一个采样点都没变」才允许换候选重试：只要界面有任何动静，
     # 就说明这一击多半已经生效，再点一次必然落到别处（用户反馈的"偏一大片"）。
-    if (verify and not changed and ratio <= 0.0 and est is not None
+    # 自动换候选重试只在模型**显式**要求 verify 时开启：默认校验下「没有像素变化」
+    # 很可能只是焦点转移，再点一次会落到别处（用户反馈过的「乱点」）。
+    if (verify and verify_explicit and not changed and ratio <= 0.0 and est is not None
             and button == "left" and clicks == 1 and _bool(args.get("retry"), True)):
         alt = _alt_snap_point(est[0], est[1], x, y,
                               _num(args.get("snap_reach"), SNAP_REACH_DEFAULT))
@@ -5460,16 +5106,29 @@ def tool_click(args: dict) -> str:
     label = {"right": "右键", "double": "双击"}.get(action, "点击")
     _log("ai", f"{label} {x},{y}（{button}×{clicks}，鼠标注入），落点 ({ax},{ay})")
     _refresh_env()
+    scan = _list_scan_note(hwnd, y, is_row)
     return (f"已{label} ({x},{y}) {button}×{clicks}（屏幕物理坐标，鼠标注入）。"
             + _join_notes(snap_note, pre, land, vtext + retry_note, _take_coord_note())
-            + "请重新 screen_shot 验证结果。")
+            + "请重新 screen_shot 验证结果。" + scan)
 
 
 def _inject_lost_note(x: int, y: int) -> str:
-    """注入动作（拖拽/滑动/长按/拖选）被真实鼠标覆盖时的统一告警文案。"""
-    return (f"⚠ **动作没有执行**：光标无法稳定停在 ({x},{y})（当前在 {_cursor_pos()}），"
-            f"通常说明**用户正在用真实鼠标**，注入被实时覆盖了。"
-            f"请先请用户停手，或 control(action=\"status\") 查看接管状态；"
+    """注入动作（点击/拖拽/滑动/长按/拖选）没有完成时的统一告警文案。
+
+    **必须区分两类原因**（以前一律说成「用户正在用真实鼠标」，把系统拦截和坐标
+    偏差都甩锅给用户，制造了大量「我明明没碰鼠标」的困惑）：
+      * SendInput 返回 0 → 系统拒绝注入（权限/安全策略），与用户无关；
+      * 其余 → 光标被别的东西移走了（真实鼠标 / 其他注入源）或坐标链路偏差。
+    """
+    if not _last_send_ok:
+        return (f"⚠ **没有完成操作**：系统拒绝了模拟输入（SendInput 返回 0）。"
+                f"常见原因：目标应用以管理员权限运行、或安全软件拦截了模拟输入 —— "
+                f"**不是用户在操作鼠标，也不是坐标算错**。\n"
+                f"请如实告诉用户这个原因，并建议以同等权限运行本程序或让用户手动完成；"
+                f"**不要重复重试同一坐标**。")
+    return (f"⚠ **动作没有执行**：光标无法稳定停在 ({x},{y})（当前在 {_cursor_pos()}）。"
+            f"可能是真实鼠标/其他程序在移动光标，也可能是坐标链路（DPI/多屏）偏差。\n"
+            f"请先 control(action=\"status\") 查看接管状态，再用 verify_point 自检坐标链路；"
             f"**不要重复重试同一坐标**。")
 
 
@@ -5481,11 +5140,20 @@ def tool_long_press(args: dict) -> str:
     if cand:
         x, y, snap_note = cand
     else:
+        gate = _cand_gate(args, cand)
+        if gate:
+            return gate
         if args.get("x") in (None, "") or args.get("y") in (None, ""):
             raise ValueError("long_press 需要坐标：传 x/y（截图基准）或 cand=编号。")
         x, y = _resolve_point(args)
         x, y, snap_note = _apply_snap(args, x, y)
     dur = max(0.2, float(_num(args.get("duration"), int(DEFAULT_LONG_PRESS_S * 1000)) / 1000.0))
+    bounds = _screen_bounds_note(x, y, "长按")
+    if bounds:
+        return bounds
+    drift = _shot_drift_note(x, y, 0, args)
+    if drift:
+        return drift
     pre = _ensure_click_target(x, y, args)
     ok = do_long_press(x, y, dur, mode=_input_mode(args))
     if not ok:
@@ -5522,6 +5190,14 @@ def tool_drag(args: dict) -> str:
     steps = _num(args.get("steps"), DRAG_FILE_STEPS if file_mode else 0)
     overshoot = _num(args.get("overshoot"), DRAG_FILE_OVERSHOOT if file_mode else 0)
     dur = max(0.1, dur_ms / 1000.0)
+    path_note = _path_guard(x1, y1, x2, y2, "拖拽")
+    if path_note:
+        return path_note
+    # 起点是「抓取点」：截图后画面若已换窗口，按旧图抓取会拖错东西（终点同理但不宜
+    # 提前激活目标窗口——那会改变界面布局），所以这里只拦起点。
+    drift = _shot_drift_note(x1, y1, _input_target_hwnd(args), args)
+    if drift:
+        return drift
     pre = _ensure_click_target(x1, y1, args)
     if not do_drag(x1, y1, x2, y2, dur, hold=max(0.02, hold_ms / 1000.0),
                    mode=_input_mode(args), steps=int(steps),
@@ -5554,6 +5230,9 @@ def tool_swipe(args: dict) -> str:
     x1, y1, n1 = _apply_snap(args, x1, y1, default_on=False)
     x2, y2, n2 = _apply_snap(args, x2, y2, default_on=False)
     dur = max(0.08, _num(args.get("duration"), 260) / 1000.0)
+    path_note = _path_guard(x1, y1, x2, y2, "滑动")
+    if path_note:
+        return path_note
     pre = _ensure_click_target(x1, y1, args)
     if not do_swipe(x1, y1, x2, y2, dur, mode=_input_mode(args)):
         _refresh_env()
@@ -5563,10 +5242,11 @@ def tool_swipe(args: dict) -> str:
     if _touch_allowed(_input_mode(args)):
         return (f"已从 ({x1},{y1}) 滑动到 ({x2},{y2})（触控滑动，系统会带惯性）。"
                 + _join_notes(n1, n2, pre)
-                + "请重新 screen_shot 看滚动结果；滚动窗口内容也可直接用 scroll。")
+                + "停稳后 screen_shot 确认目标行是否进入视野，然后**直接 click 那一行**"
+                  "（聊天/联系人这类行式列表不要再用滚轮 scroll）。")
     return (f"已从 ({x1},{y1}) 滑动到 ({x2},{y2})（鼠标拖动）。"
             + _join_notes(n1, n2, pre, _take_coord_note())
-            + "滚动窗口内容建议改用 scroll(strength=…, direction=…)。")
+            + "停稳后 screen_shot 确认目标行，再直接 click 它；行式列表优先继续用 swipe。")
 
 
 def tool_select(args: dict) -> str:
@@ -5578,6 +5258,9 @@ def tool_select(args: dict) -> str:
     # 选择默认**不**吸附：选区两端通常落在文字/内容的任意位置，吸附到「元素中心」反而错
     x1, y1, n1 = _apply_snap(args, x1, y1, default_on=False)
     x2, y2, n2 = _apply_snap(args, x2, y2, default_on=False)
+    path_note = _path_guard(x1, y1, x2, y2, "拖选")
+    if path_note:
+        return path_note
     pre = _ensure_click_target(x1, y1, args)
     if not do_drag(x1, y1, x2, y2, max(0.2, _num(args.get("duration"), 420) / 1000.0), hold=0.05):
         _refresh_env()
@@ -5628,8 +5311,9 @@ def tool_type_text(args: dict) -> str:
     text = str(args.get("text") if args.get("text") is not None else "")
     if not text:
         raise ValueError("text 为空，无可输入内容")
-    if len(text) > 2000:
-        text = text[:2000]
+    if len(text) > TYPE_TEXT_MAX_CHARS:
+        raise ValueError(f"文本长度 {len(text)} 超过单次输入上限 {TYPE_TEXT_MAX_CHARS}；"
+                         "请拆成多段输入，或改用 copy/paste，不会静默截断。")
     note = _ensure_input_target(args, "输入文本")
     tgt = _input_target_hwnd(args)
     fg = foreground_window()
@@ -5641,6 +5325,16 @@ def tool_type_text(args: dict) -> str:
     # 先停一下让输入法/输入框把上屏处理完，否则回车可能被当成输入法候选上屏。
     submit = _bool(args.get("submit"), False)
     if submit:
+        # 长文本注入期间前台可能被弹窗/用户操作换掉；回车前必须再确认一次。
+        # 这里比较输入前后的**实际前台**，不擅自抢回目标：没有显式 hwnd 时也同样安全。
+        current_fg = foreground_window()
+        if fg and current_fg != fg:
+            raise RuntimeError(
+                f"已拒绝回车发送：输入期间前台窗口从「{window_title(fg) or fg}」变为"
+                f"「{window_title(current_fg) or current_fg}」。Enter 会发进错误的应用，"
+                "所以没有执行。请重新截图确认焦点，不要重复输入。")
+        if not fg:
+            _ensure_input_target(args, "回车发送")
         time.sleep(max(0.08, _num(args.get("submit_delay"), 120) / 1000.0))
         do_key("enter")
     _log("ai", f"输入文本（{len(text)} 字符）" + ("并回车发送" if submit else "") + f"：{text[:60]}")
@@ -5665,14 +5359,29 @@ def tool_key_press(args: dict) -> str:
     key = str(args.get("key") or "").strip()
     if not key:
         raise ValueError("key 为空（如 enter / ctrl+c / win+ctrl+d）")
-    # win 开头的组合键是系统级快捷键（如 win+ctrl+d 切虚拟桌面），不绑定窗口；
-    # 其余按键只对前台窗口生效，必须先把目标窗口切到前台，否则会打进别的应用。
-    note = "" if key.lower().startswith("win") else _ensure_input_target(args, f"发送按键 {key}")
-    fg = foreground_window()
+    normalized = re.sub(r"[\s_]+", "", key.lower())
+    window_nav = normalized in {"alt+tab", "alt+shift+tab", "shift+alt+tab",
+                                "alt+esc", "alt+shift+esc", "shift+alt+esc"}
+    # win 组合键与 Alt+Tab/Alt+Esc 是系统级导航，不绑定应用窗口；尤其不能在 Alt+Tab
+    # 前把旧目标重新激活，否则会把刚要切走的窗口又抢回来。
+    system_key = normalized.startswith("win") or window_nav
+    note = "" if system_key else _ensure_input_target(args, f"发送按键 {key}")
+    before = foreground_window()
     do_key(key)
+    if window_nav:
+        time.sleep(WINDOW_SWITCH_SETTLE_S)
+        # 后续键盘输入不能再沿用切换前的窗口目标，否则下一次输入又会切回去；
+        # 旧截图也只描述切换前的窗口，必须强制重新截图。
+        _STATE["view_target"] = 0
+        _VIEW["img_w"] = _VIEW["img_h"] = 0.0
+    fg = foreground_window()
     _log("ai", f"按键 {key}")
     _refresh_env()
-    return (f"已发送按键 {key}（发往窗口：{window_title(fg) or fg}）。" + _join_notes(note)
+    if window_nav:
+        return (f"已发送按键 {key}。切换后前台窗口：「{window_title(fg) or fg}」"
+                f"（切换前是「{window_title(before) or before}」）。"
+                "请重新 screen_shot 确认目标窗口后再操作。")
+    return (f"已发送按键 {key}（当前前台窗口：{window_title(fg) or fg}）。" + _join_notes(note)
             + "请重新 screen_shot 验证结果。")
 
 
@@ -5883,22 +5592,18 @@ def _hit_check(hwnd: int, x: int, y: int) -> str:
 # 窗口 / 应用管理工具
 # ============================================================================
 def tool_open_app(args: dict):
-    """打开 / 切到某个应用：**任务栏 / 托盘优先**，其次启动。
+    """打开 / 切到某个应用：已有窗口就切前台，确实没运行才启动。
 
     用户说「打开微信」「切到 XX」「XX 在后台/最小化了」时**先调这个**，不要用
     list_windows 反复找窗口 —— 那正是把「打开微信发个消息」拖成几十次工具调用、
-    甚至绕不出来的原因。返回值里直接给出 hwnd 与就绪状态，后续 screen_shot(mode="window",
-    hwnd=…) / click_window 直接用这个 hwnd 即可。
+    甚至绕不出来的原因。返回值里直接给出 hwnd 与就绪状态，后续用整屏截图读坐标，
+    需要相对坐标时再用 click_window(hwnd=…)。
 
-    三级优先级（按用户要求：任务栏前台 → 后台托盘 → 启动新实例）：
+    优先级：
       1. 已有可见窗口 → 直接切前台并**实测校验**（最小化的先恢复）；
-         置前被系统拒绝时，回任务栏原图 + 坐标表，让模型用 index=编号 一步点过去；
-      2. 没有可见窗口但**进程在跑**（典型：最小化到托盘）→ 不启动第二个实例，
-         回任务栏 + 「↑」后台面板的原图与坐标表，让模型认出图标后 open_app(index=N) 点开；
+      2. 没有可见窗口但**进程在跑**（典型：最小化到托盘）→ **不启动第二个实例**，
+         如实告知并让用户手动唤出；
       3. 确实没在运行 → 启动 + 等窗口 + 恢复 + 置前 + 校验。
-
-    index=N 是「按编号点任务栏/面板里的图标」，是切到已运行应用最快也最稳的一步
-    （where="panel" 时点「↑」面板里的编号）。
 
     name 用用户的原话（中文口语名也行，如「微信」「记事本」）；插件自己按
     开始菜单 + 注册表 App Paths 建的索引做模糊匹配。
@@ -5912,18 +5617,6 @@ def tool_open_app(args: dict):
     keys = _app_keys(name)
     tmo = max(2.0, _num(args.get("timeout"), 15000) / 1000.0)
     steps = []
-    where = str(args.get("where") or "taskbar").strip().lower()
-    index = _num(args.get("index"), 0)
-
-    # ① 按编号点任务栏/后台面板里的图标（一步切到已运行的应用）
-    if index > 0:
-        out = tool_taskbar_open({"index": index, "where": where, "name": name})
-        head = (f"open_app：按编号点「{'↑ 后台面板' if where != 'taskbar' else '任务栏'}」"
-                f"第 {index} 个图标（切到已运行应用的最短路径）。\n")
-        if isinstance(out, list) and out and out[0].get("type") == "text":
-            out[0]["text"] = head + str(out[0].get("text") or "")
-            return out
-        return head + str(out)
 
     hwnd, title, how = _find_app_window(keys)
     if hwnd:
@@ -5937,17 +5630,16 @@ def tool_open_app(args: dict):
                 f"已安装应用里名字最接近的是：{cand}\n"
                 f"请从这些**真实名字**里挑一个重试；若列表里确实没有，说明它没装，"
                 f"请先安装，或用文件工具找到它的可执行文件路径后让用户确认。")
-        # ② 没窗口但进程在跑 → 多半最小化到了托盘：先去找图标，别再开一个实例
+        # ② 没窗口但进程在跑 → 多半最小化到了托盘：**不要**再开一个实例
         proc = _process_running(keys)
         if proc and not _bool(args.get("launch"), False):
-            _log("ai", f"open_app：{name} 进程 {proc} 在跑但无可见窗口 → 转托盘面板查找")
-            return _taskbar_pick_hint(
-                name,
-                f"「{name}」**进程在运行（{proc}）但没有可见窗口** —— 典型情况是"
-                f"最小化到了**系统托盘/后台面板**。此时**不要启动第二个实例**"
-                f"（会开出重复窗口、甚至抢登录态）。先看下面的任务栏原图与坐标表；"
-                f"图标不在任务栏可见区就再用 where=\"panel\" 看「↑」后台面板。",
-                where="taskbar")
+            _log("ai", f"open_app：{name} 进程 {proc} 在跑但无可见窗口")
+            return (f"「{name}」的进程（{proc}）在运行，但**没有可见窗口** —— "
+                    f"多半是最小化到了系统托盘。为避免开出第二个实例/抢登录态，"
+                    f"**没有启动新进程**。\n"
+                    f"请让用户手动点一下托盘图标把窗口唤出（或右键托盘图标的「打开主界面」）；"
+                    f"唤出后直接 open_app(name=\"{name}\") 即可切到前台。\n"
+                    f"如果用户确认要从头启动，再传 launch=true。")
         before = {w["hwnd"] for w in list_windows()}
         _log("ai", f"启动应用「{res['display']}」← {res['target']}")
         launch_app(res["target"])
@@ -5984,16 +5676,14 @@ def tool_open_app(args: dict):
             f"{'已在前台' if ok else '⚠ 不在前台'}")
     body = "\n".join(f"  · {s}" for s in steps)
     if not ok:
-        # 置前失败：不再让模型反复 open_app/manage_window 试置顶，直接给任务栏原图+坐标表。
-        return _taskbar_pick_hint(
-            name,
-            f"「{title or name}」窗口已找到（hwnd={hwnd}），但**系统拒绝了前台切换**"
-            f"（通常是被别的窗口/锁屏/UAC 挡住，或有前台锁）。{note or ''}\n"
-            f"此时坐标点击有落到别的窗口上的风险 —— 点一下它的任务栏图标通常一步就切过去：",
-            where="taskbar")
+        # 置前失败：如实说明，别让模型反复 open_app/manage_window 试置顶
+        return (f"{head}\n{body}\n"
+                f"⚠ 系统拒绝了前台切换（{note or '前台锁/被遮挡'}）—— 此时坐标点击有落到"
+                f"别的窗口上的风险。请让用户手动点一下「{title or name}」的窗口，"
+                f"或先把遮挡窗口 minimize 后再重试；**不要**反复置顶。")
     return (f"{head}\n{body}\n"
-            f"下一步：用 screen_shot(mode=\"window\", hwnd={hwnd}) 建立坐标基准，"
-            f"再用 zoom_in 放大细看、refine_point 挑编号、click 按编号或坐标点击 —— "
+            f"下一步：screen_shot 看整屏（图=用户眼前画面）→ zoom_in 放大细看 → "
+            f"refine_point 挑编号 → click 按编号或坐标点击 —— "
             f"**不要**再重复 list_windows 找窗口，也**不要**再调 open_app/manage_window 反复置顶。")
 
 
@@ -6034,13 +5724,15 @@ def tool_manage_window(args: dict) -> str:
         return (f"已请求把窗口「{name}」切到前台，但{note}。"
                 f"继续点击有落到错误窗口的风险，建议先处理前置窗口"
                 f"（如用 manage_window 列出窗口确认），或请用户手动切到目标窗口。")
+    if action == "fit":
+        return fit_window(hwnd)
     if action == "move":
         return move_window(hwnd, to_physical(args.get("x"), args.get("y"))[0],
                            to_physical(args.get("x"), args.get("y"))[1],
                            _num(args.get("w"), 0), _num(args.get("h"), 0))
     if action in ("maximize", "minimize", "restore", "show", "close"):
         return set_window_state(hwnd, action)
-    raise ValueError(f"未知动作: {action}（可用 state/list/activate/focus/maximize/"
+    raise ValueError(f"未知动作: {action}（可用 state/list/activate/focus/fit/maximize/"
                      f"minimize/restore/move/close/wait）")
 
 
@@ -6051,39 +5743,48 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "screen_shot", "description":
         "截屏并返回**纯净原图**给你查看（不叠加坐标网格/刻度/准星），直接看图判断目标位置。"
+        "**始终整屏**（虚拟桌面并集）：图=用户眼前画面，弹窗/遮挡/任务栏都在图里，"
+        "不存在「窗口图被裁剪/窗口被遮挡」导致坐标整体偏移的问题。"
         "坐标基准=图像像素（左上角 0,0），点击/拖拽等工具的 x/y 直接填你在图上读到的像素值即可"
-        "（插件自动换算为屏幕物理坐标）。mode=full 整屏（默认）；mode=window 只截某个窗口"
-        "（配合 list_windows 的 title/hwnd）。每次行动前后都应截屏：先看准目标，行动后再验证结果。",
+        "（插件自动换算为屏幕物理坐标）。点小目标先 zoom_in 放大到接近 1:1 再读数。"
+        "每次行动前后都应截屏：先看准目标，行动后再验证结果。"
+        "长任务传 wait_ms=5000 等参数，一次等待后只截一张，别轮询烧 token。",
      "inputSchema": {"type": "object", "properties": {
-         "mode": {"type": "string", "description": "full=整屏（默认），window=指定窗口"},
-         "title": {"type": "string", "description": "窗口标题片段（mode=window 时用）"},
-         "hwnd": {"type": "integer", "description": "窗口句柄（mode=window 时用，来自 list_windows）"},
          "grid": {"type": "boolean", "description": "是否叠加坐标网格刻度（默认 false；仅人工读数/调试时开启）"},
-         "capture": {"type": "string", "description": "抓图方式：auto（默认，PrintWindow 抓到空白时自动改用屏幕抓取）；printwindow=不受遮挡；screen=屏幕区域（GPU 自绘/独占表面界面如 Blender 用这个）"}}}},
+         "wait_ms": {"type": "integer", "description": "长任务等待多少毫秒后再截图（0~60000）：一次等待+一次截图，避免连续轮询浪费 token"}}}},
     {"name": "zoom_in", "description":
-        "放大屏幕局部以精确定位（两步定位第二步）：x/y 为当前截图基准坐标，"
+        "放大屏幕局部以精确定位（两步定位第二步）。三种定位方式，可靠度从高到低："
+        "① 只传 hwnd/title（不传坐标）→ 直接放大该窗口的完整可见区域，不需要你给像素，"
+        "服务商压缩图片也完全不受影响 ——「总截到别的区域」时首选；"
+        "② cand=编号（来自 refine_point）→ 坐标由插件按原始屏幕像素计算，同样免疫压图；"
+        "③ 传 nx/ny（归一化）或用 seen_w/seen_h 校准的像素。"
+        "**未校准的绝对像素 x/y 会被拒绝**（服务商压图后必然偏移，会截到别的区域）。"
         "size 为放大区域边长（默认 400），factor 为放大倍数（默认 3）。"
-        "返回**纯净放大图**（不叠加网格/刻度/准星），直接看清像素级细节。"
-        "放大走**最近邻**（边缘是硬实的像素方块），所以图上读到的像素与屏幕像素一一对应 —— "
-        "点小目标（工具栏按钮/菜单项）先放大到接近 1:1 再读数，比在全屏缩略图上估准得多。",
+        "返回**纯净放大图**（不叠加网格/刻度/准星），最近邻放大，图上像素与屏幕像素一一对应。",
      "inputSchema": {"type": "object", "properties": {
-         "x": {"type": "integer", "description": "中心 x（当前截图坐标）"},
+         "x": {"type": "integer", "description": "中心 x（当前截图坐标；未校准会被拒绝，优先用 hwnd/cand/nx）"},
          "y": {"type": "integer", "description": "中心 y（当前截图坐标）"},
+         "hwnd": {"type": "integer", "description": "按窗口句柄放大：只放大这个窗口的完整可见区域（不需要坐标）"},
+         "title": {"type": "string", "description": "按窗口标题放大（可省略 hwnd），同样不需要坐标"},
+         "cand": {"type": "integer", "description": "按 refine_point 的候选编号放大（坐标由插件算，免疫压图）"},
          "size": {"type": "integer", "description": "放大区域边长，默认 400"},
-         "factor": {"type": "integer", "description": "放大倍数，默认 3"},
+         "factor": {"type": "integer", "description": "放大倍数，默认 3（窗口模式固定 1:1）"},
          "grid": {"type": "boolean", "description": "是否叠加坐标网格刻度（默认 false，纯净放大）"},
          "cursor": {"type": "boolean", "description": "是否叠加鼠标准星（默认 false）"},
          "smooth": {"type": "boolean", "description": "是否平滑插值放大（默认 false=最近邻，像素边缘硬实、便于精确读数）"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
-         "required": ["x", "y"]}},
+         "nx": {"type": "number", "description": "归一化 x（0~1 或 0~1000）；图片被服务商压缩时用它代替 x"},
+         "ny": {"type": "number", "description": "归一化 y（0~1 或 0~1000）"},
+         "seen_w": {"type": "integer", "description": "你实际看到的图片宽度（与插件声明尺寸不同时用于校准）"},
+         "seen_h": {"type": "integer", "description": "你实际看到的图片高度"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化"}},
+         "required": []}},
     {"name": "list_windows", "description":
         "列出当前可见窗口（句柄/类别/标题/位置/尺寸/进程/类名）。"
         "**⚠ 成本高，默认不要调用**：桌面动辄上百个窗口，这一屏文字既占上下文又逼你"
         "逐条读，是最容易把任务拖成多轮往返的工具。按下面的顺序来："
         "① 想打开/切换到某个应用 → open_app(name=应用名)（自动判断在不在跑、"
         "要不要恢复/置顶，并回给 hwnd）；"
-        "② 应用在任务栏/后台 → `taskbar_open()` 拿编号后 `taskbar_open(index=N)`；"
-        "③ **以上都不行、且必须知道桌面上到底有什么时**才用本工具，并且一定带 "
+        "② **以上都不行、且必须知道桌面上到底有什么时**才用本工具，并且一定带 "
         "`kind` 收窄（main / menu / overlay），别拉全量。"
         "包含无标题的桌宠、悬浮球（类别=无标题浮层）与弹出菜单（类别=弹出菜单）——"
         "这类窗口没有标题，只有这里能拿到 hwnd。",
@@ -6103,7 +5804,7 @@ TOOLS = [
          "button": {"type": "string", "description": "left（默认）/right/middle"},
          "clicks": {"type": "integer", "description": "点击次数，默认 1"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（仅触控优先的界面才用）"},
-         "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告是否真的响应（默认 false）"},
+         "verify": {"type": "boolean", "description": "点击后自动校验界面是否响应（默认 true；只追求速度时传 false）"},
          "snap": {"type": "boolean", "description": "是否把 rel 坐标吸附到最近控件的中心（默认 true；想点精确像素传 false）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏得很大时可加大到 140）"}}}},
     {"name": "verify_point", "description":
@@ -6116,8 +5817,10 @@ TOOLS = [
          "x": {"type": "integer", "description": "x 坐标（截图基准）"},
          "y": {"type": "integer", "description": "y 坐标（截图基准）"},
          "move": {"type": "boolean", "description": "是否真的把光标移过去，默认 true"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
-         "required": ["x", "y"]}},
+         "nx": {"type": "number", "description": "归一化 x（0~1 或 0~1000）；图片被服务商压缩时用它代替 x"},
+         "ny": {"type": "number", "description": "归一化 y（0~1 或 0~1000）"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化"}},
+         "required": []}},
     {"name": "refine_point", "description":
         "**坐标精修（强烈建议在 click 前用）**：你从截图上估出的坐标是「估」的 —— 屏幕缩放到 "
         "1280 宽后，图上 1px 误差在 4K 屏上就是 3px，而 Blender/剪辑软件里按钮只有 20px 高，"
@@ -6133,8 +5836,10 @@ TOOLS = [
          "y": {"type": "integer", "description": "你估计的 y（截图基准）"},
          "reach": {"type": "integer", "description": "搜索半径像素，默认 88（估计得越不准越要加大，最大 140）"},
          "pick": {"type": "integer", "description": "指定候选菜单里的编号 N，直接取第 N 个候选的中心（不填=取最近的那个）"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"}},
-         "required": ["x", "y"]}},
+         "nx": {"type": "number", "description": "归一化 x（0~1 或 0~1000）；图片被服务商压缩时用它代替 x"},
+         "ny": {"type": "number", "description": "归一化 y（0~1 或 0~1000）"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化"}},
+         "required": []}},
     {"name": "click", "description":
         "鼠标操作统一入口（x/y 为当前截图基准坐标）。用 action 选动作（只需记住这一个工具）："
         "click=单击（默认）/double=双击/right=右键/long_press=长按（可呼出上下文菜单）/"
@@ -6146,11 +5851,18 @@ TOOLS = [
         "**默认会自动做元素吸附**：把坐标修正到附近那个控件的几何中心（纯像素连通域判定，"
         "不依赖控件树，对 Blender 等自绘界面同样有效），返回值里会说明有没有吸附、位移多少。"
         "想点一个精确像素（如三维视口里的某点）传 snap=false。"
+        "多窗口下**可见区域直接点**，只有落点被其他窗口遮挡时才激活目标窗口；"
+        "窗口移动或缩放后必须重新截图，旧坐标会被拒绝。"
         "拖拽与滑动动作顺带支持 duration（毫秒）与 input=touch。",
      "inputSchema": {"type": "object", "properties": {
          "x": {"type": "integer", "description": "x 坐标（截图基准）；action=drag/swipe/select 时为起点；用 cand 时可省略"},
          "y": {"type": "integer", "description": "y 坐标（截图基准）；action=drag/swipe/select 时为起点；用 cand 时可省略"},
          "cand": {"type": "integer", "description": "按 refine_point 列出的候选编号点击（坐标由插件按候选框几何中心算出，优先用它）"},
+         "nx": {"type": "number", "description": "归一化 x（图宽百分比）：0~1 小数或 0~1000 千分比；与 ny 一起可替代 x/y，图片被服务商压缩时最可靠"},
+         "ny": {"type": "number", "description": "归一化 y（图高百分比）：0~1 小数或 0~1000 千分比"},
+         "seen_w": {"type": "integer", "description": "你实际看到的图片宽度（若与截图声明的尺寸不同，插件按此校准坐标）"},
+         "seen_h": {"type": "integer", "description": "你实际看到的图片高度"},
+         "raw": {"type": "boolean", "description": "明确要点精确像素（画布/空白处）：跳过压缩拦截，直接按图像坐标点"},
          "action": {"type": "string", "description": "click（默认）/double/right/long_press/drag/swipe/select"},
          "x2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 x（截图基准）"},
          "y2": {"type": "integer", "description": "action=drag/swipe/select 时的终点 y（截图基准）"},
@@ -6158,12 +5870,13 @@ TOOLS = [
          "button": {"type": "string", "description": "left（默认）/right/middle"},
          "clicks": {"type": "integer", "description": "点击次数，默认 1（action=double 时自动为 2）"},
          "input": {"type": "string", "description": "注入方式：默认 auto=鼠标（像素级精准）；touch=真实触控（触控优先的界面才用，实测落点偏差不可控）"},
-         "verify": {"type": "boolean", "description": "点击前后比对落点像素，报告界面是否真的响应了（默认 false；**密排界面建议开**）"},
-         "retry": {"type": "boolean", "description": "verify 判定没点中时，自动改点同一目标的次优候选一次（默认 true）"},
+         "verify": {"type": "boolean", "description": "点击后自动校验界面是否响应（默认 true；只追求速度时可传 false 省约 0.2s）"},
+         "retry": {"type": "boolean", "description": "仅在显式 verify=true 且判定没点中时，自动改点同一目标的次优候选一次（默认 true）"},
          "snap": {"type": "boolean", "description": "是否自动吸附到最近控件的中心（默认 true；点精确像素、滑动/拖选内容时传 false；用 cand 时自动关闭）"},
          "snap_reach": {"type": "integer", "description": "吸附搜索半径像素，默认 88（估计偏差较大时可加大到 140）"},
-         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=直接给屏幕物理坐标"},
-         "title": {"type": "string", "description": "目标窗口标题片段（可选；填了就在该窗口内点击，并自动把它激活置顶）"},
+         "space": {"type": "string", "description": "x/y 的坐标系：image（默认，当前截图基准）；screen=屏幕物理坐标；norm=归一化 0~1/0~1000"},
+         "title": {"type": "string", "description": "目标窗口标题片段（可选；可见区域直接点，仅落点被遮挡时才激活置顶）"},
+         "allow_list_click": {"type": "boolean", "description": "已确认要点的就是列表这一行时才传 true：连续点开 3 条不同列表行后会被临时拒绝点行（防逐条试探）"},
          "hwnd": {"type": "integer", "description": "目标窗口句柄（可选，来自 list_windows）"}},
          "required": []}},
     {"name": "long_press", "description":
@@ -6204,7 +5917,9 @@ TOOLS = [
          "required": ["x1", "y1", "x2", "y2"]}},
     {"name": "swipe", "description":
         "滑动：从 (x1,y1) 快速滑到 (x2,y2)。触控设备带系统惯性，适合滚动列表/翻页/下拉；"
-        "无触控设备退化为鼠标拖动（滚动内容建议改用 scroll）。**默认不做元素吸附**"
+        "**行式列表（聊天/联系人/会话）优先用它把目标滑进视野，然后直接 click 那一行**"
+        "（不要用滚轮 scroll 反复滚：容易滚过头、目标跑出视野）。"
+        "无触控设备退化为鼠标拖动。**默认不做元素吸附**"
         "（手势是划过一片内容，两端没有「元素中心」可言）。",
      "inputSchema": {"type": "object", "properties": {
          "x1": {"type": "integer", "description": "起点 x（截图基准）"},
@@ -6234,7 +5949,9 @@ TOOLS = [
         "1 很轻、5 大约半屏、10 约一屏多；"
         "② delta（正上负下，120=一格）—— 需要精确格数时用。"
         "滚动量会**按格分段发送**（一次甩大 delta 会被很多应用 clamp 成一格）。"
-        "可传 x/y 先把指针移到该处再滚（指针下的滚动区才会响应）。",
+        "可传 x/y 先把指针移到该处再滚（指针下的滚动区才会响应）。"
+        "**聊天/联系人/会话这类行式列表不要用滚轮**（容易滚过头、目标跑出视野）："
+        "改用 swipe 把目标滑进视野，停稳后直接 click 那一行。",
      "inputSchema": {"type": "object", "properties": {
          "strength": {"type": "integer", "description": "力度 1~10（5≈半屏，10≈一屏多）；与 delta 二选一"},
          "direction": {"type": "string", "description": "up / down（配合 strength；默认 up）"},
@@ -6246,7 +5963,8 @@ TOOLS = [
         "输入文本（Unicode 注入，支持中文/符号）。"
         "**焦点自动识别**：如果键盘焦点已经在输入框里（类名/文本插入点判定），"
         "就直接输入，**不要再点击输入框**；返回里会说明当前焦点是不是可输入控件。"
-        "**发消息别再去点发送按钮**：传 submit=true 会在输入完成后自动按 Enter 发送。"
+        "**发消息别再去点发送按钮**：传 submit=true 会在输入完成后自动按 Enter 发送，"
+        "并在**回车前**再次核对前台窗口，焦点变了就拒绝发送。"
         "**注入前会确保目标窗口在最前**：抢不到焦点就拒绝执行，避免文字打进别的应用"
         "（例如 AI 助手自己的输入框）。",
      "inputSchema": {"type": "object", "properties": {
@@ -6258,7 +5976,8 @@ TOOLS = [
          "required": ["text"]}},
     {"name": "key_press", "description":
         "按键/组合键：enter、tab、esc、backspace、f5、ctrl+c、ctrl+shift+s、win+ctrl+d 等。"
-        "除 win 开头的系统级快捷键外，注入前会确保目标窗口在最前（抢不到就拒绝），"
+        "alt+tab / alt+shift+tab / alt+esc 是系统窗口导航，不会先抢回旧目标，返回真实新前台。"
+        "其他非 win 开头的应用内按键，注入前会确保目标窗口在最前（抢不到就拒绝），"
         "避免按键（尤其 enter）打进别的应用。",
      "inputSchema": {"type": "object", "properties": {
          "title": {"type": "string", "description": "目标窗口标题片段（可选；注入前会确保它在最前，避免文字打进别的应用）"},
@@ -6289,53 +6008,30 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "description": "status/take_over/resume"}}}},
     {"name": "open_app", "description":
-        "**打开/切到应用（任务栏 → 后台托盘 → 启动，三级优先）**："
-        "① 已有窗口 → 恢复最小化、切前台并实测校验；"
-        "② 没有可见窗口但进程在跑（最小化到托盘）→ **不启动第二个实例**，回任务栏与「↑」"
-        "后台面板的原图与坐标表，让你用 index=编号 一步点开；"
-        "③ 确实没在运行 → 启动 + 等窗口 + 置前 + 校验。"
+        "**打开/切到应用**：已有窗口 → 恢复最小化、切前台并实测校验（这就是把后台应用"
+        "直接拉到前台的方式，不需要去点任务栏图标）；没有可见窗口但进程在跑（托盘）→ "
+        "**不启动第二个实例**，让用户手动唤出；确实没运行 → 启动 + 等窗口 + 置前 + 校验。"
         "**不要**用 list_windows 反复找窗口（那是任务绕不出来的主因）。"
         "name 传用户的原话即可（中文口语名也认，如「微信」「记事本」）；"
-        "返回值给出 hwnd 与就绪状态，后续直接用该 hwnd 截图/读坐标。",
+        "返回值给出 hwnd 与就绪状态，后续用整屏截图读坐标即可。",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string",
                   "description": "应用名，例如「微信」「企业微信」「记事本」「Visual Studio Code」"},
-         "index": {"type": "integer",
-                   "description": "按任务栏（或 where=panel 时「↑」后台面板）里第 N 个图标点开——"
-                                  "切换已运行应用最快的一步；编号来自返回值里的坐标表"},
-         "where": {"type": "string",
-                   "description": "taskbar（默认，屏幕底部任务栏）/ panel（右侧「↑」隐藏图标/后台应用面板）"},
          "launch": {"type": "boolean",
-                    "description": "强制启动新实例（默认 false：进程在跑但没有窗口时先去找托盘图标，避免开出重复实例）"},
+                    "description": "强制启动新实例（默认 false：进程在跑但没有窗口时不重复启动）"},
          "timeout": {"type": "integer",
                      "description": "等待窗口出现的超时毫秒（默认 15000，启动慢的应用可加大）"}},
          "required": ["name"]}},
-    {"name": "taskbar_open", "description":
-        "**从任务栏打开/切换应用（首选，比 open_app 更直接）**：自动认出屏幕底部任务栏那条"
-        "通栏、把里面的图标切成一个个槽位并**编号**，返回任务栏原图（图上无任何标记）+ "
-        "编号坐标表；带 index=N 时直接点第 N 个，"
-        "并回读落点、校验前台窗口是否真的切过去了。"
-        "用户说「打开微信 / 切到 XX / XX 在后台」时：先 screen_shot 看一眼任务栏上有没有那个"
-        "图标 —— 有就 taskbar_open(index=N) 一步切过去（应用已在运行时，点任务栏图标 = 切到"
-        "它的窗口，不会重开一个）；图标不在可见区（任务栏放不下）就 "
-        "taskbar_open(where=\"panel\") 先展开右侧「↑ 隐藏图标/后台运行的应用」面板，"
-        "再把面板里的图标编号并点击。图标在任务栏和面板里都没有、或任务栏是自动隐藏的，"
-        "才用 open_app(name=…) 启动。**不要再用 list_windows / 反复整屏截图去找应用窗口。**",
-     "inputSchema": {"type": "object", "properties": {
-         "index": {"type": "integer", "description": "要点第几个槽位（从 1 开始，编号见返回的图与表）；不填=只扫描并列编号，不点击"},
-         "where": {"type": "string", "description": "taskbar=任务栏本体（默认）；panel=先展开右侧「↑」隐藏图标/后台应用面板，再在面板里定位"},
-         "chevron": {"type": "integer", "description": "where=panel 时可显式指定「↑」按钮是任务栏里的第几个槽位（自动识别不准时用）"},
-         "name": {"type": "string", "description": "要找的应用名（可选）：填了会额外回报它当前是已在最前 / 在后台 / 已最小化 / 没运行，避免你反复置顶"},
-         "timeout": {"type": "integer", "description": "点击后轮询等前台切换的毫秒数，默认 900（启动慢的应用可加大到 3000；一旦切过去了会立刻返回，不会白等）"}}}},
     {"name": "manage_window", "description":
         "窗口/应用管理：state 列出窗口（含最小化标记）；"
         "activate/focus 切到前台并实测校验；"
+        "**fit = 一键让窗口完整显示**（先最大化，固定尺寸窗口则缩放并移进屏幕）；"
         "maximize/minimize/restore 调整显示状态；move 移动或改尺寸；close 关闭；"
         "wait 等待某标题窗口出现（弹窗延迟弹出时用，比固定 sleep 可靠）。"
-        "**切到已在运行的应用请优先用 taskbar_open(index=N)，不要反复调本工具置顶。**",
+        "**切到已在运行的应用用 open_app(name=…)，不要反复调本工具置顶。**",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "description":
-                    "state/list/activate/focus/maximize/minimize/restore/move/close/wait"},
+                    "state/list/activate/focus/fit/maximize/minimize/restore/move/close/wait"},
          "title": {"type": "string", "description": "窗口标题片段"},
          "hwnd": {"type": "integer", "description": "窗口句柄"},
          "x": {"type": "integer", "description": "move 时的目标 x（截图基准）"},
@@ -6367,7 +6063,6 @@ _HANDLERS = {
     "control": tool_control,
     "manage_window": tool_manage_window,
     "open_app": tool_open_app,
-    "taskbar_open": tool_taskbar_open,
 }
 
 
@@ -6733,16 +6428,23 @@ def _handle(msg: dict):
         except Exception as e:
             result = {"content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
                       "isError": True}
+        finally:
+            # 操控动作完成后记时间：截图工具据此等 1s 再抓图（见 _settle_after_action）
+            if name in _CONTROL_TOOLS:
+                _mark_action_done()
         return {"jsonrpc": "2.0", "id": rid, "result": result}
     return {"jsonrpc": "2.0", "id": rid,
             "error": {"code": -32601, "message": f"未知方法: {method}"}}
 
 
 def main():
-    _init_dpi_awareness()
+    global _DPI_AWARE
+    _DPI_AWARE = _init_dpi_awareness() or _DPI_AWARE
     # 不启动本地可视化服务：AI 操控期间由屏幕光带 + 顶部胶囊提示窗直接提示用户，
     # 不再往用户浏览器里塞一个预览页（那是多余的一层，还容易被当成"AI 打开了网页"）。
     _watcher.start()       # 真人输入打断检测
+    threading.Thread(target=_aura_watchdog, daemon=True,
+                     name="cc-aura-watchdog").start()   # 会话过期 → 提示层淡出
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     for line in stdin:     # stdin 关闭（客户端断开）→ 循环退出，进程自然结束
         if not line.strip():
