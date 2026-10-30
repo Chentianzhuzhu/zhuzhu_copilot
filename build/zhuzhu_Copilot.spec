@@ -57,6 +57,14 @@ _skills_datas = ([(_os.path.join(_assets_seed, 'skills'), 'skills_seed')]
 _plugins_datas = ([(_os.path.join(_assets_seed, 'plugins'), 'plugins_seed')]
                   if _os.path.isdir(_os.path.join(_assets_seed, 'plugins'))
                   else [(_os.path.join(_root, 'src/zhuzhu_Copilot/plugins'), 'plugins')])
+# Copilot 插件种子：同样由 prepare_assets_seed.py 合并「仓库示例 + 用户现有」，
+# 运行时 copilot_plugins.ensure_shipped_copilot_plugins 首启同步到用户目录，
+# 做到安装即出现在「设置 → Copilot 插件」列表里。
+_copilot_seed = _os.path.join(_assets_seed, 'copilot_plugins')
+_copilot_datas = ([(_copilot_seed, 'copilot_plugins_seed')]
+                  if _os.path.isdir(_copilot_seed)
+                  else [(_os.path.join(_root, 'src/zhuzhu_Copilot/copilot_plugins_examples'),
+                         'copilot_plugins_examples')])
 
 a = Analysis(
     [_os.path.join(_root, 'src/main.py')],
@@ -71,7 +79,7 @@ a = Analysis(
            # 安全引擎数据文件（config/security.json、security_rules.json、yara/ 规则库）：
            # 引擎在打包态按 _MEIPASS/config 解析，缺失则回退内置默认导致规则库/特征库不生效
            (_os.path.join(_root, 'config'), 'config')]
-           + _skills_datas + _plugins_datas
+           + _skills_datas + _plugins_datas + _copilot_datas
            + _runtime_datas + _d3d_datas + _seed_datas,
     hiddenimports=[
         # agent_tools 通过 importlib 动态导入 core 子模块（agent_find/agent_tts/
