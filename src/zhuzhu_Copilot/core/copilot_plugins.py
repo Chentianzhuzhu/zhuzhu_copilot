@@ -16,7 +16,7 @@
   plugin.json     元数据：kind=copilot / name / author 开发者或公司 /
                   updated_at 更新时间 / icon 插件图标 / description / enabled；
                   也可内嵌 source_ops
-  source_ops.json 源码变更清单（与 plugin.json.source_ops 二选一，前者优先）
+  source_ops.json 源码变更清单（与 plugin.json 内嵌 source_ops 二选一，内嵌优先）
   copilot.json    声明式应用扩展清单（pages / services / tray / shortcuts）
   agent/          可选 Agent 能力子包（SKILL.md / server.py，导入时登记）
   icon.*          插件图标（png/jpg/svg/ico…）
@@ -934,20 +934,24 @@ _COPILOT_README = """# Copilot 插件 {name} 实现说明
 - `plugin.json`：元数据（name / kind=copilot / enabled / description）。
 - `source_ops.json`：源码变更清单（必填，非空数组）。
 - `copilot.example.json`：应用级扩展清单示例（页面/服务/托盘/快捷键），需要时复制为
-  `copilot.json` 再改；`module` 必须指向**本插件包内**的模块文件。
+  `copilot.json` 再改；`module` 必须指向**本插件包内由你自己创建**的模块文件
+  （字段名固定为 `id` / `module` / `widget` / `entry` / `action` / `hotkey`）。
 - `agent/`（可选）：`SKILL.md` + `server.py`，导入时登记为技能与 MCP。
 
-## source_ops 五种写法（可混用，单插件 ≤50 条）
+## source_ops 七种写法（可混用，单插件 ≤50 条）
 ```json
 [
   {"op": "create_file", "path": "zhuzhu_Copilot/ui/my_feature.py", "content": "..."},
   {"op": "insert_after", "path": "zhuzhu_Copilot/ui/agent_panel.py",
    "anchor": "def _build_ui(self):", "content": "        self._my_hook()\\n"},
+  {"op": "insert_at", "path": "zhuzhu_Copilot/core/agent_tools.py",
+   "line": 120, "content": "..."},
   {"op": "append", "path": "zhuzhu_Copilot/ui/agent_panel.py", "content": "\\n# ...\\n"},
   {"op": "replace_lines", "path": "zhuzhu_Copilot/core/agent_tools.py",
    "start_line": 120, "end_line": 126, "content": "..."},
   {"op": "replace_module", "path": "zhuzhu_Copilot/ui/styles.py",
-   "start": "def apply_theme()", "end": "def apply_palette(", "content": "..."}
+   "start": "def apply_theme()", "end": "def apply_palette(", "content": "..."},
+  {"op": "replace_file", "path": "zhuzhu_Copilot/ui/my_font.py", "content": "..."}
 ]
 ```
 - 路径必须是**应用源码根内的相对路径**（禁绝对路径 / `..`）。
@@ -956,17 +960,19 @@ _COPILOT_README = """# Copilot 插件 {name} 实现说明
 
 ## 落地与生效
 `apply_copilot_plugin` 会：插件校验系统（静态规则 + 源码评审）→ 备份 → 写入转译层 →
-逐文件 py_compile（失败整体回滚）→ 热加载引擎在运行进程内即时装载（**无需重启应用**）。
+逐文件编译检查（失败整体回滚）→ 热加载引擎在运行进程内即时装载（**无需重启应用**）。
 改错了用 `revert_copilot_plugin` 即时回滚。
 """
 
 _COPILOT_MANIFEST_EXAMPLE = {
-    "pages": [{"title": "示例页面", "module": "my_page.py",
-               "class": "MyPage", "icon": ""}],
-    "services": [{"name": "my_service", "module": "my_service.py",
-                  "start": "start", "stop": "stop"}],
-    "tray": [{"title": "示例动作", "module": "my_tray.py", "action": "run"}],
-    "shortcuts": [{"sequence": "Ctrl+Alt+M", "module": "my_tray.py", "action": "run"}],
+    "pages": [{"id": "my-page", "title": "示例页面",
+               "module": "pages/my_page.py", "widget": "MyPage"}],
+    "services": [{"id": "my-service", "title": "示例服务",
+                  "module": "service/my_service.py", "entry": "start", "stop": "stop"}],
+    "tray": [{"id": "my-tray", "title": "示例动作",
+              "module": "pages/my_page.py", "action": "run"}],
+    "shortcuts": [{"id": "my-hotkey", "title": "示例快捷键", "hotkey": "ctrl+alt+m",
+                   "module": "pages/my_page.py", "action": "run"}],
 }
 
 
