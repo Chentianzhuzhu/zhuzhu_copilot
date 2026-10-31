@@ -455,19 +455,96 @@ def _import_with_code(name: str, code, path) -> bool:
 # ---------------------------------------------------------------------------
 # 活类热修补：新类的属性就地补进旧类对象
 # ---------------------------------------------------------------------------
+#: 不能跨类搬运的描述符：PyQt 的 signal / property 绑定在**定义它的那个类**上，
+#: 把新类的描述符塞进旧类后，旧类元对象里没有对应注册项，旧实例访问会抛
+#: 「_Xxx does not have a signal with the signature ...」。旧类保持原描述符即可
+#: （信号连接、槽函数都还挂在旧类上，照常可用）。
+_SKIP_DESCRIPTOR_MODULES = ("PyQt6.", "PyQt5.", "sip", "shiboken")
+#: 载体：表示"这个属性不要搬到旧类"（不能用 None，类属性本身就可能是 None）
+_PATCH_SKIP = object()
+
+
+def _skip_class_attr(value) -> bool:
+    tmod = getattr(type(value), "__module__", "") or ""
+    return any(tmod.startswith(m) for m in _SKIP_DESCRIPTOR_MODULES)
+
+
+def _make_cell(value):
+    """构造一个只含 value 的闭包单元（用于替换函数里的 __class__ 单元）。"""
+    def _inner():
+        return value
+    return _inner.__closure__[0]
+
+
+def _rebind_class_cell(fn, live_cls):
+    """把函数闭包里的 `__class__` 单元改指向 live_cls。
+
+    零参 `super()` 依赖方法函数闭包中的 `__class__` 单元：直接把它从新类搬到
+    旧类时，该单元仍指向**新类**，旧实例调用该方法就会报
+    「super(type, obj): obj is not an instance or subtype of type」——这正是
+    插件热插拔时 `_CardBoard.resizeEvent` 崩溃的根因。重建一个函数对象并把
+    单元换成 live_cls，旧实例才能真正跑上新实现。
+    """
+    code = getattr(fn, "__code__", None)
+    closure = getattr(fn, "__closure__", None)
+    if code is None or not closure or "__class__" not in code.co_freevars:
+        return fn
+    cells = tuple(_make_cell(live_cls) if name == "__class__" else cell
+                  for cell, name in zip(closure, code.co_freevars))
+    new_fn = types.FunctionType(code, fn.__globals__, fn.__name__,
+                                fn.__defaults__, cells)
+    new_fn.__kwdefaults__ = fn.__kwdefaults__
+    new_fn.__annotations__ = dict(getattr(fn, "__annotations__", None) or {})
+    new_fn.__dict__.update(getattr(fn, "__dict__", None) or {})
+    new_fn.__module__ = fn.__module__
+    new_fn.__qualname__ = fn.__qualname__
+    new_fn.__doc__ = fn.__doc__
+    return new_fn
+
+
+def _remap_class_attr(value, live_cls):
+    """把新类的属性值转成可安全 setattr 到 live_cls 的形式（_PATCH_SKIP = 跳过）。"""
+    if _skip_class_attr(value):
+        return _PATCH_SKIP
+    if isinstance(value, types.FunctionType):
+        return _rebind_class_cell(value, live_cls)
+    if isinstance(value, staticmethod):
+        inner = _remap_class_attr(value.__func__, live_cls)
+        return _PATCH_SKIP if inner is _PATCH_SKIP else staticmethod(inner)
+    if isinstance(value, classmethod):
+        inner = _remap_class_attr(value.__func__, live_cls)
+        return _PATCH_SKIP if inner is _PATCH_SKIP else classmethod(inner)
+    if isinstance(value, property):
+        parts = []
+        for f in (value.fget, value.fset, value.fdel):
+            if f is None:
+                parts.append(None)
+                continue
+            mapped = _remap_class_attr(f, live_cls)
+            if mapped is _PATCH_SKIP:
+                return _PATCH_SKIP
+            parts.append(mapped)
+        return property(*parts)
+    return value
+
+
 def _patch_live_class(live_cls, new_cls) -> int:
     """把 new_cls 的属性补进 live_cls（已存在实例仍指向 live_cls）。
 
-    跳过 `__dict__` / `__weakref__` / `__module__`（CPython 类型槽，不能 setattr）；
-    其余一律 setattr：方法、类属性、property、`__init__` 全部换成新实现。
-    返回补上的属性数。
+    跳过 `__dict__` / `__weakref__` / `__module__`（CPython 类型槽，不能 setattr）
+    与 PyQt 描述符（跨类搬运会让旧类丢失信号注册）；其余一律 setattr：方法、
+    类属性、property、`__init__` 全部换成新实现。方法的 `__class__` 单元改指
+    live_cls，保证零参 `super()` 在旧实例上仍然可用。返回补上的属性数。
     """
     n = 0
     for k, v in list(vars(new_cls).items()):
         if k in ("__dict__", "__weakref__", "__module__"):
             continue
+        mapped = _remap_class_attr(v, live_cls)
+        if mapped is _PATCH_SKIP:
+            continue
         try:
-            setattr(live_cls, k, v)
+            setattr(live_cls, k, mapped)
             n += 1
         except Exception:
             continue

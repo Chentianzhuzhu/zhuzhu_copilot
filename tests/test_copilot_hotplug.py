@@ -142,3 +142,105 @@ def test_manifest_accepts_glass_window_fields():
         "id": "p3", "title": "t", "module": "pages/p.py", "widget": "W",
         "width": 10}]})
     assert not bad2
+
+
+# ══════════════ 活类热修补：PyQt 信号（崩溃/失联回归） ══════════════
+
+def test_live_class_patch_keeps_pyqt_signals(app):
+    """热修补不得把新类的 pyqtSignal 描述符搬进旧类。
+
+    回归：插件启停会原地重执行 agent_panel，旧实例随后访问自己的信号时报
+    「_CardBoard does not have a signal with the signature PyQt_PyObject,...」。
+    """
+    import types
+    from zhuzhu_Copilot.core import hot_reload as hr
+
+    mod = types.ModuleType("zz_hp_sig_mod")
+    src = (
+        "from PyQt6.QtCore import QObject, pyqtSignal\n"
+        "\n"
+        "class Sig(QObject):\n"
+        "    changed = pyqtSignal(object)\n"
+        "\n"
+        "    def fire(self, v):\n"
+        "        self.changed.emit(v)\n"
+    )
+    exec(compile(src, "zz_hp_sig_mod", "exec"), mod.__dict__)
+    obj = mod.Sig()
+    got = []
+    obj.changed.connect(got.append)
+
+    old_ns = dict(mod.__dict__)
+    exec(compile(src, "zz_hp_sig_mod", "exec"), mod.__dict__)
+    patched = hr._patch_live_classes(mod, old_ns)
+    assert "Sig" in patched
+    obj.fire(7)             # 旧实例 + 新方法 + 旧类自己的信号
+    assert got == [7]
+
+
+# ══════════════ 定向热插拔：启停一个插件不得重启其他插件 ══════════════
+
+def _read_trace(d: Path) -> list:
+    f = d / "trace.log"
+    return f.read_text(encoding="utf-8").splitlines() if f.is_file() else []
+
+
+def _make_service_plugin(root: Path, name: str) -> Path:
+    """带后台服务的插件：服务 start/stop 都写进插件目录下的 trace.log。"""
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "plugin.json").write_text(json.dumps(
+        {"name": name, "kind": "copilot", "enabled": True, "description": "t"}),
+        encoding="utf-8")
+    (d / "svc").mkdir()
+    (d / "svc" / "s.py").write_text(
+        "from pathlib import Path\n"
+        "_LOG = Path(__file__).resolve().parent.parent / 'trace.log'\n"
+        "\n"
+        "def _log(t):\n"
+        "    with open(_LOG, 'a', encoding='utf-8') as f:\n"
+        "        f.write(t + '\\n')\n"
+        "\n"
+        "class Handle:\n"
+        "    def stop(self):\n"
+        "        _log('stop')\n"
+        "\n"
+        "def start():\n"
+        "    _log('start')\n"
+        "    return Handle()\n",
+        encoding="utf-8")
+    (d / "copilot.json").write_text(json.dumps({"services": [{
+        "id": f"{name}-svc", "title": "svc", "module": "svc/s.py",
+        "entry": "start", "stop": "stop"}]}), encoding="utf-8")
+    return d
+
+
+def test_toggle_one_plugin_keeps_other_plugins_running(app, tmp_path, monkeypatch):
+    """停用/启用 alpha 只影响 alpha：beta 的服务不得被 stop/start 一遍。"""
+    from zhuzhu_Copilot.core import copilot_plugins
+    from zhuzhu_Copilot.ui import main_window as mw
+
+    root = tmp_path / "plugins"
+    monkeypatch.setattr(copilot_plugins, "COPILOT_PLUGINS_DIR", root)
+    state = {"started": set(), "services": [], "tray": [], "shortcuts": [],
+             "host": None, "errors": {}}
+    monkeypatch.setattr(mw, "_COPILOT_EXT_STATE", state)
+    panel = _FakePanel()
+    state["host"] = panel
+    da = _make_service_plugin(root, "alpha")
+    db = _make_service_plugin(root, "beta")
+    try:
+        mw.load_copilot_extensions(panel)
+        assert _read_trace(da) == ["start"] and _read_trace(db) == ["start"]
+
+        mw._hot_hook_after_change("alpha")
+        assert _read_trace(da) == ["start", "stop"]
+        assert _read_trace(db) == ["start"], "停用 alpha 不得重启其他插件的服务"
+
+        mw._hot_hook_after_enable("alpha")
+        assert _read_trace(da) == ["start", "stop", "start"]
+        assert _read_trace(db) == ["start"], "启用 alpha 不得重启其他插件的服务"
+    finally:
+        mw.unload_extension_modules("alpha")
+        mw.unload_extension_modules("beta")
+

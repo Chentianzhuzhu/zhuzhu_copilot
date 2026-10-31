@@ -281,3 +281,36 @@ def test_ui_event_hook_dedup_by_key():
     # 同 key 只有一条
     assert sum(1 for k in hr._UI_EVENTS["after_change"] if k == "dedup.test") == 1
     hr._UI_EVENTS["after_change"].pop("dedup.test", None)
+
+
+# ══════════════ 7. 活类热修补：零参 super()（_CardBoard 崩溃回归） ══════════════
+
+def test_live_class_patch_keeps_zero_arg_super():
+    """旧实例被热修补后跑新方法，零参 super() 不得报
+    「obj is not an instance or subtype of type」。
+
+    回归：插件启停时 agent_panel 被原地重执行，`_CardBoard.resizeEvent`（以及
+    所有用零参 super 的 Qt 方法）在旧实例上抛 TypeError 导致应用崩溃。
+    """
+    import types
+    mod = types.ModuleType("zz_hp_super_mod")
+    v1 = (
+        "class Base:\n"
+        "    def value(self):\n"
+        "        return 1\n"
+        "\n"
+        "class Child(Base):\n"
+        "    def value(self):\n"
+        "        return super().value() + 10\n"
+    )
+    exec(compile(v1, "zz_hp_super_mod", "exec"), mod.__dict__)
+    inst = mod.Child()
+    assert inst.value() == 11
+
+    old_ns = dict(mod.__dict__)
+    exec(compile(v1.replace("+ 10", "+ 20"), "zz_hp_super_mod", "exec"), mod.__dict__)
+    patched = hr._patch_live_classes(mod, old_ns)
+    assert "Child" in patched
+    # 旧实例：新实现生效，且 super() 仍然指向旧类的父类
+    assert inst.value() == 21
+

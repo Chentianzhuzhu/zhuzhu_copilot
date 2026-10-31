@@ -2935,17 +2935,40 @@ def _hot_hook_before_disable(name: str) -> None:
 
 
 def _hot_hook_after_enable(name: str) -> None:
+    """启用后**只重建本插件**的扩展：先停旧（服务/页签/模块），再按磁盘最新代码挂载。
+
+    旧实现每次启用都 `restart_copilot_services()` 全量重建：它会把所有插件的
+    后台服务一起 stop → start，用户看到的是「启用一个插件，其他插件的功能也
+    跟着重启/失效」。扩展之间没有共享句柄，按插件定向重建即可。
+    """
     try:
-        start_copilot_plugin(name)
+        stop_copilot_plugin(name)          # 幂等：清掉该插件旧服务与合成包模块
     except Exception:
         pass
-    # 源码变更可能改写了其他启用插件的服务代码：全量重建一次（幂等）
-    restart_copilot_services()
+    err = ""
+    try:
+        ok, msg = start_copilot_plugin(name)
+        if not ok:
+            err = msg
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+    errors = _COPILOT_EXT_STATE.setdefault("errors", {})
+    if err:
+        errors[name] = err
+    else:
+        errors.pop(name, None)
 
 
 def _hot_hook_after_change(name: str) -> None:
-    # 停用/删除/回滚/强制回滚后：按启用列表重建服务与页面（被删插件不会再登记）
-    restart_copilot_services()
+    """停用/删除/回滚后：**只摘本插件**的扩展与服务，其他插件保持运行。
+
+    旧实现这里做全量 restart，导致「停用一个插件把其他插件也重启一遍」。
+    """
+    try:
+        stop_copilot_plugin(name)
+    except Exception:
+        pass
+    (_COPILOT_EXT_STATE.get("errors") or {}).pop(name, None)
 
 
 def install_hotplug_hooks() -> bool:
