@@ -1,0 +1,8 @@
+[
+  {"id":"agnes","name":"默认服务商","baseUrl":"https://api.agnes-ai.cn/v1","model":"agnes-2.5-flash","isBuiltin":true},
+  {"id":"deepseek","name":"DeepSeek","baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat","isBuiltin":false},
+  {"id":"qwen","name":"通义千问","baseUrl":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen-plus","isBuiltin":false},
+  {"id":"kimi","name":"Kimi","baseUrl":"https://api.moonshot.cn/v1","model":"moonshot-v1-8k","isBuiltin":false},
+  {"id":"doubao","name":"豆包","baseUrl":"https://ark.cn-beijing.volces.com/api/v3","model":"doubao-seed-1.6","isBuiltin":false},
+  {"id":"minimax","name":"MiniMax","baseUrl":"https://api.minimax.chat/v1","model":"MiniMax-M2","isBuiltin":false}
+]
