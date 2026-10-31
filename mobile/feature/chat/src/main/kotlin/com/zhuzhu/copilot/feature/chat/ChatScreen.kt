@@ -4,20 +4,28 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -39,9 +48,36 @@ import dev.chrisbanes.haze.HazeState
 fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: ChatViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsState()
     var input by remember { mutableStateOf("") }
+    var showSetup by remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.setupSaved) {
+        if (state.setupSaved) {
+            showSetup = false
+            viewModel.consumeSetupSaved()
+            viewModel.refreshProviderState()
+        }
+    }
 
     Column(modifier.fillMaxSize()) {
-        GlassTopBar("zhuzhu", hazeState)
+        GlassTopBar("zhuzhu", hazeState) {
+            Box(
+                Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .clickable {
+                        viewModel.refreshProviderState()
+                        showSetup = true
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Settings,
+                    contentDescription = stringResource(R.string.chat_settings_cd),
+                    tint = GlassTokens.TextSecondary,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+        }
 
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
@@ -138,5 +174,20 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                 }
             }
         }
+    }
+
+    if (showSetup) {
+        ProviderSetupDialog(
+            presets = state.presets,
+            active = state.activeConfig,
+            savedApiKey = state.activeApiKey,
+            saving = state.setupSaving,
+            errorRes = state.setupErrorRes,
+            onDismiss = {
+                showSetup = false
+                viewModel.refreshProviderState()
+            },
+            onSave = viewModel::saveProvider,
+        )
     }
 }

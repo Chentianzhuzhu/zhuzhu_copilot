@@ -8,4 +8,16 @@
     <string name="chat_risk_safe">安全</string>
     <string name="chat_risk_sensitive">需确认</string>
     <string name="chat_risk_destructive">危险操作</string>
+    <string name="chat_settings_cd">模型设置</string>
+    <string name="chat_setup_save_failed">保存失败，请重试</string>
+    <string name="provider_setup_title">快速模型配置</string>
+    <string name="provider_setup_presets">服务商预设</string>
+    <string name="provider_setup_base_url">接口地址（Base URL）</string>
+    <string name="provider_setup_model">模型名称</string>
+    <string name="provider_setup_api_key">API Key</string>
+    <string name="provider_setup_notice">内置账号（agnes）需要登录；当前版本请填写自己的 OpenAI 兼容 Key。</string>
+    <string name="provider_setup_save">保存</string>
+    <string name="provider_setup_saving">保存中…</string>
+    <string name="provider_setup_cancel">取消</string>
+    <string name="provider_setup_custom_name">自定义服务商</string>
 </resources>

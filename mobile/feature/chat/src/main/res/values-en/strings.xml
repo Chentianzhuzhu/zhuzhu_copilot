@@ -8,4 +8,16 @@
     <string name="chat_risk_safe">Safe</string>
     <string name="chat_risk_sensitive">Needs confirmation</string>
     <string name="chat_risk_destructive">Destructive action</string>
+    <string name="chat_settings_cd">Model settings</string>
+    <string name="chat_setup_save_failed">Save failed, try again</string>
+    <string name="provider_setup_title">Quick model setup</string>
+    <string name="provider_setup_presets">Provider presets</string>
+    <string name="provider_setup_base_url">Base URL</string>
+    <string name="provider_setup_model">Model</string>
+    <string name="provider_setup_api_key">API key</string>
+    <string name="provider_setup_notice">The built-in agnes account requires sign-in. In this version, enter your own OpenAI-compatible key.</string>
+    <string name="provider_setup_save">Save</string>
+    <string name="provider_setup_saving">Saving…</string>
+    <string name="provider_setup_cancel">Cancel</string>
+    <string name="provider_setup_custom_name">Custom provider</string>
 </resources>

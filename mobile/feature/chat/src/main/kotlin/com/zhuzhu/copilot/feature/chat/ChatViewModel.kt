@@ -9,6 +9,7 @@ import com.zhuzhu.copilot.agent.ToolContext
 import com.zhuzhu.copilot.data.repo.ProviderRepository
 import com.zhuzhu.copilot.model.AgentEvent
 import com.zhuzhu.copilot.model.ConfirmationRequest
+import com.zhuzhu.copilot.model.ProviderConfig
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,12 @@ data class ChatUiState(
     val providersReady: Boolean = false,
     val toolRows: List<ToolRowUi> = emptyList(),
     val pendingConfirm: ConfirmationRequest? = null,
+    val presets: List<ProviderConfig> = emptyList(),
+    val activeConfig: ProviderConfig? = null,
+    val activeApiKey: String = "",
+    val setupSaving: Boolean = false,
+    val setupSaved: Boolean = false,
+    val setupErrorRes: Int? = null,
 )
 
 data class ChatBubble(val id: String, val fromUser: Boolean, val text: String)
@@ -54,8 +61,49 @@ class ChatViewModel @Inject constructor(
 
     fun refreshProviderState() {
         viewModelScope.launch {
-            _state.update { it.copy(providersReady = providerRepository.active() != null) }
+            val presets = providerRepository.loadPresets()
+            val active = providerRepository.active()
+            val apiKey = active?.let { providerRepository.apiKeyOf(it.id) }.orEmpty()
+            _state.update {
+                it.copy(
+                    presets = presets,
+                    activeConfig = active,
+                    activeApiKey = apiKey,
+                    providersReady = active != null,
+                )
+            }
         }
+    }
+
+    fun saveProvider(config: ProviderConfig, apiKey: String) {
+        if (_state.value.setupSaving) return
+        viewModelScope.launch {
+            _state.update { it.copy(setupSaving = true, setupErrorRes = null) }
+            try {
+                providerRepository.saveConfig(config, apiKey)
+                val active = providerRepository.active()
+                _state.update {
+                    it.copy(
+                        setupSaving = false,
+                        setupSaved = true,
+                        activeConfig = active,
+                        activeApiKey = apiKey,
+                        providersReady = active != null,
+                        error = "",
+                        errorRes = null,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                _state.update { it.copy(setupSaving = false) }
+                throw cancelled
+            } catch (ignored: Exception) {
+                _state.update { it.copy(setupSaving = false, setupErrorRes = R.string.chat_setup_save_failed) }
+            }
+        }
+    }
+
+    fun consumeSetupSaved() {
+        _state.update { it.copy(setupSaved = false) }
     }
 
     fun send(prompt: String) {
