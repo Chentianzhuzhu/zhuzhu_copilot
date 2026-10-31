@@ -1,0 +1,379 @@
+﻿blender.exe : TBBmalloc: skip allocation functions replacement in ucrtbase.dll: unknown prologue for function _msize
+所在位置 行:15 字符: 1129
++ ... M = 'dumb'; & "C:\Program Files\Blender Foundation\Blender 3.5\blende ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (TBBmalloc: skip...function _msize:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Blender 3.5.0 (hash 1be25cfff18b built 2023-03-29 06:36:20)
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_typing_f3.png'
+ Time: 00:01.33 (Saving: 00:00.64)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_idle_f20.png'
+ Time: 00:00.14 (Saving: 00:00.06)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_wave_f22.png'
+ Time: 00:00.17 (Saving: 00:00.06)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_excited_f6.png'
+ Time: 00:00.12 (Saving: 00:00.05)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_sleep_f48.png'
+ Time: 00:00.12 (Saving: 00:00.05)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_stretch_f26.png'
+ Time: 00:00.12 (Saving: 00:00.05)
+
+Info: Total files 0 | Changed 0 | Failed 0
+Fra:4 Mem:34.00M (Peak 34.00M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_base
+Fra:4 Mem:34.01M (Peak 34.01M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_display
+Fra:4 Mem:34.01M (Peak 34.01M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | screen_ui_0
+Fra:4 Mem:34.01M (Peak 34.01M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | screen_ui_3
+Fra:4 Mem:34.01M (Peak 34.01M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | screen_ui_4
+Fra:4 Mem:34.15M (Peak 34.15M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | Floor
+Fra:4 Mem:34.15M (Peak 34.15M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_logo
+Fra:4 Mem:34.15M (Peak 34.15M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_belly
+Fra:4 Mem:34.31M (Peak 34.31M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_collar
+Fra:4 Mem:34.32M (Peak 34.32M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_bell
+Fra:4 Mem:34.42M (Peak 34.42M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_head
+Fra:4 Mem:34.56M (Peak 34.56M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_muzzle
+Fra:4 Mem:34.66M (Peak 34.66M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_nose
+Fra:4 Mem:34.75M (Peak 34.75M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_eye_l
+Fra:4 Mem:34.81M (Peak 34.81M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glint_l
+Fra:4 Mem:34.83M (Peak 34.83M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_blush_l
+Fra:4 Mem:34.90M (Peak 34.90M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_ear_l
+Fra:4 Mem:34.97M (Peak 34.97M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_whisker_l0
+Fra:4 Mem:34.98M (Peak 34.98M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_eye_r
+Fra:4 Mem:34.99M (Peak 34.99M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_ear_r
+Fra:4 Mem:35.00M (Peak 35.00M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_erin_r
+Fra:4 Mem:35.00M (Peak 35.00M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_whisker_r1
+Fra:4 Mem:35.00M (Peak 35.00M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glass_l
+Fra:4 Mem:35.01M (Peak 35.01M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glass_bridge
+Fra:4 Mem:35.01M (Peak 35.01M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_shoulder_l
+Fra:4 Mem:35.05M (Peak 35.05M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_arm_l
+Fra:4 Mem:35.07M (Peak 35.07M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_elbow_l
+Fra:4 Mem:35.07M (Peak 35.07M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_l0
+Fra:4 Mem:35.07M (Peak 35.07M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_l1
+Fra:4 Mem:35.07M (Peak 35.07M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_l2
+Fra:4 Mem:35.08M (Peak 35.09M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_shoulder_r
+Fra:4 Mem:35.12M (Peak 35.12M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_arm_r
+Fra:4 Mem:35.15M (Peak 35.15M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_forearm_r
+Fra:4 Mem:35.16M (Peak 35.16M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_paw_r
+Fra:4 Mem:35.19M (Peak 35.20M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_ring1
+Fra:4 Mem:35.21M (Peak 35.21M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_r0
+Fra:4 Mem:35.24M (Peak 35.24M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_r1
+Fra:4 Mem:35.25M (Peak 35.25M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_r2
+Fra:4 Mem:35.26M (Peak 35.26M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_thigh_l
+Fra:4 Mem:35.26M (Peak 35.26M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_thigh_r
+Fra:4 Mem:35.32M (Peak 35.32M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_foot_r
+Fra:4 Mem:35.34M (Peak 35.34M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_1
+Fra:4 Mem:35.39M (Peak 35.39M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_j2
+Fra:4 Mem:35.39M (Peak 35.39M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_j3
+Fra:4 Mem:35.40M (Peak 35.40M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_tip
+Fra:4 Mem:35.43M (Peak 35.43M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_3
+Fra:4 Mem:35.52M (Peak 35.52M) | Time:00:00.07 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Initializing
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.08 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Waiting for render to start
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.08 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Loading render kernels (may take a few minutes the first time)
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.08 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Updating Scene
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.08 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Updating Shaders
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.08 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Procedurals
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.08 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Background
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.08 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Camera
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.08 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Meshes Flags
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.08 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Objects
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.08 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Objects | Copying Transformations to device
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.08 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Objects | Applying Static Transformations
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.08 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Particle Systems
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.08 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Particle Systems | Copying Particles to device
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.08 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Meshes
+Fra:4 Mem:26.75M (Peak 35.52M) | Time:00:00.09 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Mesh | Computing attributes
+Fra:4 Mem:26.91M (Peak 35.52M) | Time:00:00.09 | Mem:0.03M, Peak:0.03M | Scene, ViewLayer | Updating Mesh | Copying Attributes to device
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.09 | Mem:0.17M, Peak:0.17M | Scene, ViewLayer | Updating Scene BVH | Building
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.09 | Mem:0.17M, Peak:0.17M | Scene, ViewLayer | Updating Scene BVH | Building BVH
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.10 | Mem:1.60M, Peak:1.60M | Scene, ViewLayer | Updating Scene BVH | Building BVH 0%
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.12 | Mem:2.33M, Peak:3.33M | Scene, ViewLayer | Updating Scene BVH | Copying BVH to device
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.12 | Mem:2.33M, Peak:3.33M | Scene, ViewLayer | Updating Mesh | Computing normals
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:2.33M, Peak:3.33M | Scene, ViewLayer | Updating Mesh | Copying Mesh to device
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Objects Flags
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Primitive Offsets
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Images
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Camera Volume
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Lookup Tables
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Lights
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Lights | Computing distribution
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.12 | Mem:3.98M, Peak:3.98M | Scene, ViewLayer | Updating Lights | Computing tree
+Fra:4 Mem:28.73M (Peak 35.52M) | Time:00:00.14 | Mem:4.16M, Peak:4.16M | Scene, ViewLayer | Updating Integrator
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.14 | Mem:5.16M, Peak:5.16M | Scene, ViewLayer | Updating Film
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.14 | Mem:5.16M, Peak:5.16M | Scene, ViewLayer | Updating Lookup Tables
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.14 | Mem:5.16M, Peak:5.16M | Scene, ViewLayer | Updating Baking
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.14 | Mem:5.16M, Peak:5.16M | Scene, ViewLayer | Updating Device | Writing constant memory
+Fra:4 Mem:29.74M (Peak 35.52M) | Time:00:00.15 | Mem:5.16M, Peak:5.16M | Scene, ViewLayer | Sample 0/48
+Fra:4 Mem:83.38M (Peak 83.38M) | Time:00:01.26 | Remaining:00:51.30 | Mem:58.77M, Peak:58.77M | Scene, ViewLayer | Sample 1/48
+Fra:4 Mem:83.38M (Peak 83.38M) | Time:00:25.51 | Remaining:00:11.52 | Mem:58.77M, Peak:58.77M | Scene, ViewLayer | Sample 33/48
+Fra:4 Mem:105.95M (Peak 139.81M) | Time:00:44.44 | Mem:58.77M, Peak:58.77M | Scene, ViewLayer | Sample 48/48
+Fra:4 Mem:105.95M (Peak 139.81M) | Time:00:44.44 | Mem:58.77M, Peak:58.77M | Scene, ViewLayer | Finished
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\hero.png'
+ Time: 00:44.65 (Saving: 00:00.18)
+
+Fra:4 Mem:34.00M (Peak 34.00M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_base
+Fra:4 Mem:34.01M (Peak 34.01M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_deck
+Fra:4 Mem:34.02M (Peak 34.02M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_bezel
+Fra:4 Mem:34.03M (Peak 34.03M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | screen_ui_1
+Fra:4 Mem:34.05M (Peak 34.05M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | screen_ui_3
+Fra:4 Mem:34.05M (Peak 34.05M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_logo
+Fra:4 Mem:34.07M (Peak 34.07M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_keys
+Fra:4 Mem:34.20M (Peak 34.20M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | mug_body
+Fra:4 Mem:34.21M (Peak 34.21M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | mug_inner
+Fra:4 Mem:34.42M (Peak 34.42M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | mug_handle
+Fra:4 Mem:34.47M (Peak 34.47M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | mouse_pad
+Fra:4 Mem:34.55M (Peak 34.55M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | mouse_body
+Fra:4 Mem:34.55M (Peak 34.55M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_belly
+Fra:4 Mem:34.59M (Peak 34.59M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_chest
+Fra:4 Mem:34.63M (Peak 34.63M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_collar
+Fra:4 Mem:34.67M (Peak 34.67M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_bell
+Fra:4 Mem:34.77M (Peak 34.77M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_head
+Fra:4 Mem:34.79M (Peak 34.79M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_eye_l
+Fra:4 Mem:34.83M (Peak 34.83M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glint_l
+Fra:4 Mem:34.85M (Peak 34.85M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_blush_l
+Fra:4 Mem:34.87M (Peak 34.87M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_ear_l
+Fra:4 Mem:34.92M (Peak 34.92M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_erin_l
+Fra:4 Mem:34.94M (Peak 34.94M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_whisker_l1
+Fra:4 Mem:34.94M (Peak 34.94M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_eye_r
+Fra:4 Mem:34.95M (Peak 34.95M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glint_r
+Fra:4 Mem:35.02M (Peak 35.02M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_blush_r
+Fra:4 Mem:34.97M (Peak 35.02M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_erin_r
+Fra:4 Mem:34.98M (Peak 35.02M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_whisker_r0
+Fra:4 Mem:34.98M (Peak 35.02M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glass_l
+Fra:4 Mem:35.03M (Peak 35.03M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glass_r
+Fra:4 Mem:35.04M (Peak 35.04M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_ring2
+Fra:4 Mem:35.06M (Peak 35.06M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_shoulder_l
+Fra:4 Mem:35.07M (Peak 35.07M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_elbow_l
+Fra:4 Mem:35.08M (Peak 35.08M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_forearm_l
+Fra:4 Mem:35.08M (Peak 35.08M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_paw_l
+Fra:4 Mem:35.08M (Peak 35.08M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_l1
+Fra:4 Mem:35.09M (Peak 35.09M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_shoulder_r
+Fra:4 Mem:35.10M (Peak 35.10M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_arm_r
+Fra:4 Mem:35.12M (Peak 35.12M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_elbow_r
+Fra:4 Mem:35.14M (Peak 35.14M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_ring1
+Fra:4 Mem:35.17M (Peak 35.17M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_forearm_r
+Fra:4 Mem:35.18M (Peak 35.18M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_paw_r
+Fra:4 Mem:35.23M (Peak 35.23M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_r0
+Fra:4 Mem:35.23M (Peak 35.23M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_toe_r1
+Fra:4 Mem:35.23M (Peak 35.23M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_thigh_l
+Fra:4 Mem:35.30M (Peak 35.30M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_foot_l
+Fra:4 Mem:35.31M (Peak 35.31M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_foot_r
+Fra:4 Mem:35.34M (Peak 35.34M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_1
+Fra:4 Mem:35.35M (Peak 35.35M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_j2
+Fra:4 Mem:35.35M (Peak 35.35M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_2
+Fra:4 Mem:35.37M (Peak 35.37M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_j3
+Fra:4 Mem:35.39M (Peak 35.39M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_3
+Fra:4 Mem:35.52M (Peak 35.52M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Initializing
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Waiting for render to start
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Loading render kernels (may take a few minutes the first time)
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Updating Scene
+Fra:4 Mem:26.35M (Peak 35.52M) | Time:00:00.02 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Updating Shaders
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Procedurals
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Background
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Camera
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Meshes Flags
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Objects
+Fra:4 Mem:26.36M (Peak 35.52M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Objects | Copying Transformations to device
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.02 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Objects | Applying Static Transformations
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.02 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Particle Systems
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.02 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Particle Systems | Copying Particles to device
+Fra:4 Mem:26.38M (Peak 35.52M) | Time:00:00.02 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Meshes
+Fra:4 Mem:26.75M (Peak 35.52M) | Time:00:00.02 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Mesh | Computing attributes
+Fra:4 Mem:26.91M (Peak 35.52M) | Time:00:00.02 | Mem:0.03M, Peak:0.03M | Scene, ViewLayer | Updating Mesh | Copying Attributes to device
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.02 | Mem:0.17M, Peak:0.17M | Scene, ViewLayer | Updating Scene BVH | Building
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.02 | Mem:0.17M, Peak:0.17M | Scene, ViewLayer | Updating Scene BVH | Building BVH
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.02 | Mem:1.60M, Peak:1.60M | Scene, ViewLayer | Updating Scene BVH | Building BVH 0%
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.03 | Mem:2.25M, Peak:3.25M | Scene, ViewLayer | Updating Scene BVH | Copying BVH to device
+Fra:4 Mem:26.90M (Peak 35.52M) | Time:00:00.03 | Mem:2.25M, Peak:3.25M | Scene, ViewLayer | Updating Mesh | Computing normals
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:2.25M, Peak:3.25M | Scene, ViewLayer | Updating Mesh | Copying Mesh to device
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Objects Flags
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Primitive Offsets
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Images
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Camera Volume
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Lookup Tables
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Lights
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Lights | Computing distribution
+Fra:4 Mem:28.55M (Peak 35.52M) | Time:00:00.03 | Mem:3.90M, Peak:3.90M | Scene, ViewLayer | Updating Lights | Computing tree
+Fra:4 Mem:28.73M (Peak 35.52M) | Time:00:00.06 | Mem:4.08M, Peak:4.08M | Scene, ViewLayer | Updating Integrator
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.06 | Mem:5.08M, Peak:5.08M | Scene, ViewLayer | Updating Film
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.06 | Mem:5.08M, Peak:5.08M | Scene, ViewLayer | Updating Lookup Tables
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.06 | Mem:5.08M, Peak:5.08M | Scene, ViewLayer | Updating Baking
+Fra:4 Mem:29.73M (Peak 35.52M) | Time:00:00.06 | Mem:5.08M, Peak:5.08M | Scene, ViewLayer | Updating Device | Writing constant memory
+Fra:4 Mem:29.74M (Peak 35.52M) | Time:00:00.06 | Mem:5.08M, Peak:5.08M | Scene, ViewLayer | Sample 0/40
+Fra:4 Mem:67.35M (Peak 67.35M) | Time:00:00.55 | Remaining:00:19.18 | Mem:42.66M, Peak:42.66M | Scene, ViewLayer | Sample 1/40
+Fra:4 Mem:83.17M (Peak 106.90M) | Time:00:25.72 | Mem:42.66M, Peak:42.66M | Scene, ViewLayer | Sample 40/40
+Fra:4 Mem:83.17M (Peak 106.90M) | Time:00:25.73 | Mem:42.66M, Peak:42.66M | Scene, ViewLayer | Finished
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\hero_face.png'
+ Time: 00:25.86 (Saving: 00:00.12)
+
+CHECK typing 3
+CHECK idle 20
+CHECK wave 22
+CHECK excited 6
+CHECK sleep 48
+CHECK stretch 26
+Info: Saved "kitty_work.blend"
+14:48:58 | INFO: Draco mesh compression is available, use library at C:\Program Files\Blender Foundation\Blender 3.5\3.5\python\lib\site-packages\extern_draco.dll
+14:48:59 | INFO: Starting glTF 2.0 export
+14:48:59 | INFO: Extracting primitive: kitty_arm_l
+14:48:59 | INFO: Primitives created: 1
+14:48:59 | INFO: Extracting primitive: kitty_arm_r
+14:48:59 | INFO: Primitives created: 1
+14:48:59 | INFO: Extracting primitive: kitty_bell
+14:48:59 | INFO: Primitives created: 1
+14:48:59 | INFO: Extracting primitive: kitty_belly
+14:48:59 | INFO: Primitives created: 1
+14:48:59 | INFO: Extracting primitive: kitty_blush_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_blush_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_body
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_chest
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_collar
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_ear_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_ear_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_elbow_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_elbow_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_erin_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_erin_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_eye_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_eye_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_foot_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_foot_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_forearm_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_forearm_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_glass_bridge
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_glass_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_glass_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_glint_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_glint_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_head
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_muzzle
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_nose
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_paw_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_paw_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_shoulder_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_shoulder_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_1
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_2
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_3
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_j2
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_j3
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_ring1
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_ring2
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_tail_tip
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_thigh_l
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_thigh_r
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_toe_l0
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_toe_l1
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_toe_l2
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_toe_r0
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_toe_r1
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_toe_r2
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_whisker_l0
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_whisker_l1
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_whisker_r0
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: kitty_whisker_r1
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_base
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_bezel
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_deck
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_display
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_hinge
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_keys
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_lid
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_logo
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_pad
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: laptop_space
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: mouse_body
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: mouse_pad
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: mug_body
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: mug_handle
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: mug_inner
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: screen_ui_0
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: screen_ui_1
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: screen_ui_2
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: screen_ui_3
+14:49:00 | INFO: Primitives created: 1
+14:49:00 | INFO: Extracting primitive: screen_ui_4
+14:49:00 | INFO: Primitives created: 1
+14:49:02 | INFO: Finished glTF 2.0 export in 2.7007546424865723 s
+
+GLB_OK 2115412
+HERO C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\hero.png
+HERO_FACE C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\hero_face.png
+KITTY_BUILD_OK
+{"total_verts": 12538, "total_tris": 24656, "bounds": {"min": [-0.452, -0.7007, -0.001], "max": [0.487, 0.543, 1.4061]}, "fps": 24}
+clips: [('typing', 40, True), ('idle', 72, True), ('wave', 48, False), ('excited', 30, True), ('sleep', 96, True), ('stretch', 60, False)]
+parts: 73
+assets: C:\Users\zhuzhu\.zhuzhu_Copilot\copilot_plugins\kitty-work-pet\assets\kitty_work.npz
+
+Blender quit

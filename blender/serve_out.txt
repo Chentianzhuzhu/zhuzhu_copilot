@@ -1,0 +1,2 @@
+打工猫预览页已启动：http://127.0.0.1:8770/
+服务目录：C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\preview_lib

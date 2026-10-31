@@ -1,0 +1,96 @@
+﻿blender.exe : TBBmalloc: skip allocation functions replacement in ucrtbase.dll: unknown prologue for function _msize
+所在位置 行:1 字符: 363
++ ... TAX_OK')" ; & "C:\Program Files\Blender Foundation\Blender 3.5\blende ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (TBBmalloc: skip...function _msize:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Blender 3.5.0 (hash 1be25cfff18b built 2023-03-29 06:36:20)
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_typing_f3.png'
+ Time: 00:01.54 (Saving: 00:00.73)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_idle_f20.png'
+ Time: 00:00.14 (Saving: 00:00.06)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_wave_f22.png'
+ Time: 00:00.14 (Saving: 00:00.06)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_excited_f6.png'
+ Time: 00:00.15 (Saving: 00:00.06)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_sleep_f48.png'
+ Time: 00:00.14 (Saving: 00:00.06)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_stretch_f26.png'
+ Time: 00:00.13 (Saving: 00:00.06)
+
+Info: Total files 0 | Changed 0 | Failed 0
+Fra:4 Mem:25.40M (Peak 25.40M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_base
+Fra:4 Mem:25.40M (Peak 25.40M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_lid
+Fra:4 Mem:25.41M (Peak 25.41M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_logo
+Fra:4 Mem:25.42M (Peak 25.42M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | laptop_keys
+Fra:4 Mem:25.42M (Peak 25.42M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_head
+Fra:4 Mem:25.44M (Peak 25.44M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_muzzle
+Fra:4 Mem:25.45M (Peak 25.45M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_eye_l
+Fra:4 Mem:25.47M (Peak 25.47M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glint_l
+Fra:4 Mem:25.49M (Peak 25.49M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_ear_l
+Fra:4 Mem:25.49M (Peak 25.49M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_eye_r
+Fra:4 Mem:25.52M (Peak 25.52M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_glint_r
+Fra:4 Mem:25.53M (Peak 25.53M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_ear_r
+Fra:4 Mem:25.54M (Peak 25.54M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_shoulder_l
+Fra:4 Mem:25.55M (Peak 25.55M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_arm_l
+Fra:4 Mem:25.56M (Peak 25.56M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_elbow_l
+Fra:4 Mem:25.57M (Peak 25.57M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_paw_l
+Fra:4 Mem:25.58M (Peak 25.58M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_shoulder_r
+Fra:4 Mem:25.58M (Peak 25.58M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_arm_r
+Fra:4 Mem:25.59M (Peak 25.59M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_elbow_r
+Fra:4 Mem:25.59M (Peak 25.59M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_paw_r
+Fra:4 Mem:25.62M (Peak 25.62M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_thigh_l
+Fra:4 Mem:25.66M (Peak 25.66M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_foot_l
+Fra:4 Mem:25.66M (Peak 25.66M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_thigh_r
+Fra:4 Mem:25.67M (Peak 25.67M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_foot_r
+Fra:4 Mem:25.67M (Peak 25.67M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_j2
+Fra:4 Mem:25.68M (Peak 25.68M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_2
+Fra:4 Mem:25.70M (Peak 25.70M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_j3
+Fra:4 Mem:25.69M (Peak 25.70M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_j4
+Fra:4 Mem:25.71M (Peak 25.71M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_tip
+Fra:4 Mem:25.72M (Peak 25.72M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Synchronizing object | kitty_tail_end
+Fra:4 Mem:25.78M (Peak 25.78M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Initializing
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Waiting for render to start
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Loading render kernels (may take a few minutes the first time)
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Updating Scene
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.01 | Mem:0.00M, Peak:0.00M | Scene, ViewLayer | Updating Shaders
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Procedurals
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Background
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Camera
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Meshes Flags
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Objects
+Fra:4 Mem:20.06M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Objects | Copying Transformations to device
+Fra:4 Mem:20.07M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Objects | Applying Static Transformations
+Fra:4 Mem:20.07M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Particle Systems
+Fra:4 Mem:20.07M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Particle Systems | Copying Particles to device
+Fra:4 Mem:20.07M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Meshes
+Fra:4 Mem:20.16M (Peak 25.78M) | Time:00:00.02 | Mem:0.01M, Peak:0.01M | Scene, ViewLayer | Updating Mesh | Computing attributes
+Fra:4 Mem:20.21M (Peak 25.78M) | Time:00:00.02 | Mem:0.02M, Peak:0.02M | Scene, ViewLayer | Updating Mesh | Copying Attributes to device
+Fra:4 Mem:20.20M (Peak 25.78M) | Time:00:00.02 | Mem:0.05M, Peak:0.05M | Scene, ViewLayer | Updating Scene BVH | Building
+Fra:4 Mem:20.20M (Peak 25.78M) | Time:00:00.02 | Mem:0.05M, Peak:0.05M | Scene, ViewLayer | Updating Scene BVH | Building BVH
+Fra:4 Mem:20.20M (Peak 25.78M) | Time:00:00.02 | Mem:0.41M, Peak:0.41M | Scene, ViewLayer | Updating Scene BVH | Building BVH 0%
+Fra:4 Mem:20.20M (Peak 25.78M) | Time:00:00.02 | Mem:0.53M, Peak:0.78M | Scene, ViewLayer | Updating Scene BVH | Copying BVH to device
+Fra:4 Mem:20.20M (Peak 25.78M) | Time:00:00.02 | Mem:0.53M, Peak:0.78M | Scene, ViewLayer | Updating Mesh | Computing normals
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.53M, Peak:0.78M | Scene, ViewLayer | Updating Mesh | Copying Mesh to device
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Objects Flags
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Primitive Offsets
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Images
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Camera Volume
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Lookup Tables
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Lights
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Lights | Computing distribution
+Fra:4 Mem:20.60M (Peak 25.78M) | Time:00:00.02 | Mem:0.93M, Peak:0.93M | Scene, ViewLayer | Updating Lights | Computing tree
+Fra:4 Mem:20.62M (Peak 25.78M) | Time:00:00.03 | Mem:0.95M, Peak:0.95M | Scene, ViewLayer | Updating Integrator
+Fra:4 Mem:21.62M (Peak 25.78M) | Time:00:00.03 | Mem:1.95M, Peak:1.95M | Scene, ViewLayer | Updating Film
+Fra:4 Mem:21.62M (Peak 25.78M) | Time:00:00.03 | Mem:1.95M, Peak:1.95M | Scene, ViewLayer | Updating Lookup Tables
+Fra:4 Mem:21.62M (Peak 25.78M) | Time:00:00.03 | Mem:1.95M, Peak:1.95M | Scene, ViewLayer | Updating Baking
+Fra:4 Mem:21.62M (Peak 25.78M) | Time:00:00.03 | Mem:1.95M, Peak:1.95M | Scene, ViewLayer | Updating Device | Writing constant memory
+Fra:4 Mem:21.62M (Peak 25.78M) | Time:00:00.03 | Mem:1.95M, Peak:1.95M | Scene, ViewLayer | Sample 0/40
+Fra:4 Mem:70.40M (Peak 70.40M) | Time:00:00.92 | Remaining:00:34.65 | Mem:50.69M, Peak:50.69M | Scene, ViewLayer | Sample 1/40
+Fra:4 Mem:70.40M (Peak 70.40M) | Time:00:30.71 | Remaining:00:06.50 | Mem:50.69M, Peak:50.69M | Scene, ViewLayer | Sample 33/40

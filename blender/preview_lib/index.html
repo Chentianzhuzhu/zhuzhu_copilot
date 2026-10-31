@@ -1,0 +1,430 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>打工猫桌宠 · 3D 预览</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: rgba(20, 26, 36, 0.82);
+    --line: rgba(120, 150, 190, 0.18);
+    --text: #dfe7f2;
+    --dim: #8fa0b8;
+    --accent: #4a8fe0;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(900px 600px at 68% 18%, rgba(74, 143, 224, 0.14), transparent 60%),
+      radial-gradient(700px 500px at 20% 92%, rgba(120, 90, 200, 0.10), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  .hud { position: fixed; z-index: 5; }
+
+  #title {
+    top: 26px; left: 30px; max-width: 380px;
+  }
+  #title h1 {
+    margin: 0 0 6px; font-size: 19px; font-weight: 600; letter-spacing: .3px;
+  }
+  #title p { margin: 0; color: var(--dim); font-size: 12px; line-height: 1.7; }
+  #title .tag {
+    display: inline-block; margin-top: 10px; padding: 3px 9px; border-radius: 99px;
+    background: rgba(74, 143, 224, .16); color: #9dc4f5; font-size: 11px;
+    border: 1px solid rgba(74, 143, 224, .3);
+  }
+
+  #clips {
+    bottom: 26px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 8px; padding: 9px; border-radius: 14px;
+    background: var(--panel); border: 1px solid var(--line);
+    backdrop-filter: blur(14px); flex-wrap: wrap; justify-content: center;
+    max-width: min(760px, calc(100vw - 40px));
+  }
+  #clips button {
+    appearance: none; cursor: pointer; font: inherit; font-size: 12px;
+    color: var(--dim); background: transparent; border: 1px solid transparent;
+    padding: 7px 13px; border-radius: 9px; transition: all .16s ease;
+    white-space: nowrap;
+  }
+  #clips button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+  #clips button.on {
+    color: #eaf3ff; background: rgba(74, 143, 224, .24);
+    border-color: rgba(74, 143, 224, .45);
+    box-shadow: 0 0 16px rgba(74, 143, 224, .25);
+  }
+  #clips button small { display: block; font-size: 10px; opacity: .55; margin-top: 2px; }
+
+  #side {
+    top: 26px; right: 30px; width: 216px; padding: 15px 16px; border-radius: 14px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(14px);
+  }
+  #side h2 { margin: 0 0 10px; font-size: 11px; letter-spacing: 1.4px;
+    text-transform: uppercase; color: var(--dim); font-weight: 600; }
+  #side dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; }
+  #side dt { color: var(--dim); font-size: 11px; }
+  #side dd { margin: 0; font-size: 11px; text-align: right;
+    font-variant-numeric: tabular-nums; }
+  #side .hint { margin-top: 13px; padding-top: 11px;
+    border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; line-height: 1.75; }
+
+  #petbox {
+    bottom: 26px; right: 30px; width: 216px; padding: 14px 16px; border-radius: 14px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(14px);
+    text-align: center;
+  }
+  #petbox h2 { margin: 0 0 10px; font-size: 11px; letter-spacing: 1.4px;
+    text-transform: uppercase; color: var(--dim); font-weight: 600; text-align: left; }
+  #dock {
+    position: relative; height: 132px; border-radius: 10px; overflow: hidden;
+    background:
+      linear-gradient(135deg, #24313f 0%, #16202c 48%, #0e1620 100%);
+    border: 1px solid rgba(120,150,190,.14);
+    display: flex; align-items: flex-end; justify-content: flex-end; padding: 10px;
+  }
+  #dock .bar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 17px;
+    background: rgba(10, 16, 24, .82); border-top: 1px solid rgba(120,150,190,.14);
+  }
+  #mini { width: 118px; height: 118px; position: relative; z-index: 2; bottom: 5px; }
+  #petbox p { margin: 9px 0 0; color: var(--dim); font-size: 11px; text-align: left; }
+
+  #loading {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: var(--bg); z-index: 20; transition: opacity .5s ease;
+    font-size: 12px; color: var(--dim); letter-spacing: 1px;
+  }
+  #loading.gone { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="loading">正在载入 GLB 模型…</div>
+
+<div class="hud" id="title">
+  <h1>打工猫 · 低模 3D 桌宠</h1>
+  <p>抱着笔记本电脑双手敲键盘，骨骼动画直出；6 段动作可切换，点击小猫会有反应。</p>
+  <span class="tag">Blender 低模 · 3.2k 顶点 / 6k 三角面</span>
+</div>
+
+<div class="hud" id="side">
+  <h2>模型信息</h2>
+  <dl>
+    <dt>顶点</dt><dd id="m-verts">—</dd>
+    <dt>三角面</dt><dd id="m-tris">—</dd>
+    <dt>骨骼</dt><dd id="m-bones">—</dd>
+    <dt>动画</dt><dd id="m-clips">—</dd>
+    <dt>当前</dt><dd id="m-now">—</dd>
+    <dt>帧率</dt><dd id="m-fps">—</dd>
+  </dl>
+  <div class="hint">拖动旋转 · 滚轮缩放 · 点小猫逗它</div>
+</div>
+
+<div class="hud" id="clips"></div>
+
+<div class="hud" id="petbox">
+  <h2>桌宠实际尺寸</h2>
+  <div id="dock">
+    <div class="bar"></div>
+    <div id="mini"></div>
+  </div>
+  <p>桌面右下角 118px 的真实观感</p>
+</div>
+
+<script src="three.min.js"></script>
+<script src="GLTFLoader.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var CLIP_LABEL = {
+    typing:  ["敲键盘", "工作"],
+    idle:    ["歇一会", "呼吸张望"],
+    wave:    ["打招呼", "抬爪挥手"],
+    excited: ["爆肝", "狂敲弹跳"],
+    sleep:   ["打瞌睡", "趴下"],
+    stretch: ["伸懒腰", "双爪举起"]
+  };
+
+  var stage = document.getElementById("stage");
+  var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  if (renderer.outputEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
+  stage.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(34, 300 / 340, 0.05, 100);
+
+  // ---- 灯光：与桌宠 GL 着色器同调性的三灯 ----
+  var key = new THREE.DirectionalLight(0xfff4e6, 2.0);
+  key.position.set(2.2, 3.4, 2.6);
+  key.castShadow = true;
+  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.camera.near = 0.5;
+  key.shadow.camera.far = 12;
+  key.shadow.camera.left = -1.6;
+  key.shadow.camera.right = 1.6;
+  key.shadow.camera.top = 2.0;
+  key.shadow.camera.bottom = -0.4;
+  scene.add(key);
+
+  var fill = new THREE.DirectionalLight(0xcfe0ff, 0.85);
+  fill.position.set(-2.6, 1.6, 1.8);
+  scene.add(fill);
+
+  var rim = new THREE.DirectionalLight(0x9fc4ff, 1.1);
+  rim.position.set(-0.8, 1.2, -3.0);
+  scene.add(rim);
+
+  scene.add(new THREE.HemisphereLight(0xbcd2f0, 0x1b2430, 0.55));
+
+  // ---- 地面（柔和接触阴影） ----
+  var ground = new THREE.Mesh(
+    new THREE.CircleGeometry(4.2, 48),
+    new THREE.MeshStandardMaterial({ color: 0x1a2230, roughness: 0.95, metalness: 0.0 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.002;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  var grid = new THREE.GridHelper(6, 24, 0x2c3d55, 0x1e2a3a);
+  grid.position.y = 0.001;
+  if (grid.material) grid.material.transparent = true;
+  if (grid.material) grid.material.opacity = 0.35;
+  scene.add(grid);
+
+  // ---- 状态 ----
+  var root = new THREE.Group();
+  scene.add(root);
+  var mixer = null, actions = {}, clipNames = [], current = null;
+  var yaw = 0.45, pitch = 0.14, dist = 3.05;
+  var target = new THREE.Vector3(0, 0.62, 0);
+  var pointer = { down: false, x: 0, y: 0, moved: 0 };
+  var shakeT = 0, stat = {};
+
+  function updateCamera() {
+    // 模型正面朝 -Y（Blender）→ glTF 后朝 +Z，相机绕 Y 轴转 yaw 看过去
+    var cx = Math.sin(yaw) * Math.cos(pitch) * dist;
+    var cy = Math.sin(pitch) * dist + target.y;
+    var cz = Math.cos(yaw) * Math.cos(pitch) * dist;
+    camera.position.set(cx, cy, cz);
+    camera.lookAt(target);
+  }
+  updateCamera();
+
+  // ---- 载入 ----
+  var loader = new THREE.GLTFLoader();
+  loader.load("kitty_work.glb", function (gltf) {
+    var model = gltf.scene;
+    model.traverse(function (o) {
+      if (o.isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+        if (o.material) {
+          o.material.flatShading = true;
+          o.material.needsUpdate = true;
+        }
+        if (o.geometry && o.geometry.attributes.position) {
+          stat.verts = (stat.verts || 0) + o.geometry.attributes.position.count;
+          var idx = o.geometry.index;
+          stat.tris = (stat.tris || 0) + (idx ? idx.count / 3 :
+            o.geometry.attributes.position.count / 3);
+        }
+      }
+      if (o.isBone || o.isSkinnedMesh) stat.bones = (stat.bones || 0) + 1;
+    });
+
+    // 居中：让脚底落在 y=0，水平居中
+    var box = new THREE.Box3().setFromObject(model);
+    var size = new THREE.Vector3(); box.getSize(size);
+    var center = new THREE.Vector3(); box.getCenter(center);
+    model.position.x -= center.x;
+    model.position.z -= center.z;
+    model.position.y -= box.min.y;
+    root.add(model);
+
+    target.set(0, size.y * 0.5, 0);
+    dist = Math.max(size.y, size.x) * 2.5;
+    updateCamera();
+
+    mixer = new THREE.AnimationMixer(model);
+    (gltf.animations || []).forEach(function (clip) {
+      actions[clip.name] = mixer.clipAction(clip);
+      clipNames.push(clip.name);
+    });
+
+    document.getElementById("m-verts").textContent = (stat.verts || 0).toLocaleString();
+    document.getElementById("m-tris").textContent =
+      Math.round(stat.tris || 0).toLocaleString();
+    document.getElementById("m-bones").textContent = (stat.bones || 0);
+    document.getElementById("m-clips").textContent = clipNames.length + " 段";
+
+    buildButtons();
+    play(pickDefault());
+    document.getElementById("loading").classList.add("gone");
+  }, undefined, function (err) {
+    document.getElementById("loading").textContent =
+      "模型载入失败：" + (err && err.message ? err.message : err);
+  });
+
+  function pickDefault() {
+    return actions.typing ? "typing" : clipNames[0];
+  }
+
+  function play(name) {
+    var act = actions[name];
+    if (!act) return;
+    if (current && current !== act) current.fadeOut(0.25);
+    act.reset();
+    act.setLoop(THREE.LoopRepeat, Infinity);
+    act.fadeIn(0.25).play();
+    current = act;
+    var lbl = CLIP_LABEL[name] ? CLIP_LABEL[name][0] : name;
+    document.getElementById("m-now").textContent = lbl;
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#clips button"), function (b) {
+        b.classList.toggle("on", b.dataset.clip === name);
+      });
+  }
+
+  function buildButtons() {
+    var host = document.getElementById("clips");
+    host.innerHTML = "";
+    clipNames.forEach(function (name) {
+      var meta = CLIP_LABEL[name] || [name, ""];
+      var b = document.createElement("button");
+      b.dataset.clip = name;
+      b.innerHTML = meta[0] + "<small>" + meta[1] + "</small>";
+      b.addEventListener("click", function () { play(name); });
+      host.appendChild(b);
+    });
+  }
+
+  // ---- 交互：拖动旋转 / 滚轮缩放 / 点小猫打招呼 ----
+  var el = renderer.domElement;
+  el.addEventListener("pointerdown", function (e) {
+    pointer.down = true;
+    pointer.x = e.clientX;
+    pointer.y = e.clientY;
+    pointer.moved = 0;
+  });
+  el.addEventListener("pointermove", function (e) {
+    if (!pointer.down) return;
+    var dx = e.clientX - pointer.x;
+    var dy = e.clientY - pointer.y;
+    pointer.x = e.clientX;
+    pointer.y = e.clientY;
+    pointer.moved += Math.abs(dx) + Math.abs(dy);
+    yaw -= dx * 0.007;
+    pitch = Math.max(-0.25, Math.min(0.85, pitch + dy * 0.005));
+    updateCamera();
+  });
+  el.addEventListener("pointerup", function (e) {
+    var wasClick = pointer.down && pointer.moved < 6;
+    pointer.down = false;
+    if (!wasClick) return;
+    // 点到猫 → 打招呼（1.5 秒后回到敲键盘）
+    if (actions.wave) {
+      play("wave");
+      shakeT = 1.5;
+    }
+  });
+  el.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    dist = Math.max(1.3, Math.min(7.5, dist + e.deltaY * 0.0022));
+    updateCamera();
+  }, { passive: false });
+
+  window.addEventListener("resize", function () {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+  });
+
+  // ---- 迷你桌宠窗（118px 实测观感） ----
+  var mini = document.getElementById("mini");
+  var mrender = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  mrender.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  mrender.setSize(118, 118);
+  if (mrender.outputEncoding !== undefined) mrender.outputEncoding = THREE.sRGBEncoding;
+  mini.appendChild(mrender.domElement);
+  var mcam = new THREE.PerspectiveCamera(34, 1, 0.05, 100);
+  var mscene = new THREE.Scene();
+  var mroot = new THREE.Group();
+  mscene.add(mroot);
+  mscene.add(new THREE.HemisphereLight(0xc9dcff, 0x202b3a, 1.15));
+  var mkey = new THREE.DirectionalLight(0xffffff, 1.5);
+  mkey.position.set(1.6, 2.8, 2.4);
+  mscene.add(mkey);
+  var mf = new THREE.DirectionalLight(0xbcd4ff, 0.7);
+  mf.position.set(-2.2, 1.2, 1.2);
+  mscene.add(mf);
+  var mmixer = null, mloaded = false;
+
+  loader.load("kitty_work.glb", function (gltf) {
+    var m = gltf.scene;
+    m.traverse(function (o) {
+      if (o.isMesh && o.material) {
+        o.material.flatShading = true;
+        o.material.needsUpdate = true;
+      }
+    });
+    var box = new THREE.Box3().setFromObject(m);
+    var size = new THREE.Vector3(); box.getSize(size);
+    var c = new THREE.Vector3(); box.getCenter(c);
+    m.position.x -= c.x; m.position.z -= c.z; m.position.y -= box.min.y;
+    mroot.add(m);
+    mmixer = new THREE.AnimationMixer(m);
+    var typing = (gltf.animations || []).filter(function (a) {
+      return a.name === "typing";
+    })[0];
+    if (typing) mmixer.clipAction(typing).play();
+    var half = Math.max(size.y, size.x) * 0.5;
+    var d = half / Math.tan((34 * Math.PI / 180) / 2) / 0.82;
+    mcam.position.set(d * 0.30, size.y * 0.46, d * 0.94);
+    mcam.lookAt(0, size.y * 0.48, 0);
+    mloaded = true;
+  });
+
+  // ---- 主循环 ----
+  var clock = new THREE.Clock();
+  var fpsAcc = 0, fpsN = 0;
+  function tick() {
+    requestAnimationFrame(tick);
+    var dt = Math.min(0.1, clock.getDelta());
+    if (mixer) mixer.update(dt);
+    if (mmixer) mmixer.update(dt);
+
+    if (shakeT > 0) {
+      shakeT -= dt;
+      if (shakeT <= 0 && current !== actions.typing) play("typing");
+    }
+
+    root.rotation.y = Math.sin(clock.elapsedTime * 0.25) * 0.012;
+
+    renderer.render(scene, camera);
+    if (mloaded) mrender.render(mscene, mcam);
+
+    fpsAcc += dt; fpsN += 1;
+    if (fpsAcc >= 0.5) {
+      document.getElementById("m-fps").textContent =
+        Math.round(fpsN / fpsAcc) + " fps";
+      fpsAcc = 0; fpsN = 0;
+    }
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

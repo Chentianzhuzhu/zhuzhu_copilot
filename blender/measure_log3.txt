@@ -1,0 +1,30 @@
+﻿blender.exe : TBBmalloc: skip allocation functions replacement in ucrtbase.dll: unknown prologue for function _msize
+所在位置 行:15 字符: 1129
++ ... M = 'dumb'; & "C:\Program Files\Blender Foundation\Blender 3.5\blende ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (TBBmalloc: skip...function _msize:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Blender 3.5.0 (hash 1be25cfff18b built 2023-03-29 06:36:20)
+Read blend: C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\kitty_work.blend
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\ortho_front_f1.png'
+ Time: 00:01.49 (Saving: 00:00.70)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\ortho_side_f1.png'
+ Time: 00:00.57 (Saving: 00:00.49)
+
+
+=== Kitty_typing ===
+键盘键帽  x[-0.245, 0.245]  y[-0.493, -0.337]  z顶=0.0520
+机身台面  z顶=0.0450
+  f1   kitty_paw_l  底面z=0.0517 间隙=-0.0003  贴键  y[-0.431,-0.256] x[-0.208,-0.056]
+  f1   kitty_paw_r  底面z=0.0517 间隙=-0.0003  贴键  y[-0.431,-0.256] x[0.056,0.208]
+  f8   kitty_paw_l  底面z=0.0434 间隙=-0.0086  贴键  y[-0.422,-0.248] x[-0.208,-0.056]
+  f8   kitty_paw_r  底面z=0.0692 间隙=+0.0172  贴键  y[-0.491,-0.316] x[0.056,0.208]
+  f16  kitty_paw_l  底面z=0.0623 间隙=+0.0103  贴键  y[-0.440,-0.266] x[-0.208,-0.056]
+  f16  kitty_paw_r  底面z=0.0623 间隙=+0.0103  贴键  y[-0.440,-0.266] x[0.056,0.208]
+ORTHO front 1
+ORTHO side 1
+MEASURE_DONE
+
+Blender quit
