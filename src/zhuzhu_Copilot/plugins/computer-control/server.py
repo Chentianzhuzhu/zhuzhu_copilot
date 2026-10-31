@@ -243,6 +243,13 @@ def _bind_win32():
     u.GetDC.argtypes = (wintypes.HWND,)
     u.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
     u.GetCursorPos.argtypes = (ctypes.POINTER(wintypes.POINT),)
+    # SetCursorPos：SendInput 被第三方低层钩子吞掉时的兜底定位（不经过输入队列）
+    u.SetCursorPos.argtypes = (ctypes.c_int, ctypes.c_int)
+    u.SetCursorPos.restype = wintypes.BOOL
+    # 交互桌面探测：锁屏 / UAC 安全桌面下 SendInput 会被接受但光标不动，需准确归因
+    u.OpenInputDesktop.restype = wintypes.HANDLE
+    u.OpenInputDesktop.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    u.CloseDesktop.argtypes = (wintypes.HANDLE,)
     u.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     u.PrintWindow.argtypes = (wintypes.HWND, wintypes.HDC, wintypes.UINT)
     u.GetForegroundWindow.restype = wintypes.HWND
@@ -2120,6 +2127,20 @@ def _input_mode(args: dict) -> str:
     return m if m in INPUT_MODES else "auto"
 
 
+def _set_cursor_pos(x: int, y: int) -> bool:
+    """直接设置光标位置（SetCursorPos），作为 SendInput 的兜底定位。
+
+    为什么不只用 SendInput：部分安全软件 / 远程控制 / 输入法会在低级鼠标钩子里
+    **吞掉注入事件**——SendInput 返回 1（事件已被接受），但光标纹丝不动。此时
+    回读永远对不上，旧逻辑会误报「真实鼠标在动 / DPI 偏差」。SetCursorPos 不经过
+    输入队列与钩子，能直接改光标位置，是这类拦截下唯一可靠的定位方式。
+    """
+    try:
+        return bool(user32.SetCursorPos(int(x), int(y)))
+    except Exception:
+        return False
+
+
 def _settle_at(x: int, y: int, tries: int = 3) -> bool:
     """把光标精确落到 (x,y) 并**回读确认**；确认不到就返回 False。
 
@@ -2128,14 +2149,24 @@ def _settle_at(x: int, y: int, tries: int = 3) -> bool:
     于是「按下」发生在完全不同的位置。实测踩过：请求 (1683,1055)，回读却是 (1231,510)，
     点击打到了别的窗口上 —— 这是坐标算得再准也救不回来的一类「点偏」。
 
-    重试 3 次仍对不上就**不按键**：按在错误位置（可能是删除/发送/关闭）比不按危险得多。
+    前两次走 SendInput（正常的物理坐标注入，兼顾真实鼠标抖动一次后恢复）；
+    第 3 次起改用 SetCursorPos 兜底：低层钩子拦截注入时，SendInput 返回成功但光标
+    不动，只有 SetCursorPos 能把光标真正放到位。
+    重试仍对不上就**不按键**：按在错误位置（可能是删除/发送/关闭）比不按危险得多。
     """
-    for _ in range(max(1, int(tries))):
-        _move_absolute(x, y)
+    tx, ty = int(x), int(y)
+    for i in range(max(1, int(tries))):
+        if i < 2:
+            _move_absolute(tx, ty)
+        else:
+            _set_cursor_pos(tx, ty)
         # SendInput 返回只代表「事件已插入队列」，光标未必立刻到位；立刻回读会读到
         # 旧位置，被误判成「被真实鼠标覆盖」——用户根本没碰鼠标却被告知「你在操作」。
-        time.sleep(READBACK_SETTLE_S)
-        if _cursor_pos() == (int(x), int(y)):
+        # SetCursorPos 是同步生效，但给它留一点余量以避开桌面合成/远程会话延迟。
+        time.sleep(READBACK_SETTLE_S if i == 0 else 0.03)
+        if _cursor_pos() == (tx, ty):
+            if i > 0:
+                _log("sys", f"SendInput 未把光标放到 ({tx},{ty})，SetCursorPos 兜底成功")
             return True
         time.sleep(0.012)
     return False
@@ -4611,10 +4642,7 @@ def tool_click_window(args: dict) -> str:
     warn = _prepare_target(hwnd)
     before = _pre_click_probe(x, y, hwnd) if verify else ()
     if not do_click(x, y, button, clicks, mode=_input_mode(args)):
-        return (f"⚠ **没有完成点击**：光标无法稳定停在 ({x},{y})（连续回读不一致）。"
-                f"这通常说明**用户正在用真实鼠标**，注入被实时覆盖了 —— 此时硬点会落到"
-                f"别的位置。请先请用户停手/确认，或调 control(action=\"status\") 看接管状态，"
-                f"不要重复重试同一坐标。")
+        return _inject_lost_note(x, y)
     vtext = _click_verify(x, y, before, hwnd)
     _log("ai", f"窗口相对点击 [{hwnd}] 偏移({rx},{ry}) → 屏幕({x},{y}) {button}")
     _refresh_env()
@@ -5112,13 +5140,56 @@ def tool_click(args: dict) -> str:
             + "请重新 screen_shot 验证结果。" + scan)
 
 
+DESKTOP_SWITCHDESKTOP = 0x0100   # OpenInputDesktop 的 fdwDesktopFlags
+
+
+def _interactive_desktop_note() -> str:
+    """锁屏 / UAC 安全桌面探测。
+
+    这两类桌面上 SendInput 会「被接受但不生效」：光标停在原处，回读永远对不上。
+    以前一律归因成「真实鼠标在动 / DPI 偏差」，用户看到的是莫名其妙的警告。
+    """
+    try:
+        h = user32.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
+        if not h:
+            return ("当前处于锁屏 / UAC 安全桌面（或远程会话已断开），模拟输入无法落到"
+                    "用户的交互桌面。请先解锁、响应 UAC 提示后重试。")
+        try:
+            user32.CloseDesktop(h)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return ""
+
+
+def _cursor_clip_note(x: int, y: int) -> str:
+    """前台程序用 ClipCursor 限制光标时给出准确原因（游戏/远程桌面窗口最常见）。"""
+    fn = getattr(user32, "GetClipCursor", None)
+    if not fn:
+        return ""
+    try:
+        rc = wintypes.RECT()
+        if not fn(ctypes.byref(rc)):
+            return ""
+        if rc.left <= x < rc.right and rc.top <= y < rc.bottom:
+            return ""
+        return (f"当前前台程序把光标限制在 ({rc.left},{rc.top})-({rc.right},{rc.bottom})，"
+                f"目标 ({x},{y}) 在该区域之外，系统会把它夹到边界。"
+                f"请先切回目标程序 / 退出全屏或游戏模式后重试。")
+    except Exception:
+        return ""
+
+
 def _inject_lost_note(x: int, y: int) -> str:
     """注入动作（点击/拖拽/滑动/长按/拖选）没有完成时的统一告警文案。
 
-    **必须区分两类原因**（以前一律说成「用户正在用真实鼠标」，把系统拦截和坐标
-    偏差都甩锅给用户，制造了大量「我明明没碰鼠标」的困惑）：
-      * SendInput 返回 0 → 系统拒绝注入（权限/安全策略），与用户无关；
-      * 其余 → 光标被别的东西移走了（真实鼠标 / 其他注入源）或坐标链路偏差。
+    **必须按可验证的原因如实归因**（以前一律说成「用户正在用真实鼠标」，把系统拦截、
+    锁屏、光标限制都甩锅给用户，制造了大量「我明明没碰鼠标」的困惑）：
+      * SendInput 返回 0 → 系统拒绝注入（权限/安全策略）；
+      * OpenInputDesktop 失败 → 锁屏 / UAC 安全桌面 / 远程会话断开；
+      * ClipCursor 排除目标点 → 前台程序限制光标；
+      * 其余 → 低层钩子拦截、真实鼠标抢占或坐标链路问题（已用 SetCursorPos 兜底验证）。
     """
     if not _last_send_ok:
         return (f"⚠ **没有完成操作**：系统拒绝了模拟输入（SendInput 返回 0）。"
@@ -5126,10 +5197,22 @@ def _inject_lost_note(x: int, y: int) -> str:
                 f"**不是用户在操作鼠标，也不是坐标算错**。\n"
                 f"请如实告诉用户这个原因，并建议以同等权限运行本程序或让用户手动完成；"
                 f"**不要重复重试同一坐标**。")
-    return (f"⚠ **动作没有执行**：光标无法稳定停在 ({x},{y})（当前在 {_cursor_pos()}）。"
-            f"可能是真实鼠标/其他程序在移动光标，也可能是坐标链路（DPI/多屏）偏差。\n"
-            f"请先 control(action=\"status\") 查看接管状态，再用 verify_point 自检坐标链路；"
-            f"**不要重复重试同一坐标**。")
+    desk = _interactive_desktop_note()
+    if desk:
+        return (f"⚠ **动作没有执行**：{desk}\n"
+                f"**不要重复重试同一坐标**，先让用户处理上述状态。")
+    clip = _cursor_clip_note(x, y)
+    if clip:
+        return (f"⚠ **动作没有执行**：{clip}\n**不要重复重试同一坐标**。")
+    cx, cy = _cursor_pos()
+    return (f"⚠ **动作没有执行**：光标无法稳定停在 ({x},{y})（当前在 ({cx},{cy})）。"
+            f"SendInput 未被系统拒绝，且已用 SetCursorPos 直接定位仍对不上 —— "
+            f"通常不是坐标算错，而是：\n"
+            f"• 安全软件 / 远程控制 / 输入法的低层鼠标钩子拦截了光标移动；\n"
+            f"• 用户或触控板正在移动真实鼠标（瞬间抢走光标）；\n"
+            f"• 前台程序用 ClipCursor 限制光标。\n"
+            f"请如实告知用户原因，并请其手动点一次或先关闭拦截类软件；"
+            f"需要接管状态时用 control(action=\"status\")。**不要重复重试同一坐标**。")
 
 
 def tool_long_press(args: dict) -> str:
