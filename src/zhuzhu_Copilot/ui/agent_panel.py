@@ -159,10 +159,12 @@ from zhuzhu_Copilot.ui.tokens import (
     RADIUS_LG,
     RADIUS_MD,
     RADIUS_SM,
+    RADIUS_XS,
     SPACING_LG,
     SPACING_MD,
     SPACING_SM,
     SPACING_XS,
+    pill_radius,
 )
 from zhuzhu_Copilot.ui import window_fx
 from zhuzhu_Copilot.ui import motion
@@ -866,6 +868,35 @@ def _round_icon_btn_qss(diameter: int) -> str:
             f"border: none;"
             f"border-radius: {diameter // 2}px; }}"
             f"QPushButton:hover {{ background: {hover_disc}; }}")
+
+
+# 欢迎页建议胶囊（空状态引导）：图标 kind 取自 _line_icon 已登记集合，
+# 文案为 i18n key（构建时经 _ui 求值，切换语言后随面板重建刷新）。
+_WELCOME_SUGGESTIONS = (
+    ("doc", "解释当前打开的代码"),
+    ("folder", "梳理这个项目的结构"),
+    ("bash", "运行测试并修复失败项"),
+    ("magic", "优化我的提示词"),
+)
+
+# 建议胶囊固定高度（px）：圆角取半高，QSS 的 radius 超过半高会被 Qt 画成直角
+_WELCOME_CHIP_H = 34
+
+
+def _welcome_chip_qss() -> str:
+    """欢迎页建议胶囊皮肤（招 1：不描边）。
+
+    与顶栏 ghost 按钮同源：把描边色以低比例压在面板色上得到「磨砂填充」，
+    hover 加深一档并把文字提到正文色 —— 胶囊形状本身由半高圆角承担。
+    """
+    fill = _mix_hex(BORDER, PANEL, 0.16)
+    fill_hover = _mix_hex(BORDER, PANEL, 0.30)
+    return (f"QPushButton {{ background: {fill}; color: {TEXT_DIM}; border: none;"
+            f" border-radius: {pill_radius(_WELCOME_CHIP_H)}px;"
+            f" padding: 0 {SPACING_LG}px;"
+            f" font-size: {FONT_SMALL}px; font-weight: {_W_BUTTON}; }}"
+            f"QPushButton:hover {{ background: {fill_hover}; color: {TEXT}; }}"
+            f"QPushButton:pressed {{ background: {HOVER}; color: {TEXT}; }}")
 
 
 def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
@@ -3010,9 +3041,11 @@ class _BgAdjustStrip(QWidget):
 
     def show_for(self, title: str, unit: str, slider, tick_step: int):
         """绑定到某根背景滑杆：显示项名 / 单位，并把其改值镜像到浮条。"""
+        # 取原始色板：浮条是独立置顶窗口（背景自绘为深/浅半透明），文字与数值
+        # 必须与主题同源 —— 写死深色/浅色十六进制会在自定义主题包下失配。
         dark = _resolve_theme() == "dark"
-        text = "#F3F5F9" if dark else "#1B2433"
-        accent = "#8AB4F8" if dark else "#1E40AF"
+        text = _base_color("TEXT")
+        accent = _base_color("ACCENT_HOVER") if dark else _base_color("ACCENT")
         self.title.setText(title)
         self.title.setStyleSheet(
             f"background: transparent; color: {text};"
@@ -3349,8 +3382,6 @@ class _PluginDetailDialog(QDialog):
         self.setModal(True)
         # 与 _MultiLineInputDialog 同理：对话框是不透明白底，取原始色板
         _dlg_bg = _base_color("PANEL")
-        _in_bg = _base_color("PANEL")
-        _bd = _base_color("BORDER")
         self.setStyleSheet(f"QDialog {{ background: {_dlg_bg}; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
@@ -3370,9 +3401,11 @@ class _PluginDetailDialog(QDialog):
                         Qt.TransformationMode.SmoothTransformation))
         except Exception:
             pass
-        if icon_lbl.pixmap() is None:
-            icon_lbl.setText("🧩")
-            icon_lbl.setStyleSheet(f"font-size: 30px;")
+        # PyQt 在无 pixmap 时返回 null QPixmap（不是 None），必须同时判 isNull
+        _pm = icon_lbl.pixmap()
+        if _pm is None or _pm.isNull():
+            # 无自定义图标：用淡灰线条矢量图占位（规范禁 emoji）
+            icon_lbl.setPixmap(_line_icon("puzzle", 30, TEXT_DIM).pixmap(30, 30))
             icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         head.addWidget(icon_lbl)
         title_col = QVBoxLayout()
@@ -3399,11 +3432,15 @@ class _PluginDetailDialog(QDialog):
         # ---- 页签 ----
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(
-            f"QTabWidget::pane {{ border: 1px solid {_bd}; border-radius: 8px; }}"
-            f"QTabBar::tab {{ background: {_in_bg}; color: {TEXT_DIM};"
-            "padding: 6px 14px; border-top-left-radius: 6px;"
-            "border-top-right-radius: 6px; }}"
-            f"QTabBar::tab:selected {{ background: {_dlg_bg}; color: {TEXT}; }}")
+            # 招 1：页签容器不描边 —— 内容区用「凹陷字段」层（比对话框底暗/灰一档），
+            # 选中页签回到「卡片」层与内容区咬合，层级靠明度差承担，不画 1px 线。
+            f"QTabWidget::pane {{ border: none; border-radius: {RADIUS_SM}px;"
+            f" background: {_base_color('FIELD')}; }}"
+            f"QTabBar::tab {{ background: transparent; color: {TEXT_DIM};"
+            f" padding: 5px 14px; margin-right: 4px; border-radius: {RADIUS_XS}px; }}"
+            f"QTabBar::tab:hover {{ color: {TEXT}; }}"
+            f"QTabBar::tab:selected {{ background: {_base_color('CARD')};"
+            f" color: {TEXT}; font-weight: {_W_STRONG}; }}")
         lay.addWidget(self.tabs, 1)
         self._build_info_tab()
         self._build_config_tab()
@@ -3412,18 +3449,22 @@ class _PluginDetailDialog(QDialog):
         # ---- 底部按钮 ----
         btns = QHBoxLayout()
         export_b = QPushButton(_ui("导出插件包…"))
-        export_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
-                               f"border: 1px solid {_bd}; border-radius: 8px;"
-                               "padding: 7px 16px; font-weight: 600;")
+        export_b.setStyleSheet(
+            f"background: {_mix_hex(_base_color('BORDER'), _dlg_bg, 0.16)};"
+            f" color: {TEXT};"
+            "border: none; border-radius: 8px;"
+            "padding: 7px 16px; font-weight: 600;")
         export_b.setAutoDefault(False)
         export_b.setToolTip(_ui("把插件打包为 zip（含 plugin.json / 配置 / 图标 / 源码），便于分享与备份"))
         export_b.clicked.connect(self._on_export)
         btns.addWidget(export_b)
         btns.addStretch(1)
         close_b = QPushButton(_ui("关闭"))
-        close_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
-                              f"border: 1px solid {_bd}; border-radius: 8px;"
-                              "padding: 7px 20px;")
+        close_b.setStyleSheet(
+            f"background: {_mix_hex(_base_color('BORDER'), _dlg_bg, 0.16)};"
+            f" color: {TEXT};"
+            "border: none; border-radius: 8px;"
+            "padding: 7px 20px;")
         close_b.setAutoDefault(False)
         close_b.clicked.connect(self.accept)
         btns.addWidget(close_b)
@@ -3634,8 +3675,6 @@ class _CopilotPluginDetailDialog(QDialog):
         self.setMinimumSize(640, 540)
         self.setModal(True)
         _dlg_bg = _base_color("PANEL")
-        _in_bg = _base_color("PANEL")
-        _bd = _base_color("BORDER")
         self.setStyleSheet(f"QDialog {{ background: {_dlg_bg}; }}")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
@@ -3656,9 +3695,11 @@ class _CopilotPluginDetailDialog(QDialog):
                         Qt.TransformationMode.SmoothTransformation))
         except Exception:
             pass
-        if icon_lbl.pixmap() is None:
-            icon_lbl.setText("🧊")
-            icon_lbl.setStyleSheet("font-size: 30px;")
+        # PyQt 在无 pixmap 时返回 null QPixmap（不是 None），必须同时判 isNull
+        _pm = icon_lbl.pixmap()
+        if _pm is None or _pm.isNull():
+            # 无自定义图标：用淡灰线条矢量图占位（规范禁 emoji）
+            icon_lbl.setPixmap(_line_icon("apps", 30, TEXT_DIM).pixmap(30, 30))
             icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         head.addWidget(icon_lbl)
         title_col = QVBoxLayout()
@@ -3684,11 +3725,15 @@ class _CopilotPluginDetailDialog(QDialog):
         # ---- 页签 ----
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(
-            f"QTabWidget::pane {{ border: 1px solid {_bd}; border-radius: 8px; }}"
-            f"QTabBar::tab {{ background: {_in_bg}; color: {TEXT_DIM};"
-            "padding: 6px 14px; border-top-left-radius: 6px;"
-            "border-top-right-radius: 6px; }}"
-            f"QTabBar::tab:selected {{ background: {_dlg_bg}; color: {TEXT}; }}")
+            # 招 1：页签容器不描边 —— 内容区用「凹陷字段」层（比对话框底暗/灰一档），
+            # 选中页签回到「卡片」层与内容区咬合，层级靠明度差承担，不画 1px 线。
+            f"QTabWidget::pane {{ border: none; border-radius: {RADIUS_SM}px;"
+            f" background: {_base_color('FIELD')}; }}"
+            f"QTabBar::tab {{ background: transparent; color: {TEXT_DIM};"
+            f" padding: 5px 14px; margin-right: 4px; border-radius: {RADIUS_XS}px; }}"
+            f"QTabBar::tab:hover {{ color: {TEXT}; }}"
+            f"QTabBar::tab:selected {{ background: {_base_color('CARD')};"
+            f" color: {TEXT}; font-weight: {_W_STRONG}; }}")
         lay.addWidget(self.tabs, 1)
         self._build_info_tab()
         self._build_config_tab()
@@ -3699,18 +3744,22 @@ class _CopilotPluginDetailDialog(QDialog):
         # ---- 底部按钮 ----
         btns = QHBoxLayout()
         export_b = QPushButton(_ui("导出插件包…"))
-        export_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
-                               f"border: 1px solid {_bd}; border-radius: 8px;"
-                               "padding: 7px 16px; font-weight: 600;")
+        export_b.setStyleSheet(
+            f"background: {_mix_hex(_base_color('BORDER'), _dlg_bg, 0.16)};"
+            f" color: {TEXT};"
+            "border: none; border-radius: 8px;"
+            "padding: 7px 16px; font-weight: 600;")
         export_b.setAutoDefault(False)
         export_b.setToolTip(_ui("把插件打包为 zip（含 plugin.json / 配置 / 图标 / 变更清单），便于分享与备份"))
         export_b.clicked.connect(self._on_export)
         btns.addWidget(export_b)
         btns.addStretch(1)
         close_b = QPushButton(_ui("关闭"))
-        close_b.setStyleSheet(f"background: {_in_bg}; color: {TEXT};"
-                              f"border: 1px solid {_bd}; border-radius: 8px;"
-                              "padding: 7px 20px;")
+        close_b.setStyleSheet(
+            f"background: {_mix_hex(_base_color('BORDER'), _dlg_bg, 0.16)};"
+            f" color: {TEXT};"
+            "border: none; border-radius: 8px;"
+            "padding: 7px 20px;")
         close_b.setAutoDefault(False)
         close_b.clicked.connect(self.accept)
         btns.addWidget(close_b)
@@ -5259,20 +5308,25 @@ class _AgentSettingsDialog(QDialog):
         会被覆写为 transparent，而本对话框是独立不透明窗口 —— 透明底不填色，
         渲染成纯黑（浅色模式整页发黑），必须回落实色（见 _base_color）。"""
         _dlg_bg = self._BG
-        _popup_bg = self._PANEL
-        _in_bg = self._PANEL
-        _in_focus = self._PANEL2
+        _popup_bg = _base_color("ELEVATED")
+        # 招 1：输入类控件是「凹陷字段」——比对话框底暗/灰一档，悬停/聚焦逐档加深，
+        # **不描边**（聚焦可见性由背景加深 + 光标闪烁承担，与主面板同规）。
+        _in_bg = _base_color("FIELD")
+        _in_hover = _mix_hex(_base_color("FIELD"), _base_color("HOVER"), 0.55)
+        _in_focus = _base_color("HOVER")
         return (
             # 对象名限定：仅作用于设置对话框自身，不级联到子 QMessageBox/QInputDialog
             f"QDialog#agentSettingsDlg {{ background: {_dlg_bg}; }}"
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
             f"QLineEdit, QPlainTextEdit, QComboBox {{ background: {_in_bg};"
-            f"color: {self._TEXT}; border: 1px solid {self._BORDER};"
+            f"color: {self._TEXT}; border: none;"
             "border-radius: 12px; padding: 6px 10px; }"
+            f"QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover {{"
+            f"background: {_in_hover}; }}"
             f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
-            f"border: 1px solid {self._BORDER}; background: {_in_focus}; }}"
+            f"background: {_in_focus}; }}"
             f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
-            f"color: {TEXT}; border: 1px solid {self._BORDER};"
+            f"color: {TEXT}; border: none;"
             f"border-radius: 12px; padding: 4px; outline: none;"
             f"selection-background-color: {self._PANEL2};"
             f" selection-color: {TEXT}; }}"
@@ -5298,10 +5352,11 @@ class _AgentSettingsDialog(QDialog):
             f"border-left: 3px solid {self._ACCENT_HOVER}; }}")
 
     def _cancel_btn_qss(self) -> str:
-        """次级按钮（取消）底色。"""
-        return (f"background: {self._PANEL}; color: {self._TEXT};"
-                f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                "padding: 8px 24px; font-size: 13px; font-weight: 600;")
+        """次级按钮（取消）底色：招 1 不描边，用磨砂填充浮出。"""
+        _fill = _mix_hex(self._BORDER, self._PANEL, 0.16)
+        return (f"background: {_fill}; color: {self._TEXT}; border: none;"
+                f"border-radius: {RADIUS_SM}px; padding: 8px 24px;"
+                "font-size: 13px; font-weight: 600;")
 
     def done(self, code: int):
         # 拖动中被关闭时对话框可能仍是透明的：先恢复并收起浮条，避免下次打开不可见
@@ -18650,13 +18705,18 @@ class _SessionStatusDelegate(QStyledItemDelegate):
         pending = bool(st and (st.get("pending_confirm") or st.get("pending_ask")))
         name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         painter.save()
-        # 背景：选中 / 悬停
-        if option.state & QStyle.StateFlag.State_Selected:
-            painter.fillRect(option.rect, option.palette.highlight())
-        elif option.state & QStyle.StateFlag.State_MouseOver:
-            painter.fillRect(option.rect, QColor(HOVER))
+        # 背景：选中 / 悬停。弹层是圆角容器（QSS border-radius 10），行高亮也按
+        # 同一档圆角内缩 2px 绘制，避免「圆角弹层里出现一条直角色带」。
         rect = QRect(option.rect)
-        left = rect.left() + 4
+        bg = rect.adjusted(2, 2, -2, -2)
+        painter.setPen(Qt.PenStyle.NoPen)
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.setBrush(option.palette.highlight())
+            painter.drawRoundedRect(bg, RADIUS_XS, RADIUS_XS)
+        elif option.state & QStyle.StateFlag.State_MouseOver:
+            painter.setBrush(QColor(HOVER))
+            painter.drawRoundedRect(bg, RADIUS_XS, RADIUS_XS)
+        left = rect.left() + 6
         cy = rect.center().y()
         # 待确认黄色圆点（最左侧）
         if pending:
@@ -18674,12 +18734,14 @@ class _SessionStatusDelegate(QStyledItemDelegate):
             painter.drawArc(QRect(cx - 6, cy - 6, 12, 12),
                             self.panel._spin_angle * 16, 120 * 16)
             left += 16
-        # 文本
+        # 文本：按可用宽度省略（会话名可能较长，不能压到右侧状态图标上）
         painter.setFont(option.font)
         painter.setPen(option.palette.text().color())
-        painter.drawText(QRect(left, rect.top(), max(0, rect.width() - (left - rect.left())),
-                               rect.height()),
-                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
+        avail = max(0, rect.width() - (left - rect.left()) - 8)
+        elided = option.fontMetrics.elidedText(
+            name, Qt.TextElideMode.ElideRight, avail)
+        painter.drawText(QRect(left, rect.top(), avail, rect.height()),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
         painter.restore()
 
     def sizeHint(self, option, index):
@@ -20378,11 +20440,15 @@ class AgentPanel(QDialog):
         self._scroll_bottom_btn.setAutoDefault(False)
         self._scroll_bottom_btn.setIconSize(QSize(18, 18))
         self._scroll_bottom_btn.setToolTip(_ui("回到底部"))
+        # 配色取自主题强调色（不再写死旧主题蓝）：深浅主题、自定义主题包
+        # 都能得到同源主色；圆盘本身即形状，按招 1 不描边。
+        _sb = QColor(ACCENT_HOVER)
+        _sb_press = QColor(ACCENT).darker(118).name()
         self._scroll_bottom_btn.setStyleSheet(
-            "QPushButton { background: rgba(47,82,216,0.92); border: 1px solid rgba(255,255,255,0.15);"
-            " border-radius: 20px; }"
-            "QPushButton:hover { background: rgba(47,82,216,1.0); }"
-            "QPushButton:pressed { background: rgba(37,67,184,1.0); }")
+            f"QPushButton {{ background: rgba({_sb.red()},{_sb.green()},{_sb.blue()},0.92);"
+            " border: none; border-radius: 20px; }"
+            f"QPushButton:hover {{ background: rgba({_sb.red()},{_sb.green()},{_sb.blue()},1.0); }}"
+            f"QPushButton:pressed {{ background: {_sb_press}; }}")
         self._scroll_bottom_btn.clicked.connect(self._on_scroll_bottom_btn)
         self._scroll_bottom_btn.hide()
         self._scroll_bottom_btn.raise_()
@@ -20541,8 +20607,10 @@ class AgentPanel(QDialog):
         wd_hint_lay.setSpacing(8)
         self.wd_hint_bar = QFrame()
         self.wd_hint_bar.setObjectName("wdHintBar")
+        # 招 1：提示条不描边，用一层低比例磨砂填充从背景里浮出（深浅主题同源）
+        _wh_fill = _mix_hex(BORDER, PANEL, 0.14)
         self.wd_hint_bar.setStyleSheet(
-            f"QFrame#wdHintBar {{ background: rgba(0,0,0,0); border: 1px solid {BORDER};"
+            f"QFrame#wdHintBar {{ background: {_wh_fill}; border: none;"
             f"border-radius: {RADIUS_SM}px; }}")
         _wh_lay = QHBoxLayout(self.wd_hint_bar)
         _wh_lay.setContentsMargins(10, 5, 6, 5)
@@ -20556,10 +20624,10 @@ class AgentPanel(QDialog):
         _wh_btn.setAutoDefault(False)
         _wh_btn.setFixedHeight(26)
         _wh_btn.setStyleSheet(
-            f"QPushButton {{ background: {PANEL}; color: {TEXT};"
-            f"border: 1px solid {ACCENT}; border-radius: 6px; padding: 0 10px;"
+            f"QPushButton {{ background: transparent; color: {ACCENT_HOVER};"
+            f"border: none; border-radius: {RADIUS_XS}px; padding: 0 10px;"
             "font-size: 12px; font-weight: 600; }}"
-            f"QPushButton:hover {{ background: {ACCENT_HOVER}; color: #FFFFFF; }}")
+            f"QPushButton:hover {{ background: {ACCENT}; color: #FFFFFF; }}")
         _wh_btn.setToolTip(_ui("跳转到 AI 设置 → 对话流，为该对话配置专属工作目录"))
         _wh_btn.clicked.connect(self._open_workdir_settings)
         _wh_lay.addWidget(_wh_btn)
@@ -20623,6 +20691,27 @@ class AgentPanel(QDialog):
         sub.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_BASE}px;")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         box.addWidget(sub)
+        # 空状态引导：一排建议胶囊，点击即把提示词填进输入框（不直接发送，
+        # 留给用户改完再按 Enter）。作用是把「空白页」变成可上手的第一句话。
+        chips = QHBoxLayout()
+        chips.setSpacing(SPACING_SM)
+        chips.addStretch(1)
+        self._welcome_chips = []
+        chip_qss = _welcome_chip_qss()
+        for kind, text in _WELCOME_SUGGESTIONS:
+            chip = QPushButton(_line_icon(kind, 16, TEXT_DIM), _ui(text))
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setAutoDefault(False)
+            chip.setIconSize(QSize(16, 16))
+            chip.setFixedHeight(_WELCOME_CHIP_H)
+            chip.setStyleSheet(chip_qss)
+            chip.clicked.connect(
+                lambda _=False, t=_ui(text): self._use_welcome_suggestion(t))
+            chips.addWidget(chip)
+            self._welcome_chips.append(chip)
+        chips.addStretch(1)
+        box.addSpacing(SPACING_LG - 10)
+        box.addLayout(chips)
         lay.addLayout(box)
         lay.addStretch(1)
         # 欢迎语按本地时间自动刷新（欢迎页驻留时跨时段自动切换）
@@ -20640,6 +20729,15 @@ class AgentPanel(QDialog):
         text = _welcome_greeting()
         if label.text() != text:
             label.setText(text)
+
+    def _use_welcome_suggestion(self, text: str) -> None:
+        """点击欢迎页建议胶囊：把提示词填进输入框并聚焦（不自动发送）。"""
+        inp = getattr(self, "input", None)
+        if inp is None:
+            return
+        inp.setPlainText(str(text or ""))
+        inp.moveCursor(QTextCursor.MoveOperation.End)
+        inp.setFocus()
 
     def _update_welcome(self):
         """无对话内容时显示欢迎页，否则显示聊天区（发消息后立即切换）"""

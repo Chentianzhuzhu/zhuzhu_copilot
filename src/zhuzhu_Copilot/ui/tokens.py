@@ -18,7 +18,7 @@ RADIUS_XS = 6      # 小型控件：徽标 / 标签 / 勾选框
 RADIUS_SM = 8      # 按钮 / 输入框 / 列表项 / 卡片内元素
 RADIUS_MD = 12     # 面板 / 弹出视图 / 卡片
 RADIUS_LG = 16     # 聊天气泡 / 大圆角容器
-RADIUS_PILL = 999  # 胶囊：高度一半以上即视为全圆（按钮 / tag / 徽章）
+RADIUS_PILL = 999  # 胶囊的**语义标记**：不可直接写进 QSS（见 pill_radius 注释）
 
 # 事件流聊天气泡几何（气泡设计规范值，仅几何不含颜色）
 BUBBLE_RADIUS_USER = 18     # .msg 非对称圆角：左上/右上/左下 18
@@ -47,6 +47,18 @@ SPACING_SM = 8
 SPACING_MD = 12
 SPACING_LG = 16
 SPACING_XL = 24
+
+
+def pill_radius(height: int) -> int:
+    """胶囊圆角：取控件短边的一半。
+
+    **Qt QSS 的 border-radius 不能超过控件短边的一半** —— 超限时 Qt 不会自动
+    钳制，而是直接按直角绘制（实测 999px 的胶囊按钮/标签全部渲染成方块）。
+    因此胶囊半径必须按自身高度计算；``RADIUS_PILL`` 只作语义标记，禁止写进 QSS。
+    高度通常由调用方固定（如 22 / 34），保证半径与高度始终同步。
+    """
+    return max(1, int(height) // 2)
+
 
 # 等宽数字字体栈（招 4「数字锁死等宽」）：
 # 实时跳动的数字（token 计数 / 耗时徽章 / 统计值）若用比例数字，每位宽度不一，

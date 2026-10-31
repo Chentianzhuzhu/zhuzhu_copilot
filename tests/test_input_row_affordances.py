@@ -62,18 +62,20 @@ def panel():
 
 
 def test_optimize_button_is_a_visible_circle(panel):
-    """圆钮要「看得出来是圆的」：圆角 = 直径一半，且必须有底 + 描边。
+    """圆钮要「看得出来是圆的」：圆角 = 直径一半，且必须有**实心底盘**。
 
-    只把 border-radius 改成一半是不够的：`background: transparent; border: none` 下
-    圆角与矩形完全同形，用户看到的仍是一个裸图标（所以第一次修复后反馈照旧）。
+    可见性由「比输入框亮一档的实心圆盘」承担（客户端 UI/UX 招 1：不描边，
+    形状本身就是边界）；`background: transparent; border: none` 会让圆角与矩形
+    完全同形，用户看到的只是一个裸图标（故仍需断言有底色与 hover 反馈）。
     """
     btn = panel.optimize_btn
     d = btn.width()
     assert d == btn.height() and d > 0, f"正圆前提是宽高相等，实得 {btn.width()}x{btn.height()}"
     qss = btn.styleSheet()
     assert f"border-radius: {d // 2}px" in qss, "圆角必须取直径一半，否则是圆角方块"
-    assert "border: 1px solid" in qss, "没有描边，圆角不可感知（圆形附着样式缺失）"
-    assert "background:" in qss, "透明底时圆角同样看不出（必须有实心底）"
+    assert "border: none" in qss, "按招 1 不描边，形状由实心圆盘承担"
+    assert "background:" in qss and "transparent" not in qss.split("hover")[0], \
+        "常态必须有实心底盘，透明底时圆角看不出"
     assert "QPushButton:hover" in qss, "圆钮需要 hover 反馈"
 
 

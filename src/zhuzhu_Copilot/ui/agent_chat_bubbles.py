@@ -73,12 +73,12 @@ from zhuzhu_Copilot.ui.tokens import (
     RADIUS_CHIP,
     RADIUS_CMD,
     RADIUS_LG,
-    RADIUS_PILL,
     RADIUS_SM,
     RADIUS_TILE,
     SPACING_XS,
     OUT_FOLD_LINES,
     THINK_FOLD_LINES,
+    pill_radius,
 )
 
 # ---------------------------------------------------------------------------
@@ -643,6 +643,10 @@ def _spreader() -> _IdleSpreader:
     return _SPREADER
 
 
+# 胶囊按钮固定高度（px）：圆角取半高，见 tokens.pill_radius
+PILL_BTN_H = 22
+
+
 class PillButton(QPushButton):
     """胶囊按钮（demo .fold-btn 虚线描边 / .proc-btn 实线描边）。"""
 
@@ -652,6 +656,9 @@ class PillButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAutoDefault(False)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        # 胶囊高度固定：QSS 的 border-radius 必须在半高以内才生效
+        # （超过时 Qt 直接按直角绘制），固定高度才能让半径取到精确半高。
+        self.setFixedHeight(PILL_BTN_H)
         self._dashed = bool(dashed)
         self._apply_style(style)
         if icon is not None:
@@ -670,7 +677,7 @@ class PillButton(QPushButton):
             f"QPushButton {{ background: {_tint(0.14)}; color: {style.accent};"
             f" font-family: {style.font_ui}; font-size: {FONT_SMALL}px; font-weight: {style.w_strong};"
             f" border: none;"
-            f" border-radius: {RADIUS_PILL}px; padding: 5px 16px; }}"
+            f" border-radius: {pill_radius(PILL_BTN_H)}px; padding: 5px 16px; }}"
             f"QPushButton:hover {{ background: {_tint(0.24)}; color: {style.accent}; }}")
 
     def restyle(self, style: ChatStyle):
@@ -1855,6 +1862,10 @@ class _FoldMixin:
             return              # 控件已销毁：随对象一起作废即可
 
 
+# 思考阶段 tag 胶囊固定高度（px）：圆角取半高，见 tokens.pill_radius
+THINK_TAG_H = 19
+
+
 class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
     """思考过程气泡（demo .think-bubble）：卡片底 + 1px 边框 + 非对称圆角
     （左上 6 为「小尾巴」角），头行 = 图标壳 + 「思考过程」+ tag 胶囊（含三点），
@@ -1891,6 +1902,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         hl.addWidget(self._title, 0, Qt.AlignmentFlag.AlignVCenter)
         hl.addStretch(1)
         self._tag = QWidget(head)
+        self._tag.setFixedHeight(THINK_TAG_H)   # 圆角取半高，见 tokens.pill_radius
         self._tag.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._tag_style("")     # 胶囊底随阶段（PLANNING/EXEC）取色
         tl = QHBoxLayout(self._tag)
@@ -2002,7 +2014,7 @@ class ThinkBubble(_FoldMixin, _PinMixin, _EmergeMixin, QFrame):
         self._tag_name = tag or ""      # restyle 时按同一阶段取色（不重建控件）
         self._tag.setStyleSheet(
             f"QWidget {{ background: {self._style.tag_bg_of(tag)};"
-            f" border-radius: {RADIUS_PILL}px; }}")
+            f" border-radius: {pill_radius(THINK_TAG_H)}px; }}")
 
     # ---------- 内容 ----------
     def set_content(self, tag: str, body_html: str, sid=None, defer: bool = False):
