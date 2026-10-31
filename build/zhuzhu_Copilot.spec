@@ -57,8 +57,6 @@ _skills_datas = ([(_os.path.join(_assets_seed, 'skills'), 'skills_seed')]
 _plugins_datas = ([(_os.path.join(_assets_seed, 'plugins'), 'plugins_seed')]
                   if _os.path.isdir(_os.path.join(_assets_seed, 'plugins'))
                   else [(_os.path.join(_root, 'src/zhuzhu_Copilot/plugins'), 'plugins')])
-# Copilot 插件**不打包**：它默认必须为空列表，由用户自行导入/生成，
-# 避免把开发机上的插件带进安装包。
 
 a = Analysis(
     [_os.path.join(_root, 'src/main.py')],

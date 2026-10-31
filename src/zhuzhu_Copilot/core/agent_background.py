@@ -1,4 +1,4 @@
-"""后台任务管理器（BackgroundTaskManager）。
+﻿"""后台任务管理器（BackgroundTaskManager）。
 
 为 AgentEngine / 子 Agent / 命令执行提供统一的后台并发执行基础设施：
 - BackgroundTask：单个后台任务的数据与状态（运行中/完成/失败/已取消）

@@ -1,4 +1,4 @@
-"""Agent 通信层：Agent 间消息总线 + 上下文账本（ContextLedger）。
+﻿"""Agent 通信层：Agent 间消息总线 + 上下文账本（ContextLedger）。
 
 工作团模式下 Agent 之间有两类非文件沟通：
 - 消息总线（mailbox）：chat_with 投递的消息。目标空闲时下一轮拉取；目标繁忙时

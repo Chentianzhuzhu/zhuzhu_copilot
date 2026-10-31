@@ -1,4 +1,4 @@
-"""Copilot 源码覆盖层导入钩子（独立模块，禁止依赖 zhuzhu_Copilot 包）。
+﻿"""Copilot 源码覆盖层导入钩子（独立模块，禁止依赖 zhuzhu_Copilot 包）。
 
 背景：应用以 PyInstaller 打包分发（安装目录里没有源码），「源码级 Copilot 插件」
 不能把代码插进安装目录。改为写入用户数据目录下的**源码覆盖层**：
