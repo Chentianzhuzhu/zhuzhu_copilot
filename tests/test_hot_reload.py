@@ -122,6 +122,19 @@ STATE = {"k": 0}
     assert mod.STATE["k"] == 99, "reload 不得清空运行中的登记表"
 
 
+def test_agent_tools_runtime_state_registered():
+    """启用源码级插件会重执行 agent_tools：运行态必须登记保留。
+
+    漏掉 WORKDIR 时，插件一启用工作目录就被重置为空，工作树与 Git 面板会
+    按空目录刷新（用户看到的「文件树和 Git 面板被清空」）。
+    """
+    keys = set(hot_reload._STATE_PRESERVE.get(
+        "zhuzhu_Copilot.core.agent_tools", ()))
+    required = {"WORKDIR", "_running_cmds", "_cmd_seq", "_FILE_OBSERVERS",
+                "_CUSTOM_REGISTRY"}
+    assert required <= keys
+
+
 def test_reload_failure_reports_error(lab):
     """语法坏掉的模块：报错而不是崩，且旧实现尽量保住。"""
     name = _write(lab, "broken.py", '''

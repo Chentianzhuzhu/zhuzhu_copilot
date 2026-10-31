@@ -67,6 +67,25 @@ _STATE_PRESERVE = {
     "zhuzhu_Copilot.ui.main_window": ("_COPILOT_EXT_STATE",),
     # _THEME_VERSION 必须保留：清零会让旧渲染缓存键与新主题版本撞车 → 旧配色残留
     "zhuzhu_Copilot.ui.agent_panel": ("_THEME_VERSION", "_LAST_PALETTE"),
+    # agent_tools 是插件最常改的模块（几乎都要往 TOOLS 插工具），启用源码级插件
+    # 会重执行它。这些是**运行期状态**，源码里重新声明 {} / "" 会把它们清空：
+    #  · WORKDIR —— 清空后工作树与 Git 面板会立刻按空工作目录刷新（表现为「清空」）；
+    #  · _FILE_OBSERVERS —— AI 改文件后的差异预览会彻底失效；
+    #  · _running_cmds / _cmd_seq —— 后台命令轮询与编号丢失；
+    #  · _CUSTOM_REGISTRY —— 工作流自定义工具被取消登记；
+    #  · TTS / 下载 / 缓存 / 编辑事务等进程内状态同理。
+    # 统一按「保留旧对象」处理（不是灌入新内容）：这里的旧内容本身就是运行成果。
+    "zhuzhu_Copilot.core.agent_tools": (
+        "WORKDIR",
+        "_CUSTOM_REGISTRY", "_CUSTOM_SOURCE", "_CUSTOM_LOCK",
+        "_LAZY_IMPORTS", "_BUILTIN_SCHEMAS", "_FILE_OBSERVERS",
+        "_running_cmds", "_cmds_lock", "_cmd_seq",
+        "_TODO_CACHE", "_TODO_WRITES", "_TODO_LOCK",
+        "_SEARCH_CACHE", "_active_download", "_active_dl_lock",
+        "_NET_TARGET_POLICY", "_EDIT_DELTA", "_EDIT_DELTA_LOCK",
+        "_TTS_PLAYER_LOCK", "_TTS_BUF", "_TTS_STOP_EVT", "_TTS_DONE_EVT",
+        "_TTS_FLUSH_EVT", "_TTS_SEG_START", "_TTS_PLAYER_THREAD",
+    ),
 }
 
 #: 重执行会重建的**容器**全局量：保留旧对象、把新内容灌进去（既有引用继续有效）。
