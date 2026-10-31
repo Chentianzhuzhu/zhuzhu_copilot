@@ -105,8 +105,17 @@ def test_session_combo_arrow_is_actually_painted(panel):
 
     判据不能再用「深色像素」：背景已改为浅色面板底，深色背景消失后亮度判会测不到箭头。
     改为「右侧下拉区相对左侧参照区有明显差异像素」。
+
+    会话下拉已移进左侧常驻抽屉、本体现在是隐藏的数据源：隐藏控件抓图拿不到真实绘制，
+    故先临时 show 再抓图，判完立刻隐藏（不影响后续用例的布局断言）。
     """
-    img = panel.session_combo.grab().toImage()
+    combo = panel.session_combo
+    combo.show()
+    _pump(50)
+    try:
+        img = combo.grab().toImage()
+    finally:
+        combo.hide()
     x0, x1 = max(1, img.width() - 18), max(2, img.width() - 6)
     ys = list(range(3, img.height() - 3))
     ref_x = max(2, x0 - 30)

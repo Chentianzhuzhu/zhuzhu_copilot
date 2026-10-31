@@ -1371,6 +1371,14 @@ _NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("会员与积分", "membership"),
 )
 
+
+def _nav_index(key: str) -> int:
+    """按 key 查设置页导航下标（-1 = 不存在）。入口跳转用它，避免把下标写死。"""
+    for i, (_name, k) in enumerate(_NAV_ITEMS):
+        if k == key:
+            return i
+    return -1
+
 # 插件类型 -> 列表里的中文标注。值是 i18n key，展示时统一过 _uim，
 # 故与 _NAV_ITEMS 一样必须保持「中文原文」，不能在模块导入期求值。
 _PLUGIN_KIND_LABEL = {
@@ -1776,6 +1784,11 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
         p.drawRoundedRect(QRectF(s * 0.16, s * 0.20, s * 0.68, s * 0.60),
                           s * 0.10, s * 0.10)
         p.drawLine(QPointF(s * 0.60, s * 0.20), QPointF(s * 0.60, s * 0.80))
+    elif kind == "more":      # 更多（三个实心圆点，右侧胶囊栏底部）
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(color))
+        for _dx in (0.30, 0.50, 0.70):
+            p.drawEllipse(QPointF(s * _dx, s * 0.50), s * 0.055, s * 0.055)
     p.end()
     return QIcon(pm)
 
@@ -1787,7 +1800,7 @@ _LINE_ICON_KINDS = frozenset({
     "retry", "vol", "music", "full", "trash", "new", "plus", "ok", "no",
     "drive", "list", "doc", "bash", "net", "folder", "apps", "user", "server",
     "puzzle", "mic", "video", "audio", "chart", "magic", "clock", "think",
-    "tool", "term", "chev", "preview",
+    "tool", "term", "chev", "preview", "more",
 })
 
 
@@ -18808,6 +18821,315 @@ class _SessionStatusDelegate(QStyledItemDelegate):
         return QSize(sz.width() + 44, sz.height())
 
 
+# ---------- 常驻侧栏：左侧历史对话抽屉 / 右侧功能胶囊栏 ----------
+# 大厂客户端同款结构：对话历史固定可见（不再收在顶栏下拉里），右侧是一条
+# 细长圆角「岛」，只放竖排线条图标，点击直达对应功能页。
+_DRAWER_W = 244          # 抽屉固定宽（对话名 + 相对时间两行足够展开）
+_DRAWER_ROW_H = 54       # 会话行高（名称行 + 时间行）
+_DRAWER_SEARCH_H = 30    # 搜索框高（与顶栏图标按钮同档）
+_RAIL_W = 56             # 胶囊宽；圆角取半宽（pill_radius），超过半宽 Qt 会画成直角
+_RAIL_BTN_D = 40         # 胶囊内图标按钮 40x40（左右各留 8）
+_RAIL_DIV_W = 24         # 组间分隔线长度
+
+
+def _rel_time(ts: float) -> str:
+    """会话更新时间 → 相对时间文案（大厂侧栏同款：刚刚 / N 分钟前 / 日期）。"""
+    try:
+        delta = max(0.0, time.time() - float(ts or 0))
+    except Exception:
+        return ""
+    if delta < 60:
+        return _ui("刚刚")
+    if delta < 3600:
+        return _uif("{a0} 分钟前", a0=int(delta // 60))
+    if delta < 86400:
+        return _uif("{a0} 小时前", a0=int(delta // 3600))
+    if delta < 7 * 86400:
+        return _uif("{a0} 天前", a0=int(delta // 86400))
+    try:
+        return datetime.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+class _SessionRowDelegate(QStyledItemDelegate):
+    """抽屉会话行：两行排版（名称 13px + 相对时间 11px）+ 右侧运行/待确认状态点。
+
+    与顶栏下拉的自绘 delegate 同源（面板 `_sess` 状态），但行更高、信息分两行，
+    更贴近大厂客户端的常驻历史栏。
+    """
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+
+    def sizeHint(self, option, index):
+        return QSize(super().sizeHint(option, index).width(), _DRAWER_ROW_H)
+
+    def paint(self, painter, option, index):
+        sid = index.data(Qt.ItemDataRole.UserRole)
+        st = self.panel._sess.get(sid) if isinstance(sid, str) else None
+        running = bool(st and st.get("task_active"))
+        pending = bool(st and (st.get("pending_confirm") or st.get("pending_ask")))
+        name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        updated = index.data(Qt.ItemDataRole.UserRole + 1) or 0
+        painter.save()
+        rect = QRect(option.rect)
+        bg = rect.adjusted(2, 2, -2, -2)
+        painter.setPen(Qt.PenStyle.NoPen)
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.setBrush(QColor(_mix_hex(ACCENT, PANEL, 0.12)))
+            painter.drawRoundedRect(bg, RADIUS_SM, RADIUS_SM)
+        elif option.state & QStyle.StateFlag.State_MouseOver:
+            painter.setBrush(QColor(HOVER))
+            painter.drawRoundedRect(bg, RADIUS_SM, RADIUS_SM)
+        # 状态点贴右缘：运行中深蓝、待确认琥珀（不放转圈动画，避免每帧重绘整栏）
+        if running or pending:
+            painter.setBrush(QColor(ACCENT_HOVER if running else WARN))
+            painter.drawEllipse(QRect(rect.right() - 16, rect.center().y() - 3, 6, 6))
+        left = rect.left() + 10
+        right = rect.right() - (18 if (running or pending) else 8)
+        avail = max(0, right - left)
+        f = QFont(option.font)
+        f.setPixelSize(FONT_BODY)
+        f.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(f)
+        painter.setPen(QColor(TEXT))
+        fm = QFontMetrics(f)
+        painter.drawText(QRect(left, rect.top() + 8, avail, FONT_BODY + 4),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         fm.elidedText(name, Qt.TextElideMode.ElideRight, avail))
+        stamp = _rel_time(float(updated or 0))
+        if stamp:
+            f2 = QFont(option.font)
+            f2.setPixelSize(FONT_CAPTION)
+            painter.setFont(f2)
+            painter.setPen(QColor(TEXT_DIM))
+            painter.drawText(QRect(left, rect.top() + 26, avail, FONT_CAPTION + 4),
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             stamp)
+        painter.restore()
+
+
+class _SessionDrawer(QFrame):
+    """左侧常驻历史对话抽屉：新建 / 搜索 / 切换 / 右键删除。
+
+    复用面板既有的会话接口（`_load_session_list` / `_switch_to` / `_new_session` /
+    `_remove_session`），自身只做展示与筛选，不持有业务状态。
+    """
+
+    session_activated = pyqtSignal(str)     # 点击会话 → 切到该对话
+    new_requested = pyqtSignal()            # 点击「新建对话」
+    delete_requested = pyqtSignal(str, str)  # 右键删除（sid, 展示名）
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self.setObjectName("sessionDrawer")
+        self.setFixedWidth(_DRAWER_W)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 8)
+        lay.setSpacing(8)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.title = QLabel(_ui("对话"))
+        self.title.setStyleSheet(
+            f"color: {TEXT}; font-size: {FONT_BODY}px; font-weight: {_W_STRONG};"
+            "background: transparent;")
+        head.addWidget(self.title)
+        head.addStretch(1)
+        self.new_btn = QPushButton(_line_icon("new", 16, TEXT_DIM), "")
+        self.new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.new_btn.setAutoDefault(False)
+        self.new_btn.setFixedSize(28, 28)
+        self.new_btn.setIconSize(QSize(16, 16))
+        self.new_btn.setToolTip(_ui("新对话"))
+        self.new_btn.setStyleSheet(_BTN_ICON)
+        self.new_btn.clicked.connect(self.new_requested)
+        head.addWidget(self.new_btn)
+        lay.addLayout(head)
+
+        self.search = QLineEdit()
+        self.search.setObjectName("sessionSearch")
+        self.search.setFixedHeight(_DRAWER_SEARCH_H)
+        self.search.setPlaceholderText(_ui("搜索对话"))
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._apply_filter)
+        lay.addWidget(self.search)
+
+        self.list = QListWidget()
+        self.list.setObjectName("sessionList")
+        self.list.setFrameShape(QFrame.Shape.NoFrame)
+        self.list.setSpacing(2)
+        self.list.setItemDelegate(_SessionRowDelegate(panel, self.list))
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._on_menu)
+        self.list.itemClicked.connect(self._on_clicked)
+        lay.addWidget(self.list, 1)
+
+        self.apply_theme()
+
+    # ---- 展示 ----
+    def refresh(self, sessions: list, current_sid: str) -> None:
+        """全量重建列表（会话数在几十级，重建比增量比对更不易出错）。"""
+        self.list.blockSignals(True)
+        self.list.clear()
+        for s in sorted(sessions or [], key=lambda x: x.get("updated", 0), reverse=True):
+            sid = s.get("id")
+            if not sid:
+                continue
+            it = QListWidgetItem(_uim(s.get("name") or "新对话"))
+            it.setData(Qt.ItemDataRole.UserRole, sid)
+            it.setData(Qt.ItemDataRole.UserRole + 1, float(s.get("updated") or 0))
+            self.list.addItem(it)
+            if sid == current_sid:
+                self.list.setCurrentItem(it)
+        self.list.blockSignals(False)
+        self._apply_filter(self.search.text())
+
+    def refresh_status(self) -> None:
+        """运行/待确认状态变化时重绘行（转圈刷新点调用）。"""
+        self.list.viewport().update()
+
+    def _apply_filter(self, text: str) -> None:
+        """只隐藏不匹配行，搜索可逆（清空立即恢复全部）。"""
+        needle = (text or "").strip().lower()
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            it.setHidden(bool(needle) and needle not in it.text().lower())
+
+    def _on_clicked(self, item) -> None:
+        sid = item.data(Qt.ItemDataRole.UserRole)
+        if sid:
+            self.session_activated.emit(str(sid))
+
+    def _on_menu(self, pos) -> None:
+        item = self.list.itemAt(pos)
+        if item is None:
+            return
+        sid = item.data(Qt.ItemDataRole.UserRole)
+        if not sid:
+            return
+        menu = QMenu(self)
+        act = menu.addAction(_uif("删除对话「{a0}」", a0=item.text()))
+        if menu.exec(self.list.viewport().mapToGlobal(pos)) == act:
+            self.delete_requested.emit(str(sid), item.text())
+
+    def apply_theme(self) -> None:
+        """按当前色板重设皮肤（换肤快路径调用，幂等）。"""
+        self.setStyleSheet(
+            f"QFrame#sessionDrawer {{ background: {_panel_surface('PANEL')};"
+            f" border: none; border-radius: {RADIUS_LG}px; }}")
+        self.title.setStyleSheet(
+            f"color: {TEXT}; font-size: {FONT_BODY}px; font-weight: {_W_STRONG};"
+            "background: transparent;")
+        self.new_btn.setStyleSheet(_BTN_ICON)
+        field = _mix_hex(BORDER, PANEL, 0.18)
+        self.search.setStyleSheet(
+            f"QLineEdit#sessionSearch {{ background: {field}; color: {TEXT};"
+            f" border: none; border-radius: {RADIUS_SM}px;"
+            f" padding: 0 {SPACING_SM}px; font-size: {FONT_SMALL}px;"
+            f" selection-background-color: {ACCENT}; selection-color: #FFFFFF; }}")
+        self.list.setStyleSheet(
+            "QListWidget#sessionList { background: transparent; border: none;"
+            " outline: none; }" + _scrollbar_css(6, 3, both=False))
+
+
+# 胶囊栏条目（数据驱动）：kind / 线条图标 / tooltip。`__div__` 为组间分隔线。
+_RAIL_ITEMS = (
+    ("tasks", "list", "任务与后台"),
+    ("worktree", "folder", "工作树与文件"),
+    ("stats", "chart", "上下文统计"),
+    ("__div__", "", ""),
+    ("preview", "preview", "预览面板"),
+    ("mcp", "server", "MCP / 能力状态"),
+    ("copilot", "apps", "zhuzhu Copilot"),
+    ("__div__", "", ""),
+    ("more", "more", "更多功能"),
+)
+
+
+class _FunctionRail(QFrame):
+    """右侧常驻功能胶囊栏：竖排线条图标 + 组间细分隔线 + 底部「更多」。
+
+    只发 `action_triggered(kind)`，具体动作由面板分派（栏本身不依赖业务方法，
+    新增入口只需往 `_RAIL_ITEMS` 加一行 + 面板映射补一项）。
+    """
+
+    action_triggered = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("functionRail")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedWidth(_RAIL_W)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 10, 8, 10)
+        lay.setSpacing(4)
+        self._buttons = {}
+        self._divs = []
+        for kind, icon_kind, tip in _RAIL_ITEMS:
+            if kind == "__div__":
+                div = QFrame()
+                div.setFixedSize(_RAIL_DIV_W, 1)
+                div.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+                lay.addWidget(div, 0, Qt.AlignmentFlag.AlignHCenter)
+                self._divs.append(div)
+                continue
+            btn = QPushButton(_line_icon(icon_kind, 20, TEXT_DIM), "")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setAutoDefault(False)
+            btn.setFixedSize(_RAIL_BTN_D, _RAIL_BTN_D)
+            btn.setIconSize(QSize(20, 20))
+            btn.setToolTip(_ui(tip))
+            btn.clicked.connect(lambda _=False, k=kind: self.action_triggered.emit(k))
+            lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
+            self._buttons[kind] = btn
+        self.apply_theme()
+
+    @classmethod
+    def column(cls, rail: "_FunctionRail") -> QWidget:
+        """把胶囊装进一条固定宽度的透明列，上下留白使其垂直居中（不拉满窗口）。"""
+        col = QWidget()
+        col.setObjectName("functionRailCol")
+        col.setFixedWidth(_RAIL_W)
+        lay = QVBoxLayout(col)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addStretch(1)
+        lay.addWidget(rail, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addStretch(1)
+        return col
+
+    def anchor_pos(self, kind: str) -> QPoint:
+        """弹层锚点：按钮左下角的全局坐标（「更多」菜单据此弹出）。"""
+        btn = self._buttons.get(kind)
+        if btn is None:
+            return self.mapToGlobal(QPoint(self.width(), self.height()))
+        return btn.mapToGlobal(btn.rect().bottomLeft())
+
+    def apply_theme(self) -> None:
+        self.setStyleSheet(
+            f"QFrame#functionRail {{ background: {_panel_surface('PANEL')};"
+            f" border: none; border-radius: {pill_radius(_RAIL_W)}px; }}")
+        fill = _mix_hex(BORDER, PANEL, 0.18)
+        fill_press = _mix_hex(BORDER, PANEL, 0.30)
+        qss = (f"QPushButton {{ background: transparent; border: none;"
+               f" border-radius: {RADIUS_SM}px; }}"
+               f"QPushButton:hover {{ background: {fill_press}; }}"
+               f"QPushButton:pressed {{ background: {fill}; }}")
+        for btn in self._buttons.values():
+            btn.setStyleSheet(qss)
+        div_qss = (f"QFrame {{ background: {_mix_hex(BORDER, PANEL, 0.35)};"
+                   " border: none; }")
+        for div in self._divs:
+            div.setStyleSheet(div_qss)
+
+
 class _CuteBubble(QLabel):
     """小熊糖果风锐评气泡（趣味联动特例，不受全局简约/禁 emoji 约束）。
     QLabel 的 QSS 背景在 WA_TranslucentBackground 下不会绘制，故全部用 paintEvent 手动绘制：
@@ -20318,17 +20640,10 @@ class AgentPanel(QDialog):
         # 下拉列表右键菜单：删除对话
         self.session_combo.view().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.session_combo.view().customContextMenuRequested.connect(self._on_session_context_menu)
-        top.addWidget(self.session_combo)
-
-        self.new_btn = QPushButton(_line_icon("new", color=TEXT_DIM), "")
-        self.new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.new_btn.setAutoDefault(False)
-        self.new_btn.setFixedSize(34, 34)
-        self.new_btn.setIconSize(QSize(18, 18))
-        self.new_btn.setToolTip(_ui("新对话"))
-        self.new_btn.setStyleSheet(_BTN_ICON)
-        self.new_btn.clicked.connect(self._new_session)
-        top.addWidget(self.new_btn)
+        # 会话切换已由左侧常驻抽屉承担：组合框保留为**隐形数据源**（20+ 处切换/状态
+        # 逻辑与既有测试都以它为入口），但不再进入顶栏布局。
+        self.session_combo.setParent(self)
+        self.session_combo.hide()
 
         self.settings_btn = QPushButton(_svg_icon(_GEAR_SVG, 20, TEXT_DIM), "")
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -20715,13 +21030,25 @@ class AgentPanel(QDialog):
         right.addWidget(self.composer)
         QTimer.singleShot(0, self._fit_composer)   # 布局落位后贴合内容高度
         body.addLayout(right, 1)
-        # 主内容外套 dock 行：左 dock 侧栏 | 主内容 | 右 dock 侧栏（隐藏时宽度 0 不占空间）
+        # 常驻侧栏：左侧历史对话抽屉 + 右侧功能胶囊栏（大厂客户端同款骨架）。
+        # 抽屉承载会话切换/新建/搜索（顶栏下拉已移除）；胶囊只放入口图标。
+        self.session_drawer = _SessionDrawer(self, self)
+        self.session_drawer.session_activated.connect(self._on_drawer_session)
+        self.session_drawer.new_requested.connect(self._new_session)
+        self.session_drawer.delete_requested.connect(self._remove_session)
+        self._function_rail = _FunctionRail(self)
+        self._function_rail.action_triggered.connect(self._on_rail_action)
+        self._rail_col = _FunctionRail.column(self._function_rail)
+        # 主内容外套 dock 行：抽屉 | 左 dock 侧栏 | 主内容 | 右 dock 侧栏 | 胶囊栏
+        # （dock 侧栏隐藏时宽度 0 不占空间）
         self._dock_row = QHBoxLayout()
         self._dock_row.setContentsMargins(0, 0, 0, 0)
         self._dock_row.setSpacing(6)
+        self._dock_row.addWidget(self.session_drawer, 0)
         self._dock_row.addWidget(self._dock_left, 0)
         self._dock_row.addLayout(body, 1)
         self._dock_row.addWidget(self._dock_right, 0)
+        self._dock_row.addWidget(self._rail_col, 0)
         root.addLayout(self._dock_row, 1)   # 底部区域占满窗口：聊天区弹性，输入行贴底
         add_brand_footer(self)
         # 恢复子面板与主面板的关系（贴附/融入，随设置即时应用）
@@ -21951,11 +22278,77 @@ class AgentPanel(QDialog):
             self.session_combo.setCurrentIndex(idx)
         self.session_combo.blockSignals(False)
         self._fit_session_combo_width()   # 会话名变化后收起态宽度随之自适应
+        # 用 __dict__ 取：轻量测试用 AgentPanel.__new__ 构造（基类未初始化），
+        # getattr 会落到 Qt 属性机制并抛 RuntimeError。
+        drawer = self.__dict__.get("session_drawer")
+        if drawer is not None:
+            drawer.refresh(lst, self._session_id)   # 复用本次读取，不重复读盘
 
     def _on_session_selected(self, idx):
         sid = self.session_combo.itemData(idx)
         if sid and sid != self._session_id:
             self._switch_to(sid)
+
+    def _on_drawer_session(self, sid: str):
+        """左侧抽屉点击会话：与下拉同一入口（避免重复切到当前会话）。"""
+        if sid and sid != self._session_id:
+            self._switch_to(sid)
+
+    # ---------- 右侧功能胶囊栏：点击直达对应功能页 ----------
+    def _rail_handlers(self) -> dict:
+        """胶囊 kind → 动作（数据映射，新增入口只需在此补一行）。"""
+        return {
+            "tasks": lambda: self._reveal_feature(
+                "agent_show_todos", ("_sync_todos_win",), "todos_win"),
+            "worktree": lambda: self._reveal_feature(
+                "agent_show_worktree", ("_sync_wt_win", "_sync_git_win"), "wt_win"),
+            "stats": self.toggle_token_stats,
+            "preview": self._toggle_preview,
+            "mcp": lambda: self._open_settings(page_index=_nav_index("mcp")),
+            "copilot": self.toggle_copilot_panel,
+            "more": self._open_rail_more_menu,
+        }
+
+    def _on_rail_action(self, kind: str):
+        fn = self._rail_handlers().get(kind)
+        if fn is not None:
+            fn()
+
+    def _reveal_feature(self, setting_key: str, syncs: tuple, win_name: str):
+        """侧栏面板「跳转」：打开对应开关 → 同步布局 → 显示并置前。
+
+        开关写入 QSettings 与设置页同一开关同源，避免「点开后又被同步逻辑隐藏」。
+        """
+        try:
+            app_identity.qsettings().setValue(setting_key, "1")
+            for name in syncs:
+                fn = getattr(self, name, None)
+                if callable(fn):
+                    fn()
+            w = getattr(self, win_name, None)
+            if w is not None:
+                w.show()
+                w.raise_()
+        except Exception:
+            pass
+
+    def _open_rail_more_menu(self):
+        """胶囊底部「更多」：直接跳设置页的对应分页（不新开窗口）。"""
+        menu = QMenu(self)
+        entries = []
+        for key, label in (("general", "通用与记忆"), ("skills", "技能"),
+                           ("workflow", "工作流"), ("wallpaper", "背景"),
+                           ("membership", "会员与积分")):
+            idx = _nav_index(key)
+            if idx < 0:
+                continue
+            act = menu.addAction(_ui(label))
+            entries.append((act, idx))
+        chosen = menu.exec(self._function_rail.anchor_pos("more"))
+        for act, idx in entries:
+            if chosen == act:
+                self._open_settings(page_index=idx)
+                return
 
     def _switch_to(self, sid: str):
         """切换会话（多对话并发）：当前会话后台任务不中断；目标会话若已有内存态
@@ -24607,6 +25000,20 @@ class AgentPanel(QDialog):
             pop, self.__dict__.get("token_btn"), self)
         return pop
 
+    def _rail_reserved_width(self) -> int:
+        """右侧常驻胶囊栏占用的宽度（浮层/弹窗让位用）。
+
+        胶囊是常驻固定列：统计浮层若按窗口右缘右对齐会盖住胶囊（图标还会压在卡片
+        上方）。这里给出「胶囊宽 + 间距」的预留量，浮层按此收缩。
+        """
+        rail = self.__dict__.get("_rail_col")
+        try:
+            if rail is not None and rail.isVisible():
+                return _RAIL_W + SPACING_SM
+        except RuntimeError:
+            pass
+        return 0
+
     def _token_pop_size(self, pop) -> tuple:
         """浮层尺寸（宽, 高）：宽度 = 首选宽与"面板可用宽"取小（窄面板下不越界）；
         高度取布局 heightForWidth —— 卡片里有多个自动换行标签（阈值图例、缓存明细、
@@ -24614,7 +25021,7 @@ class AgentPanel(QDialog):
         （表现为文字被遮挡/只剩半行）。"""
         margin = SPACING_SM
         try:
-            avail = max(240, int(self.width()) - 2 * margin)
+            avail = max(240, int(self.width()) - 2 * margin - self._rail_reserved_width())
         except Exception:
             avail = int(pop.PREFERRED_WIDTH)
         w = max(240, min(int(pop.PREFERRED_WIDTH), avail))
@@ -24643,7 +25050,8 @@ class AgentPanel(QDialog):
             below = anchor.y() + btn.height() + gap
         else:   # 无按钮锚点（由 API 直接唤起）：左上角落位
             anchor, x, below = QPoint(margin, margin), margin, margin
-        x = max(margin, min(x, max(margin, self.width() - w - margin)))
+        right_limit = self.width() - margin - self._rail_reserved_width()
+        x = max(margin, min(x, max(margin, right_limit - w)))
         y = below
         if y + h > self.height() - margin:
             y = max(margin, anchor.y() - h - gap)   # 下方放不下 → 上翻
@@ -25073,6 +25481,11 @@ class AgentPanel(QDialog):
         self._spin_angle = (self._spin_angle + 30) % 360
         try:
             self.session_combo.view().viewport().update()
+        except Exception:
+            pass
+        # 抽屉里的会话行也要跟着闪状态点（隐藏的下拉与抽屉共用同一份 _sess 状态）
+        try:
+            self.__dict__["session_drawer"].refresh_status()
         except Exception:
             pass
 
@@ -26567,8 +26980,16 @@ class AgentPanel(QDialog):
         _set(getattr(self, "model_combo", None), _HOME_COMBO)
         _set(getattr(self, "token_label", None),
              f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
-        _set(getattr(self, "new_btn", None), _BTN_ICON)
         _set(getattr(self, "settings_btn", None), _BTN_ICON)
+        # 常驻侧栏（对话抽屉 / 功能胶囊）：底色与分隔线由色板派生，换肤必须就地重刷
+        for w in (self.__dict__.get("session_drawer"),
+                  self.__dict__.get("_function_rail")):
+            _fn = getattr(w, "apply_theme", None)
+            if callable(_fn):
+                try:
+                    _fn()
+                except RuntimeError:
+                    pass
         _set(getattr(self, "preview_btn", None), _BTN_GHOST)
         _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
         _set(getattr(self, "token_btn", None), _BTN_GHOST)
@@ -28219,9 +28640,10 @@ class AgentPanel(QDialog):
         except Exception:
             pass
 
-    def _open_settings(self, *_args, highlight_sid: str = None):
+    def _open_settings(self, *_args, highlight_sid: str = None, page_index: int = None):
         """打开 AI 设置；保存后应用（刷新纯文本/记忆状态，空闲时重建引擎）。
-        highlight_sid：打开后定位到「对话流」页该会话行并闪烁边框（工作目录提示条跳转用）"""
+        highlight_sid：打开后定位到「对话流」页该会话行并闪烁边框（工作目录提示条跳转用）
+        page_index：打开后直接切到该导航分页（右侧胶囊与「更多」菜单跳转用）"""
         dlg = _AgentSettingsDialog(parent=self)
         # 首次打开挤压修复：exec 前布局未激活，窗口会以最小尺寸显示；显示后补一次
         # adjustSize 让对话框按真实内容恢复常规大小（内容更大则随内容放大，
@@ -28235,6 +28657,15 @@ class AgentPanel(QDialog):
                 pass
             _center_dialog_on_screen(dlg)
         QTimer.singleShot(0, _normalize_dialog)
+        if page_index is not None:
+            # 与窗口归一化同帧延迟：exec 前布局未激活，立即 setCurrentRow 会被重置回首页
+            def _go_page():
+                try:
+                    if 0 <= int(page_index) < dlg.nav.count():
+                        dlg.nav.setCurrentRow(int(page_index))
+                except Exception:
+                    pass
+            QTimer.singleShot(0, _go_page)
         if highlight_sid:
             # exec() 阻塞：对话框显示且构建完成后跳到对应行（延迟一帧+窗口就绪）
             def _focus():

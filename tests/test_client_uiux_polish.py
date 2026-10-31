@@ -197,3 +197,107 @@ def test_light_palette_matches_big_company_baseline():
     assert st.LIGHT_PALETTE["primary"] == "#2563EB"
     assert ap._THEMES["light"]["ACCENT"] == "#2563EB"
     assert ap._THEMES["light"]["FIELD"] == st.LIGHT_PALETTE["field"]
+
+
+# ---------- 7. 常驻侧栏：左侧历史对话抽屉 ----------
+
+def _drawer(panel):
+    return panel.session_drawer
+
+
+def test_session_drawer_is_persistent_left_column(panel):
+    """对话历史必须是左侧常驻抽屉（顶栏下拉已移除），宽度固定不随窗口收缩。"""
+    from PyQt6.QtWidgets import QListWidget, QLineEdit
+    d = _drawer(panel)
+    assert d.isVisible(), "历史对话抽屉必须常驻可见"
+    assert d.parent() is panel
+    assert panel._dock_row.indexOf(d) == 0, "抽屉必须是主内容行最左侧一列"
+    assert d.width() == ap._DRAWER_W, f"抽屉宽度应固定为 {ap._DRAWER_W}，实得 {d.width()}"
+    assert d.findChild(QListWidget, "sessionList") is not None, "缺少会话列表"
+    assert d.findChild(QLineEdit, "sessionSearch") is not None, "缺少会话搜索框"
+    assert d.new_btn.isVisible(), "抽屉必须自带新建对话入口"
+
+
+def test_session_drawer_matches_session_list(panel):
+    """抽屉条目与隐藏的会话组合框同源：数量一致，且当前会话处于选中态。"""
+    p = panel
+    lst = p._load_session_list()
+    if len(lst) < 2:
+        p._create_session()
+        p._refresh_session_combo()
+        lst = p._load_session_list()
+    d = _drawer(p)
+    assert d.list.count() == p.session_combo.count(), "抽屉与组合框会话数量不一致"
+    cur = d.list.currentItem()
+    assert cur is not None, "当前会话未在抽屉中选中"
+    from PyQt6.QtCore import Qt
+    assert cur.data(Qt.ItemDataRole.UserRole) == p._session_id
+
+
+def test_session_drawer_switches_session(panel):
+    """点击抽屉条目 → 走与下拉相同的切换入口。"""
+    p = panel
+    d = _drawer(p)
+    other = None
+    from PyQt6.QtCore import Qt
+    for i in range(d.list.count()):
+        sid = d.list.item(i).data(Qt.ItemDataRole.UserRole)
+        if sid and sid != p._session_id:
+            other = sid
+            break
+    if other is None:                      # 只有一个会话：补一个（不切换）
+        other = p._create_session()["id"]
+        p._refresh_session_combo()
+    switched = []
+    mp = pytest.MonkeyPatch()
+    mp.setattr(p, "_switch_to", lambda sid: switched.append(sid))
+    try:
+        d.session_activated.emit(other)
+    finally:
+        mp.undo()
+    assert switched == [other], "抽屉点击未触发会话切换"
+
+
+# ---------- 8. 常驻侧栏：右侧功能胶囊 ----------
+
+def test_function_rail_is_capsule_with_icon_buttons(panel):
+    """右侧栏必须是细长圆角胶囊：纯图标按钮 + 组间细线 + 底部「更多」。"""
+    rail = panel._function_rail
+    assert rail.isVisible(), "功能胶囊必须常驻可见"
+    assert rail.width() == ap._RAIL_W
+    qss = rail.styleSheet()
+    assert f"border-radius: {ap.pill_radius(ap._RAIL_W)}px" in qss, "胶囊圆角必须取半宽"
+    assert "border: none" in qss, "按招 1 不描边"
+    btns = list(rail._buttons.values())
+    assert len(btns) >= 7, f"胶囊入口过少：{len(btns)}"
+    for b in btns:
+        assert b.text() == "", "胶囊只放图标，不放文字"
+        assert not b.icon().isNull(), "胶囊按钮必须带矢量图标（禁 emoji）"
+        assert b.size().width() == ap._RAIL_BTN_D
+    assert len(rail._divs) >= 2, "至少两组分隔线（大厂胶囊同款分组）"
+    assert "more" in rail._buttons, "底部缺少「更多」入口"
+
+
+def test_function_rail_dispatch(panel):
+    """胶囊按钮直接跳到对应功能页：统计浮层 / MCP 设置分页。"""
+    p = panel
+    calls = []
+    mp = pytest.MonkeyPatch()
+    mp.setattr(p, "toggle_token_stats", lambda: calls.append("stats"))
+    mp.setattr(p, "_open_settings",
+               lambda **kw: calls.append(("settings", kw.get("page_index"))))
+    try:
+        p._function_rail._buttons["stats"].click()
+        p._function_rail._buttons["mcp"].click()
+    finally:
+        mp.undo()
+    assert calls[0] == "stats", "统计入口未接通上下文统计浮层"
+    assert calls[1] == ("settings", ap._nav_index("mcp")), \
+        "MCP 入口未跳到设置页 MCP 分页"
+
+
+def test_session_combo_leaves_top_bar(panel):
+    """会话下拉已移出顶栏：保留为隐形数据源（既有逻辑/测试仍可调用）。"""
+    combo = panel.session_combo
+    assert combo.isHidden(), "会话下拉不应再出现在顶栏"
+    assert combo.parent() is panel, "隐藏组合框仍须挂在面板上（避免成为独立窗口）"
