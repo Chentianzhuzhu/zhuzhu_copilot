@@ -13,6 +13,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
+    testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
 dependencies {
@@ -23,7 +24,7 @@ dependencies {
     api(libs.compose.icons.extended)
     api(libs.compose.ui.tooling.preview)
     api(libs.compose.ui.tooling)
-    implementation(libs.haze)
+    api(libs.haze)
     implementation(libs.androidx.core.ktx)
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)

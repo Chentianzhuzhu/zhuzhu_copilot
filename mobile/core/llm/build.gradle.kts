@@ -13,8 +13,8 @@ java {
 dependencies {
     api(project(":core:common"))
     api(project(":core:model"))
-    implementation(libs.okhttp)
-    implementation(libs.kotlinx.serialization.json)
+    api(libs.okhttp)
+    api(libs.kotlinx.serialization.json)
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.kotlinx.coroutines.test)
