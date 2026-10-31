@@ -13,6 +13,7 @@ Blender 3.5 无界面运行：
 坐标约定：Blender 世界空间（Z 轴朝上），小猫面朝 -Y（渲染侧根变换绕 X 轴 -90°
 后 -Y 朝向相机）。单位：米。高度约 1.35 m。
 """
+import itertools
 import json
 import math
 import os
@@ -32,13 +33,18 @@ RUNTIME_PREFIX = os.environ.get("KITTY_RUNTIME_PREFIX", os.path.join(
 
 FPS = 24
 X, Y, Z = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+#: 开发期跳过 Cycles 成品图/姿态图（只重新烘焙资产时省两分钟；正式出图不要设）
+SKIP_RENDER = str(os.environ.get("KITTY_SKIP_RENDER", "")).strip().lower() \
+    in ("1", "true", "on", "yes")
 
-#: 网格密度档位（精细化后：球体 28×16、四肢 16 边、细节件中等分段）
-SEG_BIG = (28, 16)     # 躯干/脑袋这种大件
-SEG_MID = (20, 12)     # 中件：肚皮/口鼻/大腿/爪子
-SEG_SMALL = (14, 9)    # 小件：眼睛/关节球/铃铛
-LIMB_V = 16            # 四肢圆柱边数
-CONE_V = 12            # 耳朵等锥体边数
+#: 网格密度档位（高精度：球体 40×24、四肢 24 边、细节件中等分段）
+#: 桌宠在屏幕上只有一百多像素，但提高面数后轮廓/关节过渡更顺滑，
+#: 也经得起「放大一点」和拉伸动作的近距离观察。
+SEG_BIG = (40, 24)     # 躯干/脑袋这种大件
+SEG_MID = (28, 18)     # 中件：肚皮/口鼻/大腿/爪子
+SEG_SMALL = (20, 13)   # 小件：眼睛/关节球/铃铛
+LIMB_V = 24            # 四肢圆柱边数
+CONE_V = 20            # 耳朵等锥体边数
 
 
 # --------------------------------------------------------------------------- #
@@ -750,6 +756,95 @@ def sample_action(arm, act, count):
 # --------------------------------------------------------------------------- #
 
 
+def _np_quat_mat(q):
+    """(...,4) 的 (w,x,y,z) 四元数 → (...,3,3) 旋转矩阵（与运行时 rig 同一套公式）。"""
+    q = np.asarray(q, dtype=np.float64)
+    shape = q.shape[:-1]
+    q = q.reshape(-1, 4)
+    q = q / np.maximum(np.linalg.norm(q, axis=-1, keepdims=True), 1e-9)
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    out = np.empty((len(q), 3, 3))
+    out[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    out[:, 0, 1] = 2 * (x * y - z * w)
+    out[:, 0, 2] = 2 * (x * z + y * w)
+    out[:, 1, 0] = 2 * (x * y + z * w)
+    out[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    out[:, 1, 2] = 2 * (y * z - x * w)
+    out[:, 2, 0] = 2 * (x * z - y * w)
+    out[:, 2, 1] = 2 * (y * z + x * w)
+    out[:, 2, 2] = 1 - 2 * (x * x + y * y)
+    return out.reshape(shape + (3, 3))
+
+
+def animated_bounds(arrays, parts_meta, clips=None):
+    """扫描全部动画帧求**真实运动包围盒**（整体 + 逐段），给运行时相机取景用。
+
+    静态绑定包围盒不含挥手/伸懒腰时举高的爪子，相机按静态盒取景会把手臂切掉。
+    这里复用运行时同一套骨骼矩阵 + 刚性部件变换，只对每个部件的 8 个包围盒角点
+    做变换（73 × 346 × 8 ≈ 20 万次），几十毫秒即可，无需逐帧 to_mesh。
+
+    逐段包围盒让运行时按**当前动作**取景：敲键盘时镜头贴近（猫更大），
+    挥手/伸懒腰时再平滑拉远，既不切边也不让待机状态永远缩得很小。
+
+    非刚性部件（有第二路权重）跳过——调用方会把静态包围盒并进结果，宁大勿小。
+    """
+    rest = arrays["rest"].astype(np.float64)
+    inv = np.linalg.inv(rest)
+    nb = len(rest)
+    local = np.empty_like(rest)
+    for i, p in enumerate(arrays["parents"]):
+        local[i] = rest[i] if p < 0 else inv[p] @ rest[i]
+
+    corners = {}
+    for pm in parts_meta:
+        k = pm["key"]
+        weights = arrays[k + "_weights"]
+        if np.any(weights[:, 1:] > 0):
+            continue
+        pos = arrays[k + "_pos"][:, :3].astype(np.float64)
+        lo0, hi0 = pos.min(axis=0), pos.max(axis=0)
+        corners[k] = (np.array(list(itertools.product(*zip(lo0, hi0))), dtype=np.float64),
+                      int(arrays[k + "_joints"][0, 0]))
+    if not corners:
+        return None, None, []
+
+    rot = _np_quat_mat(arrays["basis_rot"])
+    loc = arrays["basis_loc"].astype(np.float64)
+    scl = arrays["basis_scl"].astype(np.float64)
+    frames = rot.shape[0]
+    frame_lo = np.empty((frames, 3))
+    frame_hi = np.empty((frames, 3))
+    for f in range(frames):
+        basis = np.tile(np.eye(4), (nb, 1, 1))
+        basis[:, :3, :3] = rot[f] * scl[f][:, None, :]
+        basis[:, :3, 3] = loc[f]
+        world = np.empty((nb, 4, 4))
+        for i, p in enumerate(arrays["parents"]):
+            world[i] = (local[i] @ basis[i] if p < 0
+                        else world[p] @ local[i] @ basis[i])
+        mats = world @ inv
+        blo = np.full(3, np.inf)
+        bhi = np.full(3, -np.inf)
+        for k, (cs, ji) in corners.items():
+            m = mats[ji]
+            pts = cs @ m[:3, :3].T + m[:3, 3]
+            blo = np.minimum(blo, pts.min(axis=0))
+            bhi = np.maximum(bhi, pts.max(axis=0))
+        frame_lo[f] = blo
+        frame_hi[f] = bhi
+
+    all_lo = frame_lo.min(axis=0)
+    all_hi = frame_hi.max(axis=0)
+    per_clip = []
+    for c in (clips or []):
+        s, n = int(c.get("start") or 0), max(1, int(c.get("count") or 1))
+        seg_lo = frame_lo[s:s + n]
+        seg_hi = frame_hi[s:s + n]
+        per_clip.append((seg_lo.min(axis=0) if len(seg_lo) else all_lo,
+                         seg_hi.max(axis=0) if len(seg_hi) else all_hi))
+    return all_lo, all_hi, per_clip
+
+
 def bake_runtime(arm, made):
     bones = list(arm.data.bones)
     bone_index = {b.name: i for i, b in enumerate(bones)}
@@ -836,6 +931,17 @@ def bake_runtime(arm, made):
 
     pts = np.concatenate(all_pos)
     lo, hi = pts.min(axis=0), pts.max(axis=0)
+    # 运动包围盒：相机取景必须覆盖动画里举高的爪子（静态盒只有绑定姿态）
+    ab_lo, ab_hi, clip_bounds = animated_bounds(arrays, parts_meta, clip_meta)
+    if ab_lo is None:
+        ab_lo, ab_hi = lo.copy(), hi.copy()
+        clip_bounds = [(lo, hi)] * len(clip_meta)
+    else:
+        ab_lo, ab_hi = np.minimum(ab_lo, lo), np.maximum(ab_hi, hi)
+    for c, (cl, ch) in zip(clip_meta, clip_bounds):
+        cl, ch = np.minimum(cl, lo), np.maximum(ch, hi)
+        c["bounds"] = {"min": [round(float(v), 4) for v in cl],
+                       "max": [round(float(v), 4) for v in ch]}
     meta = {
         "source": "kitty_work.blend",
         "fps": FPS,
@@ -844,6 +950,8 @@ def bake_runtime(arm, made):
         "parts": parts_meta,
         "bounds": {"min": [round(float(v), 4) for v in lo],
                    "max": [round(float(v), 4) for v in hi]},
+        "anim_bounds": {"min": [round(float(v), 4) for v in ab_lo],
+                        "max": [round(float(v), 4) for v in ab_hi]},
         "total_verts": int(sum(p["verts"] for p in parts_meta)),
         "total_tris": int(sum(p["tris"] for p in parts_meta)),
     }
@@ -970,7 +1078,8 @@ def main():
     bpy.context.scene.frame_end = max(c for _n, c, _a in made)
     add_light_rig()
     add_check_camera()
-    render_checks(made)
+    if not SKIP_RENDER:
+        render_checks(made)
     meta = bake_runtime(arm, made)
     push_to_nla(arm, made)
     bpy.ops.wm.save_as_mainfile(filepath=OUT_BLEND)
@@ -982,7 +1091,8 @@ def main():
         print("GLB_OK", os.path.getsize(OUT_GLB))
     except Exception as exc:
         print("GLB_EXPORT_FAILED", exc)
-    render_hero(made)
+    if not SKIP_RENDER:
+        render_hero(made)
     print("KITTY_BUILD_OK")
     print(json.dumps({k: meta[k] for k in ("total_verts", "total_tris",
                                            "bounds", "fps")}, ensure_ascii=False))

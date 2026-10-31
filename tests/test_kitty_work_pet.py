@@ -12,6 +12,7 @@
 """
 import importlib.util
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -20,13 +21,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-pytest.importorskip("numpy")
+np = pytest.importorskip("numpy")
 
 PLUGIN_DIR = Path(os.environ.get("KITTY_WORK_PLUGIN")
                   or Path.home() / ".zhuzhu_Copilot" / "copilot_plugins"
                   / "kitty-work-pet")
 ASSET_PREFIX = PLUGIN_DIR / "assets" / "kitty_work"
 RIG_FILE = PLUGIN_DIR / "src" / "rig.py"
+VIEW_FILE = PLUGIN_DIR / "src" / "view.py"
 PET_FILE = PLUGIN_DIR / "src" / "pet.py"
 
 CLIPS = {"typing", "idle", "wave", "excited", "sleep", "stretch"}
@@ -41,6 +43,20 @@ def _load_module(name: str, path: Path):
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load_pkg_module(pkg_name: str, base: Path, filename: str):
+    """按插件包的相对导入规则加载（view.py 依赖 .rig 的相对导入）。"""
+    import types
+    pkg = sys.modules.get(pkg_name)
+    if pkg is None:
+        pkg = types.ModuleType(pkg_name)
+        pkg.__path__ = [str(base)]
+        sys.modules[pkg_name] = pkg
+    name = f"{pkg_name}.{Path(filename).stem}"
+    if name in sys.modules:
+        return sys.modules[name]
+    return _load_module(name, base / filename)
 
 
 @pytest.fixture(scope="module")
@@ -64,6 +80,91 @@ def test_asset_has_six_clips_and_expected_bones(rig):
     assert by_name["typing"].count == 40 and by_name["typing"].loop
     assert by_name["stretch"].loop is False and by_name["wave"].loop is False
     assert rig.frame_count == sum(c.count for c in rig.clips)
+
+
+def test_animated_bounds_cover_raised_paws(rig):
+    """相机取景必须按「全部动画帧的运动包围盒」，否则挥手/伸懒腰会切掉爪子。"""
+    ab = rig.meta.get("anim_bounds")
+    assert ab and ab.get("min") and ab.get("max"), "资产缺少 anim_bounds"
+    static = rig.meta["bounds"]
+    assert ab["max"][2] > static["max"][2] + 0.03, \
+        f"运动包围盒没有比静态更高：{ab['max'][2]} vs {static['max'][2]}"
+    assert ab["min"][2] <= static["min"][2] + 1e-4
+    lo, hi = rig.anim_bounds_min, rig.anim_bounds_max
+    assert hi[2] > lo[2] and hi[0] > lo[0]
+
+
+def test_per_clip_bounds_come_from_animation_not_static(rig):
+    """逐段包围盒要真实反映动作：挥手/伸懒腰比敲键盘宽一倍左右（相机据此拉远）。"""
+    for c in rig.clips:
+        assert c.name in rig.clip_bounds, f"{c.name} 缺少逐段包围盒"
+    lo_t, hi_t = rig.bounds_for("typing")
+    lo_w, hi_w = rig.bounds_for("wave")
+    lo_s, hi_s = rig.bounds_for("stretch")
+    assert (hi_w[0] - lo_w[0]) > (hi_t[0] - lo_t[0]) + 0.3, "挥手包围盒应明显更宽"
+    assert (hi_s[0] - lo_s[0]) > (hi_t[0] - lo_t[0]) + 0.3, "伸懒腰包围盒应明显更宽"
+    assert (hi_t[2] - lo_t[2]) > 1.2, "敲键盘时画面高度至少能装下整只猫"
+
+
+def test_camera_fit_keeps_animated_model_inside_frustum():
+    """相机取景数学：按运动包围盒 + 画面留边，上下左右都不能出画。"""
+    if not VIEW_FILE.is_file():
+        pytest.skip("未安装 kitty-work-pet 插件")
+    pkg = "_kitty_work_view_test"
+    _load_pkg_module(pkg, VIEW_FILE.parent, "rig.py")
+    view_mod = _load_pkg_module(pkg, VIEW_FILE.parent, "view.py")
+
+    lo, hi = [-0.46, -0.71, -0.01], [0.49, 0.55, 1.75]   # 代表性运动包围盒
+    aspect = 320.0 / 380.0
+    eye, target = view_mod.fit_camera(lo, hi, aspect)
+    assert target[0] == pytest.approx((lo[0] + hi[0]) * 0.5)
+    assert target[1] == pytest.approx((lo[2] + hi[2]) * 0.5)
+    assert eye[2] > 0 and eye[1] > target[1], "相机应在模型前方且略高"
+
+    fov = view_mod._FOV_DEG
+    near = max(abs(lo[1]), abs(hi[1]))
+    depth = float(eye[2] - near)
+    assert depth > 0
+    half_v = math.radians(fov * 0.5)
+    assert math.atan((hi[2] - eye[1]) / depth) < half_v * 0.95
+    assert math.atan((eye[1] - lo[2]) / depth) < half_v * 0.95
+    half_h = math.atan(math.tan(half_v) * aspect)
+    assert math.atan(max(abs(lo[0] - eye[0]), abs(hi[0] - eye[0])) / depth) \
+        < half_h * 0.98
+
+
+def test_every_clip_projects_fully_on_screen(rig):
+    """把每段动作的运动包围盒 8 个角点真正投影一遍：上下左右都必须在画面内。
+
+    这条比只看相机距离更硬：覆盖「包围盒 + 3/4 视角 + 宽高比」整条链路，
+    任何一段动作切边都会在这里失败。
+    """
+    if not VIEW_FILE.is_file():
+        pytest.skip("未安装 kitty-work-pet 插件")
+    pkg = "_kitty_work_view_test"
+    if f"{pkg}.view" not in sys.modules:
+        _load_pkg_module(pkg, VIEW_FILE.parent, "rig.py")
+        _load_pkg_module(pkg, VIEW_FILE.parent, "view.py")
+    view_mod = sys.modules[f"{pkg}.view"]
+
+    aspect = 320.0 / 380.0
+    proj = view_mod._perspective(view_mod._FOV_DEG, aspect, 0.05, 100.0)
+    up = np.array([0.0, 1.0, 0.0])
+    for c in rig.clips:
+        lo, hi = rig.bounds_for(c.name)
+        eye, target = view_mod.fit_camera(lo, hi, aspect)
+        view = view_mod._look_at(eye, target, up)
+        corners = np.array(list(
+            __import__("itertools").product(*zip(lo, hi))), dtype=np.float64)
+        # Blender Z-up → GL Y-up：根变换绕 X -90°，（x,y,z）→（x, z, -y）
+        gl = np.stack([corners[:, 0], corners[:, 2], -corners[:, 1],
+                       np.ones(len(corners))], axis=1)
+        # 渲染侧与 GLSL 同约定（矩阵左乘列向量）：proj @ view @ gl
+        clip = (proj @ view @ gl.T).T
+        ndc = clip[:, :2] / np.where(np.abs(clip[:, 3:4]) < 1e-9, 1e-9,
+                                     clip[:, 3:4])
+        assert np.abs(ndc).max() < 0.98, \
+            f"{c.name} 有角点出画：{np.abs(ndc).max():.3f}"
 
 
 def test_paws_and_laptop_are_bound_to_the_right_bones(rig):
