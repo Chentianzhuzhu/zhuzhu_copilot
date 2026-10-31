@@ -100,3 +100,6 @@ auth-server/.env.*
 auth-server/.env.bak.*
 # SSH/部署辅助脚本可能含主机口令：仅保留示例
 scripts/_ssh_local.*
+
+# 头脑风暴可视化伴侣的本地会话产物（线框图/交互事件，不入库）
+.superpowers/
