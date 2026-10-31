@@ -471,22 +471,26 @@ def set_enabled(name: str, enabled: bool) -> tuple:
             except Exception:
                 pass
             hot_reload.reload_overlay(force=True)
-            hot_reload.emit_ui("after_change", name)
+            # 先落盘停用，再触发 after_change：否则重建扩展时会按磁盘上仍然
+            # enabled=true 的旧元数据把刚停掉的服务又启动回来。
             bad_meta = _read_meta(name) or meta
             bad_meta["enabled"] = False
             bad_meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             _write_meta(name, bad_meta)
+            hot_reload.emit_ui("after_change", name)
             detail = "；".join(res["failed"][:3])
             return False, (f"插件「{name}」热加载失败，已自动回滚（无需重启）：{detail}。"
                            "请检查插件代码后重新启用")
-        # 4) 声明式扩展挂装（页面/服务/托盘/快捷键）；GUI 线程同步、工作线程自动 marshal
-        hot_reload.emit_ui("after_enable", name)
-        # 5) 写元数据
+        # 4) 先写元数据再挂装扩展：after_enable 里会重建全部服务，必须让
+        #    load_copilot_extensions 读到的 enabled 已是 true，否则本插件的服务
+        #    刚启动就会被「只重建启用中插件」的那一步漏掉。
         meta = _read_meta(name) or meta
         meta["enabled"] = True
         meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         if not _write_meta(name, meta):
             return False, "写入插件元数据失败"
+        # 5) 声明式扩展挂装（页面/服务/托盘/快捷键）；GUI 线程同步、工作线程自动 marshal
+        hot_reload.emit_ui("after_enable", name)
         hint = hot_reload.summary(res)
         return True, f"插件「{name}」已启用并即时生效（无需重启）：{hint}"
 
@@ -497,12 +501,14 @@ def set_enabled(name: str, enabled: bool) -> tuple:
         if not ok:
             return False, f"插件「{name}」停用失败：{msg}"
     res = hot_reload.reload_overlay()
-    hot_reload.emit_ui("after_change", name)
+    # 先落盘停用，再触发 after_change：否则重建扩展时会按磁盘上仍然
+    # enabled=true 的旧元数据把本插件的服务重新启动（表现为「禁用后仍在跑」）。
     meta = _read_meta(name) or meta
     meta["enabled"] = False
     meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     if not _write_meta(name, meta):
         return False, "写入插件元数据失败"
+    hot_reload.emit_ui("after_change", name)
     hint = hot_reload.summary(res)
     return True, f"插件「{name}」已停用并即时卸载（无需重启）：{hint}"
 

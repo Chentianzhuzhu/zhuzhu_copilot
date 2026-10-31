@@ -220,6 +220,28 @@ def test_ui_events_fired_on_toggle(iso):
         hot_reload._UI_EVENTS["after_change"].pop("lifecycle.chg", None)
 
 
+def test_toggle_persists_meta_before_rebuild_events(iso, monkeypatch):
+    """禁用/启用必须在触发重建事件前先把 enabled 落盘。
+
+    否则 after_change 重建扩展时会按磁盘上仍然 enabled=true 的旧元数据
+    把刚停掉的服务重新拉起来 —— 用户看到的「禁用后插件仍在跑，只有删除才生效」。
+    """
+    seen = []
+
+    def _emit(event, name=""):
+        meta = copilot_plugins.get_plugin(name) or {}
+        seen.append((event, bool(meta.get("enabled", True))))
+
+    monkeypatch.setattr(hot_reload, "emit_ui", _emit)
+    _make_plugin("hp-ui-order", [])
+    assert copilot_plugins.set_enabled("hp-ui-order", False)[0]
+    after_change = [en for ev, en in seen if ev == "after_change"]
+    assert after_change and after_change[0] is False, seen
+    assert copilot_plugins.set_enabled("hp-ui-order", True)[0]
+    after_enable = [en for ev, en in seen if ev == "after_enable"]
+    assert after_enable and after_enable[-1] is True, seen
+
+
 # ══════════════ 6. 成功路径不允许出现"重启"字样 ══════════════
 
 def test_no_restart_wording_on_success(iso):
