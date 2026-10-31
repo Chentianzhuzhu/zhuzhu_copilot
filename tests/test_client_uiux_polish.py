@@ -127,3 +127,73 @@ def test_pill_radius_never_exceeds_half_height():
     assert "border-radius: {RADIUS_PILL}px" not in bubble_src, \
         "胶囊仍在直接使用 RADIUS_PILL（会被 Qt 画成直角）"
     assert "border-radius: {RADIUS_PILL}px" not in SRC
+
+
+# ---------- 5. 一体化输入卡（大厂客户端同款结构） ----------
+
+def test_input_lives_inside_one_composer_card(panel):
+    """输入框与工具行必须收进同一张圆角卡片，而不是横向摊成一排控件。"""
+    from PyQt6.QtWidgets import QFrame
+    assert isinstance(panel.composer, QFrame)
+    assert panel.composer.objectName() == "composerCard"
+    assert panel.input.parent() is panel.composer, "输入框必须坐落在输入卡内"
+    assert panel.attach_btn.parent() is panel.composer, "工具按钮必须坐落在输入卡内"
+    assert panel.action_btn.parent() is panel.composer, "发送按钮必须坐落在输入卡内"
+    # 扁平模式：输入框不再自绘第二层圆角底色（避免卡片里再套一个输入框）
+    assert panel.input._flat_bg is True
+    qss = panel.composer.styleSheet()
+    assert "border-radius: 16px" in qss and "border: none" in qss
+
+
+def test_composer_height_fits_content(panel):
+    """输入卡高度必须贴合内容（不能被竖直布局撑出大片空白）。"""
+    hint = panel._composer_lay.sizeHint().height()
+    assert panel.composer.height() == hint, \
+        f"输入卡高度 {panel.composer.height()} 与内容高 {hint} 不符"
+    assert panel.composer.maximumHeight() == hint
+
+
+# ---------- 6. 设置页：标题 + 圆角内容卡 + 导航胶囊 ----------
+
+def _bare_settings_dialog():
+    """不构造真实设置对话框（避免重 I/O），只取页面骨架需要的色板字段。"""
+    from zhuzhu_Copilot.ui import styles as st
+    d = ap._AgentSettingsDialog.__new__(ap._AgentSettingsDialog)
+    d._BG = st.LIGHT_PALETTE["bg_top"]
+    d._PANEL = st.LIGHT_PALETTE["card"]
+    d._PANEL2 = st.LIGHT_PALETTE["card"]
+    d._HOVER = st.LIGHT_PALETTE["hover"]
+    d._TEXT = st.LIGHT_PALETTE["text"]
+    d._DIM = st.LIGHT_PALETTE["text_secondary"]
+    d._ACCENT = st.LIGHT_PALETTE["primary"]
+    d._ACCENT_HOVER = st.LIGHT_PALETTE["primary_hover"]
+    d._BORDER = st.LIGHT_PALETTE["border"]
+    return d
+
+
+def test_settings_page_puts_body_in_a_section_card():
+    from PyQt6.QtWidgets import QFrame
+    d = _bare_settings_dialog()
+    page = d._page("通用")
+    card = page.findChild(QFrame, "settingsCard")
+    assert card is not None, "设置页正文必须收进圆角卡片"
+    assert d._page_body(page) is card.layout(), "页面正文布局必须指向卡片内层"
+    assert "border-radius:" in card.styleSheet(), "卡片必须有圆角"
+    assert "background:" in card.styleSheet(), "卡片必须有分层底色"
+
+
+def test_settings_nav_uses_pill_selection_without_border_line():
+    d = _bare_settings_dialog()
+    qss = d._nav_qss()
+    assert "border-left" not in qss, "导航选中态不该再用左边线（改为圆角胶囊）"
+    assert "border-radius" in qss and "item:selected" in qss
+
+
+def test_light_palette_matches_big_company_baseline():
+    """浅色基调：冷白背景 + 纯白卡片 + 更亮的深蓝主色（参照 TRAE/Claude 观感）。"""
+    from zhuzhu_Copilot.ui import styles as st
+    assert st.LIGHT_PALETTE["bg_top"] == "#F7F9FC"
+    assert st.LIGHT_PALETTE["card"] == "#FFFFFF"
+    assert st.LIGHT_PALETTE["primary"] == "#2563EB"
+    assert ap._THEMES["light"]["ACCENT"] == "#2563EB"
+    assert ap._THEMES["light"]["FIELD"] == st.LIGHT_PALETTE["field"]

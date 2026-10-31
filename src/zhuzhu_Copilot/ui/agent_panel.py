@@ -151,7 +151,7 @@ from zhuzhu_Copilot.ui.tokens import (
     FONT_BASE,
     FONT_BODY,
     FONT_CAPTION,
-    FONT_HERO,
+    FONT_LARGE,
     FONT_SMALL,
     FONT_TITLE,
     FONT_WEIGHT,
@@ -185,15 +185,15 @@ _THEMES = {
         "FIELD": "#12151B",
     },
     "light": {
-        "BG": "#F7F8FB", "BG_BOTTOM": "#EDF0F5", "PANEL": "#FFFFFF",
-        "CARD": "#FFFFFF", "BORDER": "#E3E8F0", "BORDER_SOFT": "#D5DCE8",
-        "TEXT": "#1B2433", "TEXT_DIM": "#5F6B7E", "ACCENT": "#1E40AF",
-        "ACCENT_HOVER": "#2B51D1", "LINK_COLOR": "#2B51D1", "USER_BG": "#1E40AF",
-        "AI_BG": "#FFFFFF", "OK": "#16A34A", "WARN": "#D97706", "ERR": "#DC2626",
-        "HOVER": "#EDF1F8", "CODE_ACCENT": "#2B4BD8", "CODE_BG": "#F0F3F9",
+        "BG": "#F7F9FC", "BG_BOTTOM": "#EEF1F6", "PANEL": "#FFFFFF",
+        "CARD": "#FFFFFF", "BORDER": "#E6EAF1", "BORDER_SOFT": "#D8DFE9",
+        "TEXT": "#1F2430", "TEXT_DIM": "#667085", "ACCENT": "#2563EB",
+        "ACCENT_HOVER": "#3B82F6", "LINK_COLOR": "#2563EB", "USER_BG": "#2563EB",
+        "AI_BG": "#FFFFFF", "OK": "#12B76A", "WARN": "#F79009", "ERR": "#F04438",
+        "HOVER": "#F2F5FA", "CODE_ACCENT": "#1D4ED8", "CODE_BG": "#F5F7FB",
         # 悬浮层：浅色下白面板浮在灰底上即分层；凹陷字段比白卡片暗一档
         "ELEVATED": "#FFFFFF",
-        "FIELD": "#EEF1F7",
+        "FIELD": "#EFF3F8",
     },
 }
 
@@ -241,9 +241,6 @@ _CURSOR_COLOR_ON_WALLPAPER_INVERTED = "#FFFFFF"
 # （纯黑壁纸 9.9:1、深灰 12.0:1、纯白 21:1）。
 # 详见 _input_bg 的历史实测表。
 _INPUT_CARET_BASE_ALPHA = 0.70
-# 输入框描边（自定义背景下）：淡灰。用它而不是主题描边色，是为了在花背景上立住
-# 输入框边界；不用纯黑是为了不和纯黑文字/光标粘连（详见 _input_border）。
-_INPUT_CARET_BORDER = "#E3E8F0"
 # 输入框圆角半径（px）：QSS（_input_qss）与语音遮罩裁剪（_VoiceOverlay.paintEvent）
 # 共用同一来源 —— 遮罩要与输入框边框圆角贴合，半径分开写必然漂移。
 _INPUT_RADIUS = 10
@@ -585,8 +582,13 @@ def _input_bg() -> str:
 
 
 def _input_border() -> str:
-    """输入框描边色：自定义背景下取淡灰，非壁纸模式用主题边框色。"""
-    return _INPUT_CARET_BORDER if _feedback_boosted() else BORDER
+    """输入框描边色：自定义背景下与前景（文字/光标）同源黑白。
+
+    写死淡灰会在花背景上糊成「透明」，纯黑/纯白又可能与前景粘连 —— 唯一
+    稳妥做法是复用 `_input_fg()` 的二选一结果：边界与文字同色，始终立得住。
+    非壁纸模式仍用主题边框色。
+    """
+    return _input_fg() if _feedback_boosted() else BORDER
 
 
 def _input_fg() -> str:
@@ -897,6 +899,16 @@ def _welcome_chip_qss() -> str:
             f" font-size: {FONT_SMALL}px; font-weight: {_W_BUTTON}; }}"
             f"QPushButton:hover {{ background: {fill_hover}; color: {TEXT}; }}"
             f"QPushButton:pressed {{ background: {HOVER}; color: {TEXT}; }}")
+
+
+def _composer_qss() -> str:
+    """输入卡皮肤（大厂 AI 客户端同款）：一张圆角卡片承载正文 + 工具行。
+
+    招 1：不描边。浅色下卡片是纯白、主背景是冷灰，靠明度差浮起；
+    深色下卡片比背景亮约一档。自定义背景模式让位给壁纸（透明）。
+    """
+    return (f"QFrame#composerCard {{ background: {_panel_surface('PANEL')};"
+            f" border: none; border-radius: {RADIUS_LG}px; }}")
 
 
 def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
@@ -2640,15 +2652,15 @@ def _seg_sig(seg: dict) -> tuple:
 
 
 def _hot_apply_plugins() -> None:
-    """插件导入/创建后的运行时收尾：热加载转译层并重建 Copilot 扩展服务。
+    """插件导入/创建后的运行时收尾：热加载转译层。
 
-    不依赖任何设置页控件（设置页与对话页导入共用）；失败静默，不影响导入结果。
+    Copilot 插件的新页面/服务已由 core 的 `set_enabled` → `after_enable` 定向
+    挂载；这里**不再全量 restart_copilot_services**，否则任何一次导入都会把
+    其他正在运行的插件服务一起停掉再重开（表现为「导入一个插件，其他插件全重启」）。
     """
     try:
         from zhuzhu_Copilot.core import hot_reload
-        from zhuzhu_Copilot.ui import main_window as _mw
         hot_reload.reload_overlay()
-        _mw.restart_copilot_services()
     except Exception:
         pass
 
@@ -5263,13 +5275,14 @@ class _AgentSettingsDialog(QDialog):
         # 不再随主题更新（残留深色），浅色主题下内容区会渲染成大块纯黑（对话流/
         # 语音合成等留白多的页面最明显）。透明后透出设置对话框自身背景（浅色），
         # 保证窗口圆角在任何模式下都正确套用。
-        self.stack.setStyleSheet("QStackedWidget { background: transparent; }")
+        self.stack.setStyleSheet(f"QStackedWidget {{ background: {self._BG}; }}")
         # 右侧内容区包滚动容器：窗口高度缩小后页面内容超出时滚动展示，避免被挤压
         self._page_scroll = QScrollArea()
         self._page_scroll.setWidgetResizable(True)
         self._page_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._page_scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }")
+            f"QScrollArea {{ background: {self._BG}; border: none; }}")
+        self._page_scroll.viewport().setStyleSheet(f"background: {self._BG};")
         self._page_scroll.setWidget(self.stack)
         right.addWidget(self._page_scroll, 1)
 
@@ -5318,6 +5331,9 @@ class _AgentSettingsDialog(QDialog):
             # 对象名限定：仅作用于设置对话框自身，不级联到子 QMessageBox/QInputDialog
             f"QDialog#agentSettingsDlg {{ background: {_dlg_bg}; }}"
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
+            # 勾选框 / 单选框默认会被样式化系统铺一层 palette 底（深浅主题下都
+            # 表现为「文字后面一条灰带」），显式透明让它坐在卡片上。
+            "QCheckBox, QRadioButton { background: transparent; }"
             f"QLineEdit, QPlainTextEdit, QComboBox {{ background: {_in_bg};"
             f"color: {self._TEXT}; border: none;"
             "border-radius: 12px; padding: 6px 10px; }"
@@ -5337,19 +5353,25 @@ class _AgentSettingsDialog(QDialog):
             + _scrollbar_css(4, 3, both=False))
 
     def _nav_qss(self) -> str:
-        """左侧导航样式。"""
+        """左侧导航样式（大厂设置页同款）：无左边线，选中项是整块淡蓝圆角胶囊。
+
+        旧实现用「3px 强调色左竖线」标记选中（视觉上像缩进过的标签栏）；
+        改为与内容卡片同风格的选择态：淡强调色底 + 强调色文字 + 圆角，
+        悬停只提亮文字与底色，不抢选中态的层级。
+        """
+        sel_bg = _mix_hex(self._ACCENT, self._BG, 0.12)
         return (
-            f"QListWidget {{ background: {self._PANEL}; border: none;"
-            "padding-top: 10px; outline: none; }"
-            f"QListWidget::item {{ color: {self._DIM}; padding: 12px 14px;"
-            "font-size: 13px; font-weight: 600; border: none;"
-            f"border-left: 3px solid transparent; }}"
-            f"QListWidget::item:hover {{ background: {self._PANEL2};"
+            f"QListWidget {{ background: {self._BG}; border: none;"
+            "padding: 10px 8px; outline: none; }"
+            f"QListWidget::item {{ color: {self._DIM}; padding: 10px 12px;"
+            "font-size: 13px; font-weight: 500; border: none;"
+            f"border-radius: {RADIUS_SM}px; margin: 1px 0; }}"
+            f"QListWidget::item:hover {{ background: {self._HOVER};"
             f"color: {self._TEXT}; }}"
             f"QListWidget::item:selected {{"
-            f"background: {self._PANEL2};"
+            f"background: {sel_bg};"
             f"color: {self._ACCENT_HOVER};"
-            f"border-left: 3px solid {self._ACCENT_HOVER}; }}")
+            "border: none; }")
 
     def _cancel_btn_qss(self) -> str:
         """次级按钮（取消）底色：招 1 不描边，用磨砂填充浮出。"""
@@ -5369,17 +5391,40 @@ class _AgentSettingsDialog(QDialog):
 
     # ---------- 各分组页面 ----------
     def _page(self, title: str) -> QWidget:
+        """设置页骨架（大厂设置页同款）：标题在上，内容统一收进一张圆角卡片。
+
+        卡片用 CARD 层（浅色=纯白、深色=比背景亮一档）且不描边，靠明度差分浮；
+        标题收敛为 17px/600，避免旧版每页再套一层「16px 粗标题」的层级噪音。
+        """
         w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(12)
         t = QLabel(title)
-        t.setStyleSheet(f"color: {self._TEXT}; font-size: 16px; font-weight: 700;")
-        lay.addWidget(t)
+        t.setStyleSheet(f"color: {self._TEXT}; font-size: 17px; font-weight: 600;")
+        outer.addWidget(t)
+        card = QFrame()
+        card.setObjectName("settingsCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card.setStyleSheet(
+            f"QFrame#settingsCard {{ background: {self._PANEL2};"
+            f" border: none; border-radius: {RADIUS_MD}px; }}"
+            # 勾选框在卡片里会被横向拉满；样式化系统会给它铺一层 palette 底
+            # （表现为文字后一条灰带）。在**卡片**这一层声明透明，比对话框层
+            # 更靠近控件（控件自带 color 样式表时祖先规则更可靠地参与合并）。
+            "QFrame#settingsCard QCheckBox, QFrame#settingsCard QRadioButton,"
+            " QFrame#settingsCard QLabel { background: transparent; }")
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(16, 14, 16, 16)
+        inner.setSpacing(10)
+        outer.addWidget(card)
+        outer.addStretch(1)
+        w._body_lay = inner
         return w
 
     def _page_body(self, w: QWidget) -> QVBoxLayout:
-        return w.layout()
+        """页面正文布局：新骨架返回卡片内层布局（旧骨架回退到页布局）。"""
+        return getattr(w, "_body_lay", w.layout())
 
     def _btn_qss(self, kind: str = "ghost") -> str:
         """卡片页交互按钮统一 QSS（单一数据源）：primary 主操作 / ghost 次操作 / dim 弱化。"""
@@ -5414,7 +5459,10 @@ class _AgentSettingsDialog(QDialog):
         sa.setWidgetResizable(True)
         sa.setFrameShape(QFrame.Shape.NoFrame)
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        sa.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        # 显式底色：滚动区 viewport 默认按应用 palette 填充，系统深色模式下会
+        # 在浅色设置页里露出一整块黑底（用户截图里的「内容区顶部黑带」）。
+        sa.setStyleSheet(f"QScrollArea {{ background: {self._BG}; border: none; }}")
+        sa.viewport().setStyleSheet(f"background: {self._BG};")
         sa.setWidget(w)
         return sa
 
@@ -11801,6 +11849,8 @@ class _DropTextEdit(QPlainTextEdit):
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.textChanged.connect(lambda: QTimer.singleShot(0, self._auto_height))
         self._ime_preedit = ""   # 输入法预编辑串（组合态未上屏内容，inputMethodEvent 维护）
+        # 扁平模式：输入框自己不再画圆角底色，直接坐落在宿主卡片上（一体化输入卡）。
+        self._flat_bg = False
         # 初始校准：QPlainTextEdit 默认尺寸偏高，事件循环启动后立刻按内容压回单行高
         QTimer.singleShot(0, self._auto_height)
 
@@ -11810,9 +11860,11 @@ class _DropTextEdit(QPlainTextEdit):
         QTimer.singleShot(0, self._auto_height)
 
     def _paint_bg(self):
-        """圆角背景色：壁纸模式返回 None（透出壁纸）；非壁纸返回 FIELD，聚焦 focus_bg。"""
+        """圆角背景色：壁纸模式返回 None（透出壁纸）；非壁纸返回 FIELD，聚焦 focus_bg；
+        扁平模式（一体化输入卡）同样返回 None —— 底色由外层卡片提供，避免出现
+        「卡片里再套一个圆角输入框」的双层圆角噪声。"""
         try:
-            if _feedback_boosted():
+            if _feedback_boosted() or getattr(self, "_flat_bg", False):
                 return None
             if self.hasFocus():
                 return _mix_hex(HOVER, FIELD, 0.55)
@@ -11858,6 +11910,13 @@ class _DropTextEdit(QPlainTextEdit):
         lines = doc.documentLayout().documentSize().height()
         h = int(lines * self.fontMetrics().lineSpacing()) + 16   # 行高 × 行数 + 内边距
         self.setFixedHeight(min(max(h, 42), 140))
+        # 高度变化 → 通知宿主卡片重新贴合内容（否则卡片高度会停在被布局撑开的旧值）
+        cb = getattr(self, "_on_height_changed", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass
 
     def keyPressEvent(self, e):
         # Enter 发送；Shift+Enter 换行
@@ -20492,11 +20551,11 @@ class AgentPanel(QDialog):
         self._cmd_debounce.timeout.connect(self._update_cmd_suggestions)
 
         # 附件缩略图条：拖入的图片/文件在此预览（隐藏时无高度；子项自动换行不挤压）
+        # 归属「输入卡」内部（见下方 composer），与输入框同属一次待发送内容。
         self._attach_bar = QWidget()
         self._attach_bar.setStyleSheet("background: transparent;")
         self._attach_lay = FlowLayout(self._attach_bar, margin=0, spacing=8)
         self._attach_bar.setVisible(False)
-        right.addWidget(self._attach_bar)
 
         # 排队消息面板：任务运行中发送的多条消息在此排队显示，可逐条编辑/删除。
         # 高度自适应（单条单行、多条限高滚动），无消息自动隐藏。
@@ -20512,10 +20571,27 @@ class AgentPanel(QDialog):
         self.bg_task_panel = _BackgroundTaskPanel(self)
         self.bg_task_panel.hide()
 
-        # 输入栏
-        bottom = QHBoxLayout()
-        bottom.setSpacing(6)
+        # 输入区：大厂 AI 客户端同款「一体化输入卡」——上方正文输入、下方工具行。
+        # 旧布局把输入框与五个控件横向摊成一排，窄窗口下输入框被挤成一条细缝；
+        # 收进一张圆角卡片后，输入永远占满整行宽度，工具按钮在第二行自然分组。
+        self.composer = QFrame()
+        self.composer.setObjectName("composerCard")
+        self.composer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.composer.setStyleSheet(_composer_qss())
+        # 高度锁到内容：输入卡不该吃掉聊天区下方的剩余竖直空间（否则「多行输入」
+        # 的弹性 stretch 会把它撑高，在输入文字与工具行之间留下一大片空白）。
+        self.composer.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        composer_lay = QVBoxLayout(self.composer)
+        composer_lay.setContentsMargins(10, 8, 10, 8)
+        composer_lay.setSpacing(6)
+        self._composer_lay = composer_lay          # 附件条 / 工作目录提示后续挂进来
+        composer_lay.addWidget(self._attach_bar)
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
         self.input = _DropTextEdit()
+        self.input._flat_bg = True        # 底色由输入卡承担（见 _composer_qss）
+        self.input._on_height_changed = self._fit_composer   # 多行增高时卡片同步贴合
         _install_focus_glow(self.input)   # 聚焦边缘泛光（替代蓝色实线边框）
         apply_input_caret(self.input)     # 原生光标宽度（自定义背景下同样 2px，见常量注释）
         self.input.setPlaceholderText("/ for commad @ for agent")
@@ -20529,7 +20605,7 @@ class AgentPanel(QDialog):
         self.input.textChanged.connect(self._on_input_cancel_edit)
         self.input.installEventFilter(self)   # 拦截 Ctrl+V：剪贴板图片转附件
         self.input.fileDropped.connect(self._on_input_files_dropped)   # 文件拖入 → 附件
-        bottom.addWidget(self.input, 1)
+        composer_lay.addWidget(self.input)
 
         # 输入框右侧「语音输入」：科大讯飞流式语音听写，录音期间输入框上盖一层
         # 深蓝遮罩并随音量起伏（见 _VoiceOverlay / core/agent_asr.py）
@@ -20541,7 +20617,7 @@ class AgentPanel(QDialog):
         self.voice_btn.setToolTip(_ui("语音输入：点击开始说话（边说边出字），再次点击结束"))
         self.voice_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
         self.voice_btn.clicked.connect(self._voice_toggle)
-        bottom.addWidget(self.voice_btn)
+        tools.addWidget(self.voice_btn)
 
         # 语音输入遮罩：输入框的子控件，初始隐藏，不吃鼠标事件
         self._voice_overlay = _VoiceOverlay(self.input)
@@ -20559,7 +20635,7 @@ class AgentPanel(QDialog):
         self.attach_btn.setToolTip(_ui("上传文件/图片给 AI（也可拖拽文件到输入框或 Ctrl+V 粘贴截图）"))
         self.attach_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
         self.attach_btn.clicked.connect(self._pick_attachments)
-        bottom.addWidget(self.attach_btn)
+        tools.addWidget(self.attach_btn)
 
         # 输入框右侧：提示词优化（基于上下文优化当前输入，异步后台调用 LLM）
         self.optimize_btn = QPushButton(_line_icon("magic", 20, ACCENT), "")
@@ -20571,7 +20647,8 @@ class AgentPanel(QDialog):
         # 与「+」上传按钮同款皮肤（用户要求）：实心面板底 + 描边正圆，hover 描边转强调色
         self.optimize_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
         self.optimize_btn.clicked.connect(self._on_optimize_clicked)
-        bottom.addWidget(self.optimize_btn)
+        tools.addWidget(self.optimize_btn)
+        tools.addStretch(1)   # 左侧工具组 / 右侧模型+发送，中间弹性留白
 
         # 输入框右侧：手动切换本次使用的模型（选「自动」则按工作力度路由）
         self.model_combo = _ArrowComboBox()
@@ -20582,7 +20659,7 @@ class AgentPanel(QDialog):
         self.model_combo.setToolTip(_ui("手动切换本次使用的模型；「自动选择」= 按工作力度路由"))
         self.model_combo.currentIndexChanged.connect(self._on_model_combo)
         self.model_combo.setAcceptDrops(False)   # 文件拖放由面板统一接收
-        bottom.addWidget(self.model_combo)
+        tools.addWidget(self.model_combo)
 
         # 发送/停止融合按钮：空闲=发送（深蓝），运行中=转圈可点击停止，停止中=红底转圈
         self.action_btn = QPushButton(_line_icon("send", 16, "#FFFFFF"), "")
@@ -20593,7 +20670,8 @@ class AgentPanel(QDialog):
         self.action_btn.setStyleSheet(_BTN_PRIMARY)
         self.action_btn.setToolTip(_ui("发送"))
         self.action_btn.clicked.connect(self._on_action_clicked)
-        bottom.addWidget(self.action_btn)
+        tools.addWidget(self.action_btn)
+        composer_lay.addLayout(tools)
         # 排队面板：内容自适应高度（消息行数决定），紧贴输入行上方，无底部留白
         right.addWidget(self.queue_panel)
         # 后台任务状态区：紧贴输入行上方，有任务时才占位显示
@@ -20632,8 +20710,10 @@ class AgentPanel(QDialog):
         _wh_btn.clicked.connect(self._open_workdir_settings)
         _wh_lay.addWidget(_wh_btn)
         wd_hint_lay.addWidget(self.wd_hint_bar)
-        right.addWidget(self.wd_hint)
-        right.addLayout(bottom)
+        # 提示条收进输入卡顶部（与「这次要发的内容」同一区域），不再横贯整个窗口
+        self._composer_lay.insertWidget(1, self.wd_hint)
+        right.addWidget(self.composer)
+        QTimer.singleShot(0, self._fit_composer)   # 布局落位后贴合内容高度
         body.addLayout(right, 1)
         # 主内容外套 dock 行：左 dock 侧栏 | 主内容 | 右 dock 侧栏（隐藏时宽度 0 不占空间）
         self._dock_row = QHBoxLayout()
@@ -20653,6 +20733,25 @@ class AgentPanel(QDialog):
         self._apply_panel_mode()
         # 顶栏「预览面板」按钮初始外观跟随当前启用状态（默认隐藏 → 幽灵态）
         self._sync_preview_btn()
+
+    def _fit_composer(self) -> None:
+        """把输入卡高度锁到内容高度。
+
+        输入卡挂在右侧竖直布局里，会被分配到聊天区之外的剩余空间；「多行输入」的
+        弹性 stretch 一旦存在，就会在正文与工具行之间留出一大片空白。这里按
+        内层布局的 sizeHint 上下限都钉死，内容（多行输入 / 附件条 / 工作目录提示）
+        变化时即时重算，卡片始终贴合内容。
+        """
+        try:
+            lay = getattr(self, "_composer_lay", None)
+            comp = getattr(self, "composer", None)
+            if lay is None or comp is None:
+                return
+            h = lay.sizeHint().height()
+            comp.setMinimumHeight(h)
+            comp.setMaximumHeight(h)
+        except Exception:
+            pass
 
     def _connect_signals(self):
         # 语音输入：后台线程回调 → 主线程（信号天然排队，跨线程安全）
@@ -20683,8 +20782,9 @@ class AgentPanel(QDialog):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(10)
         t = QLabel("zhuzhu Copilot")
-        # 招 2：大标题字重随主题降档（暗色 600，浅色 700），800 在深色底发糊
-        t.setStyleSheet(f"color: {TEXT}; font-size: {FONT_HERO}px; font-weight: {_W_TITLE};")
+        # 大厂客户端空状态同款：标题收敛到 24px / 主题字重（旧 30px 在窗口里过重，
+        # 观感像启动页而不是「可以开始输入」的工作区）。
+        t.setStyleSheet(f"color: {TEXT}; font-size: {FONT_LARGE}px; font-weight: {_W_TITLE};")
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
         box.addWidget(t)
         sub = QLabel(_welcome_greeting())
@@ -22306,6 +22406,7 @@ class AgentPanel(QDialog):
         except Exception:
             has = True
         w.setVisible(not has)
+        self._fit_composer()   # 提示条显隐改变卡片内容高度
 
     def _open_workdir_settings(self, *_):
         """提示条「去设置」按钮：打开设置对话框并定位到「对话流」页当前会话行闪烁提醒"""
@@ -26493,6 +26594,8 @@ class AgentPanel(QDialog):
         # 语音按钮：皮肤随录音态走（录音中是主色渐变，不能按常态皮肤刷回去）
         _set(getattr(self, "voice_btn", None), self._voice_btn_qss())
         _set(getattr(self, "action_btn", None), _BTN_PRIMARY)
+        # 输入卡（一体化输入区）：壁纸透明态翻转时底要跟着让位给壁纸
+        _set(getattr(self, "composer", None), _composer_qss())
         _set(getattr(self, "cmd_list", None), self._cmd_list_qss())
         # 聊天滚动区（含主题自适应滚动条）：面板保留时其 QSS 也是旧的
         _set(getattr(self, "msg_area", None),
@@ -30165,6 +30268,7 @@ class AgentPanel(QDialog):
         # 插入到 stretch 之前
         self._attach_lay.addWidget(box)
         self._attach_bar.setVisible(True)
+        self._fit_composer()
 
     def _remove_attachment(self, box: QWidget, kind: str, value):
         """取消单个附件：从附件条移除缩略图并从待发送列表剔除"""
@@ -30180,6 +30284,7 @@ class AgentPanel(QDialog):
             self._pending_files = [x for x in self._pending_files if x != value]
         if not self._pending_images and not self._pending_files:
             self._attach_bar.setVisible(False)
+            self._fit_composer()
 
     def _clear_attachments(self):
         while self._attach_lay.count() > 0:
@@ -30189,6 +30294,7 @@ class AgentPanel(QDialog):
         self._pending_images = []
         self._pending_files = []
         self._attach_bar.setVisible(False)
+        self._fit_composer()
 
     def _free_layout_item(self, item):
         if item.widget():
@@ -30599,6 +30705,7 @@ class AgentPanel(QDialog):
                 pass
         if pending_images:
             self._attach_bar.setVisible(True)
+        self._fit_composer()   # 重建后按恢复的附件条重新贴合
 
         # 8) 恢复面板几何/窗口状态（避免切换主题时面板偏移）
         try:

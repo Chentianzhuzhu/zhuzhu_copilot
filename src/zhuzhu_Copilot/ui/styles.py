@@ -81,24 +81,27 @@ DARK_PALETTE = {
     "danger": "#F87171",
 }
 
-# 浅色主题色板（与 AI 面板浅色主题同风格，颜色沿用四色系）
+# 浅色主题色板（大厂 AI 客户端基调：冷白纸面 + 淡灰分层 + 深蓝主色）
+# 参照 TRAE / Claude 等客户端的浅色观感：背景略偏冷灰、卡片纯白、描边压到
+# 「几乎看不见」的淡灰（#E6EAF1），主色用更亮的深蓝（#2563EB），避免旧版
+# #1E40AF 偏军蓝的沉重感。
 LIGHT_PALETTE = {
-    "bg_top": "#F7F8FB",
-    "bg_bottom": "#EDF0F5",
-    "card": "#FFFFFF",
+    "bg_top": "#F7F9FC",            # 冷白纸面
+    "bg_bottom": "#EEF1F6",         # 底部略深一档
+    "card": "#FFFFFF",              # 卡片纯白
     "elevated": "#FFFFFF",          # 悬浮层（浅色下白面板浮在灰底上即分层）
-    "field": "#EEF1F7",             # 凹陷字段（比白卡片暗一档）
-    "primary": "#1E40AF",
-    "primary_hover": "#2B51D1",
-    "primary_pressed": "#1A368F",   # 按压态
-    "primary_light": "#E4EBFC",     # 选中态（浅蓝底，深字可读）
-    "text": "#1B2433",
-    "text_secondary": "#5F6B7E",
-    "border": "#E3E8F0",
-    "hover": "#EDF1F8",
-    "success": "#16A34A",
-    "warning": "#D97706",
-    "danger": "#DC2626",
+    "field": "#EFF3F8",              # 凹陷字段（比白卡片暗一档）
+    "primary": "#2563EB",           # 深蓝（比旧版更亮，接近大厂 AI 客户端主色）
+    "primary_hover": "#3B82F6",
+    "primary_pressed": "#1D4ED8",   # 按压态
+    "primary_light": "#E8F0FE",     # 选中态（浅蓝底，深字可读）
+    "text": "#1F2430",              # 近黑（不用纯黑，留一点冷灰倾向）
+    "text_secondary": "#667085",    # 淡灰
+    "border": "#E6EAF1",            # 发丝线（几乎不可见）
+    "hover": "#F2F5FA",
+    "success": "#12B76A",
+    "warning": "#F79009",
+    "danger": "#F04438",
 }
 
 # 当前激活色板（set_palette() 就地更新内容，引用方读取即时生效）

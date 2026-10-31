@@ -972,8 +972,10 @@ def test_dropdown_popups_keep_opaque_surface_on_wallpaper(tmp_path):
 
     popup = _rule_of(ap._QCOMBO, "QComboBox QAbstractItemView")
     assert "transparent" not in popup, f"下拉弹层不能透明（会渲染成深色）：{popup}"
-    assert ap._base_color("PANEL") in popup
-    assert ap._base_color("BORDER") in popup
+    # 下拉弹层是「悬浮层」：比卡片亮一档的 ELEVATED 底（招 1 微对比分层），
+    # 且不再描边（旧版取 PANEL + BORDER，已随分层规范调整）。
+    assert ap._base_color("ELEVATED") in popup
+    assert "border: none" in popup
 
     holder = ap.AgentPanel.__new__(ap.AgentPanel)   # 只调纯拼接方法，不触发 Qt 初始化
     cand = ap.AgentPanel._cmd_list_qss(holder)
