@@ -3,9 +3,12 @@ package com.zhuzhu.copilot.feature.chat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zhuzhu.copilot.agent.AgentEngine
+import com.zhuzhu.copilot.agent.ConfirmationCenter
+import com.zhuzhu.copilot.agent.ConfirmationDecision
 import com.zhuzhu.copilot.agent.ToolContext
 import com.zhuzhu.copilot.data.repo.ProviderRepository
 import com.zhuzhu.copilot.model.AgentEvent
+import com.zhuzhu.copilot.model.ConfirmationRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,20 +25,30 @@ data class ChatUiState(
     val running: Boolean = false,
     val error: String = "",
     val providersReady: Boolean = false,
+    val toolRows: List<ToolRowUi> = emptyList(),
+    val pendingConfirm: ConfirmationRequest? = null,
 )
 
 data class ChatBubble(val id: String, val fromUser: Boolean, val text: String)
+
+data class ToolRowUi(val callId: String, val name: String, val summary: String, val running: Boolean)
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val providerRepository: ProviderRepository,
     private val engine: AgentEngine,
+    private val confirmCenter: ConfirmationCenter,
 ) : ViewModel() {
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     init {
         refreshProviderState()
+        viewModelScope.launch {
+            confirmCenter.pending.collect { request ->
+                _state.update { it.copy(pendingConfirm = request) }
+            }
+        }
     }
 
     fun refreshProviderState() {
@@ -64,6 +77,7 @@ class ChatViewModel @Inject constructor(
                     streaming = "",
                     running = true,
                     error = "",
+                    toolRows = emptyList(),
                 )
             }
             try {
@@ -73,6 +87,18 @@ class ChatViewModel @Inject constructor(
                             _state.update { s -> s.copy(streaming = s.streaming + event.text) }
                         is AgentEvent.Error ->
                             _state.update { s -> s.copy(error = event.message) }
+                        is AgentEvent.ToolStarted -> _state.update { s ->
+                            s.copy(
+                                toolRows = s.toolRows.filterNot { it.callId == event.call.id } +
+                                    ToolRowUi(event.call.id, event.call.name, "", running = true),
+                            )
+                        }
+                        is AgentEvent.ToolResult -> _state.update { s ->
+                            s.copy(
+                                toolRows = s.toolRows.filterNot { it.callId == event.call.id } +
+                                    ToolRowUi(event.call.id, event.call.name, event.summary, running = false),
+                            )
+                        }
                         else -> Unit
                     }
                 }
@@ -93,6 +119,8 @@ class ChatViewModel @Inject constructor(
             }
         }
     }
+
+    fun answerConfirm(decision: ConfirmationDecision) = confirmCenter.resolve(decision)
 
     fun stop() = engine.cancel()
 }

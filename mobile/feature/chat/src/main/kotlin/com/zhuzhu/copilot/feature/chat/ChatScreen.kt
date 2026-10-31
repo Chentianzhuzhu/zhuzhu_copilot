@@ -64,10 +64,22 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                     Text(state.streaming, color = GlassTokens.TextSecondary, modifier = Modifier.padding(8.dp))
                 }
             }
+            items(state.toolRows, key = { it.callId }) { row ->
+                ToolCallCard(row, hazeState)
+            }
         }
 
         if (state.error.isNotEmpty()) {
             Text(state.error, color = GlassTokens.Danger, modifier = Modifier.padding(horizontal = 16.dp))
+        }
+
+        state.pendingConfirm?.let { request ->
+            ConfirmSheet(
+                request = request,
+                hazeState = hazeState,
+                onDecision = viewModel::answerConfirm,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
         }
 
         GlassSurface(

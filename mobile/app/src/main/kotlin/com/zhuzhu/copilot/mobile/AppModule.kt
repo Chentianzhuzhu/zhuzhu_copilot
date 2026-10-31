@@ -6,7 +6,7 @@ import com.zhuzhu.copilot.agent.AgentConfig
 import com.zhuzhu.copilot.agent.AgentEngine
 import com.zhuzhu.copilot.agent.ChatTurn
 import com.zhuzhu.copilot.agent.ConfirmMode
-import com.zhuzhu.copilot.agent.ConfirmationDecision
+import com.zhuzhu.copilot.agent.ConfirmationCenter
 import com.zhuzhu.copilot.agent.LlmCaller
 import com.zhuzhu.copilot.agent.RiskPolicy
 import com.zhuzhu.copilot.agent.ToolRegistry
@@ -97,12 +97,20 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun agentEngine(llm: LlmCaller, registry: ToolRegistry): AgentEngine = AgentEngine(
+    fun confirmationCenter(): ConfirmationCenter = ConfirmationCenter()
+
+    @Provides
+    @Singleton
+    fun agentEngine(
+        llm: LlmCaller,
+        registry: ToolRegistry,
+        center: ConfirmationCenter,
+    ): AgentEngine = AgentEngine(
         llm = llm,
         registry = registry,
         riskPolicy = RiskPolicy(ConfirmMode.SENSITIVE_AND_ABOVE),
-        // Task 8C 会替换为真实确认网关；此处仅为编译期占位（本阶段没有注册任何工具）
-        gateway = { ConfirmationDecision.ALLOW_ONCE },
+        // 唯一网关：确认请求挂起等待 UI 决策，不存在自动放行兜底
+        gateway = center,
         config = AgentConfig(),
     )
 }
