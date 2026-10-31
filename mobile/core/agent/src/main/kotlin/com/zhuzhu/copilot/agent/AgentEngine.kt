@@ -46,7 +46,19 @@ class AgentEngine(
         onEvent: (AgentEvent) -> Unit,
     ): String = withContext(Dispatchers.Default) {
         activeJob = coroutineContext[Job]
-        val messages = mutableListOf(ChatTurn(Role.USER, prompt))
+        val permissions = grantedPermissions()
+        val compactor = ContextCompactor()
+        val messages = mutableListOf(
+            ChatTurn(
+                Role.SYSTEM,
+                SystemPromptBuilder.build(
+                    deviceInfo = context.deviceInfo,
+                    permissions = permissions,
+                    toolNames = registry.toolNamesFor(permissions),
+                ),
+            ),
+            ChatTurn(Role.USER, prompt),
+        )
         val sessionAllowed = mutableSetOf<String>()
         var steps = 0
         var lastText = ""
@@ -55,6 +67,13 @@ class AgentEngine(
             while (steps < config.maxSteps) {
                 if (context.isCancelled()) break
                 steps++
+
+                compactor.compact(messages)
+                var used = messages.sumOf { TokenBudget.estimate(it.content) }
+                while (compactor.ceilingReached(used) && messages.size > 1) {
+                    messages.removeAt(1) // 保留 system，裁剪最旧消息
+                    used = messages.sumOf { TokenBudget.estimate(it.content) }
+                }
 
                 val tools = registry.specsFor(grantedPermissions())
                 val deltas = llm.stream(messages, tools).toList()
@@ -113,7 +132,7 @@ class AgentEngine(
                     val result = executeWithRetry(tool, call, context) { msg ->
                         onEvent(AgentEvent.ToolProgress(call.name, msg))
                     }
-                    messages += ChatTurn(Role.TOOL, result.summary, toolCallId = call.id)
+                    messages += ChatTurn(Role.TOOL, Untrusted.wrap(call.name, result.summary), toolCallId = call.id)
                     onEvent(AgentEvent.ToolResult(call, result.ok, result.summary))
                 }
             }

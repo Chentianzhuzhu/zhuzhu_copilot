@@ -12,6 +12,7 @@ data class ToolContext(
     val taskId: String,
     val isCancelled: () -> Boolean = { false },
     val onProgress: (String) -> Unit = {},
+    val deviceInfo: String = "Android",
 )
 
 interface AgentTool {
