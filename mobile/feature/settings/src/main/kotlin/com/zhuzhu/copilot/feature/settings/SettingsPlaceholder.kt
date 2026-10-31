@@ -6,11 +6,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import com.zhuzhu.copilot.ui.GlassTokens
 
 @Composable
 fun SettingsPlaceholder() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("设置页将在计划 C 接入", color = GlassTokens.TextTertiary)
+        Text(stringResource(R.string.settings_placeholder), color = GlassTokens.TextTertiary)
     }
 }

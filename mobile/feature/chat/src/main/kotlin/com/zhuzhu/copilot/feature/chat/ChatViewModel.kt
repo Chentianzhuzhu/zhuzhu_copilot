@@ -24,6 +24,7 @@ data class ChatUiState(
     val streaming: String = "",
     val running: Boolean = false,
     val error: String = "",
+    val errorRes: Int? = null,
     val providersReady: Boolean = false,
     val toolRows: List<ToolRowUi> = emptyList(),
     val pendingConfirm: ConfirmationRequest? = null,
@@ -63,12 +64,12 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val provider = providerRepository.active()
             if (provider == null) {
-                _state.update { it.copy(error = "请先在设置中配置模型") }
+                _state.update { it.copy(errorRes = R.string.chat_need_provider, error = "") }
                 return@launch
             }
             val apiKey = providerRepository.apiKeyOf(provider.id).orEmpty()
             if (apiKey.isBlank()) {
-                _state.update { it.copy(error = "当前服务商缺少 API Key") }
+                _state.update { it.copy(errorRes = R.string.chat_missing_key, error = "") }
                 return@launch
             }
             _state.update {
@@ -77,6 +78,7 @@ class ChatViewModel @Inject constructor(
                     streaming = "",
                     running = true,
                     error = "",
+                    errorRes = null,
                     toolRows = emptyList(),
                 )
             }
@@ -86,7 +88,7 @@ class ChatViewModel @Inject constructor(
                         is AgentEvent.TokenDelta ->
                             _state.update { s -> s.copy(streaming = s.streaming + event.text) }
                         is AgentEvent.Error ->
-                            _state.update { s -> s.copy(error = event.message) }
+                            _state.update { s -> s.copy(error = event.message, errorRes = null) }
                         is AgentEvent.ToolStarted -> _state.update { s ->
                             s.copy(
                                 toolRows = s.toolRows.filterNot { it.callId == event.call.id } +

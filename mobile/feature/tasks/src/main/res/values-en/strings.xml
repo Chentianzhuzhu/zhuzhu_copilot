@@ -1,0 +1,8 @@
+<resources>
+    <string name="tasks_title">Tasks</string>
+    <string name="tasks_running">Running</string>
+    <string name="tasks_done">Completed</string>
+    <string name="tasks_aborted">Aborted</string>
+    <string name="tasks_empty">No tasks yet</string>
+    <string name="tasks_placeholder">Tasks arrive in Plan B</string>
+</resources>

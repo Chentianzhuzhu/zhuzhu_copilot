@@ -1,0 +1,11 @@
+<resources>
+    <string name="chat_input_hint">Describe a task, or hold to speak</string>
+    <string name="chat_send">Send</string>
+    <string name="chat_need_provider">Configure a model in Settings first</string>
+    <string name="chat_missing_key">This provider has no API key</string>
+    <string name="chat_stop">Stop task</string>
+    <string name="chat_tool_running">Running</string>
+    <string name="chat_risk_safe">Safe</string>
+    <string name="chat_risk_sensitive">Needs confirmation</string>
+    <string name="chat_risk_destructive">Destructive action</string>
+</resources>

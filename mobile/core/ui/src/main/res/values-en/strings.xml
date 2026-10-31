@@ -1,0 +1,10 @@
+<resources>
+    <string name="tab_chat">Chat</string>
+    <string name="tab_tasks">Tasks</string>
+    <string name="tab_settings">Settings</string>
+    <string name="app_name">zhuzhu Copilot Mobile</string>
+    <string name="stop">Stop</string>
+    <string name="allow">Allow</string>
+    <string name="skip">Skip</string>
+    <string name="always_allow">Always allow</string>
+</resources>

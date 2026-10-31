@@ -1,5 +1,9 @@
 package com.zhuzhu.copilot.feature.chat
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,11 +26,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.zhuzhu.copilot.ui.GlassSurface
 import com.zhuzhu.copilot.ui.GlassTokens
 import com.zhuzhu.copilot.ui.GlassTopBar
+import com.zhuzhu.copilot.ui.MotionTokens
 import dev.chrisbanes.haze.HazeState
 
 @Composable
@@ -69,8 +75,18 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
             }
         }
 
-        if (state.error.isNotEmpty()) {
-            Text(state.error, color = GlassTokens.Danger, modifier = Modifier.padding(horizontal = 16.dp))
+        val errorRes = state.errorRes
+        val errorText = errorRes?.let { stringResource(it) } ?: state.error
+        AnimatedVisibility(
+            visible = errorText.isNotEmpty(),
+            enter = fadeIn(tween(MotionTokens.EnterMs)),
+            exit = fadeOut(tween(MotionTokens.EnterMs)),
+        ) {
+            Text(
+                errorText,
+                color = GlassTokens.Danger,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
         }
 
         state.pendingConfirm?.let { request ->
@@ -91,7 +107,9 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                 TextField(
                     value = input,
                     onValueChange = { input = it },
-                    placeholder = { Text("描述任务，或按住说话", color = GlassTokens.TextTertiary) },
+                    placeholder = {
+                        Text(stringResource(R.string.chat_input_hint), color = GlassTokens.TextTertiary)
+                    },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp),
                     colors = TextFieldDefaults.colors(
@@ -113,7 +131,10 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                         }
                     },
                 ) {
-                    Text(if (state.running) "中止" else "发送", color = GlassTokens.BlueSoft)
+                    Text(
+                        stringResource(if (state.running) R.string.chat_stop else R.string.chat_send),
+                        color = GlassTokens.BlueSoft,
+                    )
                 }
             }
         }

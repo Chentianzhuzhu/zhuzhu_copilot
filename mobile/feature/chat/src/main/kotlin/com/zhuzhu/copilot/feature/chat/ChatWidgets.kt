@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.zhuzhu.copilot.agent.ConfirmationDecision
 import com.zhuzhu.copilot.model.ConfirmationRequest
@@ -24,7 +25,7 @@ fun ToolCallCard(row: ToolRowUi, hazeState: HazeState) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(row.name, color = GlassTokens.TextPrimary, style = MaterialTheme.typography.bodySmall)
             Text(
-                if (row.running) "执行中…" else row.summary,
+                if (row.running) stringResource(R.string.chat_tool_running) else row.summary,
                 color = if (row.running) GlassTokens.BlueSoft else GlassTokens.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -39,10 +40,11 @@ fun ConfirmSheet(
     modifier: Modifier = Modifier,
     onDecision: (ConfirmationDecision) -> Unit,
 ) {
+    val risk = riskLabel(request.risk)
     GlassSurface(modifier.fillMaxWidth(), hazeState, corner = 16.dp) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                "${request.toolName} · ${riskLabel(request.risk)}",
+                "${request.toolName} · $risk",
                 color = if (request.risk == RiskLevel.DESTRUCTIVE) GlassTokens.Danger else GlassTokens.TextPrimary,
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -54,14 +56,23 @@ fun ConfirmSheet(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextButton(onClick = { onDecision(ConfirmationDecision.DENY) }) {
-                    Text("跳过", color = GlassTokens.TextSecondary)
+                    Text(
+                        stringResource(com.zhuzhu.copilot.ui.R.string.skip),
+                        color = GlassTokens.TextSecondary,
+                    )
                 }
                 TextButton(onClick = { onDecision(ConfirmationDecision.ALLOW_ONCE) }) {
-                    Text("允许", color = GlassTokens.BlueSoft)
+                    Text(
+                        stringResource(com.zhuzhu.copilot.ui.R.string.allow),
+                        color = GlassTokens.BlueSoft,
+                    )
                 }
                 if (request.risk != RiskLevel.DESTRUCTIVE) {
                     TextButton(onClick = { onDecision(ConfirmationDecision.ALLOW_SESSION) }) {
-                        Text("始终允许", color = GlassTokens.TextSecondary)
+                        Text(
+                            stringResource(com.zhuzhu.copilot.ui.R.string.always_allow),
+                            color = GlassTokens.TextSecondary,
+                        )
                     }
                 }
             }
@@ -69,8 +80,11 @@ fun ConfirmSheet(
     }
 }
 
-private fun riskLabel(risk: RiskLevel): String = when (risk) {
-    RiskLevel.SAFE -> "安全"
-    RiskLevel.SENSITIVE -> "需确认"
-    RiskLevel.DESTRUCTIVE -> "危险操作"
-}
+@Composable
+private fun riskLabel(risk: RiskLevel): String = stringResource(
+    when (risk) {
+        RiskLevel.SAFE -> R.string.chat_risk_safe
+        RiskLevel.SENSITIVE -> R.string.chat_risk_sensitive
+        RiskLevel.DESTRUCTIVE -> R.string.chat_risk_destructive
+    }
+)

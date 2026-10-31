@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.HazeState
 
@@ -53,7 +54,7 @@ fun GlassTabBar(
     hazeState: HazeState,
     onSelect: (Int) -> Unit,
 ) {
-    val labels = listOf("对话", "任务", "设置")
+    val labels = listOf(R.string.tab_chat, R.string.tab_tasks, R.string.tab_settings)
     val icons = listOf(Icons.Outlined.AutoAwesome, Icons.Outlined.Add, Icons.Outlined.Settings)
     GlassSurface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).height(52.dp),
@@ -61,8 +62,9 @@ fun GlassTabBar(
         corner = 16.dp,
     ) {
         Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            labels.forEachIndexed { index, label ->
+            labels.forEachIndexed { index, labelRes ->
                 val active = index == selected
+                val label = stringResource(labelRes)
                 Column(
                     Modifier
                         .weight(1f)

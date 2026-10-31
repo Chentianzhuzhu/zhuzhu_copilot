@@ -1,0 +1,10 @@
+<resources>
+    <string name="tab_chat">对话</string>
+    <string name="tab_tasks">任务</string>
+    <string name="tab_settings">设置</string>
+    <string name="app_name">zhuzhu Copilot Mobile</string>
+    <string name="stop">中止</string>
+    <string name="allow">允许</string>
+    <string name="skip">跳过</string>
+    <string name="always_allow">始终允许</string>
+</resources>

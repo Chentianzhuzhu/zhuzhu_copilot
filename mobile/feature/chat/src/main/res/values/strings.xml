@@ -1,0 +1,11 @@
+<resources>
+    <string name="chat_input_hint">描述任务，或按住说话</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_need_provider">请先在设置中配置模型</string>
+    <string name="chat_missing_key">当前服务商缺少 API Key</string>
+    <string name="chat_stop">中止任务</string>
+    <string name="chat_tool_running">执行中</string>
+    <string name="chat_risk_safe">安全</string>
+    <string name="chat_risk_sensitive">需确认</string>
+    <string name="chat_risk_destructive">危险操作</string>
+</resources>

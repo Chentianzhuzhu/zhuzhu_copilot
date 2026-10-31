@@ -1,0 +1,8 @@
+<resources>
+    <string name="tasks_title">任务</string>
+    <string name="tasks_running">进行中</string>
+    <string name="tasks_done">已完成</string>
+    <string name="tasks_aborted">已中止</string>
+    <string name="tasks_empty">暂无任务记录</string>
+    <string name="tasks_placeholder">任务页将在计划 B 接入</string>
+</resources>

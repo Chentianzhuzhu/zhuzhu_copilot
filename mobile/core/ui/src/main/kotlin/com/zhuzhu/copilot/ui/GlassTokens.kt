@@ -43,3 +43,11 @@ fun GlassLevel.spec(): GlassSpec = when (this) {
     GlassLevel.STANDARD -> GlassSpec(GlassTokens.StandardBlurDp, 1.75f, 0.10f, 1.0f)
     GlassLevel.VIVID -> GlassSpec(GlassTokens.VividBlurDp, 2.05f, 0.13f, 1.0f)
 }
+
+object MotionTokens {
+    const val EnterMs = 200
+    const val HudInMs = 320
+    const val HudOutMs = 200
+    const val HighlightMoveMs = 120
+    const val BreatheMs = 2200
+}

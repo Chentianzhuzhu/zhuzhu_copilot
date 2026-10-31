@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,7 +49,7 @@ private fun AppRoot() {
             .background(GlassTokens.BgBase)
             .systemBarsPadding()
     ) {
-        Box(Modifier.fillMaxSize().padding(bottom = 68.dp)) {
+        Box(Modifier.fillMaxSize().padding(bottom = 68.dp).animateContentSize()) {
             when (tab) {
                 0 -> ChatScreen(hazeState)
                 1 -> TasksPlaceholder()

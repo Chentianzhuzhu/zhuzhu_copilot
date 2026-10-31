@@ -1,0 +1,9 @@
+<resources>
+    <string name="settings_title">设置</string>
+    <string name="settings_model">模型与账号</string>
+    <string name="settings_permissions">权限</string>
+    <string name="settings_automation">自动化</string>
+    <string name="settings_voice">语音</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_placeholder">设置页将在计划 C 接入</string>
+</resources>
