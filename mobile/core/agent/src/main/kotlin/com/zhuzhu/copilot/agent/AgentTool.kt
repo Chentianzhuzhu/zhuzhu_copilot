@@ -16,6 +16,6 @@ data class ToolContext(
 
 interface AgentTool {
     val spec: ToolSpec
-    val requiredPermission: String? get() = "accessibility"
+    val requiredPermission: String? get() = null
     suspend fun execute(argumentsJson: String, context: ToolContext): ToolResult
 }

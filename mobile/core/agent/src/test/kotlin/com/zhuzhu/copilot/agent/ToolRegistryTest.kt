@@ -10,6 +10,7 @@ import org.junit.Test
 class ToolRegistryTest {
     private val tap = object : AgentTool {
         override val spec = ToolSpec("tap_node", "点击", """{"type":"object"}""", RiskLevel.SENSITIVE)
+        override val requiredPermission: String? = "accessibility"
         override suspend fun execute(argumentsJson: String, context: ToolContext): ToolResult =
             ToolResult(ok = true, summary = "clicked")
     }
