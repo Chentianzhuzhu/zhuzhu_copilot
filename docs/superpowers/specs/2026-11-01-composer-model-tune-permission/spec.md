@@ -140,5 +140,11 @@
 3. 下拉菜单淡入改为 120fps：`ArrowComboBox` 用 8ms 定时器逐帧写窗口透明度（QPropertyAnimation 约 60fps，有台阶感）。
 4. 调节浮层「固定位置」弹出：几何只定位一次，只做透明度淡入/淡出，取消 8px 上移动画（避免面板在飘）。
 
+## 5.6 按用户反馈修订（第七轮）
+
+1. 删除对话栏收起后的 36px 窄条：`_SessionDrawer.set_collapsed(True)` 直接整栏隐藏，展开入口由左栏两枚圆形按钮提供；两枚按钮贴左（2px 边距，列宽 42px）。
+2. 修复 `hidePopup` 的 `RuntimeError: QTimer has been deleted`：放弃 8ms 自建定时器，回到 `QPropertyAnimation`，收起时对已结束动画 `stop()` 加 RuntimeError 兜底。
+3. 修复下拉淡入的撕裂/闪烁：不再高频改原生窗口透明度（与合成器抢帧），改由 Qt 动画引擎驱动；且 `opacity=0` 在 `showPopup` 之后**同步**设置（旧版晚一帧才归零，会先闪一帧全不透明）。
+
 ## 6. 非目标
 - 不改 `agent_llm.EFFORTS` 与力度映射算法、不改上下文解析优先级链、不改执行模式在引擎内的语义、不做设置页其他控件重排。

@@ -150,62 +150,49 @@ class ArrowComboBox(QComboBox):
         self._run_arrow(True)
         self._fade_popup()
 
-    #: 下拉弹层淡入帧率：120fps（QPropertyAnimation 固定 ~60fps，达不到用户要求的丝滑度）
-    FADE_FPS = 120
-
     def _fade_popup(self):
-        """下拉列表淡入（120fps）：Qt 的组合框弹层是独立窗口，只能整体调窗口透明度。
+        """下拉列表淡入：弹层是独立原生窗口，只能整体调 ``windowOpacity``。
 
-        用 8ms 定时器逐帧写窗口透明度（QPropertyAnimation 的全局刷新约 16ms=60fps，
-        在快速淡入时看得出台阶）。延后一帧再起动画：showPopup 返回时弹层刚完成定位，
-        立刻设 0 透明度会在个别后端闪一下；下一帧窗口已稳定，淡入是干净过渡。
+        为什么用 QPropertyAnimation 而不是自建高频定时器：以 8ms 逐帧改原生窗口
+        透明度会与合成器/垂直同步抢帧，实测出现**撕裂与闪烁**；交给 Qt 动画引擎
+        （约 60fps、与刷新对齐）反而顺滑。
+
+        关键：opacity=0 必须**同步**设在 show() 之后、事件循环返回之前。晚一帧再设
+        （旧实现的 singleShot(0)）会先以全不透明上屏一帧再跳回 0 → 肉眼就是闪一下。
         """
-        def _run():
-            try:
-                win = self.view().window()
-            except Exception:
+        try:
+            win = self.view().window()
+        except Exception:
+            return
+        if win is None or win is self.window():
+            return
+        # 只对真正的弹层容器做透明动画：某些后端 view().window() 会回落到主窗口，
+        # 对主窗口设 0 透明度会让整个应用瞬间「消失」。
+        try:
+            if not (win.windowFlags() & Qt.WindowType.Popup):
                 return
-            if win is None or win is self.window():
-                return
-            # 只对真正的弹层容器做透明动画：某些后端 view().window() 会回落到主窗口，
-            # 对主窗口设 0 透明度会让整个应用瞬间「消失」。
+            win.setWindowOpacity(0.0)
+            anim = QPropertyAnimation(win, b"windowOpacity", self)
+            anim.setDuration(max(120, int(motion.POP_MS)))
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(motion.settle())
+            self._popup_anim = anim      # 持有引用，避免被回收
+            anim.start()
+        except Exception:
             try:
-                if not (win.windowFlags() & Qt.WindowType.Popup):
-                    return
-                old = getattr(self, "_popup_fade_timer", None)
-                if old is not None:
-                    old.stop()
-                win.setWindowOpacity(0.0)
-                dur = max(1, int(motion.POP_MS))
-                fps = max(60, int(self.FADE_FPS))
-                steps = max(1, int(dur * fps / 1000))
-                curve = motion.settle()
-                state = {"i": 0}
-                timer = QTimer(self)
-                timer.setInterval(max(1, int(1000 / fps)))
-
-                def _tick():
-                    state["i"] += 1
-                    prog = min(1.0, state["i"] / float(steps))
-                    try:
-                        win.setWindowOpacity(float(curve.valueForProgress(prog)))
-                    except Exception:
-                        pass
-                    if prog >= 1.0:
-                        timer.stop()
-                        timer.deleteLater()
-
-                timer.timeout.connect(_tick)
-                self._popup_fade_timer = timer
-                timer.start()
+                win.setWindowOpacity(1.0)
             except Exception:
                 pass
-        QTimer.singleShot(0, _run)
 
     def hidePopup(self):
-        t = getattr(self, "_popup_fade_timer", None)
-        if t is not None:
-            t.stop()
+        anim = getattr(self, "_popup_anim", None)
+        if anim is not None:
+            try:
+                anim.stop()          # 已销毁的动画对象会抛 RuntimeError，忽略即可
+            except RuntimeError:
+                pass
+            self._popup_anim = None
         super().hidePopup()
         self._run_arrow(False)
 

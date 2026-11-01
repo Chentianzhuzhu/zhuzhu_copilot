@@ -309,18 +309,17 @@ def test_session_combo_leaves_top_bar(panel):
 
 # ---------- 9. 折叠 / 展开 ----------
 
-def test_session_drawer_collapses_to_narrow_strip(panel):
-    """对话栏收起后只留 36px 窄条 + 展开箭头，再点一次恢复完整列表。"""
+def test_session_drawer_collapses_by_hiding_entirely(panel):
+    """对话栏收起后整栏隐藏（旧 36px 窄条已删除），展开入口由左栏两枚圆形按钮提供。"""
     d = _drawer(panel)
     if d.is_collapsed():
         d.set_collapsed(False)
-    assert d.width() == ap._DRAWER_W
+    assert d.isVisible() and d.width() == ap._DRAWER_W
     d.set_collapsed(True)
-    assert d.width() == ap._DRAWER_COLLAPSED_W, "收起后应是窄条而不是整块消失"
-    assert not d.list.isVisible() and not d.search.isVisible(), "收起后列表/搜索框应让位"
-    assert d.expand_btn.isVisible(), "窄条上必须保留展开箭头"
+    assert d.isHidden(), "收起后应整栏隐藏，不再保留窄条"
+    assert not d.expand_btn.isVisible(), "收起态不应再有展开箭头窄条"
     d.set_collapsed(False)
-    assert d.width() == ap._DRAWER_W
+    assert d.isVisible() and d.width() == ap._DRAWER_W
     assert d.list.isVisible()
 
 
@@ -645,9 +644,14 @@ def test_capsule_slider_thumb_shifted_right():
     assert sl._thumb_x() - x1 == ap._CapsuleSlider.THUMB_SHIFT
 
 
-def test_model_dropdown_fades_at_120fps(panel):
-    """模型选择下拉菜单淡入按 120fps 逐帧推进（不是 60fps 的台阶）。"""
-    assert ap.ArrowComboBox.FADE_FPS >= 120
+def test_model_dropdown_popup_fade_is_smooth_and_safe(panel):
+    """下拉淡入走 Qt 动画引擎（高频定时器会撕裂/闪烁）；收起时对已结束动画安全。"""
+    combo = panel.model_combo
+    assert not hasattr(ap.ArrowComboBox, "FADE_FPS"), "8ms 高频定时器方案已移除"
+    combo.showPopup()
+    _pump(400)          # 等淡入动画自然结束（动画对象可能已被回收）
+    combo.hidePopup()   # 旧实现会在这里抛 RuntimeError: QTimer has been deleted
+    _pump(20)
 
 
 def test_model_tune_context_uses_switch_button(panel):

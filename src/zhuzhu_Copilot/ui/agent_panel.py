@@ -19166,7 +19166,7 @@ _RAIL_W = 56             # 胶囊宽；圆角取半宽（pill_radius），超过
 _RAIL_BTN_D = 40         # 胶囊内图标按钮 40x40（左右各留 8）
 _RAIL_DIV_W = 24         # 组间分隔线长度
 _DRAWER_COLLAPSED_W = 36  # 对话栏收起后的窄条宽（只留展开箭头）
-_DOCK_COLLAPSED_W = 54    # 左侧栏收起后的迷你列宽（两枚 38px 圆形按钮 + 左右 8px 内边距）
+_DOCK_COLLAPSED_W = 42    # 左侧栏收起后的迷你列宽（两枚 38px 圆形按钮 + 2px 边距，尽量贴左）
 _DOCK_HEAD_H = 28         # 左侧栏顶部「栏标题条」高度（内含收起箭头）
 
 # 折叠状态持久化键：与设置页开关同一 QSettings 机制，重启后保持用户选择
@@ -19417,6 +19417,8 @@ class _SessionDrawer(QFrame):
         self._lay.setSpacing(0 if on else 8)
         if not on:
             self._fade_in(self._full)
+        # 收起态整栏隐藏（旧 36px 窄条方案已废弃）：展开入口由左栏两枚圆形按钮提供
+        self.setVisible(not on)
 
     def _fade_in(self, w: QWidget) -> None:
         """展开时内容淡入（160ms）：只做透明度，不改几何，保证布局与测试都确定性。"""
@@ -21871,7 +21873,7 @@ class AgentPanel(QDialog):
         self._apply_panel_mode()
         # 折叠状态持久化：按上次选择落地（对话栏独立折叠；文件树/Git/任务整体折叠）
         if _stored_flag(_STORE_DRAWER_COLLAPSED):
-            self.session_drawer.set_collapsed(True)
+            self.session_drawer.set_collapsed(True)   # 收起即整栏隐藏（不留窄条）
         if _stored_flag(_STORE_LEFTDOCK_COLLAPSED):
             self._set_leftdock_collapsed(True, persist=False)
         self._sync_rail_state()   # 胶囊 tooltip / 左栏入口可见性按初始状态对齐
@@ -23142,7 +23144,7 @@ class AgentPanel(QDialog):
         if drawer is None:
             return
         on = not drawer.is_collapsed()
-        drawer.set_collapsed(on)
+        drawer.set_collapsed(on)   # 收起态整栏隐藏由 set_collapsed 统一处理
         try:
             app_identity.qsettings().setValue(
                 _STORE_DRAWER_COLLAPSED, "1" if on else "0")
@@ -24718,7 +24720,8 @@ class AgentPanel(QDialog):
             mini.setObjectName("dockLeftMini")
             mini.setStyleSheet("QWidget#dockLeftMini { background: transparent; }")
             ml = QVBoxLayout(mini)
-            ml.setContentsMargins(8, 8, 8, 8)
+            # 贴左：对话栏窄条已删除，两枚圆形按钮直接占据最左侧（左右各 2px 边距）
+            ml.setContentsMargins(2, 8, 2, 8)
             ml.setSpacing(8)
             # 两枚圆形入口 = 「对话菜单」+「侧栏」：点击即展开对应面板（用户指定）
             for _ico, _tip, _act in (
