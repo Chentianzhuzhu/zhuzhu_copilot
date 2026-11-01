@@ -5,7 +5,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -22,11 +21,10 @@ import com.zhuzhu.copilot.feature.chat.ChatScreen
 import com.zhuzhu.copilot.feature.settings.SettingsPlaceholder
 import com.zhuzhu.copilot.feature.tasks.TasksPlaceholder
 import com.zhuzhu.copilot.ui.GlassTabBar
-import com.zhuzhu.copilot.ui.GlassTokens
+import com.zhuzhu.copilot.ui.SceneBackground
 import com.zhuzhu.copilot.ui.ZhuzhuTheme
 import dagger.hilt.android.AndroidEntryPoint
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeSource
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -42,22 +40,20 @@ private fun AppRoot() {
     val hazeState = remember { HazeState() }
     var tab by remember { mutableIntStateOf(0) }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .hazeSource(hazeState)
-            .background(GlassTokens.BgBase)
-            .systemBarsPadding()
-    ) {
-        Box(Modifier.fillMaxSize().padding(bottom = 68.dp).animateContentSize()) {
-            when (tab) {
-                0 -> ChatScreen(hazeState)
-                1 -> TasksPlaceholder()
-                else -> SettingsPlaceholder()
+    Box(Modifier.fillMaxSize()) {
+        SceneBackground(hazeState)
+
+        Box(Modifier.fillMaxSize().systemBarsPadding()) {
+            Box(Modifier.fillMaxSize().padding(bottom = 84.dp).animateContentSize()) {
+                when (tab) {
+                    0 -> ChatScreen(hazeState)
+                    1 -> TasksPlaceholder()
+                    else -> SettingsPlaceholder()
+                }
             }
-        }
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-            GlassTabBar(selected = tab, hazeState = hazeState, onSelect = { tab = it })
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                GlassTabBar(selected = tab, hazeState = hazeState, onSelect = { tab = it })
+            }
         }
     }
 }

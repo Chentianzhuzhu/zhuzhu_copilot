@@ -18,30 +18,32 @@ object GlassTokens {
     val Danger = Color(0xFFC9736E)
     val Divider = Color(0x0FFFFFFF)
 
-    val CardCorner = 12.dp
-    val PanelCorner = 16.dp
-    val SheetCorner = 22.dp
+    val CardCorner = 16.dp
+    val PanelCorner = 18.dp
+    val SheetCorner = 24.dp
+    val CapsuleCorner = 26.dp
 
-    const val RimWidthDp = 1.2f
-    const val StandardBlurDp = 22
-    const val QuietBlurDp = 16
-    const val VividBlurDp = 26
-    const val GrainOpacity = 0.15f
+    const val RimWidthDp = 1.6f
+    const val ElevationDp = 18
+    const val StandardBlurDp = 24
+    const val QuietBlurDp = 18
+    const val VividBlurDp = 28
+    const val GrainOpacity = 0.18f
 }
 
 enum class GlassLevel { QUIET, STANDARD, VIVID }
 
 data class GlassSpec(
     val blurDp: Int,
-    val saturation: Float,
     val tintAlpha: Float,
     val rimAlpha: Float,
+    val grain: Float,
 )
 
 fun GlassLevel.spec(): GlassSpec = when (this) {
-    GlassLevel.QUIET -> GlassSpec(GlassTokens.QuietBlurDp, 1.35f, 0.06f, 0.45f)
-    GlassLevel.STANDARD -> GlassSpec(GlassTokens.StandardBlurDp, 1.75f, 0.10f, 1.0f)
-    GlassLevel.VIVID -> GlassSpec(GlassTokens.VividBlurDp, 2.05f, 0.13f, 1.0f)
+    GlassLevel.QUIET -> GlassSpec(GlassTokens.QuietBlurDp, 0.08f, 0.50f, 0.10f)
+    GlassLevel.STANDARD -> GlassSpec(GlassTokens.StandardBlurDp, 0.12f, 1.00f, 0.18f)
+    GlassLevel.VIVID -> GlassSpec(GlassTokens.VividBlurDp, 0.15f, 1.00f, 0.20f)
 }
 
 object MotionTokens {

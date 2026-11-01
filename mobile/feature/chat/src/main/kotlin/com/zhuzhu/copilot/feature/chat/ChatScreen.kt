@@ -89,14 +89,15 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                     horizontalArrangement = if (bubble.fromUser) Arrangement.End else Arrangement.Start,
                 ) {
                     GlassSurface(
-                        modifier = Modifier.padding(vertical = 2.dp),
+                        modifier = Modifier.padding(vertical = 3.dp),
                         hazeState = hazeState,
-                        corner = 12.dp,
+                        corner = 16.dp,
+                        tintColor = if (bubble.fromUser) GlassTokens.BlueHighlight else Color.White,
                     ) {
                         Text(
                             bubble.text,
                             color = if (bubble.fromUser) Color.White else GlassTokens.TextPrimary,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
                         )
                     }
                 }
@@ -135,11 +136,11 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
         }
 
         GlassSurface(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
             hazeState = hazeState,
-            corner = 17.dp,
+            corner = GlassTokens.CapsuleCorner,
         ) {
-            Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextField(
                     value = input,
                     onValueChange = { input = it },

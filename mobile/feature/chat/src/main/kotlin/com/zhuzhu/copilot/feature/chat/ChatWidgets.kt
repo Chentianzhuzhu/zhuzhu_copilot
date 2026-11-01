@@ -21,8 +21,12 @@ import dev.chrisbanes.haze.HazeState
 
 @Composable
 fun ToolCallCard(row: ToolRowUi, hazeState: HazeState) {
-    GlassSurface(Modifier.fillMaxWidth(), hazeState, corner = 12.dp) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    GlassSurface(
+        Modifier.fillMaxWidth().padding(horizontal = 0.dp, vertical = 2.dp),
+        hazeState,
+        corner = 16.dp,
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(row.name, color = GlassTokens.TextPrimary, style = MaterialTheme.typography.bodySmall)
             Text(
                 if (row.running) stringResource(R.string.chat_tool_running) else row.summary,
@@ -41,8 +45,8 @@ fun ConfirmSheet(
     onDecision: (ConfirmationDecision) -> Unit,
 ) {
     val risk = riskLabel(request.risk)
-    GlassSurface(modifier.fillMaxWidth(), hazeState, corner = 16.dp) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    GlassSurface(modifier.fillMaxWidth(), hazeState, corner = 20.dp) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 "${request.toolName} · $risk",
                 color = if (request.risk == RiskLevel.DESTRUCTIVE) GlassTokens.Danger else GlassTokens.TextPrimary,
