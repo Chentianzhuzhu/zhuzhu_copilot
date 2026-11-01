@@ -915,8 +915,11 @@ def _composer_qss() -> str:
     招 1：不描边。浅色下卡片是纯白、主背景是冷灰，靠明度差浮起；
     深色下卡片比背景亮约一档。自定义背景模式让位给壁纸（透明）。
     """
+    # 与侧栏同一套「描边分层」语言：底仍是抬升的面板色，但补 1px 淡灰描边，
+    # 浅色下卡片轮廓不再只靠明度差（壁纸模式描边自动透明）。
     return (f"QFrame#composerCard {{ background: {_panel_surface('PANEL')};"
-            f" border: none; border-radius: {RADIUS_LG}px; }}")
+            f" border: 1px solid {_panel_stroke('BORDER')};"
+            f" border-radius: {RADIUS_LG}px; }}")
 
 
 def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
@@ -4302,7 +4305,7 @@ def _split_args(s: str) -> list:
 
 
 # ---- 管理页（插件 / Agent / 工作流 / 市场）视觉统一：单一数据源 ----
-_CARD_RADIUS = 10
+_CARD_RADIUS = 12
 _CARD_ICON_RADIUS = 9
 _PAGE_BTN_RADIUS = 8
 _PAGE_BTN_PAD = "7px 14px"
@@ -4701,7 +4704,8 @@ class _Card(QFrame):
         else:
             bg = PANEL
         self.setStyleSheet(
-            f"QFrame#pluginCard {{ background: {bg}; border: none;"
+            f"QFrame#pluginCard {{ background: {bg};"
+            f" border: 1px solid {_base_color('BORDER')};"
             f" border-left: 3px solid {ACCENT if self._sel else 'transparent'};"
             f" border-radius: {_CARD_RADIUS}px; }}")
         self._title.setStyleSheet(
@@ -5445,7 +5449,8 @@ class _AgentSettingsDialog(QDialog):
         card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         card.setStyleSheet(
             f"QFrame#settingsCard {{ background: {self._PANEL2};"
-            f" border: none; border-radius: {RADIUS_MD}px; }}"
+            f" border: 1px solid {self._BORDER};"
+            f" border-radius: {RADIUS_MD}px; }}"
             # 勾选框在卡片里会被横向拉满；样式化系统会给它铺一层 palette 底
             # （表现为文字后一条灰带）。在**卡片**这一层声明透明，比对话框层
             # 更靠近控件（控件自带 color 样式表时祖先规则更可靠地参与合并）。
@@ -18935,6 +18940,8 @@ class _SessionRowDelegate(QStyledItemDelegate):
         pending = bool(st and (st.get("pending_confirm") or st.get("pending_ask")))
         name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         updated = index.data(Qt.ItemDataRole.UserRole + 1) or 0
+        preview = str(index.data(Qt.ItemDataRole.UserRole + 2) or "")
+        pinned = bool(index.data(Qt.ItemDataRole.UserRole + 3))
         painter.save()
         rect = QRect(option.rect)
         bg = rect.adjusted(2, 2, -2, -2)
@@ -18945,31 +18952,64 @@ class _SessionRowDelegate(QStyledItemDelegate):
         elif option.state & QStyle.StateFlag.State_MouseOver:
             painter.setBrush(QColor(HOVER))
             painter.drawRoundedRect(bg, RADIUS_SM, RADIUS_SM)
-        # 状态点贴右缘：运行中深蓝、待确认琥珀（不放转圈动画，避免每帧重绘整栏）
+        # 置顶：行首一根 2px 强调色细条（比图钉更安静，也不占文字宽度）
+        left = rect.left() + 10
+        if pinned:
+            painter.setBrush(QColor(ACCENT_HOVER))
+            painter.drawRoundedRect(QRect(rect.left() + 4, rect.top() + 16,
+                                          2, rect.height() - 32), 1, 1)
+            left += 4
+        # 状态点贴右下角：运行中深蓝、待确认琥珀（不放转圈动画，避免每帧重绘整栏）
         if running or pending:
             painter.setBrush(QColor(ACCENT_HOVER if running else WARN))
-            painter.drawEllipse(QRect(rect.right() - 16, rect.center().y() - 3, 6, 6))
-        left = rect.left() + 10
-        right = rect.right() - (18 if (running or pending) else 8)
-        avail = max(0, right - left)
+            painter.drawEllipse(QRect(rect.right() - 16, rect.top() + 32, 6, 6))
+        # 第一行：会话名 + 右上角相对时间
+        stamp = _rel_time(float(updated or 0))
         f = QFont(option.font)
         f.setPixelSize(FONT_BODY)
         f.setWeight(QFont.Weight.DemiBold)
         painter.setFont(f)
         painter.setPen(QColor(TEXT))
         fm = QFontMetrics(f)
-        painter.drawText(QRect(left, rect.top() + 8, avail, FONT_BODY + 4),
-                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                         fm.elidedText(name, Qt.TextElideMode.ElideRight, avail))
-        stamp = _rel_time(float(updated or 0))
+        stamp_w = 0
         if stamp:
             f2 = QFont(option.font)
             f2.setPixelSize(FONT_CAPTION)
             painter.setFont(f2)
+            fm2 = QFontMetrics(f2)
+            stamp_w = fm2.horizontalAdvance(stamp) + 8
+        avail = max(0, rect.right() - 10 - stamp_w - left)
+        f.setPixelSize(FONT_BODY)
+        painter.setFont(f)
+        painter.setPen(QColor(TEXT))
+        painter.drawText(QRect(left, rect.top() + 8, avail, FONT_BODY + 4),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         fm.elidedText(name, Qt.TextElideMode.ElideRight, avail))
+        if stamp:
+            painter.setFont(f2)
             painter.setPen(QColor(TEXT_DIM))
-            painter.drawText(QRect(left, rect.top() + 26, avail, FONT_CAPTION + 4),
-                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            painter.drawText(QRect(rect.right() - stamp_w, rect.top() + 9,
+                                   stamp_w - 8, FONT_CAPTION + 4),
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                              stamp)
+        # 第二行：最近一条消息预览（没有预览时回退显示相对时间，不留空行）
+        second = preview or stamp
+        if preview:
+            f3 = QFont(option.font)
+            f3.setPixelSize(FONT_CAPTION)
+            painter.setFont(f3)
+            painter.setPen(QColor(TEXT_DIM))
+            avail2 = max(0, rect.right() - (18 if (running or pending) else 8) - left)
+            painter.drawText(
+                QRect(left, rect.top() + 26, avail2, FONT_CAPTION + 4),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                QFontMetrics(f3).elidedText(preview, Qt.TextElideMode.ElideRight, avail2))
+        else:
+            painter.setFont(f2 if stamp else f)
+            painter.setPen(QColor(TEXT_DIM))
+            painter.drawText(QRect(left, rect.top() + 26, rect.width() - 16, FONT_CAPTION + 4),
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             second)
         painter.restore()
 
 
@@ -18983,6 +19023,7 @@ class _SessionDrawer(QFrame):
     session_activated = pyqtSignal(str)     # 点击会话 → 切到该对话
     new_requested = pyqtSignal()            # 点击「新建对话」
     delete_requested = pyqtSignal(str, str)  # 右键删除（sid, 展示名）
+    pin_requested = pyqtSignal(str, bool)    # 右键置顶 / 取消置顶（sid, 是否置顶）
     toggle_requested = pyqtSignal()         # 标题栏 / 窄条上的收起、展开按钮
 
     def __init__(self, panel, parent=None):
@@ -19088,6 +19129,23 @@ class _SessionDrawer(QFrame):
             self._lay.setContentsMargins(10, 10, 10, 8)
         self.setFixedWidth(_DRAWER_COLLAPSED_W if on else _DRAWER_W)
         self._lay.setSpacing(0 if on else 8)
+        if not on:
+            self._fade_in(self._full)
+
+    def _fade_in(self, w: QWidget) -> None:
+        """展开时内容淡入（160ms）：只做透明度，不改几何，保证布局与测试都确定性。"""
+        try:
+            eff = QGraphicsOpacityEffect(w)
+            w.setGraphicsEffect(eff)
+            anim = QPropertyAnimation(eff, b"opacity", self)
+            anim.setDuration(motion.ANIM_FAST)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.finished.connect(lambda: w.setGraphicsEffect(None))
+            self._fade_anim = anim      # 持有引用，避免被 GC 提前回收
+            anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+        except Exception:
+            pass
 
     def is_collapsed(self) -> bool:
         return self._collapsed
@@ -19097,13 +19155,18 @@ class _SessionDrawer(QFrame):
         """全量重建列表（会话数在几十级，重建比增量比对更不易出错）。"""
         self.list.blockSignals(True)
         self.list.clear()
-        for s in sorted(sessions or [], key=lambda x: x.get("updated", 0), reverse=True):
+        # 置顶优先，其次按最近更新；排序只影响展示，不改磁盘里的 updated 语义
+        for s in sorted(sessions or [],
+                        key=lambda x: (bool(x.get("pinned")), x.get("updated", 0)),
+                        reverse=True):
             sid = s.get("id")
             if not sid:
                 continue
             it = QListWidgetItem(_uim(s.get("name") or "新对话"))
             it.setData(Qt.ItemDataRole.UserRole, sid)
             it.setData(Qt.ItemDataRole.UserRole + 1, float(s.get("updated") or 0))
+            it.setData(Qt.ItemDataRole.UserRole + 2, str(s.get("preview") or ""))
+            it.setData(Qt.ItemDataRole.UserRole + 3, bool(s.get("pinned")))
             self.list.addItem(it)
             if sid == current_sid:
                 self.list.setCurrentItem(it)
@@ -19133,9 +19196,15 @@ class _SessionDrawer(QFrame):
         sid = item.data(Qt.ItemDataRole.UserRole)
         if not sid:
             return
+        pinned = bool(item.data(Qt.ItemDataRole.UserRole + 3))
         menu = QMenu(self)
-        act = menu.addAction(_uif("删除对话「{a0}」", a0=item.text()))
-        if menu.exec(self.list.viewport().mapToGlobal(pos)) == act:
+        pin_act = menu.addAction(_ui("取消置顶") if pinned else _ui("置顶会话"))
+        menu.addSeparator()
+        del_act = menu.addAction(_uif("删除对话「{a0}」", a0=item.text()))
+        chosen = menu.exec(self.list.viewport().mapToGlobal(pos))
+        if chosen == pin_act:
+            self.pin_requested.emit(str(sid), not pinned)
+        elif chosen == del_act:
             self.delete_requested.emit(str(sid), item.text())
 
     def apply_theme(self) -> None:
@@ -20896,6 +20965,12 @@ class AgentPanel(QDialog):
         self.net_label.setToolTip(_ui("网络连接状态"))
         stats_layout.addWidget(self.net_label)
         top.addLayout(stats_layout)
+        # 统计信息与操作按钮之间的细分隔线：把「只读状态」与「可点操作」分成两组
+        _top_sep = QFrame()
+        _top_sep.setFixedSize(1, 18)
+        _top_sep.setStyleSheet(
+            f"QFrame {{ background: {_panel_stroke('BORDER')}; border: none; }}")
+        top.addWidget(_top_sep, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # 预览面板展开/收起：固定融入主面板右侧栏，默认隐藏；点击即切换
         self.preview_btn = QPushButton(_line_icon("preview", 18, TEXT_DIM), "")
@@ -21082,7 +21157,7 @@ class AgentPanel(QDialog):
         self.input._on_height_changed = self._fit_composer   # 多行增高时卡片同步贴合
         _install_focus_glow(self.input)   # 聚焦边缘泛光（替代蓝色实线边框）
         apply_input_caret(self.input)     # 原生光标宽度（自定义背景下同样 2px，见常量注释）
-        self.input.setPlaceholderText("/ for commad @ for agent")
+        self.input.setPlaceholderText(_ui("/ for commands · @ for agents"))
         self.input.setMinimumHeight(32)
         self.input.setMaximumHeight(110)
         # 壁纸 + 浅色下：描边/文字（含光标色系）纯黑；聚焦蓝色泛光见 _install_focus_glow
@@ -21209,6 +21284,7 @@ class AgentPanel(QDialog):
         self.session_drawer.session_activated.connect(self._on_drawer_session)
         self.session_drawer.new_requested.connect(self._new_session)
         self.session_drawer.delete_requested.connect(self._remove_session)
+        self.session_drawer.pin_requested.connect(self._toggle_session_pin)
         self.session_drawer.toggle_requested.connect(self._toggle_drawer)
         self._function_rail = _FunctionRail(self)
         self._function_rail.action_triggered.connect(self._on_rail_action)
@@ -22424,6 +22500,13 @@ class AgentPanel(QDialog):
         }
         name = self._session_name
         eng = self._engine
+        # 侧栏第二行预览：取最后一条用户消息（压成单行并限长，避免列表被撑高）
+        preview = ""
+        try:
+            if self._user_msgs:
+                preview = " ".join(str(self._user_msgs[-1] or "").split())[:80]
+        except Exception:
+            preview = ""
 
         def _work():
             try:
@@ -22439,6 +22522,8 @@ class AgentPanel(QDialog):
                     if x.get("id") == sid:
                         x["updated"] = time.time()
                         x["name"] = name
+                        if preview:
+                            x["preview"] = preview
                 self._save_session_list(lst)
             except Exception:
                 pass
@@ -22473,6 +22558,15 @@ class AgentPanel(QDialog):
         """左侧抽屉点击会话：与下拉同一入口（避免重复切到当前会话）。"""
         if sid and sid != self._session_id:
             self._switch_to(sid)
+
+    def _toggle_session_pin(self, sid: str, pinned: bool) -> None:
+        """置顶 / 取消置顶会话（只改 sessions.json 的 pinned 标记，不动更新时间）。"""
+        lst = self._load_session_list()
+        for x in lst:
+            if x.get("id") == sid:
+                x["pinned"] = bool(pinned)
+        self._save_session_list(lst)
+        self._refresh_session_combo()
 
     # ---------- 折叠 / 展开（对话栏与左侧整栏） ----------
     def _toggle_drawer(self):

@@ -402,6 +402,8 @@
     "{a0} 分钟前": "{a0} min ago",
     "{a0} 小时前": "{a0} hr ago",
     "{a0} 天前": "{a0} days ago",
+    "置顶会话": "Pin chat",
+    "取消置顶": "Unpin chat",
     "对话栏": "Chat sidebar",
     "左栏（文件树 / Git / 任务）": "Left panel (files / Git / tasks)",
     "收起对话栏": "Collapse chat sidebar",

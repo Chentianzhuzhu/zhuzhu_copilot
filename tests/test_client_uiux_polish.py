@@ -142,7 +142,8 @@ def test_input_lives_inside_one_composer_card(panel):
     # 扁平模式：输入框不再自绘第二层圆角底色（避免卡片里再套一个输入框）
     assert panel.input._flat_bg is True
     qss = panel.composer.styleSheet()
-    assert "border-radius: 16px" in qss and "border: none" in qss
+    # 统一视觉语言：输入卡保留抬升面板底，但补 1px 描边（与侧栏同一套分层）
+    assert "border-radius: 16px" in qss and "border: 1px solid" in qss
 
 
 def test_composer_height_fits_content(panel):
@@ -346,3 +347,21 @@ def test_function_rail_exposes_collapse_entries(panel):
     rail = panel._function_rail
     assert "drawer" in rail._buttons, "胶囊缺少对话栏折叠入口"
     assert "leftdock" in rail._buttons, "胶囊缺少左栏折叠入口"
+
+
+def test_session_drawer_shows_preview_and_pins_first(panel):
+    """抽屉行：最近消息预览进第二行，置顶会话排在最前（不改盘上的 updated）。"""
+    from PyQt6.QtCore import Qt
+    d = _drawer(panel)
+    d.refresh([
+        {"id": "old", "name": "旧会话", "updated": 100, "preview": "这是旧会话的预览"},
+        {"id": "new", "name": "新会话", "updated": 200, "preview": "这是新会话的预览"},
+        {"id": "pin", "name": "置顶会话", "updated": 50, "pinned": True,
+         "preview": "置顶的预览"},
+    ], "new")
+    assert d.list.item(0).data(Qt.ItemDataRole.UserRole) == "pin", "置顶会话未排在最前"
+    assert d.list.item(0).data(Qt.ItemDataRole.UserRole + 2) == "置顶的预览"
+    assert d.list.item(0).data(Qt.ItemDataRole.UserRole + 3) is True
+    assert d.list.currentItem().data(Qt.ItemDataRole.UserRole) == "new"
+    # 撤销测试数据：刷新回真实会话列表，避免影响后续用例
+    panel._refresh_session_combo()
