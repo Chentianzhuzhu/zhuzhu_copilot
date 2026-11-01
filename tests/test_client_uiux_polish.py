@@ -366,18 +366,21 @@ def test_drawer_refresh_keeps_scroll_position(panel):
     panel._refresh_session_combo()
 
 
-def test_input_hides_placeholder_on_focus(panel):
-    """聚焦时占位文案必须让位：否则光标叠在灰色占位字上，看起来像「没光标」。"""
+def test_input_keeps_placeholder_on_focus(panel):
+    """点击/聚焦输入框不得清空提示文案（用户反馈：点一下提示文字就消失）。
+
+    有文本时 Qt 本来就会隐藏 placeholder，因此无需在聚焦时手动清空。"""
     from PyQt6.QtCore import QEvent
     from PyQt6.QtGui import QFocusEvent
     inp = panel.input
     ph = panel._input_placeholder
+    assert ph == ap._ui("今天能帮你做点什么呢？"), f"提示文案未更新：{ph}"
     inp.setPlaceholderText(ph)          # 输入框启动即聚焦，先显式还原文案再验证
     assert inp.placeholderText() == ph
     inp.focusInEvent(QFocusEvent(QEvent.Type.FocusIn))
-    assert inp.placeholderText() == "", "聚焦后占位文案未隐藏"
+    assert inp.placeholderText() == ph, "聚焦后提示文字被清空"
     inp.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut))
-    assert inp.placeholderText() == ph, "失焦后占位文案未恢复"
+    assert inp.placeholderText() == ph
 
 
 def test_mouse_cursor_is_system_default(panel):
@@ -428,6 +431,27 @@ def test_model_tune_gate_only_on_model_name(panel, monkeypatch):
     assert panel._model_tune_gate() is True, "指针停在模型名称文本区应允许弹层"
     monkeypatch.setattr(ap, "QCursor", types.SimpleNamespace(pos=lambda: arrow))
     assert panel._model_tune_gate() is False, "指针在箭头区不应触发调节浮层"
+
+
+def test_tune_popover_not_flickering_between_combo_and_popover(panel, monkeypatch):
+    """从模型框移到浮层时不得被旧离开计时器收起（否则会反复弹出/关闭）。"""
+    import types
+    from PyQt6.QtCore import QPoint
+    panel._open_model_tune()
+    _pump(80)
+    pop = panel._model_tune
+    assert pop.isVisible()
+    # 指针停在浮层内部：离开宽限到期也不收起
+    inside = pop.mapToGlobal(QPoint(pop.width() // 2, pop.height() // 2))
+    monkeypatch.setattr(ap, "QCursor", types.SimpleNamespace(pos=lambda: inside))
+    panel._maybe_close_model_tune()
+    assert pop.isVisible(), "指针仍在浮层上却被收起（会与重新弹出形成闪烁）"
+    # 指针移到两者之外：正常收起
+    far = pop.mapToGlobal(QPoint(-600, -600))
+    monkeypatch.setattr(ap, "QCursor", types.SimpleNamespace(pos=lambda: far))
+    panel._maybe_close_model_tune()
+    _pump(300)
+    assert not pop.isVisible(), "指针离开后浮层未收起"
 
 
 def test_tune_popover_suppresses_combo_tooltip(panel):
@@ -488,6 +512,9 @@ def test_permission_pill_sits_right_of_optimize(panel):
     assert not pill.icon_lbl.pixmap().isNull(), "权限图标未绘制"
     assert not pill.chev_lbl.pixmap().isNull(), "胶囊缺少下尖角"
     assert pill.text_lbl.text() == ap._ui(ap._PERM_LABELS[panel._mode])
+    # 三档图标必须互不相同：前两档不能再共用一个「安全盾牌」样式
+    assert ap._PERM_ICONS == {"ask": "hand", "edit": "wrench", "yolo": "shield-alert"}
+    assert len(set(ap._PERM_ICONS.values())) == 3, "权限三档图标重复"
 
 
 def test_perm_menu_offers_three_levels(panel, monkeypatch):

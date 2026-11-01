@@ -71,6 +71,13 @@
 - [x] 回归：SVG 图标可渲染、`on_enter` 接线、进入即清空 tooltip
 - [x] 三个测试文件 58 passed
 
+## T12 第四轮修订（用户反馈：浮层闪烁 / 输入框提示 / 权限图标区分）
+- [x] `_maybe_close_model_tune` + `_pointer_over_tune`：离开宽限到期先复核指针是否仍在框/浮层（含窄缝）
+- [x] 占位文案改为「今天能帮你做点什么呢？」；`_DropTextEdit` 聚焦不再清空 placeholder
+- [x] 权限三档图标互不相同：`ask=hand` / `edit=wrench` / `yolo=shield-alert`，胶囊与菜单同源
+- [x] 回归：占位文案聚焦保持、浮层不闪烁、三档图标唯一
+- [x] 三个测试文件 59 passed
+
 ## 已按 spec 执行的决策
 - 浮层内「自动按难度」与滑块**独立**（拖滑块不会自动关掉自动模式）。
 - 权限菜单复用 `agent_mode`（ask/edit/yolo），三项即「每步确认 / 仅工具调用 / 全部访问」。

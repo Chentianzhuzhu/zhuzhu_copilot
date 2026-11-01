@@ -11769,7 +11769,6 @@ class _DropTextEdit(QPlainTextEdit):
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.textChanged.connect(lambda: QTimer.singleShot(0, self._auto_height))
         self._ime_preedit = ""   # 输入法预编辑串（组合态未上屏内容，inputMethodEvent 维护）
-        self._placeholder = ""   # 聚焦时临时清空占位文案（见 focusInEvent）
         # 扁平滑模式：输入框自己不再画圆角底色，直接坐落在宿主卡片上（一体化输入卡）。
         self._flat_bg = False
         # 自绘光标：Qt 原生光标在「透明 viewport + 空文档」组合下不可见（实测），
@@ -11820,13 +11819,12 @@ class _DropTextEdit(QPlainTextEdit):
         p.end()
 
     def focusInEvent(self, e):
-        """聚焦时隐藏占位文案：光标落在第 0 位时会与灰色占位字重叠，
-        看起来「光标像没显示」（用户反馈）。失焦后恢复占位提示。"""
+        """聚焦只负责点亮光标：占位文案保持显示（点击输入框不应把提示文字弄没）。
+
+        Qt 本身在**有文本**时才隐藏 placeholder，空输入框聚焦仍会显示；此前为了让
+        光标不被灰字压住而清空 placeholder，用户反馈「点一下输入框提示文字就消失」，
+        故取消该行为（光标改为自绘在最左侧，仍可辨认）。"""
         super().focusInEvent(e)
-        ph = self.placeholderText()
-        if ph:
-            self._placeholder = ph
-            self.setPlaceholderText("")
         self._caret_on = True
         self._caret_timer.start()
         self.update()
@@ -11834,9 +11832,6 @@ class _DropTextEdit(QPlainTextEdit):
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
         self._caret_timer.stop()
-        ph = self.__dict__.pop("_placeholder", "")
-        if ph and not self.placeholderText():
-            self.setPlaceholderText(ph)
         self.update()
 
     def _paint_bg(self):
@@ -19676,6 +19671,9 @@ def _perm_icon(kind: str, size: int = 16, color: str = TEXT_DIM) -> QIcon:
 # Agent 权限胶囊：高度 / 三档文案（唯一事实来源：按钮、菜单、tooltip 都取这里）
 _PERM_PILL_H = 30
 _PERM_LABELS = {"ask": "每步确认", "edit": "仅工具调用", "yolo": "全部访问"}
+# 三档权限各自的专属图标（胶囊与菜单行同源）：前两档**不允许**共用盾牌，
+# 否则用户分不清「每步确认」和「仅工具调用」——手/扳手/警示盾三个语义各不相同。
+_PERM_ICONS = {"ask": "hand", "edit": "wrench", "yolo": "shield-alert"}
 _PERM_SUBTITLES = {
     "ask": "重要操作由你确认",
     "edit": "自主调用工具，非白名单命令仍需确认",
@@ -19725,7 +19723,7 @@ class _PermPill(QWidget):
         """按当前权限刷新图标/文案/配色（yolo 整枚转红警示）"""
         self._danger = mode == "yolo"
         self.icon_lbl.setPixmap(_perm_icon(
-            "shield-alert" if self._danger else "shield", 16,
+            _PERM_ICONS.get(mode, _PERM_ICONS["ask"]), 16,
             ERR if self._danger else ACCENT).pixmap(16, 16))
         self.text_lbl.setText(_ui(_PERM_LABELS.get(mode, _PERM_LABELS["ask"])))
         self.apply_theme()
@@ -20599,7 +20597,7 @@ class AgentPanel(QDialog):
         self._resize_timer.setInterval(160)
         self._resize_timer.timeout.connect(self._rebuild_bubbles_after_resize)
         # 占位文案单一来源：构建输入框与「取消排队编辑」恢复时都取这一份
-        self._input_placeholder = _ui("/ for commands · @ for agents")
+        self._input_placeholder = _ui("今天能帮你做点什么呢？")
         # 无边框自绘窗口：圆角由 QSS（border-radius）+ 透明底自绘，Win10/Win11 一致；
         # 原生标题栏已移除，关闭/最大化/最小化由自绘红黄绿圆点接管（见 _TitleBar）
         self.setWindowFlags(Qt.WindowType.Window
@@ -21715,15 +21713,16 @@ class AgentPanel(QDialog):
         self._model_tune.auto_changed.connect(self._on_model_tune_auto)
         self._model_tune.context_changed.connect(self._on_model_tune_context)
         # 悬停计时带前置闸门：只有指针停在模型名称文本区、且下拉列表未展开时才弹层
+        # 两个守卫的离开动作都走「复核」：只有指针同时离开模型框与浮层（含中间窄缝）
+        # 才真正收起，避免从框移到浮层时被旧计时器关掉、再被重新弹开（频繁闪烁）
         self._model_hover = _HoverHold(
             _MODEL_TUNE_HOLD_MS, self._open_model_tune,
-            _MODEL_TUNE_LEAVE_MS, self._close_model_tune, self,
+            _MODEL_TUNE_LEAVE_MS, self._maybe_close_model_tune, self,
             gate=self._model_tune_gate, on_enter=self._on_model_name_enter)
         self.model_combo.installEventFilter(self._model_hover)
-        # 浮层自身也参与悬停保持：指针在浮层内不收起，离开 250ms 才收起
         self._model_tune_hover = _HoverHold(
             _MODEL_TUNE_HOLD_MS, self._open_model_tune,
-            _MODEL_TUNE_LEAVE_MS, self._close_model_tune, self)
+            _MODEL_TUNE_LEAVE_MS, self._maybe_close_model_tune, self)
         self._model_tune.installEventFilter(self._model_tune_hover)
         self._sync_model_badges()
         # 排队面板：内容自适应高度（消息行数决定），紧贴输入行上方，无底部留白
@@ -29941,6 +29940,33 @@ class AgentPanel(QDialog):
             pass
         self._model_tune_dismiss_attach(True)
 
+    def _pointer_over_tune(self, pad: int = 12) -> bool:
+        """指针是否仍停在模型框 / 调节浮层（各自外扩 pad 像素，覆盖两者之间的窄缝）。"""
+        try:
+            p = QCursor.pos()
+            combo = self.__dict__.get("model_combo")
+            if combo is not None and combo.isVisible() \
+                    and combo.rect().adjusted(-pad, -pad, pad, pad).contains(
+                        combo.mapFromGlobal(p)):
+                return True
+            pop = self.__dict__.get("_model_tune")
+            if pop is not None and pop.isVisible() \
+                    and pop.rect().adjusted(-pad, -pad, pad, pad).contains(
+                        pop.mapFromGlobal(p)):
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _maybe_close_model_tune(self):
+        """离开宽限到期后复核：指针只要还在框/浮层（含中间窄缝）就保持打开。
+
+        模型框与浮层各有一个悬停守卫，从框移到浮层时前者的离开计时仍会到期；
+        直接收起的话，浮层守卫又会重新打开 → 用户看到「频繁弹出又关闭」。"""
+        if self._pointer_over_tune():
+            return
+        self._close_model_tune()
+
     def _close_model_tune(self):
         """收起调节浮层（离开宽限计时到期 / 点击外部 / Esc），恢复下拉框提示语"""
         pop = self.__dict__.get("_model_tune")
@@ -30065,7 +30091,7 @@ class AgentPanel(QDialog):
             danger = mode == "yolo"
             row = _PermRow(
                 _ui(_PERM_LABELS[mode]), _ui(_PERM_SUBTITLES[mode]),
-                "hand" if mode == "ask" else ("wrench" if mode == "edit" else "shield-alert"),
+                _PERM_ICONS[mode],
                 danger=danger, checked=(mode == cur), parent=menu)
             wa = QWidgetAction(menu)
             wa.setDefaultWidget(row)

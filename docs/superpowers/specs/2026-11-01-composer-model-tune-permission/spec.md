@@ -117,5 +117,11 @@
 1. 权限图标改为**开源 SVG（Lucide，ISC 许可）**：胶囊 `shield` / `shield-alert`（全部访问）、下尖角 `chevron`；菜单行 `hand`（每步确认）/ `wrench`（仅工具调用）/ `shield-alert`（全部访问）、对勾 `check`。删除 `_line_icon` 里手绘的 `shield` / `warning` 分支（不再维护两套图形）。
 2. 提示气泡与调节浮层互斥提前到**指针进入瞬间**：`_HoverHold` 新增 `on_enter` 回调，进入模型框即 `QToolTip.hideText()` + 清空 tooltip，避免 QToolTip 在约 0.7s 出现、正好打断 1s 时弹出的调节浮层；浮层收起/指针离开后恢复提示语。
 
+## 5.3 按用户反馈修订（第四轮）
+
+1. 调节浮层不再频繁弹出/关闭：离开宽限到期后先复核指针位置（模型框 / 浮层各自外扩 12px，覆盖两者之间窄缝），仍在任一处就保持打开；两个悬停守卫的离开动作统一走 `_maybe_close_model_tune`。
+2. 输入框提示文案改为「今天能帮你做点什么呢？」；聚焦（点击输入框）不再清空 placeholder，提示文字保持显示，有文本时由 Qt 自然隐藏。
+3. 权限胶囊图标随当前档位切换，且三档互不相同：`ask=hand` / `edit=wrench` / `yolo=shield-alert`（与权限菜单三行 SVG 同源），前两档不再共用盾牌。
+
 ## 6. 非目标
 - 不改 `agent_llm.EFFORTS` 与力度映射算法、不改上下文解析优先级链、不改执行模式在引擎内的语义、不做设置页其他控件重排。
