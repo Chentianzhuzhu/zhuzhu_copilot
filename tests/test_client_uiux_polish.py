@@ -828,6 +828,37 @@ def test_workdir_combo_widens_for_long_names(panel, tmp_path):
         panel._sync_workdir_combo()
 
 
+def test_workdir_combo_reclaims_gap_before_arrow(panel, tmp_path):
+    """按钮宽度不变，把「文字右缘 → 下拉箭头」之间多留的空白还给文字（长名少截断）。
+
+    QSS 默认 `padding-right(12) + drop-down(22)` 让文字在离箭头还有 ~19px 处就省略；
+    收窄为 6px + 14px（chevron 左缘仍在 -15 附近），留出 5~6px 呼吸后其余空白全给文字。
+    sizeHint 由 `_ArrowComboBox._hint_w` 覆盖为原公式，按钮尺寸与改动前一致。
+    """
+    from PyQt6.QtGui import QFont, QFontMetrics
+    d = tmp_path / "zhuzhu-copilot-very-long-project-directory-name"
+    d.mkdir()
+    raw = panel._settings.value(ap.AgentPanel._WD_RECENT_KEY, "")
+    try:
+        panel._push_recent_workdir(str(d))
+        panel._sync_workdir_combo()
+        c = panel.wd_combo
+        qss = c.styleSheet()
+        assert "padding-right: 6px" in qss, "工作目录下拉未收窄右侧内边距"
+        assert f"width: {ap.COMBO_ARROW_W - 8}px" in qss, "下拉区宽度未收窄，箭头前空白仍在"
+        f = QFont(c.font())
+        f.setPixelSize(ap.FONT_SMALL)
+        fm = QFontMetrics(f)
+        text_w = max((fm.horizontalAdvance(c.itemText(i)) for i in range(c.count())),
+                     default=0)
+        expected = max(130, min(280, text_w + 66))
+        assert c.sizeHint().width() == expected, "按钮宽度偏离原按内容计算值"
+        assert c.maximumWidth() == expected
+    finally:
+        panel._settings.setValue(ap.AgentPanel._WD_RECENT_KEY, raw)
+        panel._sync_workdir_combo()
+
+
 def test_new_session_inherits_previous_workdir():
     """新开对话沿用上一个对话的实际生效工作目录（接线守卫：防改动丢继承逻辑）"""
     import inspect

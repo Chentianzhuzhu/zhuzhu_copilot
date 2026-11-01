@@ -721,7 +721,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     global _W_TITLE, _W_STRONG, _W_BUTTON, _W_EMPHASIS
     global _BTN_GHOST, _BTN_COMPACT, _BTN_GHOST_ACCENT, _BTN_PRIMARY, _BTN_DIM
     global _BTN_GHOST_FRAMED
-    global _QCOMBO, _HOME_COMBO, _BTN_ICON, _BTN_DANGER
+    global _QCOMBO, _HOME_COMBO, _WD_COMBO, _BTN_ICON, _BTN_DANGER
     global _THEME_VERSION, _LAST_PALETTE
     # 幂等：色板与上次一致则跳过，避免 _THEME_VERSION 无谓自增 + QSS 重复生成
     if not force and _LAST_PALETTE and _LAST_PALETTE == t:
@@ -860,6 +860,13 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                    f"border: none;"
                    f" selection-background-color: {_combo_hover};"
                    f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
+    # 工作目录下拉：默认 `padding-right(12) + drop-down(22)` 会在文字右缘与 chevron 之间
+    # 留出约 19px 空档，长项目名明明还有位置却被提前省略。这里只收窄**右侧**内边距与
+    # 下拉区（6px + 14px，chevron 左缘约在 -15px），把这段空白还给文字并留 5~6px 呼吸；
+    # 按钮宽度由 `_ArrowComboBox.sizeHint` 覆盖为原计算值，控件尺寸与配色都不变。
+    _WD_COMBO = (_HOME_COMBO
+                 + "QComboBox { padding-right: 6px; }"
+                 + f"QComboBox::drop-down {{ width: {COMBO_ARROW_W - 8}px; }}")
     _BTN_ICON = (f"QPushButton {{ background: {_soft_fill(BG)}; border: none;"
                  f"border-radius: {RADIUS_SM}px; }}"
                  f"QPushButton:hover {{ background: {HOVER}; }}")
@@ -11820,6 +11827,14 @@ class _ArrowComboBox(ArrowComboBox):
     要么被样式表吃掉，收敛到一处后新增下拉只写 `_ArrowComboBox()` 即可。
     """
 
+    # >0 时用该宽度覆盖 sizeHint：QSS 收窄右侧内边距/下拉区后，样式算出的宽度会变小，
+    # 由调用方显式指定原按钮宽度即可「按钮不变、文字区变宽」（见 _WD_COMBO）。
+    _hint_w = 0
+
+    def sizeHint(self) -> QSize:
+        s = super().sizeHint()
+        return QSize(int(self._hint_w), s.height()) if self._hint_w else s
+
 
 class _TurnWrap(QWidget):
     """AI 回合的包裹层：纵向排 [回合本体][重试行]（重试按钮位于回合正下方外侧）。
@@ -21999,7 +22014,7 @@ class AgentPanel(QDialog):
         # 增长只占用中间弹性区（stretch），不会挤压模型/发送按钮，保证视觉对齐
         self.wd_combo.setMaximumWidth(280)
         self.wd_combo.setIconSize(QSize(16, 16))
-        self.wd_combo.setStyleSheet(_HOME_COMBO)
+        self.wd_combo.setStyleSheet(_WD_COMBO)
         self.wd_combo.setToolTip(_ui("当前对话的工作目录（选择已有目录或添加文件夹）"))
         self.wd_combo.currentIndexChanged.connect(self._on_wd_combo)
         self.wd_combo.setAcceptDrops(False)
@@ -24100,10 +24115,14 @@ class AgentPanel(QDialog):
                           for i in range(combo.count())), default=0)
             # 宽度按内容：sizeHint 跟随最长条目，但不超过工具行可用空间（stretch 先让步）；
             # 空间不足时回落到最小 130px，不会挤压模型/发送按钮
+            desired = max(130, min(280, text_w + 66))
             combo.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToContents)
             combo.setMinimumWidth(130)
-            combo.setMaximumWidth(max(130, min(280, text_w + 66)))
+            combo.setMaximumWidth(desired)
+            # 按钮宽度与收窄右侧内边距前保持一致：QSS 省下的空白只还给文字（见 _WD_COMBO）
+            combo._hint_w = desired
+            combo.updateGeometry()
             # 弹出列表同样加宽：长项目名在下拉列表里也不能被截断
             view = combo.view()
             if view is not None:
@@ -28397,7 +28416,7 @@ class AgentPanel(QDialog):
              f"color: {ACCENT}; font-size: 16px; font-weight: 800;")
         _set(getattr(self, "session_combo", None), _HOME_COMBO)
         _set(getattr(self, "model_combo", None), _HOME_COMBO)
-        _set(getattr(self, "wd_combo", None), _HOME_COMBO)
+        _set(getattr(self, "wd_combo", None), _WD_COMBO)
         _set(getattr(self, "token_label", None),
              f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
         _set(getattr(self, "settings_btn", None), _BTN_ICON)
