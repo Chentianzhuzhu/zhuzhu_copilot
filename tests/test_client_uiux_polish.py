@@ -855,3 +855,146 @@ def test_settings_combos_use_arrow_combo_for_smooth_popup():
         assert isinstance(dlg.theme_combo, ap.ArrowComboBox)
     finally:
         dlg.close()
+
+
+# ---------- 7. Agent 询问改抽屉 + 选择题整行对勾 ----------
+
+def test_ask_drawer_anchors_to_composer(panel):
+    """抽屉与输入卡同宽、底边贴齐：短内容不低于输入卡，长内容向上生长。"""
+    from PyQt6.QtCore import QPoint
+    drawer = panel._ask_drawer
+    comp = panel.composer
+    assert isinstance(drawer, ap._AskDrawer)
+    assert drawer._composer is comp, "抽屉必须贴合输入卡"
+    drawer._multi = False
+    drawer._other = None
+    drawer._build_ask("继续用哪种方案？", ["方案 A", "方案 B"], False)
+    h = drawer._desired_height()
+    assert h >= comp.height(), "内容不足以低于输入卡高度（应与输入卡等大）"
+    host = drawer.parentWidget()
+    pos = comp.mapTo(host, QPoint(0, 0))
+    rect = drawer._target_rect(h)
+    assert rect.width() == comp.width(), "抽屉宽度必须与输入卡一致"
+    assert rect.x() == pos.x(), "抽屉左缘应与输入卡对齐"
+    assert rect.y() + rect.height() == pos.y() + comp.height(), "抽屉底边应贴输入卡底边"
+
+
+def test_ask_drawer_slides_and_fades(panel):
+    """开关抽屉走位移 + 透明度渐变（不是瞬间弹出），落定后与目标矩形一致。"""
+    drawer = panel._ask_drawer
+    drawer._multi = False
+    drawer._other = None
+    drawer._build_ask("确认继续吗？", ["是", "否"], False)
+    drawer._open_shell()
+    assert len(drawer._anims) >= 2, "抽屉缺少位移/淡入动画"
+    assert drawer._eff.opacity() < 1.0, "抽屉应从透明淡入"
+    _pump(320)
+    target = drawer._target_rect(drawer._desired_height())
+    assert drawer.geometry() == target, "动画落点未对准输入卡"
+    assert drawer._eff.opacity() == pytest.approx(1.0), "淡入未完成"
+    drawer._stop_anims()
+    drawer.hide()
+
+
+def test_choice_option_is_whole_row_with_checkmark():
+    """选项整行可点：勾选后左侧圆内出现对勾，强调色底覆盖到行尾（不是只染指示器）。"""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage
+    row = ap._ChoiceOption("方案 A")
+    assert isinstance(row, ap.QAbstractButton) and row.isCheckable()
+    assert row.height() == ap._ChoiceOption.ROW_H >= 34, "点击热区应是整行高度"
+    row.resize(320, ap._ChoiceOption.ROW_H)
+
+    def _render(checked: bool) -> QImage:
+        row.setChecked(checked)
+        img = QImage(row.size(), QImage.Format.Format_ARGB32)
+        img.fill(Qt.GlobalColor.transparent)
+        row.render(img)
+        return img
+
+    cx = ap._ChoiceOption.PAD_L + ap._ChoiceOption.IND_R
+    cy = row.height() // 2
+    on = _render(True)
+    off = _render(False)
+    from PyQt6.QtGui import QColor
+    # 选中：指示圆为强调色实心 + 白色对勾；未选中只有淡灰描边（不画对勾）
+    assert on.pixelColor(cx, cy - 6).name() == QColor(ap.ACCENT).name(), "指示圆未填充强调色"
+    assert on.pixelColor(cx, cy).lightness() > 240, "选中态缺少白色对勾"
+    assert off.pixelColor(cx, cy - 6).name() != QColor(ap.ACCENT).name(), "未选中不应填充强调色"
+    assert off.pixelColor(cx, cy).lightness() < on.pixelColor(cx, cy).lightness(), \
+        "未选中不应画对勾"
+    # 整行底：行尾也随选中淡染（反馈覆盖整条选项，而不是只有指示器）
+    assert on.pixelColor(row.width() - 4, cy) != off.pixelColor(row.width() - 4, cy), \
+        "选中底色未覆盖到行尾"
+
+
+def test_choice_option_click_anywhere_selects():
+    """点在文字右侧空白处也应选中（热区是整行矩形，而非只有指示器+文字）。"""
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
+    row = ap._ChoiceOption("方案 A")
+    row.resize(320, ap._ChoiceOption.ROW_H)
+    row.show()
+    _pump(20)
+    QTest.mouseClick(row, Qt.MouseButton.LeftButton,
+                     pos=QPoint(row.width() - 8, row.height() // 2))
+    assert row.isChecked(), "整行右侧空白处点击未命中"
+    row.close()
+
+
+def test_ask_drawer_grows_when_other_input_shown(panel):
+    """勾选「其他…」露出自由输入框时抽屉随之增高，且底边仍与输入卡对齐（不裁内容）。"""
+    drawer = panel._ask_drawer
+    drawer._finished = False
+    drawer._multi = False
+    drawer._other = None
+    drawer._build_ask("继续吗？", ["是", "否"], False)
+    drawer._open_shell()
+    _pump(320)
+    h0, bottom = drawer.height(), drawer.geometry().bottom()
+    drawer._on_opt(drawer._other)
+    _pump(80)
+    assert drawer.height() > h0, "露出自定义输入框后抽屉未增高（底部内容会被裁掉）"
+    assert drawer.geometry().bottom() == bottom, "增高后底边应与输入卡底边保持一致"
+    drawer._finished = True
+    drawer._stop_anims()
+    drawer.hide()
+
+
+def test_ask_drawer_returns_selected_answer(panel):
+    """抽屉内作答后嵌套事件循环返回所选文本（替代旧模态弹窗的交互路径）。"""
+    from PyQt6.QtCore import QTimer
+    drawer = panel._ask_drawer
+    QTimer.singleShot(40, lambda: (drawer._opts[0].click(), drawer._accept_ask()))
+    ans = drawer.ask("选一个", ["甲", "乙"], False)
+    assert ans == "甲", ans
+    _pump(300)
+    assert not drawer.isVisible(), "作答后抽屉应收起"
+
+
+def test_confirm_drawer_result_fields(panel):
+    """确认抽屉的三种次级操作映射到独立结果字段（宿主据此批量放行/停任务）。"""
+    drawer = panel._ask_drawer
+    drawer._build_confirm("run_command", {"command": "git status"}, "risky")
+    drawer._allow_bulk()
+    assert drawer._res.result_ok is True and drawer._res.bulk_allow is True
+    drawer._build_confirm("run_command", {"command": "rm -rf build"}, "dangerous")
+    drawer._deny_stop()
+    assert drawer._res.result_ok is False and drawer._res.stop_requested is True
+
+
+def test_ask_confirm_flow_uses_drawer_only():
+    """接线守卫：提问/确认统一走抽屉，旧模态弹窗类已删除。"""
+    assert "self._ask_drawer.ask(" in SRC
+    assert "self._ask_drawer.confirm(" in SRC
+    assert "_AskUserDialog" not in SRC, "旧提问弹窗未删除"
+    assert "_ConfirmDialog" not in SRC, "旧确认弹窗未删除"
+
+
+def test_drawer_busy_guards_switch_and_stop():
+    """抽屉用嵌套事件循环：切会话前必须拦截重入，停止任务时一并收起抽屉。"""
+    import inspect
+    switch_src = inspect.getsource(ap.AgentPanel._switch_to)
+    assert "drawer.busy" in switch_src, "切换对话未拦截抽屉等待中的重入"
+    stop_src = inspect.getsource(ap.AgentPanel._stop)
+    assert "drawer.cancel()" in stop_src, "停止任务未收起等待中的抽屉"

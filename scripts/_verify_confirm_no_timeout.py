@@ -1,12 +1,11 @@
-"""确认/提问弹窗「无限等待」+ 任务内确认去重冒烟验证（offscreen）。
+"""作答抽屉「无限等待」+ 任务内确认去重冒烟验证（offscreen）。
 
 验证点：
-1. _ConfirmDialog / _AskUserDialog 不再创建超时定时器（无限等待用户作答）
-2. 同一「工具+参数」本次任务内只弹一次确认窗，缓存命中直接复用上次结果
+1. 作答抽屉不再创建超时定时器（无限等待用户作答）
+2. 同一「工具+参数」本次任务内只弹一次确认，缓存命中直接复用上次结果
 3. 任务结束（_show_end_badge）清理确认缓存，下个任务重新弹窗
 """
 
-from zhuzhu_Copilot import app_identity
 import os
 import sys
 
@@ -19,6 +18,7 @@ from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
 
+from zhuzhu_Copilot import app_identity
 from zhuzhu_Copilot.ui import agent_panel as ap
 
 
@@ -30,12 +30,10 @@ def main() -> int:
     p = ap.AgentPanel()
     p.show()
 
-    # 1) 弹窗不再创建超时定时器（无限等待）
-    d = ap._ConfirmDialog("run_command", {"command": "x"}, "risky", p)
-    assert not hasattr(d, "_timeout_timer"), "确认弹窗不应有超时定时器"
-    a = ap._AskUserDialog("测试问题", None, p)
-    assert not hasattr(a, "_timeout_timer"), "提问弹窗不应有超时定时器"
-    print("1) 确认/提问弹窗无超时定时器 OK")
+    # 1) 抽屉不再创建超时定时器（无限等待）
+    d = p._ask_drawer
+    assert not hasattr(d, "_timeout_timer"), "作答抽屉不应有超时定时器"
+    print("1) 作答抽屉无超时定时器 OK")
 
     # 2) 任务内确认去重：同一命令只弹一次
     p._session_id = "test_sid"

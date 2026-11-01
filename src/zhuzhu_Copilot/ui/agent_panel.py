@@ -45,6 +45,7 @@ from PyQt6.QtCore import (
     QThread,
     QTimer,
     QUrl,
+    QEventLoop,
     QVariantAnimation,
     pyqtProperty,
     pyqtSignal,
@@ -79,6 +80,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
+    QAbstractButton,
     QAbstractScrollArea,
     QApplication,
     QCheckBox,
@@ -4125,178 +4127,25 @@ class _CopilotPluginDetailDialog(QDialog):
             QMessageBox.warning(self, _ui("导出失败"), msg)
 
 
-class _ConfirmDialog(QDialog):
-    """工具执行确认：显示操作与风险等级（不再内嵌屏幕截图，更轻更快）
-
-    快捷键：回车 = 允许执行；空格再回车 = 允许执行并加入 bash 命令白名单
-    （本次起该命令免确认）。命令过长时截断显示。
-    """
-
-    def __init__(self, name: str, args: dict, risk: str, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(_ui("AI 请求执行操作"))
-        self.setMinimumSize(560, 430)
-        self.result_ok = False
-        self.bulk_allow = False    # "本次任务内全部允许"：整段任务免（非危险）确认
-        self.stop_requested = False  # "拒绝并停止任务"：终止在途任务
-        self._space_pending = 0.0   # 空格按下时间戳：空格+回车=允许并加白名单
-
-        # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
-        # 而确认弹窗是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
-        _dlg_bg = _base_color("PANEL")
-        _in_bg = _base_color("BG")
-        _bd = _base_color("BORDER")
-        self.setStyleSheet(
-            f"QDialog {{ background: {_dlg_bg}; }}"
-            f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
-            f"QPushButton {{ border: none; border-radius: 10px; "
-            f"padding: 9px 22px; font-weight: 700; font-size: 13px; }}")
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(12)
-
-        risk_color = {"safe": OK, "risky": WARN, "dangerous": ERR}
-        risk_txt = {"safe": _ui("安全（白名单）"), "risky": _ui("需谨慎"), "dangerous": _ui("危险（确认后将执行）")}
-        head = QLabel(_uif("AI 想执行：<b>{a0}</b>　风险：<span style='color:{a1}'>{a2}</span>", a0=_esc(name), a1=risk_color.get(risk, TEXT), a2=risk_txt.get(risk, risk)))
-        head.setStyleSheet("font-size: 14px;")
-        lay.addWidget(head)
-
-        arg_txt = QPlainTextEdit()
-        arg_txt.setReadOnly(True)
-        arg_txt.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        arg_txt.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        # 只读 + 可滚动：命令/参数过长时滚动查看，避免内容把弹窗控件挤压变形
-        arg_txt.setStyleSheet(
-            f"background: {_in_bg}; color: {TEXT_DIM}; border: 1px solid {_bd};"
-            "border-radius: 8px; padding: 10px; font-size: 12px; font-family: Consolas;"
-            "selection-background-color: rgba(255,255,255,120);"
-            + _scrollbar_css(4, 3, both=False))
-        lay.addWidget(arg_txt, 1)
-
-        if name in _HIDE_CONTENT_TOOLS:
-            # 写入类操作：隐藏写入内容正文，仅显示目标路径与操作类型
-            if name == "save_memory":
-                shown = {"目标": "本地记忆文件 memory.md",
-                         "写入量": f"{len(str(args.get('content', '')))} 字符"}
-            else:
-                shown = {"目标路径": args.get("path", ""),
-                         "操作": {"write_file": "覆盖写入", "edit_file": "精确替换"}.get(name, name)}
-            arg_txt.setPlainText(
-                _uim("（写入内容已隐藏，仅确认是否允许此操作）\n\n")
-                + json.dumps(shown, ensure_ascii=False, indent=2))
-        else:
-            text = json.dumps(args, ensure_ascii=False, indent=2)
-            # 命令/内容过长时截断显示，避免弹窗被超长文本撑爆
-            if len(text) > 600:
-                text = text[:600] + "\n…（内容过长，仅显示前 600 字符）"
-            arg_txt.setPlainText(text)
-
-        # 快捷键提示
-        hint = QLabel(_ui("回车 = 允许｜空格 + 回车 = 允许并加入白名单（该命令免确认）｜Esc = 拒绝｜弹窗将一直等待你的选择，不会自动超时"))
-        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
-        lay.addWidget(hint)
-
-        btns = QHBoxLayout()
-        deny = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogNoButton), _ui("拒绝"))
-        deny.setStyleSheet(f"background: {ERR}; color: white;")
-        deny.setAutoDefault(False)
-        deny.clicked.connect(self._deny)
-        allow = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), _ui("允许执行"))
-        allow.setStyleSheet(f"background: {OK}; color: #06281B;")
-        allow.setAutoDefault(False)
-        allow.clicked.connect(self._allow)
-        wl = QPushButton(_ui("允许并加入白名单"))
-        wl.setStyleSheet(f"background: {ACCENT}; color: white;")
-        wl.setAutoDefault(False)
-        wl.clicked.connect(self._allow_whitelist)
-        btns.addWidget(deny)
-        btns.addWidget(allow)
-        btns.addWidget(wl)
-        lay.addLayout(btns)
-        # 次级操作：本次任务内批量授权 / 拒绝并停止整段任务（缓解多步自动化点击疲劳）
-        sub = QHBoxLayout()
-        sub.addStretch(1)
-        bulk = QPushButton(_ui("本次任务内全部允许"))
-        bulk.setStyleSheet(f"background: transparent; color: {ACCENT}; border: none;"
-                           f"font-size: {FONT_SMALL}px; font-weight: 700;")
-        bulk.setAutoDefault(False)
-        bulk.clicked.connect(self._allow_bulk)
-        stop = QPushButton(_ui("拒绝并停止任务"))
-        stop.setStyleSheet(f"background: transparent; color: {ERR}; border: none;"
-                           f"font-size: {FONT_SMALL}px; font-weight: 700;")
-        stop.setAutoDefault(False)
-        stop.clicked.connect(self._deny_stop)
-        sub.addWidget(bulk)
-        sub.addWidget(stop)
-        lay.addLayout(sub)
-        add_brand_footer(self)
-        # 与 AI 主面板统一：主题面板色 + 浅色描边。
-
-    def _timeout_close(self):
-        """弹窗超时：置拒绝并关闭，释放主线程与引擎等待，任务按拒绝继续推进"""
-        # 用户已手动应答后宿主在 exec 返回时已读取结果，此后再触发无副作用
-        self.result_ok = False
-        self.reject()
-
-    # ---- 键盘快捷键：回车=允许；空格+回车=允许并加入白名单 ----
-    def keyPressEvent(self, e):
-        if e.key() == Qt.Key.Key_Space:
-            self._space_pending = time.time()
-            e.accept()
-            return
-        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if getattr(self, "_space_pending", 0) and (time.time() - self._space_pending) < 2.0:
-                self._allow_whitelist()
-            else:
-                self._allow()
-            e.accept()
-            return
-        super().keyPressEvent(e)
-
-    def _allow(self, *_):
-        self.result_ok = True
-        self.accept()
-
-    def _deny(self, *_):
-        self.result_ok = False
-        self.accept()
-
-    def _allow_whitelist(self, *_):
-        """允许执行，并把 run_command 的命令加入 bash 白名单（本次起免确认）"""
-        self._add_cmd_whitelist()
-        self._allow()
-
-    def _allow_bulk(self, *_):
-        """本次任务内全部允许：允许本条，并标记由宿主在任务内后续免确认（危险仍硬拒）"""
-        self.bulk_allow = True
-        self._allow()
-
-    def _deny_stop(self, *_):
-        """拒绝本条并请求停止整段在途任务"""
-        self.stop_requested = True
-        self._deny()
-
-    @staticmethod
-    def _add_cmd_whitelist():
-        """把本对话框对应命令加入 custom_safe_commands（幂等去重）后保存 settings。"""
-        if not _ConfirmDialog._current_cmd:
-            return
-        try:
-            s = agent_skills.load_settings()
-            cur = [str(c).strip() for c in (s.get("custom_safe_commands") or [])
-                   if str(c).strip()]
-            cmd = str(_ConfirmDialog._current_cmd).strip()
-            if cmd and cmd.lower() not in {c.lower() for c in cur}:
-                cur.append(cmd)
-                s["custom_safe_commands"] = cur
-                agent_skills.save_settings(s)
-        except Exception:
-            pass
+# 最近一次确认的 run_command 命令（供「加入白名单」写入 settings）
+_LAST_CONFIRM_CMD = ""
 
 
-# 最近一次确认的 run_command 命令（供"加入白名单"写入 settings）
-_ConfirmDialog._current_cmd = ""
+def _add_cmd_to_whitelist() -> None:
+    """把最近一次确认的命令加入 custom_safe_commands（幂等去重）后保存 settings。"""
+    cmd = str(_LAST_CONFIRM_CMD).strip()
+    if not cmd:
+        return
+    try:
+        s = agent_skills.load_settings()
+        cur = [str(c).strip() for c in (s.get("custom_safe_commands") or [])
+               if str(c).strip()]
+        if cmd.lower() not in {c.lower() for c in cur}:
+            cur.append(cmd)
+            s["custom_safe_commands"] = cur
+            agent_skills.save_settings(s)
+    except Exception:
+        pass
 
 
 # 常用 MCP 服务器模板（选择后预填命令）
@@ -11317,110 +11166,411 @@ class _ProviderDialog(QDialog):
         return p
 
 
-class _AskUserDialog(QDialog):
-    """AI 提问弹窗（TRAE 风格）：单选/多选选项或自由回答"""
+class _DrawerResult:
+    """抽屉确认结果：字段与宿主读取约定一致（result_ok / bulk_allow / stop_requested）。"""
 
-    def __init__(self, question: str, options: list, multi_select: bool, parent=None):
+    def __init__(self):
+        self.result_ok = False
+        self.bulk_allow = False
+        self.stop_requested = False
+
+
+class _ChoiceOption(QAbstractButton):
+    """整行可点的选项：勾选后左侧绘制对勾，底色覆盖「指示器 + 文字」整行。
+
+    不用 QRadioButton：原生指示器的点击热区只有圆点与文字，右侧留白按到无效；
+    整行做成按钮后热区即整行矩形，``paintEvent`` 画一层圆角底（悬停淡化、选中强调色
+    淡染）让反馈覆盖整个选项，符合「点哪儿都能选中」的操作直觉。
+    """
+
+    ROW_H = 38          # 整行高度（含点击热区）
+    IND_R = 8           # 指示圆半径（直径 16，与正文行高相称）
+    PAD_L = 12          # 行左内边距
+    GAP = 10            # 指示器与文字的间距
+    PAD_R = 12
+
+    def __init__(self, text: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(_ui("AI 询问"))
-        self.setMinimumWidth(460)
-        self._answer = ""
-        # 表面色取原始色板：壁纸透出模式下容器色被覆写为 transparent，
-        # 而提问弹窗是独立不透明窗口 → 透明底渲染成纯黑（见 _base_color）。
-        _dlg_bg = _base_color("PANEL")
-        _line_bg = _base_color("BG")
-        _line_bd = _base_color("BORDER")
-        self.setStyleSheet(
-            f"QDialog {{ background: {_dlg_bg}; }}"
-            f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
-            f"QRadioButton, QCheckBox {{ color: {TEXT}; font-size: 13px; spacing: 10px; }}"
-            # 选择圆圈/复选框：未选中白色边框，选中填充强调色
-            "QRadioButton::indicator, QCheckBox::indicator { width: 14px; height: 14px;"
-            f" border: 1.5px solid #FFFFFF; background: transparent; }}"
-            "QRadioButton::indicator { border-radius: 8px; }"
-            "QCheckBox::indicator { border-radius: 3px; }"
-            f"QRadioButton::indicator:checked, QCheckBox::indicator:checked {{"
-            f" background: {ACCENT}; border-color: {ACCENT}; }}"
-            f"QLineEdit {{ background: {_line_bg}; color: {TEXT}; border: 1px solid {_line_bd};"
-            "border-radius: 8px; padding: 8px 12px; font-size: 13px; }}"
-            f"QPushButton {{ border: none; border-radius: 8px; padding: 8px 22px;"
-            "font-weight: 700; font-size: 13px; }}")
+        self.setText(str(text))
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedHeight(self.ROW_H)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        f = QFont(self.font())
+        f.setPixelSize(FONT_SMALL + 1)
+        self.setFont(f)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 18, 20, 18)
-        lay.setSpacing(12)
+    def sizeHint(self) -> QSize:
+        fm = QFontMetrics(self.font())
+        w = (self.PAD_L + self.IND_R * 2 + self.GAP
+             + fm.horizontalAdvance(self.text()) + self.PAD_R)
+        return QSize(w, self.ROW_H)
 
-        q_lbl = QLabel(question)
-        q_lbl.setWordWrap(True)
-        q_lbl.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {TEXT};")
-        # 问题文本过长时滚动查看：包进限高的滚动区域，避免把选项/按钮挤出屏幕外无法点击
-        q_wrap = QScrollArea()
-        q_wrap.setWidgetResizable(True)
-        q_wrap.setMaximumHeight(200)
-        q_wrap.setFrameShape(QFrame.Shape.NoFrame)
-        q_wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        q_wrap.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            + _scrollbar_css(both=False))
-        q_wrap.setWidget(q_lbl)
-        lay.addWidget(q_wrap)
+    def enterEvent(self, e):
+        self.update()
+        super().enterEvent(e)
 
-        self._choice_btns = []
-        # 自定义输入框：有选项时默认隐藏（由"其他…"勾选控制显示），无选项时直接作自由回答
-        self._free_input = QLineEdit()
-        self._free_input.setPlaceholderText(_ui("输入自定义内容…"))
-        self._free_input.hide()
-        lay.addWidget(self._free_input)
-        if options:
-            for opt in options:
-                b = QCheckBox(str(opt)) if multi_select else QRadioButton(str(opt))
-                b.setAutoExclusive(not multi_select)
-                self._choice_btns.append(b)
-                lay.addWidget(b)
-            # "其他…"选项：勾选后显示输入框，可输入自定义内容
-            other = QCheckBox(_ui("其他…")) if multi_select else QRadioButton(_ui("其他…"))
-            other.setAutoExclusive(not multi_select)
-            other.toggled.connect(lambda on: self._free_input.setVisible(on))
-            self._choice_btns.append(other)
-            lay.addWidget(other)
-            self._free_input.setPlaceholderText(_ui("输入自定义内容…"))
+    def leaveEvent(self, e):
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(self.rect())
+        hover = self.underMouse()
+        accent = QColor(ACCENT)
+        # 整行底：选中态用强调色淡染、悬停态用文字色极淡填充（不描边，避免多余线条）
+        if self.isChecked():
+            accent.setAlphaF(0.18 if hover else 0.12)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(accent)
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS_SM, RADIUS_SM)
+        elif hover:
+            tint = QColor(_base_color("TEXT"))
+            tint.setAlphaF(0.06)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(tint)
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS_SM, RADIUS_SM)
+
+        cy = r.center().y()
+        cx = self.PAD_L + self.IND_R
+        # 指示圆：未选中为淡灰描边空心圆；选中为强调色实心圆 + 白色对勾
+        if self.isChecked():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(ACCENT))
+            p.drawEllipse(QPointF(cx, cy), self.IND_R, self.IND_R)
+            pen = QPen(QColor("#FFFFFF"), 1.7)
+            p.setPen(pen)
+            tick = QPainterPath()
+            tick.moveTo(cx - 3.4, cy + 0.3)
+            tick.lineTo(cx - 1.0, cy + 2.6)
+            tick.lineTo(cx + 3.6, cy - 2.6)
+            p.drawPath(tick)
         else:
-            self._free_input.setPlaceholderText(_ui("输入你的回答…"))
-            self._free_input.show()
+            edge = QColor(_base_color("BORDER_SOFT"))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(edge, 1.4))
+            p.drawEllipse(QPointF(cx, cy), self.IND_R, self.IND_R)
 
-        # 无限等待提示：弹窗保持打开直到作答/取消，不会自动超时
-        timeout_hint = QLabel(_ui("弹窗将一直等待你的回答，不会自动超时"))
-        timeout_hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
-        lay.addWidget(timeout_hint)
+        p.setPen(QColor(TEXT))
+        text_rect = QRectF(cx + self.IND_R + self.GAP, 0,
+                           r.width() - (cx + self.IND_R + self.GAP) - self.PAD_R, r.height())
+        p.drawText(text_rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   self.text())
 
-        btns = QHBoxLayout()
-        ok = QPushButton(_std_icon(QStyle.StandardPixmap.SP_DialogYesButton), _ui("确定"))
-        ok.setStyleSheet(f"background: {OK}; color: #06281B;")
-        ok.clicked.connect(self._accept_clicked)
+
+class _AskDrawer(QFrame):
+    """贴着输入卡上滑的作答抽屉：宽度与输入卡一致、底边与输入卡底边对齐。
+
+    引擎在工具内提问 / 请求确认时线程阻塞等待，主线程由宿主调用 ``ask`` /
+    ``confirm``；本类用嵌套 ``QEventLoop`` 承接交互（等价于旧模态弹窗），但交互面
+    贴着输入卡滑出，用户的视线不必离开对话，也不打断正在进行的输入。
+    内容高于输入卡时向聊天区上方生长（可用高度封顶），短内容时与输入卡等大。
+    """
+
+    SLIDE_MS = motion.SETTLE_MS      # 滑入 / 收起时长（与全局「落定」一致）
+    RISE_PX = 26                     # 起始位置下移量：制造「从输入卡底下升起」的位移
+
+    def __init__(self, host: QWidget, composer: QWidget):
+        super().__init__(host)
+        self.setObjectName("askDrawer")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._composer = composer
+        self._body = None
+        self._loop = None
+        self._eff = None
+        self._anims: list = []
+        self._space_ts = 0.0
+        self._on_enter = None
+        self._on_escape = None
+        self._answer = ""
+        self._res = None
+        self._finished = True
+        # 外壳布局只建一次：内容每次重建时替换 body，避免重复 setLayout 警告
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        composer.installEventFilter(self)
+        self.hide()
+
+    # ---------- 主题 ----------
+    def _apply_theme(self):
+        """浮层用 ELEVATED 分层 + 无描边；按钮沿用确认弹窗的语义色。"""
+        surf = _base_color("ELEVATED")
+        field = _base_color("FIELD")
+        line = _base_color("BORDER")
+        self.setStyleSheet(
+            f"#askDrawer {{ background: {surf}; border: none;"
+            f" border-radius: {RADIUS_LG}px; }}"
+            f"#askDrawer QLabel {{ color: {TEXT}; }}"
+            f"#askDrawer QLabel#drawerHint {{ color: {TEXT_DIM};"
+            f" font-size: {FONT_CAPTION}px; }}"
+            f"#askDrawer QLineEdit {{ background: {field}; color: {TEXT};"
+            f" border: 1px solid {line}; border-radius: {RADIUS_SM}px;"
+            " padding: 7px 10px; font-size: 13px; }"
+            f"#askDrawer QPlainTextEdit {{ background: {field}; color: {TEXT_DIM};"
+            f" border: 1px solid {line}; border-radius: {RADIUS_SM}px;"
+            " padding: 8px; font-size: 12px; font-family: Consolas; }"
+            f"#askDrawer QPushButton {{ border: none; border-radius: {RADIUS_SM}px;"
+            " padding: 8px 18px; font-weight: 700; font-size: 13px; }"
+            f"#askDrawer QPushButton#drawerOk, #askDrawer QPushButton#drawerAllow"
+            f" {{ background: {OK}; color: #06281B; }}"
+            f"#askDrawer QPushButton#drawerDeny {{ background: {ERR}; color: white; }}"
+            f"#askDrawer QPushButton#drawerWhitelist {{ background: {ACCENT};"
+            " color: white; }"
+            f"#askDrawer QPushButton#drawerCancel {{ background: {field};"
+            f" color: {TEXT}; }}"
+            f"#askDrawer QPushButton#drawerSub {{ background: transparent;"
+            f" color: {ACCENT}; font-size: {FONT_SMALL}px; padding: 4px 8px; }}"
+            f"#askDrawer QPushButton#drawerStop {{ background: transparent;"
+            f" color: {ERR}; font-size: {FONT_SMALL}px; padding: 4px 8px; }}"
+            f"#askDrawer QScrollArea {{ background: transparent; border: none; }}"
+            + _scrollbar_css(both=False))
+
+    # ---------- 几何 ----------
+    def _target_rect(self, height: int) -> QRect:
+        host = self.parentWidget()
+        pos = self._composer.mapTo(host, QPoint(0, 0))
+        bottom = pos.y() + self._composer.height()
+        return QRect(pos.x(), bottom - int(height), self._composer.width(), int(height))
+
+    def _desired_height(self) -> int:
+        """内容高度优先，但不低于输入卡高度（短内容时与输入卡等大），且不越过面板顶端。"""
+        self.ensurePolished()      # 未 show 时 sizeHint 未套用 QSS，先抛光再量
+        comp = self._composer
+        host = self.parentWidget()
+        if host is None:
+            return max(comp.height(), 120)
+        bottom = comp.mapTo(host, QPoint(0, 0)).y() + comp.height()
+        cap = max(comp.height(), bottom - 8)
+        need = self._body.sizeHint().height() if self._body is not None else comp.height()
+        return int(min(max(need, comp.height()), cap))
+
+    def _reflow(self):
+        """内容高度变化（如勾选「其他…」露出输入框）时重新贴合，避免底部被裁掉。
+
+        子控件显隐触发的是排队的 LayoutRequest，立刻量会拿到旧 sizeHint，
+        故延到下一轮事件循环再校正。
+        """
+        if self.isVisible() and not self._finished:
+            QTimer.singleShot(0, self._reflow_now)
+
+    def _reflow_now(self):
+        if not self.isVisible() or self._finished:
+            return
+        self.layout().activate()
+        self.setGeometry(self._target_rect(self._desired_height()))
+
+    def _open_shell(self):
+        h = self._desired_height()
+        target = self._target_rect(h)
+        start = QRect(target.x(), target.y() + self.RISE_PX, target.width(), target.height())
+        self._stop_anims()
+        self.setGeometry(start)
+        self.setVisible(True)
+        self.raise_()
+        self.setFocus(Qt.FocusReason.PopupFocusReason)
+        eff = self._ensure_effect()
+        eff.setOpacity(0.0)
+        self._animate(start, target, 0.0, 1.0)
+        # 自由作答时直接聚焦输入框：用户点开即可打字，回车提交
+        free = getattr(self, "_free", None)
+        if free is not None and not free.isHidden():
+            free.setFocus(Qt.FocusReason.PopupFocusReason)
+
+    def _close_shell(self):
+        self._ensure_effect()      # 兜底：未开过抽屉时也不因缺少不透明度效果而崩
+        cur = self.geometry()
+        end = QRect(cur.x(), cur.y() + self.RISE_PX, cur.width(), cur.height())
+        self._stop_anims()
+        self._animate(cur, end, self._opacity(), 0.0, hide_on_end=True)
+
+    def _animate(self, a: QRect, b: QRect, o0: float, o1: float, hide_on_end: bool = False):
+        geo = QPropertyAnimation(self, b"geometry", self)
+        geo.setDuration(self.SLIDE_MS)
+        geo.setStartValue(a)
+        geo.setEndValue(b)
+        geo.setEasingCurve(motion.settle())
+        fade = QPropertyAnimation(self._eff, b"opacity", self)
+        fade.setDuration(self.SLIDE_MS)
+        fade.setStartValue(o0)
+        fade.setEndValue(o1)
+        fade.setEasingCurve(motion.settle())
+        self._anims += [geo, fade]
+        if hide_on_end:
+            geo.finished.connect(self._on_close_end)
+        for anim in (geo, fade):
+            anim.finished.connect(lambda a=anim: self._anims.remove(a)
+                                  if a in self._anims else None)
+            anim.start()
+
+    def _on_close_end(self):
+        self.hide()
+
+    def _stop_anims(self):
+        for anim in list(self._anims):
+            try:
+                anim.stop()
+            except RuntimeError:
+                pass
+        self._anims = []
+
+    def _ensure_effect(self):
+        if self._eff is None:
+            self._eff = QGraphicsOpacityEffect(self)
+            self._eff.setOpacity(1.0)
+            self.setGraphicsEffect(self._eff)
+        return self._eff
+
+    def _opacity(self) -> float:
+        try:
+            return float(self._eff.opacity()) if self._eff is not None else 1.0
+        except RuntimeError:
+            return 1.0
+
+    def eventFilter(self, obj, ev):
+        if obj is self._composer and self.isVisible() and not self._finished:
+            if ev.type() in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Show):
+                self.setGeometry(self._target_rect(self.height()))
+        return super().eventFilter(obj, ev)
+
+    # ---------- 内容 ----------
+    def _drop_body(self):
+        if self._body is not None:
+            self._outer.removeWidget(self._body)
+            self._body.hide()
+            self._body.setParent(None)
+            self._body.deleteLater()
+            self._body = None
+
+    def _new_body(self) -> QWidget:
+        self._drop_body()
+        body = QWidget(self)
+        body.setObjectName("askDrawerBody")
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        # 抽屉高度由宿主按内容计算，内容超高时内部滚动；布局不得反过来钉住窗口最小高
+        lay.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self._body = body
+        self._outer.addWidget(body)
+        return body
+
+    def _text_height(self, text: str, px: int, width: int,
+                     bold: bool = False, rich: bool = False) -> int:
+        """按目标宽度量出文本真实高度：换行/富文本都按布局结果算，不依赖 sizeHint。"""
+        f = QFont(self.font())
+        f.setPixelSize(int(px))
+        f.setBold(bool(bold))
+        doc = QTextDocument()
+        doc.setDefaultFont(f)
+        if rich:
+            doc.setHtml(str(text))
+        else:
+            doc.setPlainText(str(text))
+        doc.setTextWidth(max(80, int(width)))
+        return int(math.ceil(doc.size().height())) + 4
+
+    def _fit_label(self, label: QLabel, px: int, width: int, cap: int, bold: bool = False,
+                   rich: bool = False) -> None:
+        """钉住标题类标签的高度：固定高度后 body.sizeHint() 才能算出抽屉目标高度。"""
+        f = QFont(self.font())
+        f.setPixelSize(int(px))
+        f.setBold(bool(bold))
+        label.setFont(f)
+        fm = QFontMetrics(f)
+        h = self._text_height(label.text(), px, width, bold, rich)
+        label.setFixedHeight(int(max(fm.height(), min(h, cap))))
+
+    def _build_ask(self, question: str, options: list, multi: bool):
+        self._apply_theme()
+        self._multi = bool(multi)
+        self._other = None
+        body = self._new_body()
+        lay = body.layout()
+        inner_w = max(200, self._composer.width() - 28)
+
+        q = QLabel(str(question or ""))
+        q.setWordWrap(True)
+        q.setStyleSheet(f"color: {TEXT};")
+        self._fit_label(q, 14, inner_w, 120, bold=True)
+        lay.addWidget(q)
+
+        self._answer = ""
+        self._opts: list = []
+        self._free = QLineEdit()
+        self._free.setPlaceholderText(_ui("输入自定义内容…"))
+        self._free.returnPressed.connect(self._accept_ask)
+
+        if not options:
+            self._free.setPlaceholderText(_ui("输入你的回答…"))
+            lay.addWidget(self._free)
+        else:
+            box = QWidget()
+            b_lay = QVBoxLayout(box)
+            b_lay.setContentsMargins(0, 0, 0, 0)
+            b_lay.setSpacing(2)
+            for opt in options:
+                row = _ChoiceOption(str(opt))
+                row.clicked.connect(lambda _=False, r=row: self._on_opt(r))
+                self._opts.append(row)
+                b_lay.addWidget(row)
+            other = _ChoiceOption(_ui("其他…"))
+            other.clicked.connect(lambda _=False, r=other: self._on_opt(r))
+            self._opts.append(other)
+            b_lay.addWidget(other)
+            b_lay.addStretch(1)
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.Shape.NoFrame)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            area.setWidget(box)
+            area.setFixedHeight(min(box.sizeHint().height(), _ChoiceOption.ROW_H * 4 + 6))
+            lay.addWidget(area)
+            self._free.hide()
+            lay.addWidget(self._free)
+        for r in self._opts:
+            if r.text().startswith(_ui("其他…")):
+                self._other = r
+
+        hint = QLabel(_ui("抽屉会一直等待你的回答，不会自动超时"))
+        hint.setObjectName("drawerHint")
+        lay.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ok = QPushButton(_ui("确定"))
+        ok.setObjectName("drawerOk")
+        ok.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        ok.clicked.connect(self._accept_ask)
         cancel = QPushButton(_ui("取消"))
-        cancel.setStyleSheet(f"background: {_dlg_bg}; color: {TEXT};"
-                             f"border: 1px solid {_line_bd};")
-        cancel.clicked.connect(self.reject)
-        for b in (ok, cancel):
-            b.setAutoDefault(False)
-        btns.addStretch(1)
-        btns.addWidget(ok)
-        btns.addWidget(cancel)
-        lay.addLayout(btns)
-        add_brand_footer(self)
-        # 与 AI 主面板统一：主题面板色 + 浅色描边。
+        cancel.setObjectName("drawerCancel")
+        cancel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        cancel.clicked.connect(self._cancel)
+        row.addWidget(ok)
+        row.addWidget(cancel)
+        lay.addLayout(row)
+        self._on_enter = self._accept_ask
+        self._on_escape = self._cancel
 
-    def _timeout_close(self):
-        """弹窗超时：视为未作答并关闭，避免长期未回复占用模态导致程序卡死无响应"""
-        # 已作答（accept）时 _answer 非空，不覆盖；未答则标记未作答
-        if not self._answer:
-            self._answer = "（用户未作答）"
-            self.reject()
+    def _on_opt(self, row: _ChoiceOption):
+        """单选：点一行即取消其它行（再点已选中行不会被取消）；多选：各行独立。"""
+        if not self._multi:
+            if not row.isChecked():
+                row.setChecked(True)
+            for other in self._opts:
+                if other is not row and other.isChecked():
+                    other.setChecked(False)
+        if getattr(self, "_other", None) is not None:
+            self._free.setVisible(self._other.isChecked())
+            self._reflow()
 
-    def _accept_clicked(self, *_):
-        sel = [b.text() for b in self._choice_btns if b.isChecked()]
-        custom = self._free_input.text().strip() if self._free_input.isVisible() else ""
-        # 自定义输入内容替换"其他…"选项；未填写的"其他…"直接忽略
+    def _accept_ask(self, *_):
+        sel = [r.text() for r in self._opts if r.isChecked()]
+        custom = self._free.text().strip() if not self._free.isHidden() else ""
         if custom:
             sel = [custom if t.startswith(_ui("其他…")) else t for t in sel]
         else:
@@ -11431,10 +11581,168 @@ class _AskUserDialog(QDialog):
             self._answer = custom
         else:
             self._answer = "（用户未作答）"
-        self.accept()
+        self._finish()
 
-    def answer(self) -> str:
+    def _cancel(self, *_):
+        self._answer = "（用户取消回答）"
+        self._finish()
+
+    def _build_confirm(self, name: str, args: dict, risk: str):
+        self._apply_theme()
+        self._res = _DrawerResult()
+        body = self._new_body()
+        lay = body.layout()
+        inner_w = max(200, self._composer.width() - 28)
+
+        risk_color = {"safe": OK, "risky": WARN, "dangerous": ERR}
+        risk_txt = {"safe": _ui("安全（白名单）"), "risky": _ui("需谨慎"),
+                    "dangerous": _ui("危险（确认后将执行）")}
+        head = QLabel(_uif("AI 想执行：<b>{a0}</b>　风险：<span style='color:{a1}'>{a2}</span>",
+                           a0=_esc(name), a1=risk_color.get(risk, TEXT),
+                           a2=risk_txt.get(risk, risk)))
+        head.setWordWrap(True)
+        self._fit_label(head, FONT_BODY, inner_w, 70, rich=True)
+        lay.addWidget(head)
+
+        arg_txt = QPlainTextEdit()
+        arg_txt.setReadOnly(True)
+        arg_txt.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        if name in _HIDE_CONTENT_TOOLS:
+            if name == "save_memory":
+                shown = {"目标": "本地记忆文件 memory.md",
+                         "写入量": f"{len(str(args.get('content', '')))} 字符"}
+            else:
+                shown = {"目标路径": args.get("path", ""),
+                         "操作": {"write_file": "覆盖写入",
+                                  "edit_file": "精确替换"}.get(name, name)}
+            arg_txt.setPlainText(
+                _uim("（写入内容已隐藏，仅确认是否允许此操作）\n\n")
+                + json.dumps(shown, ensure_ascii=False, indent=2))
+        else:
+            text = json.dumps(args, ensure_ascii=False, indent=2)
+            if len(text) > 600:
+                text = text[:600] + "\n…（内容过长，仅显示前 600 字符）"
+            arg_txt.setPlainText(text)
+        arg_txt.setFixedHeight(110)
+        lay.addWidget(arg_txt)
+
+        hint = QLabel(_ui("回车 = 允许｜空格 + 回车 = 允许并加入白名单｜Esc = 拒绝"))
+        hint.setObjectName("drawerHint")
+        lay.addWidget(hint)
+
+        row = QHBoxLayout()
+        deny = QPushButton(_ui("拒绝"))
+        deny.setObjectName("drawerDeny")
+        deny.clicked.connect(self._deny)
+        allow = QPushButton(_ui("允许执行"))
+        allow.setObjectName("drawerAllow")
+        allow.clicked.connect(self._allow)
+        wl = QPushButton(_ui("允许并加入白名单"))
+        wl.setObjectName("drawerWhitelist")
+        wl.clicked.connect(self._allow_whitelist)
+        for b in (deny, allow, wl):
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            row.addWidget(b)
+        lay.addLayout(row)
+
+        sub = QHBoxLayout()
+        sub.addStretch(1)
+        bulk = QPushButton(_ui("本次任务内全部允许"))
+        bulk.setObjectName("drawerSub")
+        bulk.clicked.connect(self._allow_bulk)
+        stop = QPushButton(_ui("拒绝并停止任务"))
+        stop.setObjectName("drawerStop")
+        stop.clicked.connect(self._deny_stop)
+        for b in (bulk, stop):
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            sub.addWidget(b)
+        lay.addLayout(sub)
+        self._on_enter = self._confirm_enter
+        self._on_escape = self._deny
+
+    def _confirm_enter(self, *_):
+        """空格 + 回车 = 允许并加入白名单（沿用旧确认弹窗快捷键）。"""
+        if self._space_ts and (time.time() - self._space_ts) < 2.0:
+            self._allow_whitelist()
+        else:
+            self._allow()
+
+    def _allow(self, *_):
+        self._res.result_ok = True
+        self._finish()
+
+    def _deny(self, *_):
+        self._res.result_ok = False
+        self._finish()
+
+    def _allow_whitelist(self, *_):
+        _add_cmd_to_whitelist()
+        self._allow()
+
+    def _allow_bulk(self, *_):
+        self._res.bulk_allow = True
+        self._allow()
+
+    def _deny_stop(self, *_):
+        self._res.stop_requested = True
+        self._deny()
+
+    # ---------- 生命周期 ----------
+    def _run(self):
+        """构建完成后滑入并阻塞在嵌套事件循环里，直到用户作答（等价于模态弹窗）。"""
+        self._finished = False
+        self._space_ts = 0.0
+        self._open_shell()
+        self._loop = QEventLoop()
+        self._loop.exec()
+        self._loop = None
+        self._finished = True
+
+    def _finish(self):
+        if self._finished:
+            return
+        self._finished = True
+        self._close_shell()
+        if self._loop is not None and self._loop.isRunning():
+            self._loop.quit()
+
+    @property
+    def busy(self) -> bool:
+        """是否正等待用户作答/确认（宿主据此避免在嵌套事件循环里重入）。"""
+        return self._loop is not None
+
+    def cancel(self):
+        """宿主主动取消（如停止任务）：按「取消/拒绝」收起并唤醒嵌套事件循环。"""
+        if self.busy and callable(self._on_escape):
+            self._on_escape()
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        if k == Qt.Key.Key_Escape:
+            if callable(self._on_escape):
+                self._on_escape()
+            e.accept()
+            return
+        if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if callable(self._on_enter):
+                self._on_enter()
+            e.accept()
+            return
+        if k == Qt.Key.Key_Space:
+            self._space_ts = time.time()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def ask(self, question: str, options: list, multi: bool) -> str:
+        self._build_ask(question, options, multi)
+        self._run()
         return self._answer or "（用户取消回答）"
+
+    def confirm(self, name: str, args: dict, risk: str) -> _DrawerResult:
+        self._build_confirm(name, args, risk)
+        self._run()
+        return self._res
 
 
 class _ComboCheckDelegate(QStyledItemDelegate):
@@ -21793,6 +22101,9 @@ class AgentPanel(QDialog):
         # 提示条收进输入卡顶部（与「这次要发的内容」同一区域），不再横贯整个窗口
         self._composer_lay.insertWidget(1, self.wd_hint)
         right.addWidget(self.composer)
+        # Agent 询问/确认抽屉：贴着输入卡底边上滑、宽度与输入卡一致（第 4 条）。
+        # 所有 ask_user 提问与工具执行确认统一走这里，不再弹独立模态窗口。
+        self._ask_drawer = _AskDrawer(self, self.composer)
         QTimer.singleShot(0, self._fit_composer)   # 布局落位后贴合内容高度
         body.addLayout(right, 1)
         # 常驻侧栏：左侧历史对话抽屉 + 右侧功能胶囊栏（大厂客户端同款骨架）。
@@ -23258,6 +23569,12 @@ class AgentPanel(QDialog):
     def _switch_to(self, sid: str):
         """切换会话（多对话并发）：当前会话后台任务不中断；目标会话若已有内存态
         （可能仍在后台生成）直接恢复渲染，首次进入则后台读盘后一次性渲染。"""
+        drawer = self.__dict__.get("_ask_drawer")
+        if drawer is not None and drawer.busy:
+            # 抽屉正在等待作答/确认：先让用户处理完，避免在嵌套事件循环里重入
+            self._toast(_ui("AI 正在等待你的回答"),
+                        _ui("请先在输入卡上方的抽屉里作答或取消，再切换对话"), False)
+            return
         self._auto_scroll = True    # 切换会话：恢复自动滚动
         self._voice_abort()          # 换会话即中止录音，避免识别文本落到别的对话
         self._commit_sess()
@@ -31454,6 +31771,10 @@ class AgentPanel(QDialog):
                 pass
 
     def _stop(self):
+        # 抽屉正在等作答/确认：先按「取消/拒绝」收起，唤醒嵌套事件循环，避免等待悬挂
+        drawer = self.__dict__.get("_ask_drawer")
+        if drawer is not None and drawer.busy:
+            drawer.cancel()
         # 捕获当次要停止的目标引擎：兜底回调 5s 后触发，期间用户可能已切换到其它
         # 会话启动新任务，self._engine 已指向新引擎。若兜底误用当前引擎会把仍在
         # 运行的其它会话强制隔离，故这里锁定当次要停的引擎，仅在从未切换时生效。
@@ -33359,19 +33680,19 @@ class AgentPanel(QDialog):
             args = json.loads(args_json)
         except json.JSONDecodeError:
             args = {}
-        # 供确认弹窗"加入白名单"使用：记住本次 run_command 的命令
-        _ConfirmDialog._current_cmd = (str(args.get("command") or "").strip()
-                                       if name == "run_command" else "")
+        # 供抽屉"加入白名单"使用：记住本次 run_command 的命令
+        global _LAST_CONFIRM_CMD
+        _LAST_CONFIRM_CMD = (str(args.get("command") or "").strip()
+                            if name == "run_command" else "")
         # 需要确认：右下角通知（适用于所有对话，含前台）
         self._toast(_ui("AI 请求确认"), f"对话「{self._session_label(sid)}」需确认：{name}", True)
-        dlg = _ConfirmDialog(name, args, risk, self)
-        dlg.exec()
-        self._confirm_result = dlg.result_ok
+        res = self._ask_drawer.confirm(name, args, risk)
+        self._confirm_result = res.result_ok
         # 本次任务内"全部允许"：记录会话，后续非危险操作直接放行（任务结束自动失效）
-        if getattr(dlg, "bulk_allow", False):
+        if res.bulk_allow:
             self._task_auto_ids.add(sid)
         # "拒绝并停止任务"：置停止标记并停引擎，终止在途任务
-        if getattr(dlg, "stop_requested", False):
+        if res.stop_requested:
             self._user_stopped = True
             eng = (self._sess.get(sid) or {}).get("engine") or getattr(self, "_engine", None)
             if eng is not None:
@@ -33415,12 +33736,11 @@ class AgentPanel(QDialog):
         self._toast(_ui("AI 向你提问"), f"对话「{self._session_label(sid)}」需作答："
                     f"{str(args.get('question', ''))[:40]}", False)
         # 提问不单独成卡：由 ask_user 工具结果(_on_result)把提问拼到用户回答前
-        # 一并渲染成连续问答文本（弹窗内仍完整呈现问题与选项）
-        dlg = _AskUserDialog(str(args.get("question", "")),
-                             list(args.get("options") or []),
-                             bool(args.get("multi_select", False)), self)
-        dlg.exec()
-        self._ask_result = dlg.answer()
+        # 一并渲染成连续问答文本（抽屉内仍完整呈现问题与选项）
+        self._ask_result = self._ask_drawer.ask(
+            str(args.get("question", "")),
+            list(args.get("options") or []),
+            bool(args.get("multi_select", False)))
         self._ask_evt.set()
 
     def _session_label(self, sid: str) -> str:
@@ -33474,20 +33794,18 @@ class AgentPanel(QDialog):
             return
         if st.get("pending_confirm"):
             p = st["pending_confirm"]
-            dlg = _ConfirmDialog(p["name"], p["args"], p["risk"], self)
-            dlg.exec()
-            st["confirm_result"] = dlg.result_ok
+            res = self._ask_drawer.confirm(p["name"], p["args"], p["risk"])
+            st["confirm_result"] = res.result_ok
             st["pending_confirm"] = None
             if st["confirm_evt"]:
                 st["confirm_evt"].set()
         if st.get("pending_ask"):
             pa = st["pending_ask"]
             args = pa.get("args") or {}
-            dlg = _AskUserDialog(str(args.get("question", "")),
-                                 list(args.get("options") or []),
-                                 bool(args.get("multi_select", False)), self)
-            dlg.exec()
-            answer = dlg.answer()
+            answer = self._ask_drawer.ask(
+                str(args.get("question", "")),
+                list(args.get("options") or []),
+                bool(args.get("multi_select", False)))
             # 提问由 ask_user 工具结果(bg result)统一拼接到回答前渲染，
             # 此处仅把作答结果交给引擎（引擎随后经 result 事件触发问答文本段）
             st["ask_result"] = answer

@@ -142,9 +142,19 @@
 - [x] `test_client_uiux_polish` + `test_dock_layout` + `test_tool_controls` 88 passed
 
 ### 待办（下一批）
-- [ ] Agent 询问改为输入框底部等宽抽屉 + 渐变切换动画（所有询问/确认）
-- [ ] 选择题选项加对勾样式、整行可点击阴影
+- [x] Agent 询问改为输入框底部等宽抽屉 + 渐变切换动画（所有询问/确认）
+- [x] 选择题选项加对勾样式、整行可点击阴影
 - [ ] 自然语言创建工作流时支持主 Agent 人设（persona）
+
+## T20 Agent 询问/确认抽屉 + 选择题整行对勾（第四/五条）
+- [x] `_AskDrawer`：贴着输入卡底边上滑，宽度与输入卡一致；内容高于输入卡时向上生长（封顶到面板顶端）
+- [x] 开关走 `geometry` + `opacity` 双动画（`motion.SETTLE_MS`），不再瞬间弹出
+- [x] `ask` / `confirm` 用嵌套 `QEventLoop` 承接交互，替换旧 `_AskUserDialog` / `_ConfirmDialog`
+- [x] 后台挂起的询问/确认（`_flush_pending`）同样走抽屉
+- [x] `_ChoiceOption`：整行 `QAbstractButton` 热区，选中后指示圆填强调色并画白色对勾
+- [x] 整行底色覆盖「指示器 + 文字」：悬停极淡文字色、选中强调色淡染
+- [x] 白名单命令改为模块级 `_add_cmd_to_whitelist()`（旧确认弹窗类已删除）
+- [x] 回归：抽屉几何/动画/作答返回、整行点击、对勾渲染、确认结果字段
 
 ## 已按 spec 执行的决策
 - 浮层内「自动按难度」与滑块**独立**（拖滑块不会自动关掉自动模式）。

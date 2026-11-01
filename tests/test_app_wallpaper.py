@@ -718,7 +718,7 @@ def test_global_dialog_qss_and_scrollbar_keep_base_colors_on_wallpaper(tmp_path)
 
 
 def test_dialogs_and_subwindows_use_base_surfaces_on_wallpaper(tmp_path):
-    """确认 / 多行输入 / 提问 / MCP / 服务商弹窗与停靠子窗口：窗口根底一律原始色板。"""
+    """多行输入 / MCP / 服务商弹窗与停靠子窗口：窗口根底一律原始色板。"""
     from zhuzhu_Copilot.ui import agent_panel as ap
 
     w.set_fields(bg_image=_solid_png(tmp_path), persist=False)
@@ -727,8 +727,6 @@ def test_dialogs_and_subwindows_use_base_surfaces_on_wallpaper(tmp_path):
     base_panel = ap._base_color("PANEL")
     dialogs = [
         ap._MultiLineInputDialog("标题", "说明", "初始文本"),
-        ap._ConfirmDialog("write_file", {"path": "C:/tmp/x.txt"}, "safe"),
-        ap._AskUserDialog("问题", ["选项 A", "选项 B"], False),
         ap._McpServerDialog(),
         ap._ProviderDialog(),
     ]
