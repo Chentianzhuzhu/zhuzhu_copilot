@@ -61,18 +61,21 @@ class _SettingsProxy:
 
     def __init__(self, providers, checked=False):
         self._providers = providers
-        self.context_1m_check = QCheckBox()
-        self.context_1m_check.setChecked(checked)
+        # 1M 开关已不在设置页：值由 _context_1m 字段承载（主页面浮层读写同一字段）
+        self._context_1m = bool(checked)
 
 
 def test_settings_hint_follows_priority_chain():
     """说明文案与实际引擎同源：无声明→内置表/推断；有声明→上游；开 1M→1M 开关"""
     hint = ap._AgentSettingsDialog._context_hint_text
 
-    known = hint(_SettingsProxy([{"base_url": "https://api.deepseek.com/v1",
-                                  "models": ["deepseek-chat"]}]))
+    provider = {"base_url": "https://api.deepseek.com/v1", "models": ["deepseek-chat"]}
+    known = hint(_SettingsProxy([provider]))
+    # 期望值与引擎同源（不写死数字：内置表随上游口径调整）
+    win = agent_llm.resolve_context(provider["base_url"], "deepseek-chat",
+                                    provider=provider)["window"]
     assert "内置已知服务商表" in known
-    assert ap._fmt_tokens(131072) in known and "75%" in known
+    assert ap._fmt_tokens(win) in known and "75%" in known
     assert "输入+输出" in known
 
     inferred = hint(_SettingsProxy([{"base_url": "https://self-hosted.local/v1",
@@ -104,76 +107,23 @@ def test_settings_missing_widgets_is_silent():
     ap._AgentSettingsDialog._sync_context_hint(object())   # 连 _providers 都没有时同样静默
 
 
-# ---------- 2.5 思考强度（工作力度）8 档滑块与上游声明映射 ----------
+# ---------- 2.5 设置页不再提供力度 / 1M 入口（已迁到主页面模型浮层） ----------
 
-def _model_page_dlg():
-    """构建设置对话框并只构建「模型接入」页（拿到思考强度滑块等控件）；
-    页面 widget 需挂在对话框上防 GC（真实流程由设置页栈持有引用）"""
+def test_model_page_no_longer_exposes_effort_or_context_widgets():
+    """模型接入页只保留配置字段读写：滑块/自动开关/1M 开关与说明全部移除；
+    思考模式与强制思考仍保留。"""
     dlg = ap._AgentSettingsDialog()
     dlg._stash_page = dlg._build_model_page({"model": {}})
-    return dlg
-
-
-def test_effort_slider_eight_levels_chinese_labels():
-    """8 档滑块（关闭/低/中/高/超高/最高/极致/超级），当前档位中文显示"""
-    dlg = _model_page_dlg()
     try:
-        assert dlg.effort_slider.maximum() == len(agent_llm.EFFORTS) - 1 == 7
-        assert dlg.effort_slider.minimum() == 0
-        # 初始 8 档刻度文案
-        for lbl in ("关闭", "低", "中", "高", "超高", "最高", "极致", "超级"):
-            assert lbl in dlg.effort_hint.text()
-        # 拖动 → 标签变中文
-        dlg.effort_slider.setValue(agent_llm.EFFORTS.index("ultra"))
-        dlg._on_effort_slider()
-        assert dlg._effort == "ultra" and dlg.effort_label.text() == "极致"
-    finally:
-        dlg.close()
-
-
-def test_effort_slider_is_capsule_with_level_dots_and_particles():
-    """思考强度滑杆：胶囊自绘、每个挡位一颗淡蓝小圆点（覆盖区内也显示）；
-    拖到最高档才出现多行白色粒子流动动画。"""
-    dlg = _model_page_dlg()
-    try:
-        sl = dlg.effort_slider
-        assert isinstance(sl, ap._CapsuleSlider), "思考强度滑杆必须是胶囊滑杆"
-        assert sl.tick_step == 1, "8 个档位应每档一个圆点"
-        assert sl.tick_style == ap._CapsuleSlider.TICK_STYLE_LEVEL, "档位点应为淡蓝点"
-        assert sl.maximum() == len(agent_llm.EFFORTS) - 1
-        assert sl.PARTICLE_COUNT == 100 and sl.PARTICLE_R > 0
-        # 隐藏状态下不空转动画；显示 + 满档才跑，离开满档立刻停
-        sl.setValue(sl.maximum())
-        assert not sl._anim.isActive()
-        dlg._stash_page.show()
-        _app.processEvents()
-        assert sl._anim.isActive()
-        sl.setValue(agent_llm.EFFORTS.index("high"))
-        assert not sl._anim.isActive()
+        for name in ("effort_slider", "effort_label", "effort_hint",
+                     "auto_effort_check", "context_1m_check", "context_hint"):
+            assert not hasattr(dlg, name), f"设置页仍残留 {name}（入口应只在主页面浮层）"
+        assert hasattr(dlg, "think_combo"), "思考模式必须保留在设置页"
+        assert hasattr(dlg, "force_think_check"), "强制思考必须保留在设置页"
+        for name in ("_effort", "_auto_effort", "_context_1m"):
+            assert hasattr(dlg, name), f"模型页必须仍维护配置字段 {name}"
     finally:
         dlg._stash_page.close()
-        dlg.close()
-
-
-def test_effort_slider_auto_maps_upstream_declared_levels():
-    """上游声明力度级别 → 自动映射滑块挡位：提示声明档位，并把当前力度就近收敛"""
-    dlg = _model_page_dlg()
-    try:
-        dlg._providers = [{"models": ["m1"]}]            # 多服务商卡片（供力度声明查找）
-        dlg._effort = "extreme"                       # 当前档位不在声明内
-        dlg._declarations = {"m1": {"effort_levels": ["low", "high", "max"]}}
-        dlg._sync_effort_declared()
-        assert dlg._declared_efforts == ["low", "high", "max"]
-        assert "低 / 高 / 最高" in dlg.effort_hint.text()   # 声明档位中文提示
-        assert dlg._effort == "max"                   # 就近收敛到声明内最近档
-        assert dlg.effort_label.text() == "最高"
-        assert dlg.effort_slider.value() == agent_llm.EFFORTS.index("max")
-        # 无声明 → 回退全档位 + 按模型类型映射提示
-        dlg._declarations = {}
-        dlg._sync_effort_declared()
-        assert dlg._declared_efforts is None
-        assert "按模型类型自动映射" in dlg.effort_hint.text()
-    finally:
         dlg.close()
 
 
@@ -190,7 +140,9 @@ def test_settings_and_engine_wiring_for_context():
                   ap._AgentSettingsDialog._collect_and_save)
     )
     assert '"context_1m"' in save_src
-    assert "self.context_1m_check.isChecked()" in save_src
+    assert '"auto_effort"' in save_src
+    assert '"effort"' in save_src
+    assert "_context_1m" in save_src, "保存链必须从配置字段读取 1M 开关"
 
     panel_src = inspect.getsource(ap.AgentPanel)
     assert 'context_window=cfg.get("context_window")' in panel_src
@@ -281,11 +233,12 @@ def test_save_and_launch_paths_call_apply_context_budget():
     assert "_apply_context_budget(engine, cfg, model=model, provider=sel)" in launch
 
 
-def test_settings_1m_copy_uses_input_output_wording():
-    """1M 文案统一口径：勾选框/悬浮提示/动态说明都按「输入+输出=1M上下文窗口」表述"""
+def test_1m_copy_uses_input_output_wording():
+    """1M 文案统一口径：动态说明维持「输入+输出共用」，主页面浮层开关说明同一口径。"""
     src = inspect.getsource(ap._AgentSettingsDialog)
-    assert "模型支持1M上下文窗口，输入+输出=1M上下文窗口" in src   # 勾选框 + 悬浮提示
     assert "窗口由输入+输出共用" in src                          # 动态说明（_context_hint_text）
+    pop = inspect.getsource(ap._ModelTunePopover)
+    assert "按 1M 上下文窗口计算用量与压缩阈值" in pop            # 浮层开关 tooltip
 
 
 # ---------- 2.9 背景页：不得把右侧内容区顶出可视范围 ----------

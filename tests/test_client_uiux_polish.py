@@ -380,11 +380,112 @@ def test_input_hides_placeholder_on_focus(panel):
     assert inp.placeholderText() == ph, "失焦后占位文案未恢复"
 
 
-def test_app_uses_high_contrast_mouse_cursor(panel):
-    """空白区域必须使用应用内高对比指针（白芯黑边），而不是看不清的系统箭头。"""
+def test_mouse_cursor_is_system_default(panel):
+    """鼠标指针恢复系统默认：自定义高对比位图指针已整体删除。"""
     from PyQt6.QtCore import Qt
-    assert panel.cursor().shape() == Qt.CursorShape.BitmapCursor
-    assert not panel.cursor().pixmap().isNull(), "高对比指针位图未生成"
+    assert panel.cursor().shape() != Qt.CursorShape.BitmapCursor, \
+        "面板仍在用自定义位图指针"
+    assert not hasattr(ap, "_high_contrast_cursor"), "自定义指针函数未删除"
+    assert not hasattr(panel, "_apply_app_cursor"), "指针应用入口未删除"
+
+
+# ---------- 6. 主页面模型调节浮层 + Agent 权限下拉 ----------
+
+def test_model_tune_popover_and_hover_timers(panel):
+    """模型选择框悬停 1s 弹出浮层：胶囊滑杆（8 档、档位点、满档粒子）+ 自动开关 + 1M 开关。"""
+    pop = panel._model_tune
+    assert isinstance(pop, ap._ModelTunePopover)
+    sl = pop._slider
+    assert isinstance(sl, ap._CapsuleSlider), "思考强度滑杆必须沿用设置页胶囊滑杆"
+    assert sl.tick_step == 1 and sl.tick_style == ap._CapsuleSlider.TICK_STYLE_LEVEL
+    assert sl.maximum() == len(ap.agent_llm.EFFORTS) - 1
+    assert sl.PARTICLE_COUNT == 100
+    hold = panel._model_hover
+    assert hold._hold.interval() == ap._MODEL_TUNE_HOLD_MS == 1000
+    assert hold._leave.interval() == ap._MODEL_TUNE_LEAVE_MS == 250
+
+    panel._open_model_tune()
+    _pump(80)
+    assert pop.isVisible(), "悬停到期后浮层未显示"
+    assert pop._auto.isChecked() == bool(panel._auto_effort)
+    panel._close_model_tune()
+    _pump(260)
+
+
+def test_model_tune_drag_persists_without_auto_switch(panel):
+    """拖动滑杆只改力度、不自动关掉「自动按难度」；落盘走 model 段配置。"""
+    pop = panel._model_tune
+    orig = (panel._effort, panel._auto_effort, panel._context_1m)
+    try:
+        panel._auto_effort = True
+        pop.set_state(panel._effort, True, panel._context_1m, "128K")
+        pop._slider.setValue(ap.agent_llm.EFFORTS.index("ultra"))
+        _pump(20)
+        assert panel._effort == "ultra"
+        assert panel._auto_effort is True, "拖滑杆不应擅自关闭自动按难度"
+        assert pop._level.text() == ap._ui(ap.agent_llm.effort_label("ultra"))
+        panel._save_model_tune()
+        cfg = ap.agent_llm.load_model_config()
+        assert cfg.get("effort") == "ultra"
+    finally:
+        panel._effort, panel._auto_effort, panel._context_1m = orig
+        panel._save_model_tune()
+        panel._sync_model_badges()
+
+
+def test_model_badges_sit_left_of_model_combo(panel):
+    """模型名左侧常驻「思考档位 · 上下文窗口」徽标，鼠标为默认箭头。"""
+    from PyQt6.QtCore import Qt
+    badges = panel.model_badges
+    assert badges.text().strip(), "徽标文案为空"
+    assert "·" in badges.text(), f"徽标应含档位与窗口两段：{badges.text()}"
+    assert any(ch.isdigit() for ch in badges.text()), "徽标缺上下文窗口数值"
+    assert badges.cursor().shape() == Qt.CursorShape.ArrowCursor
+    assert badges.x() < panel.model_combo.x(), "徽标必须在模型名左侧"
+
+
+def test_permission_button_sits_right_of_optimize(panel):
+    """权限入口紧邻提示词优化右侧，图标为盾牌矢量图。"""
+    assert panel.perm_btn.parent() is panel.composer
+    assert panel.perm_btn.x() > panel.optimize_btn.x()
+    assert "shield" in ap._LINE_ICON_KINDS and "warning" in ap._LINE_ICON_KINDS
+    assert not panel.perm_btn.icon().isNull()
+
+
+def test_perm_menu_offers_three_levels(panel, monkeypatch):
+    """权限下拉三项齐全：每步确认 / 仅工具调用 / 全部访问（后者走确认弹窗）。"""
+    seen = {}
+    monkeypatch.setattr(ap._FadeMenu, "exec",
+                        lambda self, *a, **k: seen.setdefault("menu", self))
+    panel._open_perm_menu()
+    menu = seen.get("menu")
+    assert menu is not None, "权限菜单未构造"
+    labels = {a.text() for a in menu.actions()}
+    assert {ap._ui("每步确认"), ap._ui("仅工具调用"), ap._ui("全部访问")} <= labels
+
+
+def test_full_access_requires_confirmation(panel, monkeypatch):
+    """全部访问：取消确认则保持原模式；确认后即时生效并同步既有引擎 direct。"""
+    orig = str(panel._settings.value("agent_mode", "ask") or "ask")
+    try:
+        monkeypatch.setattr(panel, "_confirm_yolo_access", lambda: False)
+        panel._on_perm_action("yolo")
+        assert str(panel._settings.value("agent_mode", "ask") or "ask") == orig
+        assert panel._mode == orig
+
+        monkeypatch.setattr(panel, "_confirm_yolo_access", lambda: True)
+        panel._on_perm_action("yolo")
+        assert panel._settings.value("agent_mode") == "yolo"
+        assert panel._mode == "yolo"
+        assert panel.perm_btn.toolTip() == panel._perm_tooltip("yolo")
+        for st in (panel._sess or {}).values():
+            eng = st.get("engine")
+            if eng is not None:
+                assert eng.direct is True
+    finally:
+        panel._settings.setValue("agent_mode", orig)
+        panel._mode = orig
+        panel._refresh_perm_btn()
 
 
 def test_input_caret_is_high_contrast(panel):

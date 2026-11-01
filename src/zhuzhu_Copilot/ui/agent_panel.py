@@ -121,6 +121,7 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
     QWidgetItem,
 )
 
@@ -928,39 +929,6 @@ def _welcome_chip_qss() -> str:
             f" font-size: {FONT_SMALL}px; font-weight: {_W_BUTTON}; }}"
             f"QPushButton:hover {{ background: {fill_hover}; color: {TEXT}; }}"
             f"QPushButton:pressed {{ background: {HOVER}; color: {TEXT}; }}")
-
-
-@lru_cache(maxsize=2)
-def _high_contrast_cursor() -> QCursor:
-    """应用内高对比箭头指针：**黑芯 + 白色描边**（深浅背景都清晰）。
-
-    上一版是「白芯 + 黑描边」，在白卡片/浅色输入卡上白芯直接融进背景，
-    只剩一圈细黑边，看起来像「光标没了」（用户反馈）。改为黑芯白边：
-    - 浅色背景：黑色箭头本体承担可见性；
-    - 深色背景：白色描边勾出轮廓，本体与背景融合也不影响识别。
-    QWidget 的 cursor 会被子控件继承（显式设过 PointingHand/IBeam 的按钮与
-    输入框仍用自己的系统指针），因此只影响聊天区/侧栏等空白区域。
-    """
-    s = 30
-    pm = QPixmap(s, s)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    path = QPainterPath()
-    path.moveTo(3.0, 2.0)
-    path.lineTo(3.0, 21.5)
-    path.lineTo(8.5, 17.0)
-    path.lineTo(12.5, 25.5)
-    path.lineTo(16.0, 23.8)
-    path.lineTo(12.0, 15.5)
-    path.lineTo(19.5, 15.5)
-    path.closeSubpath()
-    p.setPen(QPen(QColor("#FFFFFF"), 2.0,
-                  cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
-    p.setBrush(QColor("#0B0D11"))
-    p.drawPath(path)
-    p.end()
-    return QCursor(pm, 3, 2)
 
 
 def _drawer_icon_btn_qss() -> str:
@@ -1877,6 +1845,29 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     elif kind == "chev-right":  # 右尖角（展开左栏）
         p.drawLine(QPointF(s * 0.38, s * 0.28), QPointF(s * 0.62, s * 0.50))
         p.drawLine(QPointF(s * 0.62, s * 0.50), QPointF(s * 0.38, s * 0.72))
+    elif kind == "shield":      # 盾牌（Agent 权限入口）
+        path = QPainterPath()
+        path.moveTo(s * 0.50, s * 0.12)
+        path.lineTo(s * 0.82, s * 0.26)
+        path.lineTo(s * 0.80, s * 0.52)
+        path.cubicTo(s * 0.78, s * 0.70, s * 0.64, s * 0.82, s * 0.50, s * 0.88)
+        path.cubicTo(s * 0.36, s * 0.82, s * 0.22, s * 0.70, s * 0.20, s * 0.52)
+        path.lineTo(s * 0.18, s * 0.26)
+        path.closeSubpath()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+    elif kind == "warning":     # 警告（三角 + 感叹号，全部访问风险态）
+        path = QPainterPath()
+        path.moveTo(s * 0.50, s * 0.14)
+        path.lineTo(s * 0.90, s * 0.82)
+        path.lineTo(s * 0.10, s * 0.82)
+        path.closeSubpath()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.drawLine(QPointF(s * 0.50, s * 0.44), QPointF(s * 0.50, s * 0.62))
+        p.setBrush(QColor(color))
+        p.drawEllipse(QPointF(s * 0.50, s * 0.72), s * 0.035, s * 0.035)
+        p.setBrush(Qt.BrushStyle.NoBrush)
     p.end()
     return QIcon(pm)
 
@@ -1889,7 +1880,7 @@ _LINE_ICON_KINDS = frozenset({
     "drive", "list", "doc", "bash", "net", "folder", "apps", "user", "server",
     "puzzle", "mic", "video", "audio", "chart", "magic", "clock", "think",
     "tool", "term", "chev", "preview", "more", "chat", "panel-left",
-    "chev-left", "chev-right",
+    "chev-left", "chev-right", "shield", "warning",
 })
 
 
@@ -6424,66 +6415,11 @@ class _AgentSettingsDialog(QDialog):
         self.provider_hint.hide()
         lay.addWidget(self.provider_hint)
         self._update_provider_ui()
-        # 思考强度（工作力度）：8 档滑块（关闭/低/中/高/超高/最高/极致/超级）+ 自动按难度开关；
-        # 档位满刻度可调，上游 /models 声明力度级别时自动映射并提示（见 _sync_effort_declared）
+        # 思考强度 / 自动按难度 / 上下文窗口的调节入口已移到主页面模型选择框
+        # （悬停 1s 弹出调节浮层，见 _ModelTunePopover）；设置页只读写这三项配置值。
         self._effort = cfg.get("effort", "medium")
         self._auto_effort = bool(cfg.get("auto_effort", True))
-        self._declared_efforts = None
-        eff_row = QHBoxLayout()
-        eff_row.setSpacing(10)
-        eff_lbl = QLabel(_ui("思考强度"))
-        eff_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-        eff_lbl.setFixedWidth(self._label_col_w())
-        eff_row.addWidget(eff_lbl)
-        # 胶囊滑杆：每个挡位一颗淡蓝小圆点（覆盖区内也显示）；满档时多行小白点流动
-        self.effort_slider = _CapsuleSlider(
-            tick_step=1, particles_on_max=True,
-            tick_style=_CapsuleSlider.TICK_STYLE_LEVEL)
-        self.effort_slider.setRange(0, len(agent_llm.EFFORTS) - 1)
-        self.effort_slider.setFixedWidth(360)
-        self.effort_slider.setPageStep(1)
-        _eff_lv = [_ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS]
-        self.effort_slider.setToolTip(
-            _ui("思考强度（工作力度）：决定思考档位与所用模型，")
-            + " / ".join(_eff_lv))
-        self.effort_slider.valueChanged.connect(self._on_effort_slider)
-        eff_row.addWidget(self.effort_slider)
-        self.effort_label = QLabel(_ui(agent_llm.effort_label(self._effort)))
-        self.effort_label.setStyleSheet(
-            f"color: {self._ACCENT}; font-size: 14px; font-weight: 800;")
-        self.effort_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # 英文标签（Very High / Extreme 等）比中文长，固定 56px 会挤压遮挡 → 最小宽度 + 自适应
-        self.effort_label.setMinimumWidth(72)
-        eff_row.addWidget(self.effort_label)
-        eff_row.addStretch(1)
-        lay.addLayout(eff_row)
-        # 挡位刻度 + 上游声明提示（同一行文案，fetch 后由 _sync_effort_declared 刷新）
-        # 刻度说明默认不占位（档位名已写进滑块 tooltip）；只有上游声明了力度档位时
-        # 才由 _sync_effort_declared 填一行必要说明，避免整页到处是小字说明
-        self.effort_hint = QLabel("")
-        self.effort_hint.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
-        self.effort_hint.setWordWrap(True)
-        self.effort_hint.hide()
-        lay.addWidget(self.effort_hint)
-        self.auto_effort_check = QCheckBox(_ui("自动按难度（按任务难度自动选择工作力度）"))
-        self.auto_effort_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
-        self.auto_effort_check.setToolTip(_ui("按任务难度自动选择工作力度（智能调用）；关闭后仅手动拖动"))
-        self.auto_effort_check.toggled.connect(self._on_effort_auto)
-        # 先初始化滑块值（屏蔽信号），再设自动开关：避免 setChecked 触发回调时
-        # 读到未初始化的滑块（值为 0=low）把 _effort 覆盖成 low —— 这是「工作力度
-        # 无法保存」的真根因（初始化阶段把配置里的力度洗成 low）。
-        self.effort_slider.blockSignals(True)
-        self.effort_slider.setValue(agent_llm.EFFORTS.index(self._effort)
-                                    if self._effort in agent_llm.EFFORTS else 0)
-        self.effort_slider.blockSignals(False)
-        self.auto_effort_check.blockSignals(True)
-        self.auto_effort_check.setChecked(self._auto_effort)
-        self.auto_effort_check.blockSignals(False)
-        lay.addWidget(self.auto_effort_check)
-        # 自动按难度开启时以提示色标注（手动力度会被自动估算覆盖），不置灰不锁定
-        self._sync_effort_ui()
-        # 已保存服务商声明过力度级别时，打开设置页即自动映射滑块挡位
-        self._sync_effort_declared()
+        self._context_1m = bool(cfg.get("context_1m", False))
         # 思考模式：跟随自动 / 始终开启 / 始终关闭 + 每次发送强制思考
         self._think_mode = cfg.get("think_mode", "auto")
         self._force_think = bool(cfg.get("force_think", False))
@@ -6513,26 +6449,6 @@ class _AgentSettingsDialog(QDialog):
         self.force_think_check.blockSignals(False)
         self.force_think_check.toggled.connect(self._on_force_think_toggled)
         lay.addWidget(self.force_think_check)
-        # ── 上下文窗口（1M 开关）──────────────────────────────────────────────
-        # 用户可强制按 1M 上限计算：窗口、预留输出、预警/压缩/硬裁阈值、进度条统统一致。
-        # 窗口取值优先级见 agent_llm.resolve_context：
-        #   1M 开关 > 上游服务商声明 > 服务商配置手填 > 内置已知表 > 模型名推断
-        self._context_1m = bool(cfg.get("context_1m", False))
-        self.context_1m_check = QCheckBox(
-            _ui("开启 1M 上下文（模型支持1M上下文窗口，输入+输出=1M上下文窗口）"))
-        self.context_1m_check.setStyleSheet(
-            f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
-        self.context_1m_check.setToolTip(
-            _uif("模型支持1M上下文窗口，输入+输出=1M上下文窗口；勾选后，所有上下文用量与压缩阈值一律按 1M token 上限计算（{a0}）；服务商实际是否支持由上游决定，若上游拒绝请关闭本开关。", a0=_fmt_tokens(agent_llm.ONE_M_CONTEXT)))
-        self.context_1m_check.blockSignals(True)
-        self.context_1m_check.setChecked(self._context_1m)
-        self.context_1m_check.blockSignals(False)
-        self.context_1m_check.toggled.connect(self._on_context_1m_toggled)
-        lay.addWidget(self.context_1m_check)
-        self.context_hint = QLabel("")
-        self.context_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-        self.context_hint.setWordWrap(True)
-        lay.addWidget(self.context_hint)
         # ── 高效模式 ────────────────────────────────────────────────────────
         # 开启后上游只拿到最小必需工具集与精简系统提示词：不提供任何 MCP server 工具、
         # 插件工具、工作流自定义工具、子 Agent / 工作团工具与文档生成等功能型工具，
@@ -6550,7 +6466,6 @@ class _AgentSettingsDialog(QDialog):
         self.efficient_check.setChecked(bool(s.get("efficient_mode", False)))
         self.efficient_check.blockSignals(False)
         lay.addWidget(self.efficient_check)
-        self._sync_context_hint()
         lay.addStretch(1)
         return w
 
@@ -10353,19 +10268,6 @@ class _AgentSettingsDialog(QDialog):
         # 面板在保存后从 QSettings 重读并同步各引擎 direct 标志
         app_identity.qsettings().setValue("agent_mode", val or "ask")
 
-    def _on_effort_slider(self, *_):
-        """用户拖动思考强度滑块：自动按难度开启时自动关闭（让手动值立即生效），并刷新标签"""
-        if self.auto_effort_check.isChecked():
-            self.auto_effort_check.setChecked(False)
-        self._effort = agent_llm.EFFORTS[self.effort_slider.value()]
-        self.effort_label.setText(_ui(agent_llm.effort_label(self._effort)))
-        self._sync_effort_ui()
-
-    def _on_effort_auto(self, *_):
-        """自动按难度开关变更：刷新力度标签（不改手动值，保持已保存的手动力度）"""
-        self.effort_label.setText(_ui(agent_llm.effort_label(self._effort)))
-        self._sync_effort_ui()
-
     def _on_panel_mode_changed(self, *_):
         """面板偏好切换：保存时由 _save 写入 QSettings，父面板 _apply_agent_settings 即时应用。
         此处仅保证选择「融入」时给出预期提示，无需额外处理。"""
@@ -10387,17 +10289,18 @@ class _AgentSettingsDialog(QDialog):
             self.think_combo.setCurrentIndex(_oi if _oi >= 0 else 0)
             self.think_combo.blockSignals(False)
 
-    def _on_context_1m_toggled(self, _checked: bool = False):
-        """1M 上下文开关：仅刷新说明文案（保存时写入配置，引擎按新上限重建）"""
-        self._sync_context_hint()
-
-    def _context_hint_text(self) -> str:
+    def _context_hint_text(self, providers=None, long_1m=None) -> str:
         """窗口说明文案：把「当前生效上限 + 来源 + 预算 + 压缩阈值」摆出来供用户核对。
 
-        来源取自 agent_llm.resolve_context（与实际引擎同一条决策链，不存在第二套判断）。"""
-        providers = list(getattr(self, "_providers", []) or [])
+        来源取自 agent_llm.resolve_context（与实际引擎同一条决策链，不存在第二套判断）。
+        设置页已不再提供 1M 开关控件（入口移到了主页面模型浮层），因此开关值可由
+        调用方显式传入；缺省读 ``self._context_1m``。"""
+        if providers is None:
+            providers = list(getattr(self, "_providers", []) or [])
+        providers = list(providers or [])
         first = providers[0] if providers else {}
-        long_1m = bool(self.context_1m_check.isChecked())
+        if long_1m is None:
+            long_1m = bool(getattr(self, "_context_1m", False))
         models = first.get("models") or []
         model = str(models[0]) if models else ""
         ctx = agent_llm.resolve_context(first.get("base_url"), model,
@@ -10426,71 +10329,6 @@ class _AgentSettingsDialog(QDialog):
             self.context_hint.setText(txt)
         except Exception:
             pass
-
-    def _sync_effort_ui(self):
-        """手动力度始终可拖动（保存始终生效）；自动按难度开启时仅以提示色标注会被自动估算覆盖"""
-        auto = self.auto_effort_check.isChecked()
-        self.effort_slider.setEnabled(True)
-        self.effort_label.setEnabled(True)
-        self.effort_label.setStyleSheet(
-            f"color: {self._DIM if auto else self._ACCENT}; font-size: 14px; font-weight: 800;")
-
-    def _effort_models(self) -> list:
-        """当前模型的力度声明查找来源：单服务商编辑框（models_edit）优先，
-        多服务商卡片（_providers）兜底，保证主设置页也能读取 """
-        try:
-            if hasattr(self, "models_edit"):
-                return [x.strip() for x in
-                        self.models_edit.text().replace("，", ",").split(",") if x.strip()]
-            out = []
-            for p in getattr(self, "_providers", []) or []:
-                for m in (p.get("models") or []):
-                    ms = str(m).strip()
-                    if ms and ms not in out:
-                        out.append(ms)
-            return out
-        except Exception:
-            return []
-
-    def _sync_effort_declared(self):
-        """上游 /models 声明的「可调思考力度级别」→ 自动映射到滑块挡位并提示。
-
-        有声明：展示声明的档位（中文名）；当前力度不在声明内时就近映射到声明内的挡位，
-        未声明的挡位在发送时由 build_effort_params 按邻近档折算，不会发非法参数。
-        无声明：提示按模型类型内置映射（DeepSeek/GLM/OpenAI 等既有量表）。
-        声明来源：本对话框临时拉取（_declarations）或已保存服务商卡片的 model_limits。"""
-        decls = dict(getattr(self, "_declarations", None) or {})
-        for p in getattr(self, "_providers", []) or []:
-            for m, v in (p.get("model_limits") or {}).items():
-                if isinstance(v, dict):
-                    base = decls.setdefault(m, {})
-                    base.update(v)
-        declared = None
-        for m in self._effort_models():
-            d = decls.get(m) or {}
-            if isinstance(d.get("effort_levels"), list):
-                declared = [x for x in d["effort_levels"] if x in agent_llm.EFFORTS]
-                break
-        self._declared_efforts = declared
-        hint = getattr(self, "effort_hint", None)
-        if hint is None:
-            return
-        if declared:
-            names = " / ".join(_ui(agent_llm.effort_label(x)) for x in declared)
-            hint.setText(_uif("上游声明本模型可调思考力度：{a0}（未列出的挡位发送时按邻近档自动折算）", a0=names))
-            if self._effort not in declared:
-                nearest = min(declared, key=lambda x: abs(
-                    agent_llm.effort_index(x) - agent_llm.effort_index(self._effort)))
-                self._effort = nearest
-                self.effort_slider.blockSignals(True)
-                self.effort_slider.setValue(agent_llm.effort_index(nearest))
-                self.effort_slider.blockSignals(False)
-                self.effort_label.setText(_ui(agent_llm.effort_label(nearest)))
-            hint.show()
-        else:
-            # 上游没声明档位：不铺一行小字说明（档位名已在滑块 tooltip 里），保持页面简洁
-            hint.setText("")
-            hint.hide()
 
     def _refresh_proxy_status(self, *_):
         """刷新代理运行状态（本机转发端口 / 系统代理指向）。"""
@@ -10570,12 +10408,16 @@ class _AgentSettingsDialog(QDialog):
             "model": first_models[0],   # 兼容旧字段
             "models": providers[0].get("models") or [],
             "protocol": providers[0]["protocol"] or "chat",
+            # 思考强度 / 自动按难度 / 1M 上下文的调节入口在主页面模型浮层，
+            # 设置页只透传当前值（用户从未打开模型页时以已持久化配置为准）
             "effort": getattr(self, "_effort", None) or _old_m.get("effort", "medium"),
-            "auto_effort": self.auto_effort_check.isChecked(),
+            "auto_effort": bool(getattr(self, "_auto_effort",
+                                        _old_m.get("auto_effort", True))),
             "think_mode": self.think_combo.currentData() or "auto",
             "force_think": self.force_think_check.isChecked(),
             # 1M 上下文开关：开启后窗口与所有阈值一律按 1M 上限计算（见 agent_llm.resolve_context）
-            "context_1m": self.context_1m_check.isChecked(),
+            "context_1m": bool(getattr(self, "_context_1m",
+                                       _old_m.get("context_1m", False))),
         }
         # 请求超时配置（timeout/idle_timeout）本页暂未提供 UI，仅为后续扩展保留：
         # 透传旧配置防止保存时覆盖丢失（读取走 load_model_config 的 settings 键）
@@ -13938,6 +13780,279 @@ class _ChipAnchorFilter(QObject):
             self._on_change()
         except Exception:
             pass
+
+
+# 主页面模型选择框的悬停调节：停留时长 / 离开宽限 / 浮层宽度（模块级常量，便于测试与调整）
+_MODEL_TUNE_HOLD_MS = 1000
+_MODEL_TUNE_LEAVE_MS = 250
+_MODEL_TUNE_W = 320
+
+
+class _HoverHold(QObject):
+    """鼠标悬停保持检测（装在目标控件上的事件过滤器）。
+
+    Enter 启动单次计时，到点触发 ``on_hold``；Leaving 先停掉计时，
+    超过 ``leave_ms`` 后若指针确实已不在目标控件（含其子控件）内才触发 ``on_leave``。
+    之所以用 ``underMouse()`` 复核：Qt 在指针移入子控件时也会给父控件发 Leave，
+    不复核就会出现「鼠标还在浮层里的勾选框上，浮层却自己收起」。
+    """
+
+    def __init__(self, hold_ms: int, on_hold=None, leave_ms: int = -1,
+                 on_leave=None, parent=None):
+        super().__init__(parent)
+        self._on_hold = on_hold
+        self._on_leave = on_leave
+        self._target = None
+        self._hold = QTimer(self)
+        self._hold.setSingleShot(True)
+        self._hold.setInterval(max(0, int(hold_ms)))
+        self._hold.timeout.connect(self._fire_hold)
+        self._leave = QTimer(self)
+        self._leave.setSingleShot(True)
+        self._leave.setInterval(max(0, int(leave_ms)))
+        self._leave.timeout.connect(self._fire_leave)
+
+    def cancel(self):
+        """停掉两个计时（浮层关闭/面板隐藏时调用，防止迟到回调再弹出）"""
+        self._hold.stop()
+        self._leave.stop()
+
+    def eventFilter(self, obj, ev):
+        et = ev.type()
+        if et == QEvent.Type.Enter:
+            self._target = obj
+            self._leave.stop()
+            if self._hold.interval() > 0:
+                self._hold.start()
+        elif et == QEvent.Type.Leave:
+            self._target = obj
+            self._hold.stop()
+            if self._leave.interval() >= 0 and self._on_leave is not None:
+                self._leave.start()
+        return False
+
+    def _fire_hold(self):
+        t = self._target
+        try:
+            if t is not None and not t.underMouse():
+                return
+            if self._on_hold is not None:
+                self._on_hold()
+        except Exception:
+            pass
+
+    def _fire_leave(self):
+        t = self._target
+        try:
+            if t is not None and t.underMouse():
+                return          # 指针仍在目标/子控件内：不收起
+            if self._on_leave is not None:
+                self._on_leave()
+        except Exception:
+            pass
+
+
+class _ModelTunePopover(QFrame):
+    """模型选择框上方弹出的调节浮层：思考强度胶囊滑杆 + 自动按难度 + 上下文窗口。
+
+    滑块沿用设置页同款 ``_CapsuleSlider``（档位圆点 + 满档粒子），**不改任何外观**。
+    本类只负责呈现与收集：改动通过信号交给面板落盘（唯一配置来源仍是 ``model`` 段）。
+    """
+
+    SLIDE = 8                       # 弹出位移（px）：自下方上移落位
+    PREFERRED_WIDTH = _MODEL_TUNE_W
+
+    effort_changed = pyqtSignal(str)
+    auto_changed = pyqtSignal(bool)
+    context_changed = pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("modelTunePop")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._eff = None
+        self._anims: list = []
+        self._closing = False
+        self._syncing = False        # set_state 期间屏蔽回环信号（避免把面板回写覆盖成误值）
+        self._build()
+        self.apply_theme()
+        self.resize(int(self.PREFERRED_WIDTH), max(1, self.sizeHint().height()))
+
+    # ---------- 构建 ----------
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(SPACING_MD, SPACING_MD, SPACING_MD, SPACING_MD)
+        lay.setSpacing(SPACING_SM)
+
+        head = QHBoxLayout()
+        head.setSpacing(SPACING_SM)
+        self._title = QLabel(_ui("思考强度"))
+        self._title.setObjectName("mtTitle")
+        head.addWidget(self._title)
+        head.addStretch(1)
+        self._level = QLabel("")
+        self._level.setObjectName("mtLevel")
+        head.addWidget(self._level)
+        lay.addLayout(head)
+
+        self._slider = _CapsuleSlider(
+            tick_step=1, particles_on_max=True,
+            tick_style=_CapsuleSlider.TICK_STYLE_LEVEL)
+        self._slider.setRange(0, len(agent_llm.EFFORTS) - 1)
+        self._slider.setPageStep(1)
+        self._slider.setFixedWidth(int(self.PREFERRED_WIDTH) - 2 * SPACING_MD)
+        self._slider.setToolTip(
+            _ui("思考强度（工作力度）：") + " / ".join(
+                _ui(agent_llm.effort_label(x)) for x in agent_llm.EFFORTS))
+        self._slider.valueChanged.connect(self._on_slider)
+        lay.addWidget(self._slider)
+
+        self._auto = QCheckBox(_ui("自动按难度"))
+        self._auto.setToolTip(_ui("按任务难度自动选择工作力度；关闭后使用滑杆挡位"))
+        self._auto.toggled.connect(self._on_auto)
+        lay.addWidget(self._auto)
+
+        ctx = QHBoxLayout()
+        ctx.setSpacing(SPACING_SM)
+        self._ctx = QCheckBox(_ui("上下文窗口"))
+        self._ctx.setToolTip(_uif(
+            "按 1M 上下文窗口计算用量与压缩阈值（{a0}）；模型实际是否支持由上游决定",
+            a0=_fmt_tokens(agent_llm.ONE_M_CONTEXT)))
+        self._ctx.toggled.connect(self._on_ctx)
+        ctx.addWidget(self._ctx)
+        ctx.addStretch(1)
+        self._ctx_val = QLabel("")
+        self._ctx_val.setObjectName("mtVal")
+        ctx.addWidget(self._ctx_val)
+        lay.addLayout(ctx)
+
+    # ---------- 样式 ----------
+    def apply_theme(self):
+        """按当前主题刷新浮层配色（不描边：层级由 ELEVATED 与底色差承担）"""
+        card_bg = _base_color("ELEVATED")
+        self.setStyleSheet(
+            f"#modelTunePop {{ background: {card_bg}; border: none;"
+            f" border-radius: {RADIUS_MD}px; }}"
+            f"#modelTunePop QLabel#mtTitle {{ color: {TEXT}; font-size: {FONT_BODY}px;"
+            f" font-weight: {_W_TITLE}; }}"
+            f"#modelTunePop QLabel#mtLevel {{ color: {ACCENT}; font-size: {FONT_BODY}px;"
+            f" font-weight: {_W_TITLE}; }}"
+            f"#modelTunePop QLabel#mtVal {{ color: {TEXT_DIM};"
+            f" font-size: {FONT_CAPTION}px; {_numeric_css()} }}"
+            f"#modelTunePop QCheckBox {{ color: {TEXT};"
+            f" font-size: {FONT_SMALL}px; spacing: 8px; }}")
+
+    # ---------- 状态 ----------
+    def set_state(self, effort: str, auto: bool, long_1m: bool, window_text: str):
+        """注入当前配置（不触发任何信号，避免打开浮层先把配置回写一遍）"""
+        eff = effort if effort in agent_llm.EFFORTS else agent_llm.EFFORTS[0]
+        self._syncing = True
+        try:
+            self._slider.setValue(agent_llm.effort_index(eff))
+            self._level.setText(_ui(agent_llm.effort_label(eff)))
+            self._auto.setChecked(bool(auto))
+            self._ctx.setChecked(bool(long_1m))
+            self._ctx_val.setText(str(window_text or "—"))
+        finally:
+            self._syncing = False
+
+    def _on_slider(self, value: int):
+        if self._syncing:
+            return
+        eff = agent_llm.EFFORTS[max(0, min(int(value), len(agent_llm.EFFORTS) - 1))]
+        self._level.setText(_ui(agent_llm.effort_label(eff)))
+        self.effort_changed.emit(eff)
+
+    def _on_auto(self, checked: bool):
+        if not self._syncing:
+            self.auto_changed.emit(bool(checked))
+
+    def _on_ctx(self, checked: bool):
+        if not self._syncing:
+            self.context_changed.emit(bool(checked))
+
+    # ---------- 弹出 / 收起 ----------
+    def _ensure_effect(self):
+        if self._eff is None:
+            self._eff = QGraphicsOpacityEffect(self)
+            self._eff.setOpacity(1.0)
+            self.setGraphicsEffect(self._eff)
+        return self._eff
+
+    def _run(self, anim):
+        anim.finished.connect(
+            lambda a=anim: self._anims.remove(a) if a in self._anims else None)
+        self._anims.append(anim)
+        anim.start()
+
+    def popup_above(self, anchor: QWidget):
+        """锚定在 anchor 正上方：右对齐，垂直留 SLIDE 间距；上方空间不足时改到下方。
+        透明度 0→1 同时轻微上移（落定性格，不做回弹过冲）。"""
+        self._closing = False
+        self.resize(int(self.PREFERRED_WIDTH), max(1, self.sizeHint().height()))
+        h = int(self.height())
+        w = int(self.PREFERRED_WIDTH)
+        gp = anchor.mapToGlobal(QPoint(anchor.width() - w, 0))
+        x = gp.x()
+        y = gp.y() - h - self.SLIDE
+        scr = anchor.screen() or QApplication.primaryScreen()
+        if scr is not None:
+            area = scr.availableGeometry()
+            x = max(area.left() + 4, min(x, area.right() - w - 4))
+            if y < area.top() + 4:
+                y = gp.y() + anchor.height() + self.SLIDE
+        eff = self._ensure_effect()
+        eff.setOpacity(0.0)
+        start = QRect(x, y + self.SLIDE, w, h)
+        self.setGeometry(start)
+        self.show()
+        self.raise_()
+        a_op = QPropertyAnimation(eff, b"opacity", self)
+        a_op.setDuration(motion.SETTLE_MS)
+        a_op.setStartValue(0.0)
+        a_op.setEndValue(1.0)
+        a_op.setEasingCurve(motion.settle())
+        a_geo = QPropertyAnimation(self, b"geometry", self)
+        a_geo.setDuration(motion.SETTLE_MS)
+        a_geo.setStartValue(start)
+        a_geo.setEndValue(QRect(x, y, w, h))
+        a_geo.setEasingCurve(motion.settle())
+        self._run(a_op)
+        self._run(a_geo)
+
+    def close_animated(self):
+        """收起（可再次弹出复用本控件）：消退性格，比弹出更快"""
+        if not self.isVisible() or self._closing:
+            return
+        self._closing = True
+        eff = self._ensure_effect()
+        cur = self.geometry()
+        a_op = QPropertyAnimation(eff, b"opacity", self)
+        a_op.setDuration(motion.FADE_OUT_MS)
+        a_op.setStartValue(eff.opacity())
+        a_op.setEndValue(0.0)
+        a_op.setEasingCurve(motion.fade_out())
+        a_geo = QPropertyAnimation(self, b"geometry", self)
+        a_geo.setDuration(motion.FADE_OUT_MS)
+        a_geo.setStartValue(cur)
+        a_geo.setEndValue(QRect(cur.x(), cur.y() + self.SLIDE // 2,
+                                cur.width(), cur.height()))
+        a_geo.setEasingCurve(motion.fade_out())
+        a_op.finished.connect(self._after_close)
+        self._run(a_op)
+        self._run(a_geo)
+
+    def _after_close(self):
+        self._closing = False
+        self.hide()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.close_animated()
+            return
+        super().keyPressEvent(e)
 
 
 class _PopoverDismissFilter(QObject):
@@ -20389,6 +20504,7 @@ class AgentPanel(QDialog):
         self._model_cfg = agent_llm.load_model_config()   # 规范化多模型/力度路由配置
         self._effort = self._model_cfg.get("effort", "medium")
         self._auto_effort = bool(self._model_cfg.get("auto_effort", True))
+        self._context_1m = bool(self._model_cfg.get("context_1m", False))
         self._model_override = None      # 输入框右侧手动指定的模型（None=按力度路由）
         self._model_override_provider = ""   # 手动指定模型所属服务商名（跨服务商切换连接参数）
         # 记住上次手动选择的模型，重启自动恢复
@@ -21377,7 +21493,29 @@ class AgentPanel(QDialog):
         self.optimize_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
         self.optimize_btn.clicked.connect(self._on_optimize_clicked)
         tools.addWidget(self.optimize_btn)
+
+        # Agent 权限下拉：紧邻提示词优化右侧（每步确认 / 仅工具调用 / 全部访问）
+        self.perm_btn = QPushButton(_line_icon("shield", 20, ACCENT), "")
+        self.perm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.perm_btn.setAutoDefault(False)
+        self.perm_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
+        self.perm_btn.setIconSize(QSize(20, 20))
+        self.perm_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
+        self.perm_btn.clicked.connect(self._open_perm_menu)
+        tools.addWidget(self.perm_btn)
+        self._refresh_perm_btn()   # 按当前执行模式初始化图标/配色/tooltip
         tools.addStretch(1)   # 左侧工具组 / 右侧模型+发送，中间弹性留白
+
+        # 模型名称左侧：思考强度 + 上下文窗口徽标（悬停模型框弹层可调，见 _ModelTunePopover）
+        self.model_badges = QLabel("")
+        self.model_badges.setObjectName("modelBadges")
+        self.model_badges.setStyleSheet(
+            f"QLabel#modelBadges {{ color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;"
+            " background: transparent; border: none; padding-right: 4px; }")
+        self.model_badges.setCursor(Qt.CursorShape.ArrowCursor)
+        self.model_badges.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        tools.addWidget(self.model_badges)
 
         # 输入框右侧：手动切换本次使用的模型（选「自动」则按工作力度路由）
         self.model_combo = _ArrowComboBox()
@@ -21401,6 +21539,23 @@ class AgentPanel(QDialog):
         self.action_btn.clicked.connect(self._on_action_clicked)
         tools.addWidget(self.action_btn)
         composer_lay.addLayout(tools)
+
+        # 模型框悬停 1s → 上方弹出思考强度 / 自动按难度 / 上下文窗口调节浮层
+        self._model_tune = _ModelTunePopover(self)
+        self._model_tune.hide()
+        self._model_tune.effort_changed.connect(self._on_model_tune_effort)
+        self._model_tune.auto_changed.connect(self._on_model_tune_auto)
+        self._model_tune.context_changed.connect(self._on_model_tune_context)
+        self._model_hover = _HoverHold(
+            _MODEL_TUNE_HOLD_MS, self._open_model_tune,
+            _MODEL_TUNE_LEAVE_MS, self._close_model_tune, self)
+        self.model_combo.installEventFilter(self._model_hover)
+        # 浮层自身也参与悬停保持：指针在浮层内不收起，离开 250ms 才收起
+        self._model_tune_hover = _HoverHold(
+            _MODEL_TUNE_HOLD_MS, self._open_model_tune,
+            _MODEL_TUNE_LEAVE_MS, self._close_model_tune, self)
+        self._model_tune.installEventFilter(self._model_tune_hover)
+        self._sync_model_badges()
         # 排队面板：内容自适应高度（消息行数决定），紧贴输入行上方，无底部留白
         right.addWidget(self.queue_panel)
         # 后台任务状态区：紧贴输入行上方，有任务时才占位显示
@@ -21480,9 +21635,6 @@ class AgentPanel(QDialog):
         if _stored_flag(_STORE_LEFTDOCK_COLLAPSED):
             self._set_leftdock_collapsed(True, persist=False)
         self._sync_rail_state()   # 胶囊 tooltip / 左栏入口可见性按初始状态对齐
-        # 应用内高对比指针：系统指针在深色面板上几乎不可见，统一换成白芯黑边箭头
-        # （子控件显式设置的 PointingHand / IBeam 不受影响）
-        self._apply_app_cursor()
         # 顶栏「预览面板」按钮初始外观跟随当前启用状态（默认隐藏 → 幽灵态）
         self._sync_preview_btn()
 
@@ -22738,18 +22890,6 @@ class AgentPanel(QDialog):
         self._refresh_session_combo()
 
     # ---------- 折叠 / 展开（对话栏与左侧整栏） ----------
-    def _apply_app_cursor(self) -> None:
-        """给主面板与四个侧栏窗口套用高对比指针（dock 子控件继承主面板，浮窗需显式设）。"""
-        try:
-            cur = _high_contrast_cursor()
-            self.setCursor(cur)
-            for name in ("todos_win", "git_win", "wt_win", "code_win"):
-                w = self.__dict__.get(name)
-                if w is not None:
-                    w.setCursor(cur)
-        except Exception:
-            pass
-
     def _toggle_drawer(self):
         """对话栏收起/展开：标题栏箭头与胶囊「对话栏」按钮共用本入口。"""
         drawer = self.__dict__.get("session_drawer")
@@ -24653,7 +24793,6 @@ class AgentPanel(QDialog):
             self._applied_panel_mode = mode
             self._sync_dock_layout()
             self._sync_rail_state()
-            self._apply_app_cursor()   # 浮出/融入后面板仍是同一指针形态
         except Exception:
             pass
 
@@ -27649,6 +27788,8 @@ class AgentPanel(QDialog):
         apply_cursor_flash()
         _set(getattr(self, "attach_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
         _set(getattr(self, "optimize_btn", None), _round_icon_btn_qss(_ROUND_BTN_D))
+        # 权限按钮皮肤随模式（yolo 红染 / 其余常态），主题切换后一并重算
+        self._refresh_perm_btn()
         # 语音按钮：皮肤随录音态走（录音中是主色渐变，不能按常态皮肤刷回去）
         _set(getattr(self, "voice_btn", None), self._voice_btn_qss())
         _set(getattr(self, "action_btn", None), _BTN_PRIMARY)
@@ -29387,7 +29528,11 @@ class AgentPanel(QDialog):
         self._sync_model_combo()   # 模型/服务商变更后即时重建输入框右侧下拉
         self._effort = self._model_cfg.get("effort", "medium")
         self._auto_effort = bool(self._model_cfg.get("auto_effort", True))
+        self._context_1m = bool(self._model_cfg.get("context_1m", False))
         self._mode = str(self._settings.value("agent_mode", "ask"))   # 执行模式在设置页调整后同步
+        self._refresh_perm_btn()     # 权限按钮图标/配色跟随执行模式（设置页改完即时同步）
+        self._sync_model_badges()    # 模型名左侧徽标（思考强度 + 上下文窗口）随配置刷新
+        self._sync_model_tune_state()
         self._restore_workdir()   # 工作目录在设置页调整后同步
         self._apply_panel_mode()  # 面板偏好（贴附/融入主面板）保存后即时生效
         self._cleanup_legacy_panel_keys()
@@ -29533,6 +29678,228 @@ class AgentPanel(QDialog):
             attach_combo_checkmark(self.model_combo, check_color=ACCENT)
         except Exception:
             pass
+        self._sync_model_badges()   # 模型列表变化会影响窗口读数，徽标同步刷新
+
+    # ---------- 模型名左侧徽标 / 悬停调节浮层 ----------
+    def _model_tune_window_text(self) -> str:
+        """当前生效的上下文上限（压缩成 128K 这类短写）。
+
+        走 agent_llm.resolve_context（与实际引擎同一条决策链），并叠加**尚未落盘**的
+        1M 开关，保证用户刚勾选时读数立即变化，而不是等下一次发送。"""
+        cfg = self._model_cfg or {}
+        providers = cfg.get("providers") or []
+        p = None
+        model = self._model_override or ""
+        if model:
+            for x in providers:
+                if model in (x.get("models") or []):
+                    p = x
+                    break
+        p = p or (providers[0] if providers else {})
+        if not model:
+            models = p.get("models") or [""]
+            model = str(models[0] or "")
+        try:
+            ctx = agent_llm.resolve_context(p.get("base_url"), model,
+                                            provider=p or None,
+                                            long_1m=bool(self._context_1m))
+            win = int(ctx.get("window") or 0)
+        except Exception:
+            win = 0
+        return _fmt_tokens(win) if win > 0 else "—"
+
+    def _sync_model_badges(self):
+        """模型名左侧徽标：思考档位（自动按难度时显示「自动」）+ 上下文窗口"""
+        lbl = self.__dict__.get("model_badges")
+        if lbl is None:
+            return
+        eff = _ui("自动") if self._auto_effort else _ui(agent_llm.effort_label(self._effort))
+        lbl.setText(_uif("思考 {a0} · {a1}", a0=eff, a1=self._model_tune_window_text()))
+
+    def _sync_model_tune_state(self):
+        """把面板当前配置灌进浮层控件（不触发回写信号）"""
+        pop = self.__dict__.get("_model_tune")
+        if pop is None:
+            return
+        pop.set_state(self._effort, self._auto_effort, self._context_1m,
+                      self._model_tune_window_text())
+
+    def _open_model_tune(self):
+        """悬停 1s / 浮层内悬停时显示调节浮层（幂等）"""
+        pop = self.__dict__.get("_model_tune")
+        if pop is None or not hasattr(self, "model_combo"):
+            return
+        self._sync_model_tune_state()
+        if pop.isVisible():
+            return
+        pop.popup_above(self.model_combo)
+        self._model_tune_dismiss_attach(True)
+
+    def _close_model_tune(self):
+        """收起调节浮层（离开宽限计时到期 / 选中外部 / Esc）"""
+        pop = self.__dict__.get("_model_tune")
+        if pop is None:
+            return
+        pop.close_animated()
+        self._model_tune_dismiss_attach(False)
+
+    def _model_tune_dismiss_attach(self, on: bool):
+        """挂载/卸载全局失焦守卫（点击浮层与模型框外或 Esc → 收起），幂等"""
+        f = self.__dict__.get("_model_tune_dismiss")
+        if f is None:
+            f = _PopoverDismissFilter(self._model_tune, self.model_combo,
+                                      parent=self, on_dismiss=self._close_model_tune)
+            self._model_tune_dismiss = f
+        app = QApplication.instance()
+        if app is None:
+            return
+        if bool(self.__dict__.get("_model_tune_dismiss_on")) == bool(on):
+            return
+        try:
+            if on:
+                app.installEventFilter(f)
+            else:
+                app.removeEventFilter(f)
+        except Exception:
+            return
+        self._model_tune_dismiss_on = bool(on)
+
+    def _on_model_tune_effort(self, effort: str):
+        if effort in agent_llm.EFFORTS:
+            self._effort = effort
+        self._sync_model_badges()
+        self._schedule_model_tune_save()
+
+    def _on_model_tune_auto(self, checked: bool):
+        self._auto_effort = bool(checked)
+        self._sync_model_badges()
+        self._schedule_model_tune_save()
+
+    def _on_model_tune_context(self, checked: bool):
+        self._context_1m = bool(checked)
+        self._sync_model_tune_state()   # 窗口读数随开关即时变化
+        self._sync_model_badges()
+        self._schedule_model_tune_save()
+
+    def _schedule_model_tune_save(self):
+        """防抖落盘：拖动滑杆会连续发信号，250ms 内的多次改动只写一次配置"""
+        t = self.__dict__.get("_model_tune_save_timer")
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(250)
+            t.timeout.connect(self._save_model_tune)
+            self._model_tune_save_timer = t
+        t.start()
+
+    def _save_model_tune(self):
+        """把浮层改动并入 model 配置并即时生效（引擎复用，仅更新运行参数）"""
+        try:
+            s = agent_skills.load_settings()
+        except Exception:
+            return
+        m = dict(s.get("model") or {})
+        m["effort"] = self._effort
+        m["auto_effort"] = bool(self._auto_effort)
+        m["context_1m"] = bool(self._context_1m)
+        s["model"] = m
+        try:
+            agent_skills.save_settings(s)
+        except Exception:
+            return
+        agent_llm.load_model_config()
+        self._apply_agent_settings()
+
+    # ---------- Agent 权限（复用执行模式 agent_mode） ----------
+    _PERM_MODES = ("ask", "edit", "yolo")
+
+    def _perm_tooltip(self, mode: str) -> str:
+        return {
+            "ask": _ui("Agent 权限：每步确认（每次操作前先询问你）"),
+            "edit": _ui("Agent 权限：仅工具调用（自主调用工具，非白名单命令仍需确认）"),
+            "yolo": _ui("Agent 权限：全部访问（直接执行，不再逐步询问，高风险）"),
+        }.get(mode, _ui("Agent 权限"))
+
+    def _refresh_perm_btn(self):
+        """按当前执行模式刷新权限按钮：图标 + 颜色 + tooltip（yolo 转红警示）"""
+        btn = self.__dict__.get("perm_btn")
+        if btn is None:
+            return
+        mode = str(getattr(self, "_mode", "ask") or "ask")
+        danger = mode == "yolo"
+        btn.setIcon(_line_icon("warning" if danger else "shield", 20,
+                               ERR if danger else ACCENT))
+        if danger:
+            # 全部访问进行中：红染圆盘（由错误色派生，不写死 rgb），一眼可辨「高风险开着」
+            c = QColor(ERR)
+            fill = f"rgba({c.red()},{c.green()},{c.blue()},0.16)"
+            hover = f"rgba({c.red()},{c.green()},{c.blue()},0.28)"
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {fill}; border: none;"
+                f" border-radius: {_ROUND_BTN_D // 2}px; }}"
+                f"QPushButton:hover {{ background: {hover}; }}")
+        else:
+            btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
+        btn.setToolTip(self._perm_tooltip(mode))
+
+    def _open_perm_menu(self):
+        """权限下拉：每步确认 / 仅工具调用 / 全部访问（全部访问为红色风险项）"""
+        btn = self.__dict__.get("perm_btn")
+        if btn is None:
+            return
+        menu = _FadeMenu(self)
+        cur = str(getattr(self, "_mode", "ask") or "ask")
+        for mode, text, kind in (("ask", _ui("每步确认"), "ok"),
+                                 ("edit", _ui("仅工具调用"), "tool")):
+            act = menu.addAction(_line_icon(kind, 16, TEXT), text)
+            act.setCheckable(True)
+            act.setChecked(mode == cur)
+            act.triggered.connect(lambda _c=False, m=mode: self._on_perm_action(m))
+        # 「全部访问」用红色警告行（QWidgetAction 才能单独上红字；普通 QAction 无逐项配色）
+        wa = QWidgetAction(menu)
+        holder = QWidget(menu)
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(10, 5, 10, 5)
+        row.setSpacing(8)
+        ico = QLabel(holder)
+        ico.setPixmap(_line_icon("warning", 16, ERR).pixmap(16, 16))
+        txt = QLabel(_ui("全部访问"), holder)
+        txt.setStyleSheet(f"color: {ERR}; background: transparent;")
+        row.addWidget(ico)
+        row.addWidget(txt)
+        row.addStretch(1)
+        wa.setDefaultWidget(holder)
+        wa.setText(_ui("全部访问"))   # 无障碍/测试可读文案（红字由上面的 QLabel 承担）
+        wa.triggered.connect(lambda _c=False: self._on_perm_action("yolo"))
+        menu.addAction(wa)
+        pos = btn.mapToGlobal(QPoint(0, -8 - menu.sizeHint().height()))
+        menu.exec(pos)
+
+    def _confirm_yolo_access(self) -> bool:
+        """全部访问二次确认（默认 No，防误点）"""
+        ret = QMessageBox.question(
+            self, _ui("开启全部访问"),
+            _uim("全部访问模式：AI 将直接执行任务，不再逐步询问/确认/约束，"
+                 "可操作任意目录（含系统目录）、执行任意命令，不再做危险操作拦截。\n"
+                 "请注意：此模式可能造成系统文件误删、关键配置被改等不可逆后果，请谨慎使用。"
+                 "确定开启？"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return ret == QMessageBox.StandardButton.Yes
+
+    def _on_perm_action(self, mode: str):
+        """应用权限：持久化 agent_mode → 更新面板模式 → 既有引擎 direct 即时生效"""
+        mode = mode if mode in self._PERM_MODES else "ask"
+        if mode == "yolo" and not self._confirm_yolo_access():
+            self._refresh_perm_btn()   # 取消后按真实模式复原按钮外观
+            return
+        self._settings.setValue("agent_mode", mode)
+        self._mode = mode
+        for st in (self._sess or {}).values():
+            eng = st.get("engine")
+            if eng:
+                eng.direct = (mode == "yolo")
+        self._refresh_perm_btn()
 
     def _provider_for_model(self, model: str) -> str:
         """返回包含指定模型的服务商名（找不到返回空串）"""
@@ -29556,6 +29923,7 @@ class AgentPanel(QDialog):
         self._settings.setValue("agent_last_provider",          # 同时记住服务商，防同名模型串服务商
                                 self._model_override_provider or "")
         self._refresh_text_only()   # 切换模型立即更新纯文本判断（粘贴图片/附件过滤实时生效）
+        self._sync_model_badges()   # 不同模型上下文窗口不同，徽标随之刷新
         # 切换模型不清空上下文：当前对话历史继续沿用，仅后续轮次使用新模型
 
     def _reconnect_mcp(self):
