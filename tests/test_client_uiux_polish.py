@@ -269,7 +269,8 @@ def test_function_rail_is_capsule_with_icon_buttons(panel):
     assert rail.width() == ap._RAIL_W
     qss = rail.styleSheet()
     assert f"border-radius: {ap.pill_radius(ap._RAIL_W)}px" in qss, "胶囊圆角必须取半宽"
-    assert "border: none" in qss, "按招 1 不描边"
+    # 统一视觉方案：侧栏一律「底色 BG + 1px 描边 + 半宽圆角」
+    assert "border: 1px solid" in qss, "胶囊应为统一底色 + 1px 描边"
     btns = list(rail._buttons.values())
     assert len(btns) >= 7, f"胶囊入口过少：{len(btns)}"
     for b in btns:

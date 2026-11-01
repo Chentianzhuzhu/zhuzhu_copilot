@@ -903,7 +903,7 @@ def _welcome_chip_qss() -> str:
 
 def _drawer_icon_btn_qss() -> str:
     """抽屉标题栏 / 窄条上的小箭头按钮：透明底，hover 时才浮出一层磨砂填充。"""
-    fill = _mix_hex(BORDER, PANEL, 0.22)
+    fill = _mix_hex(BORDER, _base_color("BG"), 0.22)
     return (f"QPushButton {{ background: transparent; border: none;"
             f" border-radius: {RADIUS_XS}px; }}"
             f"QPushButton:hover {{ background: {fill}; }}")
@@ -12159,7 +12159,8 @@ class TodosPanel(QWidget):
         header = QHBoxLayout()
         header.setSpacing(8)
         title = QLabel(_ui("任务清单"))
-        title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 800;")
+        title.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
+                            f" font-weight: {_W_STRONG};")
         header.addWidget(title)
         self._count = QLabel("")
         self._count.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
@@ -15695,7 +15696,10 @@ class CodePreviewWindow(QWidget):
         self.setObjectName("codeWin")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 表面色见 _panel_surface：壁纸模式下透明（透出主窗口壁纸），否则取色板实色
-        self.setStyleSheet(f"QWidget#codeWin {{ background: {_panel_surface('BG')}; }}")
+        self.setStyleSheet(
+            f"QWidget#codeWin {{ background: {_panel_surface('BG')};"
+            f" border: 1px solid {_panel_stroke('BORDER')};"
+            f" border-radius: {RADIUS_MD}px; }}")
         self.setFixedWidth(self.WIDTH)   # 栏内宽度固定（高度由 dock 栏分配）
         self._manual_mode = False  # 用户是否手动指定了预览模式（False=auto 按扩展名自动路由）
         self._media_full = False       # 视频是否处于全屏（独立全屏窗口承载，非本面板）
@@ -15711,7 +15715,8 @@ class CodePreviewWindow(QWidget):
         lay.setSpacing(6)
         # 标题栏 + 路径
         self.title = QLabel(_ui("预览"))
-        self.title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
+        self.title.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
+                                 f" font-weight: {_W_STRONG};")
         self.path_lbl = QLabel(_ui("打开文件或由 AI 自动分发文件到此预览"))
         self.path_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
         self.path_lbl.setWordWrap(True)
@@ -15929,7 +15934,10 @@ class CodePreviewWindow(QWidget):
         落到已有控件上 —— 因此 `_retheme` 快路径必须显式回调本方法刷新。
         """
         try:
-            self.setStyleSheet(f"QWidget#codeWin {{ background: {_panel_surface('BG')}; }}")
+            self.setStyleSheet(
+                f"QWidget#codeWin {{ background: {_panel_surface('BG')};"
+                f" border: 1px solid {_panel_stroke('BORDER')};"
+                f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
             pass
         try:
@@ -17167,7 +17175,8 @@ class TodosWindow(_RoundedFloatWindow):
         try:
             self.setStyleSheet(
                 f"QWidget#todosWin {{ background: {_panel_surface('BG')};"
-                f" border: {_panel_stroke('BORDER')}; }}")
+                f" border: 1px solid {_panel_stroke('BORDER')};"
+                f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
             pass
 
@@ -17474,7 +17483,10 @@ class GitLogWindow(_RoundedFloatWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
         # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
-        self.setStyleSheet(f"QWidget#gitLogWin {{ background: {_panel_surface('BG')}; }}")
+        self.setStyleSheet(
+            f"QWidget#gitLogWin {{ background: {_panel_surface('BG')};"
+            f" border: 1px solid {_panel_stroke('BORDER')};"
+            f" border-radius: {RADIUS_MD}px; }}")
         self._view = "commit"   # commit / branch，默认提交历史（最新在上、最旧在下）
         self._scope_ref = ""    # 非空：正在查看该分支的提交（不切换工作区）
         self.resize(self.WIDTH, 320)   # 宽高均可调（四边/四角拖拽，独立持久化）
@@ -17492,7 +17504,8 @@ class GitLogWindow(_RoundedFloatWindow):
         head = QHBoxLayout()
         head.setSpacing(6)
         title = QLabel(_ui("Git 面板"))
-        title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
+        title.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
+                            f" font-weight: {_W_STRONG};")
         head.addWidget(title)
         head.addStretch(1)
         self.branch_btn = QPushButton(_ui("分支"))
@@ -17592,7 +17605,10 @@ class GitLogWindow(_RoundedFloatWindow):
     def apply_surface_theme(self):
         """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
         try:
-            self.setStyleSheet(f"QWidget#gitLogWin {{ background: {_panel_surface('BG')}; }}")
+            self.setStyleSheet(
+                f"QWidget#gitLogWin {{ background: {_panel_surface('BG')};"
+                f" border: 1px solid {_panel_stroke('BORDER')};"
+                f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
             pass
         try:
@@ -18265,13 +18281,17 @@ class WorktreeWindow(_RoundedFloatWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
         # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
-        self.setStyleSheet(f"QWidget#wtWin {{ background: {_panel_surface('BG')}; border-radius: 12px; }}")
+        self.setStyleSheet(
+            f"QWidget#wtWin {{ background: {_panel_surface('BG')};"
+            f" border: 1px solid {_panel_stroke('BORDER')};"
+            f" border-radius: {RADIUS_MD}px; }}")
         self.resize(self.WIDTH, 360)   # 宽高均可调（四边/四角拖拽，独立持久化）
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
         title = QLabel(_ui("工作树（双击文件预览）"))
-        title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;")
+        title.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
+                            f" font-weight: {_W_STRONG};")
         # 英文标题比中文长（Worktree (double-click a file to preview)），固定 280px 面板
         # 宽度下单行会被右缘裁切 → 允许换行，避免标题文字被挤压遮挡。
         title.setWordWrap(True)
@@ -18369,7 +18389,9 @@ class WorktreeWindow(_RoundedFloatWindow):
         """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
         try:
             self.setStyleSheet(
-                f"QWidget#wtWin {{ background: {_panel_surface('BG')}; border-radius: 12px; }}")
+                f"QWidget#wtWin {{ background: {_panel_surface('BG')};"
+                f" border: 1px solid {_panel_stroke('BORDER')};"
+                f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
             pass
         try:
@@ -18918,7 +18940,7 @@ class _SessionRowDelegate(QStyledItemDelegate):
         bg = rect.adjusted(2, 2, -2, -2)
         painter.setPen(Qt.PenStyle.NoPen)
         if option.state & QStyle.StateFlag.State_Selected:
-            painter.setBrush(QColor(_mix_hex(ACCENT, PANEL, 0.12)))
+            painter.setBrush(QColor(_mix_hex(ACCENT, _base_color("BG"), 0.12)))
             painter.drawRoundedRect(bg, RADIUS_SM, RADIUS_SM)
         elif option.state & QStyle.StateFlag.State_MouseOver:
             painter.setBrush(QColor(HOVER))
@@ -19118,16 +19140,18 @@ class _SessionDrawer(QFrame):
 
     def apply_theme(self) -> None:
         """按当前色板重设皮肤（换肤快路径调用，幂等）。"""
+        # 侧栏卡统一：与文件树/Git/任务同底（BG）+ 1px 描边 + 12px 圆角
         self.setStyleSheet(
-            f"QFrame#sessionDrawer {{ background: {_panel_surface('PANEL')};"
-            f" border: none; border-radius: {RADIUS_LG}px; }}")
+            f"QFrame#sessionDrawer {{ background: {_panel_surface('BG')};"
+            f" border: 1px solid {_panel_stroke('BORDER')};"
+            f" border-radius: {RADIUS_MD}px; }}")
         self.title.setStyleSheet(
             f"color: {TEXT}; font-size: {FONT_BODY}px; font-weight: {_W_STRONG};"
             "background: transparent;")
         self.new_btn.setStyleSheet(_BTN_ICON)
         self.collapse_btn.setStyleSheet(_drawer_icon_btn_qss())
         self.expand_btn.setStyleSheet(_drawer_icon_btn_qss())
-        field = _mix_hex(BORDER, PANEL, 0.18)
+        field = _mix_hex(BORDER, _base_color("BG"), 0.22)
         self.search.setStyleSheet(
             f"QLineEdit#sessionSearch {{ background: {field}; color: {TEXT};"
             f" border: none; border-radius: {RADIUS_SM}px;"
@@ -19249,22 +19273,25 @@ class _FunctionRail(QFrame):
         return btn.mapToGlobal(btn.rect().bottomLeft())
 
     def apply_theme(self) -> None:
+        # 与左侧栏同一套表面：BG + 1px 描边（胶囊圆角取半宽）
         self.setStyleSheet(
-            f"QFrame#functionRail {{ background: {_panel_surface('PANEL')};"
-            f" border: none; border-radius: {pill_radius(_RAIL_W)}px; }}")
-        fill = _mix_hex(BORDER, PANEL, 0.18)
-        fill_press = _mix_hex(BORDER, PANEL, 0.30)
+            f"QFrame#functionRail {{ background: {_panel_surface('BG')};"
+            f" border: 1px solid {_panel_stroke('BORDER')};"
+            f" border-radius: {pill_radius(_RAIL_W)}px; }}")
+        base = _base_color("BG")
+        fill = _mix_hex(BORDER, base, 0.18)
+        fill_press = _mix_hex(BORDER, base, 0.30)
         self._qss_normal = (f"QPushButton {{ background: transparent; border: none;"
                             f" border-radius: {RADIUS_SM}px; }}"
                             f"QPushButton:hover {{ background: {fill_press}; }}"
                             f"QPushButton:pressed {{ background: {fill}; }}")
         # 开启态（如预览已展开）：强调色淡染，与顶栏预览按钮的选中态同源
-        self._qss_active = (f"QPushButton {{ background: {_mix_hex(ACCENT, PANEL, 0.14)};"
+        self._qss_active = (f"QPushButton {{ background: {_mix_hex(ACCENT, base, 0.14)};"
                             f" border: none; border-radius: {RADIUS_SM}px; }}"
-                            f"QPushButton:hover {{ background: {_mix_hex(ACCENT, PANEL, 0.22)}; }}")
+                            f"QPushButton:hover {{ background: {_mix_hex(ACCENT, base, 0.22)}; }}")
         for kind in self._buttons:
             self._apply_button(kind)
-        div_qss = (f"QFrame {{ background: {_mix_hex(BORDER, PANEL, 0.35)};"
+        div_qss = (f"QFrame {{ background: {_mix_hex(BORDER, base, 0.35)};"
                    " border: none; }")
         for div in self._divs:
             div.setStyleSheet(div_qss)
@@ -23983,9 +24010,9 @@ class AgentPanel(QDialog):
             f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')}; border: none; }}")
         c_lay = QVBoxLayout(col)
         c_lay.setContentsMargins(0, 0, 0, 0)
-        # 栏内面板首尾相接（间距 0）：面板间的竖直空隙全部并入余量、由同栏的 Git 面板
-        # 吸收占满（用户要求「任务清单上方 / 工作树下方的空隙都给 Git 面板」）
-        c_lay.setSpacing(0)
+        # 侧栏卡片统一：面板之间留 _DOCK_PANEL_GAP，让每张卡都能看清自己的描边与圆角；
+        # 份额计算已按名义间距扣减（见 _apply_dock_height_caps），不会溢出。
+        c_lay.setSpacing(self._DOCK_PANEL_GAP)
         if side == "left":
             # 左栏标题条：三块面板（文件树 / Git / 任务清单）共用一枚收起箭头，
             # 一次折叠整栏；收起后本栏变成 36px 窄条，箭头翻向右侧可再展开。
@@ -24023,6 +24050,16 @@ class AgentPanel(QDialog):
     def _dock_column(self, side: str) -> QWidget:
         return self._dock_left if side == "left" else self._dock_right
 
+    def _dock_column_qss(self, side: str) -> str:
+        """dock 栏容器皮肤：左栏收起时它本身就是一张 36px 卡片（与对话栏同套描边/圆角），
+        展开时退回透明栏底，让栏内三张面板卡各自承担边框。"""
+        if side == "left" and self._leftdock_collapsed():
+            return (f"QWidget#dockColleft {{ background: {_panel_surface('BG')};"
+                    f" border: 1px solid {_panel_stroke('BORDER')};"
+                    f" border-radius: {RADIUS_MD}px; }}")
+        return (f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')};"
+                f" border: none; }}")
+
     def _apply_dock_surface(self):
         """按当前表面色就地刷新两侧 dock 栏容器的底色。
 
@@ -24037,8 +24074,7 @@ class AgentPanel(QDialog):
                 col = self._dock_column(side)
                 if col is None:
                     continue
-                col.setStyleSheet(f"QWidget#dockCol{side} "
-                                  f"{{ background: {_panel_surface('BG')}; border: none; }}")
+                col.setStyleSheet(self._dock_column_qss(side))
             except Exception:
                 pass      # 栏容器未建 / 已销毁：不是关键路径，静默跳过
 
@@ -24168,6 +24204,8 @@ class AgentPanel(QDialog):
                 order = self._dock_panel_order(side)
                 if side == "left":
                     self._sync_leftdock_head(bool(order))
+                    # 收起态把栏容器本身画成卡片；展开态退回透明栏底（面板各自成卡）
+                    col.setStyleSheet(self._dock_column_qss(side))
                     if self._leftdock_collapsed():
                         # 整栏折叠：面板全部隐藏，只保留 36px 窄条 + 展开箭头
                         for p in order:
@@ -24248,12 +24286,13 @@ class AgentPanel(QDialog):
         if side != "left" or not order:
             return
         try:
-            # 份额口径按「名义间距」计（栏内实际间距为 0）：间距口径让份额换算与旧版
-            # 一致，差额由 Git 吸收（它是余量吸收者）。
-            gaps = self._DOCK_PANEL_GAP * max(0, len(order) - 1)
-            # 顶部「侧栏」标题条也占高，份额必须扣掉它，否则整栏会溢出 28px
+            # 份额口径按栏内实际间距计（面板卡之间留 _DOCK_PANEL_GAP），差额由 Git 吸收。
+            # 顶部「侧栏」标题条也占高（含它与首张卡之间的一段间距），份额必须扣掉
             head = self.__dict__.get("_leftdock_head")
             head_h = _DOCK_HEAD_H if (head is not None and not head.isHidden()) else 0
+            # 间距段数：有标题条 = 面板数（标题条→首卡→…）；无标题条 = 面板数 - 1
+            gaps = self._DOCK_PANEL_GAP * max(0, len(order) - (0 if head_h else 1))
+            # （self. 前缀：_DOCK_PANEL_GAP 是类属性，裸名会落到模块全局）
             avail = max(0, col.height() - gaps - head_h)
             by_name = {p.objectName(): p for p in order}
             wt = by_name.get("wtWin")
