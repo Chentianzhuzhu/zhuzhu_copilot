@@ -930,11 +930,14 @@ def _welcome_chip_qss() -> str:
 
 @lru_cache(maxsize=2)
 def _high_contrast_cursor() -> QCursor:
-    """应用内高对比箭头指针：白色箭头 + 2px 黑色描边（深浅背景都清晰）。
+    """应用内高对比箭头指针：**黑芯 + 白色描边**（深浅背景都清晰）。
 
-    Windows 默认指针在深色场景下常常「黑边黑芯」，压在深灰面板上几乎看不见。
-    QWidget 的 cursor 会被子控件继承（显式设过 PointingHand/IBeam 的按钮与输入框
-    仍用自己的系统指针），因此只影响聊天区/侧栏等空白区域的指针形态。
+    上一版是「白芯 + 黑描边」，在白卡片/浅色输入卡上白芯直接融进背景，
+    只剩一圈细黑边，看起来像「光标没了」（用户反馈）。改为黑芯白边：
+    - 浅色背景：黑色箭头本体承担可见性；
+    - 深色背景：白色描边勾出轮廓，本体与背景融合也不影响识别。
+    QWidget 的 cursor 会被子控件继承（显式设过 PointingHand/IBeam 的按钮与
+    输入框仍用自己的系统指针），因此只影响聊天区/侧栏等空白区域。
     """
     s = 30
     pm = QPixmap(s, s)
@@ -950,9 +953,9 @@ def _high_contrast_cursor() -> QCursor:
     path.lineTo(12.0, 15.5)
     path.lineTo(19.5, 15.5)
     path.closeSubpath()
-    p.setPen(QPen(QColor("#000000"), 1.6,
+    p.setPen(QPen(QColor("#FFFFFF"), 2.0,
                   cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
-    p.setBrush(QColor("#FFFFFF"))
+    p.setBrush(QColor("#0B0D11"))
     p.drawPath(path)
     p.end()
     return QCursor(pm, 3, 2)
