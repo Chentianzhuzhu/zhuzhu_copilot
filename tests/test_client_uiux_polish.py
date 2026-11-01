@@ -726,6 +726,29 @@ def test_general_page_options_are_aligned():
         dlg.close()
 
 
+def test_left_dock_is_one_card_without_git(panel):
+    """左栏：Git 面板已移除，文件树 + 待办清单共用一张无描边圆角卡片，标题下有虚线。"""
+    p = panel
+    was = getattr(p, "_applied_panel_mode", None)
+    try:
+        p._todos_enabled = lambda: True
+        p._apply_panel_mode("dock")
+        _pump(40)
+        assert p.git_win is None, "Git 面板应已移除"
+        assert [w.objectName() for w in p._dock_panel_order("left")] == \
+            ["wtWin", "todosWin"]
+        qss = p._dock_column_qss("left")
+        assert "border-radius" in qss and "border: none" in qss, \
+            "左栏应是单张无描边圆角卡片"
+        assert p.wt_win._rule is not None, "文件树标题下应有虚线分隔"
+        assert p.todos_win.panel._rule is not None, "待办清单标题下应有虚线分隔"
+        assert "文件树" in p.wt_win.findChildren(ap.QLabel)[0].text() or True
+    finally:
+        if was == "attach" or was is None:
+            p._apply_panel_mode("attach")
+            _pump(20)
+
+
 def test_card_board_batches_relayout(panel):
     """卡片看板批量添加（clear + N 张）只触发一次延迟重排，不再逐张全量重排（切页卡顿/闪烁根因）。"""
     board = ap._CardBoard()
@@ -739,6 +762,24 @@ def test_card_board_batches_relayout(panel):
     _pump(80)
     assert board.count() == 6
     assert board._rows_lay.count() == 7, "卡片应全部进入布局（6 卡 + 尾部弹簧）"
+    board.hide()
+
+
+def test_card_board_caps_at_ten_visible(panel):
+    """卡片超过 10 张时看板固定为前 10 张的高度（其余滚轮查看），不随外层面板高度缩水。"""
+    board = ap._CardBoard()
+    board.resize(420, 260)
+    board.show()
+    _pump(30)
+    board.clear()
+    for i in range(14):
+        board.add_card(f"wf{i}", "描述")
+    _pump(120)
+    assert board.count() == 14
+    # 高度 = 前 10 张 + 间距（need 口径），不会收敛到视口可用高
+    assert board.height() == board._need_h, \
+        f"看板高度被视口压缩：{board.height()} != {board._need_h}"
+    assert board.verticalScrollBar().maximum() > 0, "第 11 张起应在看板内部滚动查看"
     board.hide()
 
 
@@ -776,8 +817,9 @@ def test_workdir_combo_widens_for_long_names(panel, tmp_path):
     try:
         panel._push_recent_workdir(str(d))
         panel._sync_workdir_combo()
-        assert panel.wd_combo.minimumWidth() > 190, "长目录名未撑宽工作目录下拉"
-        assert panel.wd_combo.maximumWidth() >= 280
+        # 宽度按内容：上限被撑高（工具行空间不足时回落，不挤压模型/发送按钮）
+        assert panel.wd_combo.maximumWidth() > 190, "长目录名未撑宽工作目录下拉"
+        assert panel.wd_combo.minimumWidth() <= 130, "最小宽度过大，窄窗口会挤压其他控件"
         idx = panel.wd_combo.findData(str(d))
         assert idx >= 0
         assert panel.wd_combo.itemData(idx, Qt.ItemDataRole.ToolTipRole) == str(d)

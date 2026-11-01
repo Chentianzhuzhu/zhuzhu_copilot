@@ -4614,7 +4614,13 @@ class _CardBoard(QScrollArea):
                 self._schedule_fit()
                 return
             self._fit_retry = 0
-            h = need if avail <= 0 else min(need, max(140, avail))
+            if len(self._cards) > self.MAX_VISIBLE:
+                # 超过 10 张时**固定**为前 10 张的高度，其余交给本控件内部滚动。
+                # 不能再按外层视口收敛：否则可见张数会随窗口高度变化（「无法保证只显示
+                # 前 10 个」），且高度跟随视口反复变化还会让页面滚动时整块闪烁。
+                h = need
+            else:
+                h = need if avail <= 0 else min(need, max(140, avail))
             if abs(h - self.height()) > 2:
                 self._fitting = True
                 try:
@@ -5839,12 +5845,6 @@ class _AgentSettingsDialog(QDialog):
         self.todos_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
         self.todos_check.toggled.connect(self._on_todos_toggled)
         lay.addWidget(self.todos_check)
-        # Git 分支面板：关闭后 AI 面板不再显示 git 只读面板
-        self.git_check = QCheckBox(_ui("显示 Git 分支面板（git）"))
-        self.git_check.setChecked(self._git_enabled())
-        self.git_check.setStyleSheet(f"color: {self._TEXT}; font-size: 13px; spacing: 8px;")
-        self.git_check.toggled.connect(self._on_git_toggled)
-        lay.addWidget(self.git_check)
         # 工作树面板：关闭后 AI 面板不再显示 worktree 文件树（主窗口 worktree 已移除，仅此一处）
         self.wt_check = QCheckBox(_ui("显示工作树文件面板（worktree）"))
         self.wt_check.setChecked(self._wt_enabled())
@@ -6220,8 +6220,8 @@ class _AgentSettingsDialog(QDialog):
             panel._apply_reserve()
 
     def _git_enabled(self) -> bool:
-        return str(app_identity.qsettings()
-                   .value("agent_show_git", "1")).strip().lower() in ("1", "true", "yes")
+        """Git 分支面板已移除（用户要求）：恒 False；保留方法以免同步/布局代码到处判空。"""
+        return False
 
     def _wt_enabled(self) -> bool:
         return str(app_identity.qsettings()
@@ -6230,16 +6230,6 @@ class _AgentSettingsDialog(QDialog):
     def _code_enabled(self) -> bool:
         return str(app_identity.qsettings()
                    .value("agent_show_preview", "0")).strip().lower() in ("1", "true", "yes")
-
-    def _on_git_toggled(self, checked: bool):
-        """Git 分支面板开关：点击即生效，立即写入并同步显示/隐藏"""
-        app_identity.qsettings().setValue(
-            "agent_show_git", "1" if checked else "0")
-        panel = self.parent()
-        if panel is not None and hasattr(panel, "_sync_git_win"):
-            panel._sync_git_win()
-        if panel is not None and hasattr(panel, "_apply_reserve"):
-            panel._apply_reserve()
 
     def _on_wt_toggled(self, checked: bool):
         """工作树面板开关：点击即生效，立即写入并同步显示/隐藏"""
@@ -12024,6 +12014,22 @@ class _POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
+class _DashedRule(QFrame):
+    """标题下方 3px 处的 1px 虚线分隔：低对比、不画实线，分区靠底色对比承担。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(1)
+        self.apply_rule_theme()
+
+    def apply_rule_theme(self):
+        c = QColor(_base_color("BORDER_SOFT"))
+        c.setAlphaF(0.55)
+        self.setStyleSheet(
+            "border: none; border-top: 1px dashed "
+            f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()});")
+
+
 class TodosPanel(QWidget):
     """左侧 TODOS 可视化面板：AI 使用 update_todo / list_todo 工具时显示任务进度。
     内嵌于 AgentPanel 布局（非独立窗口 → 天然无最小化/最大化/关闭按钮）。
@@ -12050,7 +12056,7 @@ class TodosPanel(QWidget):
 
         header = QHBoxLayout()
         header.setSpacing(8)
-        title = QLabel(_ui("任务清单"))
+        title = QLabel(_ui("待办清单"))
         title.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
                             f" font-weight: {_W_STRONG};")
         header.addWidget(title)
@@ -12073,6 +12079,14 @@ class TodosPanel(QWidget):
         self._close_btn.clicked.connect(self.clear_requested.emit)
         header.addWidget(self._close_btn)
         lay.addLayout(header)
+        # 标题下方 3px 画一条虚线（分区靠底色对比，不用实线边框）
+        rule_box = QWidget()
+        rl = QVBoxLayout(rule_box)
+        rl.setContentsMargins(0, 3, 0, 0)
+        rl.setSpacing(0)
+        self._rule = _DashedRule()
+        rl.addWidget(self._rule)
+        lay.addWidget(rule_box)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -12109,9 +12123,20 @@ class TodosPanel(QWidget):
         补一次就会残留旧主题的底色/描边。
         """
         try:
-            self.setStyleSheet(
-                f"QWidget#todosPanel {{ background: {_panel_surface('BG')};"
-                f" border: {_panel_stroke('BORDER')}; }}")
+            win = self.parent()
+            docked = getattr(win, "dock_state", "float") != "float"
+            if docked:
+                # 共用卡片：待办段用「凹陷一档」底色与文件树对比，不描边
+                self.setStyleSheet(
+                    f"QWidget#todosPanel {{ background: {_panel_surface('FIELD')};"
+                    " border: none; }")
+            else:
+                self.setStyleSheet(
+                    f"QWidget#todosPanel {{ background: {_panel_surface('BG')};"
+                    f" border: {_panel_stroke('BORDER')}; }}")
+            rule = getattr(self, "_rule", None)
+            if rule is not None:
+                rule.apply_rule_theme()
         except Exception:
             pass
 
@@ -17351,10 +17376,15 @@ class TodosWindow(_RoundedFloatWindow):
         工作树面板（`wtWin`）都是这么写的。
         """
         try:
-            self.setStyleSheet(
-                f"QWidget#todosWin {{ background: {_panel_surface('BG')};"
-                f" border: 1px solid {_panel_stroke('BORDER')};"
-                f" border-radius: {RADIUS_MD}px; }}")
+            if getattr(self, "dock_state", "float") != "float":
+                # 融入 dock：整栏共享一张圆角卡片，窗口本身不再画底/描边
+                self.setStyleSheet(
+                    "QWidget#todosWin { background: transparent; border: none; }")
+            else:
+                self.setStyleSheet(
+                    f"QWidget#todosWin {{ background: {_panel_surface('BG')};"
+                    f" border: 1px solid {_panel_stroke('BORDER')};"
+                    f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
             pass
 
@@ -18468,13 +18498,19 @@ class WorktreeWindow(_RoundedFloatWindow):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
-        title = QLabel(_ui("工作树（双击文件预览）"))
+        title = QLabel(_ui("文件树"))
         title.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
                             f" font-weight: {_W_STRONG};")
-        # 英文标题比中文长（Worktree (double-click a file to preview)），固定 280px 面板
-        # 宽度下单行会被右缘裁切 → 允许换行，避免标题文字被挤压遮挡。
         title.setWordWrap(True)
         lay.addWidget(title)
+        # 标题下方 3px 虚线（分区靠底色对比，不再各画一圈边框）
+        rule_box = QWidget()
+        rl = QVBoxLayout(rule_box)
+        rl.setContentsMargins(0, 3, 0, 0)
+        rl.setSpacing(0)
+        self._rule = _DashedRule()
+        rl.addWidget(self._rule)
+        lay.addWidget(rule_box)
         self.tree = _AnimatedFileTree(self)
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(1)
@@ -18544,19 +18580,20 @@ class WorktreeWindow(_RoundedFloatWindow):
             pass
         return need
 
-    def _apply_surface_qss(self):
+    def _apply_surface_qss(self, docked: bool = False):
         """文件树底色（构建时调用一次）。
 
         树自带样式表时，**未显式提及的子控件会退回系统默认样式** —— 不给出滚动条
         规则时，浅色主题下会残留系统深色滚动条（用户反馈的「残留深色元素」）。
+        融入 dock 时树底透明、不描边（整栏共享一张圆角卡片）。
         """
         # 表面/描边色见 _panel_surface / _panel_stroke：壁纸模式下透明
         # （透出 / 自绘壁纸），非壁纸模式回落原始色板实色。
-        _surf = _panel_surface("PANEL")
-        _bd = _panel_stroke("BORDER")
+        _surf = "transparent" if docked else _panel_surface("PANEL")
+        _bd = "none" if docked else f"1px solid {_panel_stroke('BORDER')}"
         self.tree.setStyleSheet(
             f"QTreeWidget {{ background: {_surf}; color: {TEXT};"
-            f"border: 1px solid {_bd}; border-radius: 6px; padding: 4px 4px 4px 1px;"
+            f"border: {_bd}; border-radius: 6px; padding: 4px 4px 4px 1px;"
             f"outline: none; }}"
             f"QTreeWidget::item {{ padding: 3px 4px; border-radius: 4px; }}"
             f"QTreeWidget::item:selected {{ background: transparent; }}"
@@ -18565,16 +18602,27 @@ class WorktreeWindow(_RoundedFloatWindow):
             + _scrollbar_css(6, 3, both=True))
 
     def apply_surface_theme(self):
-        """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
+        """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）。
+
+        融入 dock 后本窗口不再自己画底/描边：整栏共享一张圆角卡片（见
+        `_dock_column_qss`），这里切成透明无描边，避免「卡中卡」。"""
+        docked = getattr(self, "dock_state", "float") != "float"
         try:
-            self.setStyleSheet(
-                f"QWidget#wtWin {{ background: {_panel_surface('BG')};"
-                f" border: 1px solid {_panel_stroke('BORDER')};"
-                f" border-radius: {RADIUS_MD}px; }}")
+            if docked:
+                self.setStyleSheet(
+                    "QWidget#wtWin { background: transparent; border: none; }")
+            else:
+                self.setStyleSheet(
+                    f"QWidget#wtWin {{ background: {_panel_surface('BG')};"
+                    f" border: 1px solid {_panel_stroke('BORDER')};"
+                    f" border-radius: {RADIUS_MD}px; }}")
+            rule = getattr(self, "_rule", None)
+            if rule is not None:
+                rule.apply_rule_theme()
         except Exception:
             pass
         try:
-            self._apply_surface_qss()
+            self._apply_surface_qss(docked=docked)
         except Exception:
             pass
 
@@ -21444,7 +21492,9 @@ class AgentPanel(QDialog):
         self._dock_right = self._make_dock_column("right")
         self.todos_win = TodosWindow(self)
         self.todos_win.clear_requested.connect(self._on_todos_clear)
-        self.git_win = GitLogWindow(self)
+        # Git 面板已移除（按用户要求）：左栏只保留「文件树 + 待办清单」；
+        # git 工具能力（命令执行、仓库检测）不受影响，仍可在终端/工具里使用。
+        self.git_win = None
         self.wt_win = WorktreeWindow(self)
         self.wt_win.file_open_requested.connect(self._open_code_preview)
         self.code_win = CodePreviewWindow(self)
@@ -21636,8 +21686,10 @@ class AgentPanel(QDialog):
 
         # 工作目录下拉（权限菜单右侧）：选择已有目录或添加文件夹，当前对话即时生效
         self.wd_combo = _ArrowComboBox()
-        self.wd_combo.setMinimumWidth(118)
-        self.wd_combo.setMaximumWidth(280)   # 允许更长项目名（实际宽度由 _sync_workdir_combo 按内容计算）
+        self.wd_combo.setMinimumWidth(130)
+        # 宽度按内容自适应（见 _sync_workdir_combo），上限 280；空间不足时可变窄到 130，
+        # 增长只占用中间弹性区（stretch），不会挤压模型/发送按钮，保证视觉对齐
+        self.wd_combo.setMaximumWidth(280)
         self.wd_combo.setIconSize(QSize(16, 16))
         self.wd_combo.setStyleSheet(_HOME_COMBO)
         self.wd_combo.setToolTip(_ui("当前对话的工作目录（选择已有目录或添加文件夹）"))
@@ -23729,7 +23781,12 @@ class AgentPanel(QDialog):
             fm = QFontMetrics(f)
             text_w = max((fm.horizontalAdvance(combo.itemText(i))
                           for i in range(combo.count())), default=0)
-            combo.setMinimumWidth(max(130, min(280, text_w + 66)))
+            # 宽度按内容：sizeHint 跟随最长条目，但不超过工具行可用空间（stretch 先让步）；
+            # 空间不足时回落到最小 130px，不会挤压模型/发送按钮
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToContents)
+            combo.setMinimumWidth(130)
+            combo.setMaximumWidth(max(130, min(280, text_w + 66)))
             # 弹出列表同样加宽：长项目名在下拉列表里也不能被截断
             view = combo.view()
             if view is not None:
@@ -24516,9 +24573,8 @@ class AgentPanel(QDialog):
                    .value("agent_show_todos", "1")).strip().lower() in ("1", "true", "yes")
 
     def _git_enabled(self) -> bool:
-        """Git 分支面板是否启用（设置-通用页开关，默认启用）"""
-        return str(app_identity.qsettings()
-                   .value("agent_show_git", "1")).strip().lower() in ("1", "true", "yes")
+        """Git 分支面板已移除（用户要求）：恒 False（保留方法供既有同步代码判空）"""
+        return False
 
     def _wt_enabled(self) -> bool:
         """工作树面板是否启用（设置-通用页开关，默认启用）"""
@@ -24694,9 +24750,9 @@ class AgentPanel(QDialog):
             f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')}; border: none; }}")
         c_lay = QVBoxLayout(col)
         c_lay.setContentsMargins(0, 0, 0, 0)
-        # 侧栏卡片统一：面板之间留 _DOCK_PANEL_GAP，让每张卡都能看清自己的描边与圆角；
-        # 份额计算已按名义间距扣减（见 _apply_dock_height_caps），不会溢出。
-        c_lay.setSpacing(self._DOCK_PANEL_GAP)
+        # 左栏：文件树 + 待办清单**共用一张圆角卡片**（间距 0，卡片底由栏容器绘制）；
+        # 右栏仍按面板卡间距排布。
+        c_lay.setSpacing(0 if side == "left" else self._DOCK_PANEL_GAP)
         if side == "left":
             # 左栏标题条：三块面板（文件树 / Git / 任务清单）共用一枚收起箭头，
             # 一次折叠整栏；收起后本栏变成 36px 窄条，箭头翻向右侧可再展开。
@@ -24768,8 +24824,12 @@ class AgentPanel(QDialog):
         """dock 栏容器皮肤：左栏收起时**不着色不描边** —— 收起态只保留两枚圆形入口，
         外面再套一圈圆角矩形卡片就成了「方框里放按钮」的多余轮廓（用户反馈）；
         展开时退回透明栏底，让栏内三张面板卡各自承担边框。"""
-        if side == "left" and self._leftdock_collapsed():
-            return "QWidget#dockColleft { background: transparent; border: none; }"
+        if side == "left":
+            if self._leftdock_collapsed():
+                return "QWidget#dockColleft { background: transparent; border: none; }"
+            # 展开：整栏就是一张圆角卡片（无描边），文件树/待办清单两段用底色对比分区
+            return (f"QWidget#dockColleft {{ background: {_panel_surface('CARD')};"
+                    f" border: none; border-radius: {RADIUS_LG}px; }}")
         return (f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')};"
                 f" border: none; }}")
 
@@ -24831,6 +24891,10 @@ class AgentPanel(QDialog):
             if panel.parent() is col and panel not in self._dock_panel_order(side):
                 lay.addWidget(panel)
             panel._set_dock_ui(True)   # 融入：隐藏把手/resize 热区，todos 限行滚动
+            try:
+                panel.apply_surface_theme()   # 融入后切到「无描边透明」共享卡片皮肤
+            except Exception:
+                pass
             # dock 栏内宽度按各自持久化尺寸固定（保持贴附样式列宽），浮出时解除
             try:
                 _w = _load_panel_size(panel)[0]
@@ -24854,6 +24918,10 @@ class AgentPanel(QDialog):
             panel.dock_state = "float"
             panel.setParent(self, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
             panel._set_dock_ui(False)   # 贴附：恢复把手/resize 热区，todos 恢复固定默认尺寸
+            try:
+                panel.apply_surface_theme()   # 浮出：恢复自己的底/描边（不再共享卡片）
+            except Exception:
+                pass
             # 解除 dock 期间的固定宽度与固定高度（40:60 分栏会给文件树 setFixedHeight，
             # 不解除则浮出后无法拖拽调整大小），恢复可拖拽调整大小
             try:
@@ -24906,7 +24974,7 @@ class AgentPanel(QDialog):
             return                      # 重入保护：设置封顶高度会触发子控件重排
         self._dock_sync_running = True
         try:
-            _factors = {"wtWin": DOCK_SPLIT_WT, "gitLogWin": DOCK_SPLIT_GIT, "todosWin": 20}
+            _factors = {"wtWin": 6, "todosWin": 4}   # 文件树 60% / 待办清单 40%
             for side in ("left", "right"):
                 col = self._dock_column(side)
                 if col is None:
@@ -24991,63 +25059,37 @@ class AgentPanel(QDialog):
             self._sync_dock_layout()
 
     def _apply_dock_height_caps(self, side, order, lay, col):
-        """dock 栏高度分工（仅左侧）：文件树 40% / Git 60%（任务清单先按内容钉高）。
+        """左栏高度分工：文件树 60% / 待办清单 40%（两段共用同一张圆角卡片）。
 
-        做法与旧实现的差别（关键）：
-        - 旧实现只给文件树「封顶」而不接管其下限，而文件树自带 400px minimumHeight；
-          栏高不够时 Qt 只能牺牲 Git → 提交列表被压成一条缝。现在**两侧都显式定高**
-          （文件树 setFixedHeight 份额、Git 取剩余），任何栏高下都严格 40:60，不会溢出；
-        - 份额由 `dock_split_heights` 统一裁决（纯函数，可单测），下限只作软约束；
-        - 任务清单先钉高（内容超出在面板内滚动），它的可用高度由本函数反推下发。
-
-        由 `_sync_dock_layout` 调用；窗口尺寸变化时随 resizeEvent 重算（值随栏高走）。"""
+        旧实现是「文件树 40 / Git 60 + 任务清单按内容钉高」，Git 面板移除后不再有
+        第三块，直接用 6:4 两段分配；面板之间无间距（共用卡片，间距已为 0）。"""
         if side != "left" or not order:
             return
         try:
-            # 份额口径按栏内实际间距计（面板卡之间留 _DOCK_PANEL_GAP），差额由 Git 吸收。
-            # 顶部「侧栏」标题条也占高（含它与首张卡之间的一段间距），份额必须扣掉
             head = self.__dict__.get("_leftdock_head")
-            # 标题条高度随展开/收起状态变化（34 / 28），按实际高度扣减份额
             head_h = int(head.height()) if (head is not None and not head.isHidden()) else 0
-            # 间距段数：有标题条 = 面板数（标题条→首卡→…）；无标题条 = 面板数 - 1
-            gaps = self._DOCK_PANEL_GAP * max(0, len(order) - (0 if head_h else 1))
-            # （self. 前缀：_DOCK_PANEL_GAP 是类属性，裸名会落到模块全局）
-            avail = max(0, col.height() - gaps - head_h)
+            avail = max(0, col.height() - head_h)
             by_name = {p.objectName(): p for p in order}
             wt = by_name.get("wtWin")
-            git = by_name.get("gitLogWin")
             todos = by_name.get("todosWin")
-
-            def _floor(p, fallback: int) -> int:
-                fn = getattr(p, "dock_min_height", None)
-                try:
-                    return int(fn()) if callable(fn) else fallback
-                except Exception:
-                    return fallback
-
-            wt_floor = _floor(wt, 120)
-            git_floor = _floor(git, 190)
-            # 任务清单先钉高：内容所需（含行数上限）与栏内可分配高度取小
-            if todos is not None:
-                want = None
-                try:
-                    want = int(todos.dock_wanted_height())
-                except Exception:
-                    want = None
-                if want is None:
-                    want = int(todos.minimumHeight())
-                todos.set_dock_room(max(0, avail - wt_floor - git_floor))
-                todos_h = max(0, min(want, avail - wt_floor - git_floor)) \
-                    if avail > wt_floor + git_floor else 0
+            if wt is not None and todos is not None:
+                wt_h = int(avail * 0.6)
+                todos_h = avail - wt_h
+            elif wt is not None:
+                wt_h, todos_h = avail, 0
+            elif todos is not None:
+                wt_h, todos_h = 0, avail
             else:
-                todos_h = 0
-            wt_h, git_h = dock_split_heights(avail - todos_h, wt_floor, git_floor)
-            # 文件树显式定高（min=max）：份额是硬边界，改由本函数分配而不是让它自由生长
+                return
             if wt is not None:
-                wt.setFixedHeight(wt_h)
-            if git is not None:
-                git.setMinimumHeight(min(git_floor, git_h))
-                git.setMaximumHeight(16777215)   # 余量吸收者：吃掉四舍五入的零头
+                wt.setFixedHeight(max(0, wt_h))
+            if todos is not None:
+                # 先下发栏内可用高度（内容超出在面板内滚动），再显式定高
+                try:
+                    todos.set_dock_room(max(0, todos_h))
+                except Exception:
+                    pass
+                todos.setFixedHeight(max(0, todos_h))
         except Exception:
             pass
 

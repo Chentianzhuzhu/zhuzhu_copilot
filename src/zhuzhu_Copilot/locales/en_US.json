@@ -182,6 +182,8 @@
     "选择工作目录…": "Select a working directory…",
     "选择工作目录": "Select Working Directory",
     "添加文件夹…": "Add folder…",
+    "文件树": "Files",
+    "待办清单": "To-dos",
     "从上游获取": "Fetch from Upstream",
     "从内置预设创建工作流（如三省六部制度：中书省主 Agent + 门下省/尚书省与吏户礼兵刑工六部，共 8 个注册式子 Agent，编队共用共同上下文空间）": "Create a workflow from a built-in preset (e.g. Three Departments and Six Ministries: the Zhongshu Secretariat as the main Agent plus the Menxia and Shangshu secretariats and the six ministries of personnel, revenue, rites, war, justice and works — 8 registered sub Agents sharing a common context space)",
     "从头放映": "Play from start",

@@ -198,18 +198,17 @@ def test_restore_pre_dock_size_keeps_todos_cap():
     win.close()
 
 
-def test_dock_caps_give_surplus_to_git_panel():
-    """左栏分工：文件树 : Git = 40 : 60，两者之和恰好等于可用栏高（不得溢出）。
+def test_dock_caps_split_files_and_todos_six_four():
+    """左栏分工：文件树 : 待办清单 = 6 : 4，两者之和恰好等于可用栏高（不得溢出）。
 
-    回归（用户反馈「Git 提交内容被挤压遮挡」）：旧实现只给文件树封顶、不接管其
-    minimumHeight（文件树自带 400px），栏高不够时被牺牲的永远是 Git —— 提交列表
-    被压成一条缝。现在两侧都显式定高，份额由 dock_split_heights 统一裁决。"""
-    wt, git, todos = _fresh(ap.WorktreeWindow), _fresh(ap.GitLogWindow), _fresh(ap.TodosWindow)
-    order = [wt, git, todos]
+    Git 面板已移除（用户要求），左栏两块共用一张圆角卡片、栏内间距为 0；
+    文件树占 60%，待办清单占 40%（两者都显式定高，避免任一方被压成一条缝）。"""
+    wt, todos = _fresh(ap.WorktreeWindow), _fresh(ap.TodosWindow)
+    order = [wt, todos]
     host = QWidget()
     lay = QVBoxLayout(host)
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(8)
+    lay.setSpacing(0)
     for p in order:
         lay.addWidget(p)
     host.resize(280, 900)
@@ -223,22 +222,14 @@ def test_dock_caps_give_surplus_to_git_panel():
         _pump(3)
 
     avail = host.height() - lay.spacing() * (len(order) - 1)
-    todos_h = todos.height()
-    expect_wt, expect_git = ap.dock_split_heights(avail - todos_h,
-                                                  wt.dock_min_height(),
-                                                  git.dock_min_height())
-    assert wt.height() == wt.minimumHeight() == wt.maximumHeight(), "文件树必须定高（min=max）"
-    assert abs(wt.height() - expect_wt) <= 1, (wt.height(), expect_wt)
-    assert abs(git.height() - expect_git) <= 1, (git.height(), expect_git)
-    assert git.maximumHeight() == 16777215, "Git 面板必须不封顶（负责吸收零头余量）"
-    ratio = wt.height() / max(1, wt.height() + git.height()) * 100
-    assert abs(ratio - 40.0) <= 3.0, f"文件树份额应约 40%（实际 {ratio:.1f}%）"
-    assert wt.height() + git.height() + todos_h <= avail + 1, "三块之和不得溢出栏高"
+    assert wt.height() + todos.height() <= avail + 1, "两块之和不得溢出栏高"
+    ratio = wt.height() / max(1, wt.height() + todos.height()) * 100
+    assert abs(ratio - 60.0) <= 3.0, f"文件树份额应约 60%（实际 {ratio:.1f}%）"
 
     # 非左侧（右侧）不参与该分配，且右侧面板保持不封顶
-    git.setMaximumHeight(123)
-    fake._apply_dock_height_caps("right", [git], lay, host)
-    assert git.maximumHeight() == 123, "右侧栏不应改动面板高度上限"
+    todos.setMaximumHeight(123)
+    fake._apply_dock_height_caps("right", [todos], lay, host)
+    assert todos.maximumHeight() == 123, "右侧栏不应改动面板高度上限"
 
     host.close()
     for p in order:
@@ -336,7 +327,6 @@ def _dock_column():
     p.show()
     _pump(16)
     p._todos_enabled = lambda: True
-    p._git_enabled = lambda: True
     p._apply_panel_mode("dock")
     _pump(20)
     return p, p._dock_left, p._dock_panel_order("left")
@@ -352,47 +342,31 @@ def test_dock_panels_touch_each_other():
     try:
         lay = col.property("_dock_lay")
         assert lay is not None and lay.spacing() == 0, "栏内布局间距须为 0"
-        assert [w.objectName() for w in order] == ["wtWin", "gitLogWin", "todosWin"]
+        assert [w.objectName() for w in order] == ["wtWin", "todosWin"], \
+            "Git 面板已移除，左栏只剩文件树与待办清单"
         for a, b in pairwise(order):                  # 上下相邻窗口不得有空档
             assert a.y() + a.height() == b.y(), (a.objectName(), a.y(), a.height(), b.y())
-        assert order[0].layout().contentsMargins().bottom() == 0, \
-            "工作树底边须贴边，否则与 Git 之间露出底色缝"
-        gm = p.git_win.layout().contentsMargins()
-        assert gm.top() == 0 and gm.bottom() == 0, \
-            f"Git 面板上下须贴边（当前 top={gm.top()} bottom={gm.bottom()}）"
-        assert p.todos_win.panel.layout().contentsMargins().top() == 0, \
-            "任务清单顶边须贴边，否则与 Git 之间露出底色缝"
+        # 两段共用一张圆角卡片：面板本身透明、不描边，内容边距不会露出底色缝
+        assert "border: none" in col.styleSheet() and "border-radius" in col.styleSheet(), \
+            "左栏应是一张无描边的圆角卡片"
+        assert "background: transparent" in p.wt_win.styleSheet(), \
+            "文件树融入后应透明（共享卡片底），不再自绘边框"
     finally:
         p.close()
 
 
-def test_dock_reclaims_margins_into_git_panel():
-    """贴边省下的高度确实回到「文件树 + Git」的分配池，并按 40:60 重新切分。
-
-    口径变化（2026-10-25）：旧实现让 Git 独吞全部余量；现按用户明确的
-    「文件树 40% / Git 60%」切分 → 池子变大时两者同增，Git 增 60% 那份。"""
-    p, _col, _order = _dock_column()
+def test_dock_left_column_ratio_six_four():
+    """真实 dock 栏：文件树与待办清单严格按 6:4 分配，且不溢出栏高（共用一张卡片）。"""
+    p, col, order = _dock_column()
     try:
-        p.todos_win.update_todos(TODOS)
+        p.todos_win.update_todos(TODOS[:3])
         _pump(10)
-        git_before = p.git_win.height()
-        wt_before = p.wt_win.height()
-        todos_before = p.todos_win.height()
-        m = ap.TodosPanel.MARGINS                  # (上, 右, 下, 左)
-        reclaimed = m[1] + m[3]                    # 融入时归零的上下边距合计
-        assert reclaimed > 0
-        # 恢复常规边距（贴附口径）后：清单变高 reclaimed，池子相应变小
-        p.todos_win.panel.set_dock_tight(False)
-        p.todos_win._fit_dock_height()
+        p._sync_dock_layout()
         _pump(8)
-        assert p.todos_win.height() - todos_before == reclaimed, \
-            (p.todos_win.height(), todos_before, reclaimed)
-        pool_before = wt_before + git_before
-        pool_after = p.wt_win.height() + p.git_win.height()
-        assert pool_before - pool_after == reclaimed, \
-            f"池子应恰好少 reclaimed={reclaimed}（实际 {pool_before} → {pool_after}）"
-        ratio = p.wt_win.height() / max(1, pool_after) * 100
-        assert abs(ratio - 40.0) <= 3.0, f"重新切分后文件树份额应约 40%（实际 {ratio:.1f}%）"
+        total = p.wt_win.height() + p.todos_win.height()
+        assert total <= col.height() + 1, f"两块之和溢出栏高：{total} > {col.height()}"
+        ratio = p.wt_win.height() / max(1, total) * 100
+        assert abs(ratio - 60.0) <= 4.0, f"文件树份额应约 60%（实际 {ratio:.1f}%）"
     finally:
         p.close()
 
@@ -453,16 +427,16 @@ def test_reset_panel_poses_keeps_todos_content_sized():
 
 
 def test_caps_compress_proportionally_when_share_below_panel_minimum():
-    """栏高偏小、两侧下限之和超过可用高度时：按 40:60 等比压缩，仍不得溢出。
+    """栏高偏小、面板下限之和超过可用高度时：仍按 6:4 压缩，不得溢出。
 
-    旧实现遇到这种情况会「跳过封顶」→ 文件树按自己的 400px 下限抢空间，
-    Git 被压成一条缝（用户反馈的挤压遮挡）。新口径：下限只作软约束。"""
-    wt, git = _fresh(ap.WorktreeWindow), _fresh(ap.GitLogWindow)
+    定高时 setFixedHeight 会覆盖面板自带最小高度（如文件树 400px），
+    因此小栏高下也不会某一方抢空间、另一方被压成一条缝。"""
+    wt, todos = _fresh(ap.WorktreeWindow), _fresh(ap.TodosWindow)
     wt.setMinimumHeight(400)
-    order = [wt, git]
+    order = [wt, todos]
     host = QWidget()
     lay = QVBoxLayout(host)
-    lay.setSpacing(8)
+    lay.setSpacing(0)               # 左栏共用一张卡片，两段之间无间距
     for p in order:
         lay.addWidget(p)
     host.setFixedSize(280, 300)     # 固定栏高，避免布局最小高度把窗口撑高
@@ -474,12 +448,12 @@ def test_caps_compress_proportionally_when_share_below_panel_minimum():
     fake._apply_dock_height_caps("left", order, lay, host)
     _pump(4)
     avail = host.height() - lay.spacing()
-    # 压缩后仍严格 40:60，且不溢出一像素（Qt 不会被迫违背某一方的 minimum）
-    assert wt.height() + git.height() <= avail + 1, \
-        (wt.height(), git.height(), avail)
-    total = max(1, wt.height() + git.height())
+    # 压缩后仍严格 6:4，且不溢出一像素（固定高度会覆盖面板自带 minimum）
+    assert wt.height() + todos.height() <= avail + 1, \
+        (wt.height(), todos.height(), avail)
+    total = max(1, wt.height() + todos.height())
     ratio = wt.height() / total * 100
-    assert abs(ratio - 40.0) <= 3.0, f"栏高中等偏小时份额应仍约 40%（实际 {ratio:.1f}%）"
+    assert abs(ratio - 60.0) <= 3.0, f"栏高中等偏小时份额应仍约 60%（实际 {ratio:.1f}%）"
     host.close()
     for p in order:
         p.close()
