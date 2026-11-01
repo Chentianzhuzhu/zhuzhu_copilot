@@ -366,6 +366,27 @@ def test_drawer_refresh_keeps_scroll_position(panel):
     panel._refresh_session_combo()
 
 
+def test_input_hides_placeholder_on_focus(panel):
+    """聚焦时占位文案必须让位：否则光标叠在灰色占位字上，看起来像「没光标」。"""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QFocusEvent
+    inp = panel.input
+    ph = panel._input_placeholder
+    inp.setPlaceholderText(ph)          # 输入框启动即聚焦，先显式还原文案再验证
+    assert inp.placeholderText() == ph
+    inp.focusInEvent(QFocusEvent(QEvent.Type.FocusIn))
+    assert inp.placeholderText() == "", "聚焦后占位文案未隐藏"
+    inp.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut))
+    assert inp.placeholderText() == ph, "失焦后占位文案未恢复"
+
+
+def test_app_uses_high_contrast_mouse_cursor(panel):
+    """空白区域必须使用应用内高对比指针（白芯黑边），而不是看不清的系统箭头。"""
+    from PyQt6.QtCore import Qt
+    assert panel.cursor().shape() == Qt.CursorShape.BitmapCursor
+    assert not panel.cursor().pixmap().isNull(), "高对比指针位图未生成"
+
+
 def test_input_caret_is_high_contrast(panel):
     """光标色取极端黑白（深色纯白 / 浅色纯黑），宽度深色 3px、浅色 2px。"""
     from PyQt6.QtGui import QColor, QPalette

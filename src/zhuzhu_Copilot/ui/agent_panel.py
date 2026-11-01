@@ -928,6 +928,36 @@ def _welcome_chip_qss() -> str:
             f"QPushButton:pressed {{ background: {HOVER}; color: {TEXT}; }}")
 
 
+@lru_cache(maxsize=2)
+def _high_contrast_cursor() -> QCursor:
+    """应用内高对比箭头指针：白色箭头 + 2px 黑色描边（深浅背景都清晰）。
+
+    Windows 默认指针在深色场景下常常「黑边黑芯」，压在深灰面板上几乎看不见。
+    QWidget 的 cursor 会被子控件继承（显式设过 PointingHand/IBeam 的按钮与输入框
+    仍用自己的系统指针），因此只影响聊天区/侧栏等空白区域的指针形态。
+    """
+    s = 30
+    pm = QPixmap(s, s)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.moveTo(3.0, 2.0)
+    path.lineTo(3.0, 21.5)
+    path.lineTo(8.5, 17.0)
+    path.lineTo(12.5, 25.5)
+    path.lineTo(16.0, 23.8)
+    path.lineTo(12.0, 15.5)
+    path.lineTo(19.5, 15.5)
+    path.closeSubpath()
+    p.setPen(QPen(QColor("#000000"), 1.6,
+                  cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+    p.setBrush(QColor("#FFFFFF"))
+    p.drawPath(path)
+    p.end()
+    return QCursor(pm, 3, 2)
+
+
 def _drawer_icon_btn_qss() -> str:
     """抽屉标题栏 / 窄条上的小箭头按钮：透明底，hover 时才浮出一层磨砂填充。"""
     fill = _mix_hex(BORDER, _base_color("BG"), 0.22)
@@ -11918,6 +11948,7 @@ class _DropTextEdit(QPlainTextEdit):
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.textChanged.connect(lambda: QTimer.singleShot(0, self._auto_height))
         self._ime_preedit = ""   # 输入法预编辑串（组合态未上屏内容，inputMethodEvent 维护）
+        self._placeholder = ""   # 聚焦时临时清空占位文案（见 focusInEvent）
         # 扁平模式：输入框自己不再画圆角底色，直接坐落在宿主卡片上（一体化输入卡）。
         self._flat_bg = False
         # 初始校准：QPlainTextEdit 默认尺寸偏高，事件循环启动后立刻按内容压回单行高
@@ -11927,6 +11958,23 @@ class _DropTextEdit(QPlainTextEdit):
         # 窗口宽度变化 → 换行变化 → 高度需重新校准（去抖）
         super().resizeEvent(e)
         QTimer.singleShot(0, self._auto_height)
+
+    def focusInEvent(self, e):
+        """聚焦时隐藏占位文案：光标落在第 0 位时会与灰色占位字重叠，
+        看起来「光标像没显示」（用户反馈）。失焦后恢复占位提示。"""
+        super().focusInEvent(e)
+        ph = self.placeholderText()
+        if ph:
+            self._placeholder = ph
+            self.setPlaceholderText("")
+        self.update()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        ph = self.__dict__.pop("_placeholder", "")
+        if ph and not self.placeholderText():
+            self.setPlaceholderText(ph)
+        self.update()
 
     def _paint_bg(self):
         """圆角背景色：壁纸模式返回 None（透出壁纸）；非壁纸返回 FIELD，聚焦 focus_bg；
@@ -11958,14 +12006,6 @@ class _DropTextEdit(QPlainTextEdit):
                               _INPUT_RADIUS, _INPUT_RADIUS)
             p.end()
         super().paintEvent(e)
-
-    def focusInEvent(self, e):
-        super().focusInEvent(e)
-        self.update()
-
-    def focusOutEvent(self, e):
-        super().focusOutEvent(e)
-        self.update()
 
     def _auto_height(self):
         """高度随内容自适应：单行 42px，多行增高，最高 140px（超出内部滚动）"""
@@ -20222,7 +20262,8 @@ class AgentPanel(QDialog):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(160)
         self._resize_timer.timeout.connect(self._rebuild_bubbles_after_resize)
-        self._input_placeholder = "/ for commad @ for agent"
+        # 占位文案单一来源：构建输入框与「取消排队编辑」恢复时都取这一份
+        self._input_placeholder = _ui("/ for commands · @ for agents")
         # 无边框自绘窗口：圆角由 QSS（border-radius）+ 透明底自绘，Win10/Win11 一致；
         # 原生标题栏已移除，关闭/最大化/最小化由自绘红黄绿圆点接管（见 _TitleBar）
         self.setWindowFlags(Qt.WindowType.Window
@@ -21234,7 +21275,7 @@ class AgentPanel(QDialog):
         self.input._on_height_changed = self._fit_composer   # 多行增高时卡片同步贴合
         _install_focus_glow(self.input)   # 聚焦边缘泛光（替代蓝色实线边框）
         apply_input_caret(self.input)     # 原生光标宽度（自定义背景下同样 2px，见常量注释）
-        self.input.setPlaceholderText(_ui("/ for commands · @ for agents"))
+        self.input.setPlaceholderText(self._input_placeholder)
         self.input.setMinimumHeight(32)
         self.input.setMaximumHeight(110)
         # 壁纸 + 浅色下：描边/文字（含光标色系）纯黑；聚焦蓝色泛光见 _install_focus_glow
@@ -21391,6 +21432,9 @@ class AgentPanel(QDialog):
         if _stored_flag(_STORE_LEFTDOCK_COLLAPSED):
             self._set_leftdock_collapsed(True, persist=False)
         self._sync_rail_state()   # 胶囊 tooltip / 左栏入口可见性按初始状态对齐
+        # 应用内高对比指针：系统指针在深色面板上几乎不可见，统一换成白芯黑边箭头
+        # （子控件显式设置的 PointingHand / IBeam 不受影响）
+        self._apply_app_cursor()
         # 顶栏「预览面板」按钮初始外观跟随当前启用状态（默认隐藏 → 幽灵态）
         self._sync_preview_btn()
 
@@ -22646,6 +22690,18 @@ class AgentPanel(QDialog):
         self._refresh_session_combo()
 
     # ---------- 折叠 / 展开（对话栏与左侧整栏） ----------
+    def _apply_app_cursor(self) -> None:
+        """给主面板与四个侧栏窗口套用高对比指针（dock 子控件继承主面板，浮窗需显式设）。"""
+        try:
+            cur = _high_contrast_cursor()
+            self.setCursor(cur)
+            for name in ("todos_win", "git_win", "wt_win", "code_win"):
+                w = self.__dict__.get(name)
+                if w is not None:
+                    w.setCursor(cur)
+        except Exception:
+            pass
+
     def _toggle_drawer(self):
         """对话栏收起/展开：标题栏箭头与胶囊「对话栏」按钮共用本入口。"""
         drawer = self.__dict__.get("session_drawer")
@@ -24549,6 +24605,7 @@ class AgentPanel(QDialog):
             self._applied_panel_mode = mode
             self._sync_dock_layout()
             self._sync_rail_state()
+            self._apply_app_cursor()   # 浮出/融入后面板仍是同一指针形态
         except Exception:
             pass
 
