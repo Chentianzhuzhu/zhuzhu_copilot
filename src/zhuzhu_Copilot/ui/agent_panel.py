@@ -901,6 +901,14 @@ def _welcome_chip_qss() -> str:
             f"QPushButton:pressed {{ background: {HOVER}; color: {TEXT}; }}")
 
 
+def _drawer_icon_btn_qss() -> str:
+    """抽屉标题栏 / 窄条上的小箭头按钮：透明底，hover 时才浮出一层磨砂填充。"""
+    fill = _mix_hex(BORDER, PANEL, 0.22)
+    return (f"QPushButton {{ background: transparent; border: none;"
+            f" border-radius: {RADIUS_XS}px; }}"
+            f"QPushButton:hover {{ background: {fill}; }}")
+
+
 def _composer_qss() -> str:
     """输入卡皮肤（大厂 AI 客户端同款）：一张圆角卡片承载正文 + 工具行。
 
@@ -1789,6 +1797,21 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
         p.setBrush(QColor(color))
         for _dx in (0.30, 0.50, 0.70):
             p.drawEllipse(QPointF(s * _dx, s * 0.50), s * 0.055, s * 0.055)
+    elif kind == "chat":      # 对话栏（圆角气泡 + 左下小尾巴）
+        p.drawRoundedRect(QRectF(s * 0.14, s * 0.20, s * 0.72, s * 0.50),
+                          s * 0.12, s * 0.12)
+        p.drawLine(QPointF(s * 0.34, s * 0.70), QPointF(s * 0.30, s * 0.84))
+        p.drawLine(QPointF(s * 0.30, s * 0.84), QPointF(s * 0.48, s * 0.70))
+    elif kind == "panel-left":  # 左栏（外框 + 左侧竖分隔线）
+        p.drawRoundedRect(QRectF(s * 0.14, s * 0.18, s * 0.72, s * 0.64),
+                          s * 0.08, s * 0.08)
+        p.drawLine(QPointF(s * 0.42, s * 0.18), QPointF(s * 0.42, s * 0.82))
+    elif kind == "chev-left":  # 左尖角（收起左栏）
+        p.drawLine(QPointF(s * 0.62, s * 0.28), QPointF(s * 0.38, s * 0.50))
+        p.drawLine(QPointF(s * 0.38, s * 0.50), QPointF(s * 0.62, s * 0.72))
+    elif kind == "chev-right":  # 右尖角（展开左栏）
+        p.drawLine(QPointF(s * 0.38, s * 0.28), QPointF(s * 0.62, s * 0.50))
+        p.drawLine(QPointF(s * 0.62, s * 0.50), QPointF(s * 0.38, s * 0.72))
     p.end()
     return QIcon(pm)
 
@@ -1800,7 +1823,8 @@ _LINE_ICON_KINDS = frozenset({
     "retry", "vol", "music", "full", "trash", "new", "plus", "ok", "no",
     "drive", "list", "doc", "bash", "net", "folder", "apps", "user", "server",
     "puzzle", "mic", "video", "audio", "chart", "magic", "clock", "think",
-    "tool", "term", "chev", "preview", "more",
+    "tool", "term", "chev", "preview", "more", "chat", "panel-left",
+    "chev-left", "chev-right",
 })
 
 
@@ -18830,6 +18854,22 @@ _DRAWER_SEARCH_H = 30    # 搜索框高（与顶栏图标按钮同档）
 _RAIL_W = 56             # 胶囊宽；圆角取半宽（pill_radius），超过半宽 Qt 会画成直角
 _RAIL_BTN_D = 40         # 胶囊内图标按钮 40x40（左右各留 8）
 _RAIL_DIV_W = 24         # 组间分隔线长度
+_DRAWER_COLLAPSED_W = 36  # 对话栏收起后的窄条宽（只留展开箭头）
+_DOCK_COLLAPSED_W = 36    # 左侧栏（文件树/Git/任务）收起后的窄条宽
+_DOCK_HEAD_H = 28         # 左侧栏顶部「栏标题条」高度（内含收起箭头）
+
+# 折叠状态持久化键：与设置页开关同一 QSettings 机制，重启后保持用户选择
+_STORE_DRAWER_COLLAPSED = "agent_drawer_collapsed"
+_STORE_LEFTDOCK_COLLAPSED = "agent_leftdock_collapsed"
+
+
+def _stored_flag(key: str, default: str = "0") -> bool:
+    """读取布尔型 QSettings 开关（与 _todos_enabled 等处同一判定口径）。"""
+    try:
+        v = str(app_identity.qsettings().value(key, default)).strip().lower()
+    except Exception:
+        return default == "1"
+    return v in ("1", "true", "yes")
 
 
 def _rel_time(ts: float) -> str:
@@ -18921,17 +18961,27 @@ class _SessionDrawer(QFrame):
     session_activated = pyqtSignal(str)     # 点击会话 → 切到该对话
     new_requested = pyqtSignal()            # 点击「新建对话」
     delete_requested = pyqtSignal(str, str)  # 右键删除（sid, 展示名）
+    toggle_requested = pyqtSignal()         # 标题栏 / 窄条上的收起、展开按钮
 
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self.panel = panel
+        self._collapsed = False
         self.setObjectName("sessionDrawer")
         self.setFixedWidth(_DRAWER_W)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 8)
-        lay.setSpacing(8)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(10, 10, 10, 8)
+        self._lay.setSpacing(0)
+
+        # 展开态：标题行（新建 + 收起箭头）/ 搜索 / 会话列表
+        self._full = QWidget()
+        self._full.setObjectName("sessionFull")
+        self._full.setStyleSheet("QWidget#sessionFull { background: transparent; }")
+        full = QVBoxLayout(self._full)
+        full.setContentsMargins(0, 0, 0, 0)
+        full.setSpacing(8)
 
         head = QHBoxLayout()
         head.setSpacing(6)
@@ -18950,7 +19000,17 @@ class _SessionDrawer(QFrame):
         self.new_btn.setStyleSheet(_BTN_ICON)
         self.new_btn.clicked.connect(self.new_requested)
         head.addWidget(self.new_btn)
-        lay.addLayout(head)
+        # 收起箭头：与右侧胶囊的「对话栏」开关同一状态（面板统一调度）
+        self.collapse_btn = QPushButton(_line_icon("chev-left", 14, TEXT_DIM), "")
+        self.collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.collapse_btn.setAutoDefault(False)
+        self.collapse_btn.setFixedSize(22, 22)
+        self.collapse_btn.setIconSize(QSize(14, 14))
+        self.collapse_btn.setToolTip(_ui("收起对话栏"))
+        self.collapse_btn.setStyleSheet(_drawer_icon_btn_qss())
+        self.collapse_btn.clicked.connect(self.toggle_requested)
+        head.addWidget(self.collapse_btn)
+        full.addLayout(head)
 
         self.search = QLineEdit()
         self.search.setObjectName("sessionSearch")
@@ -18958,7 +19018,7 @@ class _SessionDrawer(QFrame):
         self.search.setPlaceholderText(_ui("搜索对话"))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._apply_filter)
-        lay.addWidget(self.search)
+        full.addWidget(self.search)
 
         self.list = QListWidget()
         self.list.setObjectName("sessionList")
@@ -18968,9 +19028,47 @@ class _SessionDrawer(QFrame):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._on_menu)
         self.list.itemClicked.connect(self._on_clicked)
-        lay.addWidget(self.list, 1)
+        full.addWidget(self.list, 1)
+        self._lay.addWidget(self._full, 1)
+
+        # 收起态：只留一条 36px 窄条，顶部一枚展开箭头（点击即恢复完整对话栏）
+        self._mini = QWidget()
+        self._mini.setObjectName("sessionMini")
+        self._mini.setStyleSheet("QWidget#sessionMini { background: transparent; }")
+        mini = QVBoxLayout(self._mini)
+        mini.setContentsMargins(0, 0, 0, 0)
+        mini.setSpacing(0)
+        # 窄条顶部的身份图标：用「对话」气泡而不是裸箭头，收起态也一眼认得出这一列是什么
+        self.expand_btn = QPushButton(_line_icon("chat", 18, TEXT_DIM), "")
+        self.expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.expand_btn.setAutoDefault(False)
+        self.expand_btn.setFixedSize(26, 26)
+        self.expand_btn.setIconSize(QSize(18, 18))
+        self.expand_btn.setToolTip(_ui("展开对话栏"))
+        self.expand_btn.setStyleSheet(_drawer_icon_btn_qss())
+        self.expand_btn.clicked.connect(self.toggle_requested)
+        mini.addWidget(self.expand_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        mini.addStretch(1)
+        self._lay.addWidget(self._mini)
+        self._mini.hide()
 
         self.apply_theme()
+
+    def set_collapsed(self, on: bool) -> None:
+        """收起 / 展开对话栏（面板统一调度，状态由 QSettings 持久化）。"""
+        on = bool(on)
+        if on == self._collapsed:
+            return   # 幂等：重复调用不改布局
+        self._collapsed = on
+        self._full.setVisible(not on)
+        self._mini.setVisible(on)
+        self._lay.setContentsMargins(4, 8, 4, 8) if on else \
+            self._lay.setContentsMargins(10, 10, 10, 8)
+        self.setFixedWidth(_DRAWER_COLLAPSED_W if on else _DRAWER_W)
+        self._lay.setSpacing(0 if on else 8)
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
 
     # ---- 展示 ----
     def refresh(self, sessions: list, current_sid: str) -> None:
@@ -19027,6 +19125,8 @@ class _SessionDrawer(QFrame):
             f"color: {TEXT}; font-size: {FONT_BODY}px; font-weight: {_W_STRONG};"
             "background: transparent;")
         self.new_btn.setStyleSheet(_BTN_ICON)
+        self.collapse_btn.setStyleSheet(_drawer_icon_btn_qss())
+        self.expand_btn.setStyleSheet(_drawer_icon_btn_qss())
         field = _mix_hex(BORDER, PANEL, 0.18)
         self.search.setStyleSheet(
             f"QLineEdit#sessionSearch {{ background: {field}; color: {TEXT};"
@@ -19040,6 +19140,8 @@ class _SessionDrawer(QFrame):
 
 # 胶囊栏条目（数据驱动）：kind / 线条图标 / tooltip。`__div__` 为组间分隔线。
 _RAIL_ITEMS = (
+    ("drawer", "chat", "对话栏"),
+    ("leftdock", "panel-left", "左栏（文件树 / Git / 任务）"),
     ("tasks", "list", "任务与后台"),
     ("worktree", "folder", "工作树与文件"),
     ("stats", "chart", "上下文统计"),
@@ -19071,6 +19173,8 @@ class _FunctionRail(QFrame):
         lay.setContentsMargins(8, 10, 8, 10)
         lay.setSpacing(4)
         self._buttons = {}
+        self._icons = {}      # kind → 线条图标名（高亮态要按主题色重烘焙）
+        self._active = set()  # 高亮（功能当前处于开启状态）
         self._divs = []
         for kind, icon_kind, tip in _RAIL_ITEMS:
             if kind == "__div__":
@@ -19089,7 +19193,39 @@ class _FunctionRail(QFrame):
             btn.clicked.connect(lambda _=False, k=kind: self.action_triggered.emit(k))
             lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
             self._buttons[kind] = btn
+            self._icons[kind] = icon_kind
         self.apply_theme()
+
+    # ---- 入口状态（面板据此同步 tooltip / 可见性 / 高亮） ----
+    def set_item_tooltip(self, kind: str, text: str) -> None:
+        btn = self._buttons.get(kind)
+        if btn is not None and btn.toolTip() != text:
+            btn.setToolTip(text)
+
+    def set_item_visible(self, kind: str, visible: bool) -> None:
+        btn = self._buttons.get(kind)
+        if btn is not None:
+            btn.setVisible(bool(visible))
+
+    def set_action_active(self, kind: str, on: bool) -> None:
+        """功能开启态：强调色淡染底盘 + 强调色图标（如预览面板已展开）。"""
+        on = bool(on)
+        if on == (kind in self._active):
+            return
+        if on:
+            self._active.add(kind)
+        else:
+            self._active.discard(kind)
+        self._apply_button(kind)
+
+    def _apply_button(self, kind: str) -> None:
+        btn = self._buttons.get(kind)
+        if btn is None:
+            return
+        on = kind in self._active
+        btn.setStyleSheet(getattr(self, "_qss_active" if on else "_qss_normal", ""))
+        btn.setIcon(_line_icon(self._icons.get(kind, "list"), 20,
+                               ACCENT if on else TEXT_DIM))
 
     @classmethod
     def column(cls, rail: "_FunctionRail") -> QWidget:
@@ -19118,12 +19254,16 @@ class _FunctionRail(QFrame):
             f" border: none; border-radius: {pill_radius(_RAIL_W)}px; }}")
         fill = _mix_hex(BORDER, PANEL, 0.18)
         fill_press = _mix_hex(BORDER, PANEL, 0.30)
-        qss = (f"QPushButton {{ background: transparent; border: none;"
-               f" border-radius: {RADIUS_SM}px; }}"
-               f"QPushButton:hover {{ background: {fill_press}; }}"
-               f"QPushButton:pressed {{ background: {fill}; }}")
-        for btn in self._buttons.values():
-            btn.setStyleSheet(qss)
+        self._qss_normal = (f"QPushButton {{ background: transparent; border: none;"
+                            f" border-radius: {RADIUS_SM}px; }}"
+                            f"QPushButton:hover {{ background: {fill_press}; }}"
+                            f"QPushButton:pressed {{ background: {fill}; }}")
+        # 开启态（如预览已展开）：强调色淡染，与顶栏预览按钮的选中态同源
+        self._qss_active = (f"QPushButton {{ background: {_mix_hex(ACCENT, PANEL, 0.14)};"
+                            f" border: none; border-radius: {RADIUS_SM}px; }}"
+                            f"QPushButton:hover {{ background: {_mix_hex(ACCENT, PANEL, 0.22)}; }}")
+        for kind in self._buttons:
+            self._apply_button(kind)
         div_qss = (f"QFrame {{ background: {_mix_hex(BORDER, PANEL, 0.35)};"
                    " border: none; }")
         for div in self._divs:
@@ -20598,6 +20738,12 @@ class AgentPanel(QDialog):
 
     def build_default_ui(self):
         """内置面板构建（顶部栏 / 消息区 / 输入区一次成型）。"""
+        # 重建会换掉整棵控件树：折叠「快照」必须清空，否则主题切换后
+        # `_leftdock_saved` 指向已销毁的旧面板，展开时一个都恢复不出来。
+        # 折叠状态本身在构建末尾按持久化标志重新落地（此时新面板可见、可正确采样）。
+        self._leftdock_collapsed_on = False
+        self._leftdock_saved = []
+        self._leftdock_head_state = None   # 新标题条按钮的图标/文案缓存也要失效
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
@@ -21036,6 +21182,7 @@ class AgentPanel(QDialog):
         self.session_drawer.session_activated.connect(self._on_drawer_session)
         self.session_drawer.new_requested.connect(self._new_session)
         self.session_drawer.delete_requested.connect(self._remove_session)
+        self.session_drawer.toggle_requested.connect(self._toggle_drawer)
         self._function_rail = _FunctionRail(self)
         self._function_rail.action_triggered.connect(self._on_rail_action)
         self._rail_col = _FunctionRail.column(self._function_rail)
@@ -21058,6 +21205,12 @@ class AgentPanel(QDialog):
         self._pre_dock_sizes = {}
         self._pre_dock_geo = None
         self._apply_panel_mode()
+        # 折叠状态持久化：按上次选择落地（对话栏独立折叠；文件树/Git/任务整体折叠）
+        if _stored_flag(_STORE_DRAWER_COLLAPSED):
+            self.session_drawer.set_collapsed(True)
+        if _stored_flag(_STORE_LEFTDOCK_COLLAPSED):
+            self._set_leftdock_collapsed(True, persist=False)
+        self._sync_rail_state()   # 胶囊 tooltip / 左栏入口可见性按初始状态对齐
         # 顶栏「预览面板」按钮初始外观跟随当前启用状态（默认隐藏 → 幽灵态）
         self._sync_preview_btn()
 
@@ -22294,10 +22447,108 @@ class AgentPanel(QDialog):
         if sid and sid != self._session_id:
             self._switch_to(sid)
 
+    # ---------- 折叠 / 展开（对话栏与左侧整栏） ----------
+    def _toggle_drawer(self):
+        """对话栏收起/展开：标题栏箭头与胶囊「对话栏」按钮共用本入口。"""
+        drawer = self.__dict__.get("session_drawer")
+        if drawer is None:
+            return
+        on = not drawer.is_collapsed()
+        drawer.set_collapsed(on)
+        try:
+            app_identity.qsettings().setValue(
+                _STORE_DRAWER_COLLAPSED, "1" if on else "0")
+        except Exception:
+            pass
+        self._sync_rail_state()
+
+    def _leftdock_collapsed(self) -> bool:
+        return bool(self.__dict__.get("_leftdock_collapsed_on", False))
+
+    def _sync_leftdock_head(self, has: bool) -> None:
+        """左栏标题条跟随折叠状态：有面板才显示，箭头方向与 tooltip 同步翻转。"""
+        head = self.__dict__.get("_leftdock_head")
+        if head is None:
+            return
+        head.setVisible(bool(has))
+        btn = self.__dict__.get("_leftdock_head_btn")
+        if btn is None:
+            return
+        on = self._leftdock_collapsed()
+        # 状态没翻转就不重设图标/文案（_sync_dock_layout 在窗口 resize 时会高频触发）
+        if self.__dict__.get("_leftdock_head_state") != on:
+            self._leftdock_head_state = on
+            # 收起态用「左栏」图标（点击即展开），视觉上是一条有身份的窄条而非裸箭头
+            btn.setIcon(_line_icon("panel-left" if on else "chev-left", 14,
+                                   TEXT_DIM))
+            btn.setToolTip(_ui("展开左栏") if on else
+                           _ui("收起左栏（文件树 / Git / 任务）"))
+        # 收起成 36px 窄条时放不下「侧栏」二字，这一行只留图标
+        lbl = self.__dict__.get("_leftdock_head_lbl")
+        if lbl is not None:
+            lbl.setVisible(not on)
+
+    def _set_leftdock_collapsed(self, on: bool, persist: bool = True) -> None:
+        """左侧整栏（文件树 / Git / 任务清单）一次性收起或展开。
+
+        收起时记录哪些面板本来可见，展开时原样恢复（用户关掉的面板不会被强行打开）。
+        """
+        on = bool(on)
+        if on == self._leftdock_collapsed():
+            return
+        self._leftdock_collapsed_on = on
+        if persist:
+            try:
+                app_identity.qsettings().setValue(
+                    _STORE_LEFTDOCK_COLLAPSED, "1" if on else "0")
+            except Exception:
+                pass
+        if on:
+            self._leftdock_saved = [
+                p for p in self._dock_panel_order("left") if not p.isHidden()]
+        else:
+            wanted = set(self.__dict__.get("_leftdock_saved") or [])
+            # 折叠期间用户在设置页启用/停用的面板也要即时生效：按开关把「应显示」
+            # 的面板并进恢复集合（已被关掉的面板不会被强行打开）。
+            for name, enabled in (("wt_win", self._wt_enabled()),
+                                  ("git_win", self._wt_enabled()),
+                                  ("todos_win", self._todos_enabled())):
+                p = self.__dict__.get(name)
+                if p is not None and enabled and p.dock_state == "left":
+                    wanted.add(p)
+            for p in wanted:
+                try:
+                    p.show()
+                except Exception:
+                    pass
+            self._leftdock_saved = []
+        self._sync_dock_layout()
+        self._sync_rail_state()
+
+    def _sync_rail_state(self) -> None:
+        """胶囊入口与当前折叠/启用状态同步（tooltip、可用性与预览高亮）。"""
+        rail = self.__dict__.get("_function_rail")
+        if rail is None:
+            return
+        drawer = self.__dict__.get("session_drawer")
+        collapsed = bool(drawer.is_collapsed()) if drawer is not None else False
+        rail.set_item_tooltip("drawer", _ui("展开对话栏") if collapsed
+                              else _ui("收起对话栏"))
+        on_left = self._leftdock_collapsed()
+        rail.set_item_tooltip("leftdock", _ui("展开左栏") if on_left
+                              else _ui("收起左栏（文件树 / Git / 任务）"))
+        # 贴附模式下左栏是独立浮窗，整栏折叠无意义 → 该入口隐藏
+        rail.set_item_visible("leftdock", self._panel_mode() == "dock")
+
+    def _toggle_leftdock(self, *_args):
+        self._set_leftdock_collapsed(not self._leftdock_collapsed())
+
     # ---------- 右侧功能胶囊栏：点击直达对应功能页 ----------
     def _rail_handlers(self) -> dict:
         """胶囊 kind → 动作（数据映射，新增入口只需在此补一行）。"""
         return {
+            "drawer": self._toggle_drawer,
+            "leftdock": self._toggle_leftdock,
             "tasks": lambda: self._reveal_feature(
                 "agent_show_todos", ("_sync_todos_win",), "todos_win"),
             "worktree": lambda: self._reveal_feature(
@@ -22320,6 +22571,8 @@ class AgentPanel(QDialog):
         开关写入 QSettings 与设置页同一开关同源，避免「点开后又被同步逻辑隐藏」。
         """
         try:
+            if self._leftdock_collapsed():
+                self._set_leftdock_collapsed(False)   # 跳转功能前先把折叠的左栏展开
             app_identity.qsettings().setValue(setting_key, "1")
             for name in syncs:
                 fn = getattr(self, name, None)
@@ -22979,6 +23232,10 @@ class AgentPanel(QDialog):
                     f"color: {ACCENT_HOVER}; }}")
             else:
                 btn.setStyleSheet(_BTN_GHOST)
+            # 胶囊里的预览入口与顶栏按钮同一状态（展开时强调色淡染）
+            rail = self.__dict__.get("_function_rail")
+            if rail is not None:
+                rail.set_action_active("preview", on)
         except Exception:
             pass
 
@@ -23729,6 +23986,34 @@ class AgentPanel(QDialog):
         # 栏内面板首尾相接（间距 0）：面板间的竖直空隙全部并入余量、由同栏的 Git 面板
         # 吸收占满（用户要求「任务清单上方 / 工作树下方的空隙都给 Git 面板」）
         c_lay.setSpacing(0)
+        if side == "left":
+            # 左栏标题条：三块面板（文件树 / Git / 任务清单）共用一枚收起箭头，
+            # 一次折叠整栏；收起后本栏变成 36px 窄条，箭头翻向右侧可再展开。
+            head = QWidget()
+            head.setObjectName("dockLeftHead")
+            head.setStyleSheet("QWidget#dockLeftHead { background: transparent; }")
+            head.setFixedHeight(_DOCK_HEAD_H)
+            hl = QHBoxLayout(head)
+            hl.setContentsMargins(4, 2, 4, 2)
+            hl.setSpacing(4)
+            lbl = QLabel(_ui("侧栏"))
+            lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
+            hl.addWidget(lbl)
+            hl.addStretch(1)
+            btn = QPushButton(_line_icon("chev-left", 14, TEXT_DIM), "")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setAutoDefault(False)
+            btn.setFixedSize(20, 20)
+            btn.setIconSize(QSize(14, 14))
+            btn.setToolTip(_ui("收起左栏（文件树 / Git / 任务）"))
+            btn.setStyleSheet(_drawer_icon_btn_qss())
+            btn.clicked.connect(self._toggle_leftdock)
+            hl.addWidget(btn)
+            head.hide()   # 栏内没有面板时整条不显示（由 _sync_dock_layout 决定）
+            c_lay.addWidget(head)
+            self._leftdock_head = head
+            self._leftdock_head_btn = btn
+            self._leftdock_head_lbl = lbl
         c_lay.addStretch(1)
         col.setProperty("_dock_lay", c_lay)
         col.setProperty("_walked", False)
@@ -23881,6 +24166,19 @@ class AgentPanel(QDialog):
                 if lay is None:
                     continue
                 order = self._dock_panel_order(side)
+                if side == "left":
+                    self._sync_leftdock_head(bool(order))
+                    if self._leftdock_collapsed():
+                        # 整栏折叠：面板全部隐藏，只保留 36px 窄条 + 展开箭头
+                        for p in order:
+                            p.hide()
+                        col.setFixedWidth(_DOCK_COLLAPSED_W)
+                        col.setVisible(bool(order))
+                        try:
+                            col.layout().activate()
+                        except Exception:
+                            pass
+                        continue
                 # 垂直份额：文件树 40 / Git 60（任务清单定高，权重只影响贴附态观感）
                 widths = []
                 for i, p in enumerate(order):
@@ -23953,7 +24251,10 @@ class AgentPanel(QDialog):
             # 份额口径按「名义间距」计（栏内实际间距为 0）：间距口径让份额换算与旧版
             # 一致，差额由 Git 吸收（它是余量吸收者）。
             gaps = self._DOCK_PANEL_GAP * max(0, len(order) - 1)
-            avail = max(0, col.height() - gaps)
+            # 顶部「侧栏」标题条也占高，份额必须扣掉它，否则整栏会溢出 28px
+            head = self.__dict__.get("_leftdock_head")
+            head_h = _DOCK_HEAD_H if (head is not None and not head.isHidden()) else 0
+            avail = max(0, col.height() - gaps - head_h)
             by_name = {p.objectName(): p for p in order}
             wt = by_name.get("wtWin")
             git = by_name.get("gitLogWin")
@@ -24027,6 +24328,7 @@ class AgentPanel(QDialog):
                 self._restore_pre_dock_geometry()
             self._applied_panel_mode = mode
             self._sync_dock_layout()
+            self._sync_rail_state()
         except Exception:
             pass
 
@@ -26990,6 +27292,16 @@ class AgentPanel(QDialog):
                     _fn()
                 except RuntimeError:
                     pass
+        # 左栏标题条（侧栏文字 + 收起箭头）同样由色板派生
+        _lbl = self.__dict__.get("_leftdock_head_lbl")
+        if _lbl is not None:
+            try:
+                _lbl.setStyleSheet(
+                    f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;"
+                    "background: transparent;")
+                self._sync_leftdock_head(bool(self._dock_panel_order("left")))
+            except RuntimeError:
+                pass
         _set(getattr(self, "preview_btn", None), _BTN_GHOST)
         _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
         _set(getattr(self, "token_btn", None), _BTN_GHOST)

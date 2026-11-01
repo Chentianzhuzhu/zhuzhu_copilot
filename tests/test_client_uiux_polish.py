@@ -209,6 +209,8 @@ def test_session_drawer_is_persistent_left_column(panel):
     """对话历史必须是左侧常驻抽屉（顶栏下拉已移除），宽度固定不随窗口收缩。"""
     from PyQt6.QtWidgets import QListWidget, QLineEdit
     d = _drawer(panel)
+    if d.is_collapsed():                 # 上一次运行留下「收起」状态时先展开
+        d.set_collapsed(False)
     assert d.isVisible(), "历史对话抽屉必须常驻可见"
     assert d.parent() is panel
     assert panel._dock_row.indexOf(d) == 0, "抽屉必须是主内容行最左侧一列"
@@ -301,3 +303,45 @@ def test_session_combo_leaves_top_bar(panel):
     combo = panel.session_combo
     assert combo.isHidden(), "会话下拉不应再出现在顶栏"
     assert combo.parent() is panel, "隐藏组合框仍须挂在面板上（避免成为独立窗口）"
+
+
+# ---------- 9. 折叠 / 展开 ----------
+
+def test_session_drawer_collapses_to_narrow_strip(panel):
+    """对话栏收起后只留 36px 窄条 + 展开箭头，再点一次恢复完整列表。"""
+    d = _drawer(panel)
+    if d.is_collapsed():
+        d.set_collapsed(False)
+    assert d.width() == ap._DRAWER_W
+    d.set_collapsed(True)
+    assert d.width() == ap._DRAWER_COLLAPSED_W, "收起后应是窄条而不是整块消失"
+    assert not d.list.isVisible() and not d.search.isVisible(), "收起后列表/搜索框应让位"
+    assert d.expand_btn.isVisible(), "窄条上必须保留展开箭头"
+    d.set_collapsed(False)
+    assert d.width() == ap._DRAWER_W
+    assert d.list.isVisible()
+
+
+def test_leftdock_collapses_whole_column(panel):
+    """文件树 / Git / 任务清单算一个左栏：一次收起全部，再展开恢复原可见面板。"""
+    p = panel
+    if p._leftdock_collapsed():
+        p._set_leftdock_collapsed(False, persist=False)
+    order = p._dock_panel_order("left")
+    p._set_leftdock_collapsed(True, persist=False)
+    assert p._leftdock_collapsed()
+    assert p._dock_left.width() == ap._DOCK_COLLAPSED_W, "收起后左栏应为窄条"
+    for w in order:
+        assert w.isHidden(), "收起时栏内面板必须全部让位"
+    p._set_leftdock_collapsed(False, persist=False)
+    assert not p._leftdock_collapsed()
+    assert p._dock_left.width() >= ap._DOCK_COLLAPSED_W
+    for w in order:
+        assert w.isVisible(), "展开后原先可见的面板应恢复"
+
+
+def test_function_rail_exposes_collapse_entries(panel):
+    """胶囊里必须有「对话栏」「左栏」两个折叠开关（与标题栏箭头同一状态）。"""
+    rail = panel._function_rail
+    assert "drawer" in rail._buttons, "胶囊缺少对话栏折叠入口"
+    assert "leftdock" in rail._buttons, "胶囊缺少左栏折叠入口"
