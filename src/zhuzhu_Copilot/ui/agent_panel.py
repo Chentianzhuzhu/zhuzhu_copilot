@@ -21637,7 +21637,7 @@ class AgentPanel(QDialog):
         # 工作目录下拉（权限菜单右侧）：选择已有目录或添加文件夹，当前对话即时生效
         self.wd_combo = _ArrowComboBox()
         self.wd_combo.setMinimumWidth(118)
-        self.wd_combo.setMaximumWidth(190)
+        self.wd_combo.setMaximumWidth(280)   # 允许更长项目名（实际宽度由 _sync_workdir_combo 按内容计算）
         self.wd_combo.setIconSize(QSize(16, 16))
         self.wd_combo.setStyleSheet(_HOME_COMBO)
         self.wd_combo.setToolTip(_ui("当前对话的工作目录（选择已有目录或添加文件夹）"))
@@ -23720,6 +23720,22 @@ class AgentPanel(QDialog):
                     if combo.itemData(i) == cur), 0)
         combo.setCurrentIndex(max(0, idx))
         combo.blockSignals(False)
+        # 宽度按**最长条目**自适应：长项目名不再被截成「zhuzhu Co」；上限 280px，
+        # 更长的名字由 tooltip 显示完整路径。字体用与 QSS 同尺寸的显式字体量宽
+        # （控件样式表字体要等 polish 后才进 fontMetrics）。
+        try:
+            f = QFont(combo.font())
+            f.setPixelSize(FONT_SMALL)
+            fm = QFontMetrics(f)
+            text_w = max((fm.horizontalAdvance(combo.itemText(i))
+                          for i in range(combo.count())), default=0)
+            combo.setMinimumWidth(max(130, min(280, text_w + 66)))
+            # 弹出列表同样加宽：长项目名在下拉列表里也不能被截断
+            view = combo.view()
+            if view is not None:
+                view.setMinimumWidth(min(380, max(160, text_w + 40)))
+        except Exception:
+            pass
         combo.setToolTip(cur or _ui("当前对话未设置工作目录，点此选择或添加文件夹"))
 
     def _on_wd_combo(self, idx: int):

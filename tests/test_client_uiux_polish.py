@@ -767,6 +767,25 @@ def test_workdir_combo_sits_right_of_permission(panel, tmp_path):
         panel._sync_workdir_combo()
 
 
+def test_workdir_combo_widens_for_long_names(panel, tmp_path):
+    """长项目目录名要把下拉撑宽（不再截成「zhuzhu Co」），完整路径仍在 tooltip。"""
+    from PyQt6.QtCore import Qt
+    d = tmp_path / "zhuzhu-copilot-very-long-project-directory-name"
+    d.mkdir()
+    raw = panel._settings.value(ap.AgentPanel._WD_RECENT_KEY, "")
+    try:
+        panel._push_recent_workdir(str(d))
+        panel._sync_workdir_combo()
+        assert panel.wd_combo.minimumWidth() > 190, "长目录名未撑宽工作目录下拉"
+        assert panel.wd_combo.maximumWidth() >= 280
+        idx = panel.wd_combo.findData(str(d))
+        assert idx >= 0
+        assert panel.wd_combo.itemData(idx, Qt.ItemDataRole.ToolTipRole) == str(d)
+    finally:
+        panel._settings.setValue(ap.AgentPanel._WD_RECENT_KEY, raw)
+        panel._sync_workdir_combo()
+
+
 def test_new_session_inherits_previous_workdir():
     """新开对话沿用上一个对话的实际生效工作目录（接线守卫：防改动丢继承逻辑）"""
     import inspect
