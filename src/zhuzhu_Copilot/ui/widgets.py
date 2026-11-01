@@ -150,11 +150,15 @@ class ArrowComboBox(QComboBox):
         self._run_arrow(True)
         self._fade_popup()
 
-    def _fade_popup(self):
-        """下拉列表淡入（150ms）：Qt 的组合框弹层是独立窗口，只能整体调窗口透明度。
+    #: 下拉弹层淡入帧率：120fps（QPropertyAnimation 固定 ~60fps，达不到用户要求的丝滑度）
+    FADE_FPS = 120
 
-        延后一帧再起动画：showPopup 返回时弹层刚完成定位，立刻设 0 透明度会在
-        个别后端闪一下；下一帧窗口已稳定，淡入是从 0 → 1 的干净过渡。
+    def _fade_popup(self):
+        """下拉列表淡入（120fps）：Qt 的组合框弹层是独立窗口，只能整体调窗口透明度。
+
+        用 8ms 定时器逐帧写窗口透明度（QPropertyAnimation 的全局刷新约 16ms=60fps，
+        在快速淡入时看得出台阶）。延后一帧再起动画：showPopup 返回时弹层刚完成定位，
+        立刻设 0 透明度会在个别后端闪一下；下一帧窗口已稳定，淡入是干净过渡。
         """
         def _run():
             try:
@@ -168,19 +172,40 @@ class ArrowComboBox(QComboBox):
             try:
                 if not (win.windowFlags() & Qt.WindowType.Popup):
                     return
+                old = getattr(self, "_popup_fade_timer", None)
+                if old is not None:
+                    old.stop()
                 win.setWindowOpacity(0.0)
-                anim = QPropertyAnimation(win, b"windowOpacity", self)
-                anim.setDuration(motion.POP_MS)
-                anim.setStartValue(0.0)
-                anim.setEndValue(1.0)
-                anim.setEasingCurve(motion.settle())
-                self._popup_anim = anim   # 持有引用，避免被回收
-                anim.start()
+                dur = max(1, int(motion.POP_MS))
+                fps = max(60, int(self.FADE_FPS))
+                steps = max(1, int(dur * fps / 1000))
+                curve = motion.settle()
+                state = {"i": 0}
+                timer = QTimer(self)
+                timer.setInterval(max(1, int(1000 / fps)))
+
+                def _tick():
+                    state["i"] += 1
+                    prog = min(1.0, state["i"] / float(steps))
+                    try:
+                        win.setWindowOpacity(float(curve.valueForProgress(prog)))
+                    except Exception:
+                        pass
+                    if prog >= 1.0:
+                        timer.stop()
+                        timer.deleteLater()
+
+                timer.timeout.connect(_tick)
+                self._popup_fade_timer = timer
+                timer.start()
             except Exception:
                 pass
         QTimer.singleShot(0, _run)
 
     def hidePopup(self):
+        t = getattr(self, "_popup_fade_timer", None)
+        if t is not None:
+            t.stop()
         super().hidePopup()
         self._run_arrow(False)
 

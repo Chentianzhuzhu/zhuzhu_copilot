@@ -2762,6 +2762,7 @@ class _CapsuleSlider(QSlider):
     VALUE_PAD = 7.0      # 数值端点（圆点 / 滑块）距胶囊端点的余量：固定不动
     CAPSULE_EXTEND = 7.0  # 胶囊两端再各延长的长度（圆点位置不受影响）
     THUMB_R = 12.8       # 滑块圆半径（px）：比轨道高一档缩小 20%，收进胶囊里
+    THUMB_SHIFT = 3.0    # 滑块圆心整体右移（px）：视觉上更贴胶囊右缘（用户要求「往右一点」）
     TICK_R = 3.0         # 档位圆点半径（px）
     RING_RATIO = 0.55    # 滑块内淡灰圆环的半径占比（与外圆同心）
     TICK_STYLE_MUTED = "muted"   # 灰点 + 只画未覆盖区
@@ -2908,7 +2909,8 @@ class _CapsuleSlider(QSlider):
     def _thumb_x(self) -> float:
         x0, x1 = self._track_span()
         span_v = max(1, self.maximum() - self.minimum())
-        return x0 + (x1 - x0) * ((self.value() - self.minimum()) / span_v)
+        return (x0 + (x1 - x0) * ((self.value() - self.minimum()) / span_v)
+                + self.THUMB_SHIFT)
 
     def _paint_static(self, p, x0, x1, cy, colors=None, effect_on: bool = False):
         """轨道（两端含外延）+ 覆盖区 + 档位圆点。
@@ -14050,8 +14052,10 @@ class _ModelTunePopover(QFrame):
         anim.start()
 
     def popup_above(self, anchor: QWidget):
-        """锚定在 anchor 正上方：右对齐，垂直留 SLIDE 间距；上方空间不足时改到下方。
-        透明度 0→1 同时轻微上移（落定性格，不做回弹过冲）。"""
+        """在 anchor 正上方**固定位置**弹出：右对齐，垂直留 SLIDE + LIFT 间距。
+
+        「固定位置」= 几何只定位一次，淡入过程中与结束后都不移动（旧版同时做
+        8px 上移动画，观感像面板在飘）。上方空间不足时才翻到下方（兜底）。"""
         self._closing = False
         self.resize(int(self.PREFERRED_WIDTH), max(1, self.sizeHint().height()))
         h = int(self.height())
@@ -14065,10 +14069,9 @@ class _ModelTunePopover(QFrame):
             x = max(area.left() + 4, min(x, area.right() - w - 4))
             if y < area.top() + 4:
                 y = gp.y() + anchor.height() + self.SLIDE
+        self.setGeometry(QRect(x, y, w, h))
         eff = self._ensure_effect()
         eff.setOpacity(0.0)
-        start = QRect(x, y + self.SLIDE, w, h)
-        self.setGeometry(start)
         self.show()
         self.raise_()
         a_op = QPropertyAnimation(eff, b"opacity", self)
@@ -14076,35 +14079,21 @@ class _ModelTunePopover(QFrame):
         a_op.setStartValue(0.0)
         a_op.setEndValue(1.0)
         a_op.setEasingCurve(motion.settle())
-        a_geo = QPropertyAnimation(self, b"geometry", self)
-        a_geo.setDuration(motion.SETTLE_MS)
-        a_geo.setStartValue(start)
-        a_geo.setEndValue(QRect(x, y, w, h))
-        a_geo.setEasingCurve(motion.settle())
         self._run(a_op)
-        self._run(a_geo)
 
     def close_animated(self):
-        """收起（可再次弹出复用本控件）：消退性格，比弹出更快"""
+        """收起（可再次弹出复用本控件）：只淡出、不移动（与固定位置弹出对称）"""
         if not self.isVisible() or self._closing:
             return
         self._closing = True
         eff = self._ensure_effect()
-        cur = self.geometry()
         a_op = QPropertyAnimation(eff, b"opacity", self)
         a_op.setDuration(motion.FADE_OUT_MS)
         a_op.setStartValue(eff.opacity())
         a_op.setEndValue(0.0)
         a_op.setEasingCurve(motion.fade_out())
-        a_geo = QPropertyAnimation(self, b"geometry", self)
-        a_geo.setDuration(motion.FADE_OUT_MS)
-        a_geo.setStartValue(cur)
-        a_geo.setEndValue(QRect(cur.x(), cur.y() + self.SLIDE // 2,
-                                cur.width(), cur.height()))
-        a_geo.setEasingCurve(motion.fade_out())
         a_op.finished.connect(self._after_close)
         self._run(a_op)
-        self._run(a_geo)
 
     def _after_close(self):
         self._closing = False
@@ -19743,24 +19732,10 @@ _PERM_SVGS = {
 }
 
 
-# 权限之外复用的 Lucide 图标（左栏收起态的「Git 分支」等）
-_LUCIDE_GIT_BRANCH = _lucide(
-    '<line x1="6" x2="6" y1="3" y2="15"/>'
-    '<circle cx="18" cy="6" r="3"/>'
-    '<circle cx="6" cy="18" r="3"/>'
-    '<path d="M18 9a9 9 0 0 1-9 9"/>')
-_LUCIDE_EXTRA = {"git-branch": _LUCIDE_GIT_BRANCH}
-
-
-def _lucide_icon(kind: str, size: int = 16, color: str = TEXT_DIM) -> QIcon:
-    """通用 Lucide 线条图标（权限图标与共享图标同一套渲染），缺图返回空图标"""
-    svg = _PERM_SVGS.get(kind) or _LUCIDE_EXTRA.get(kind)
-    return _svg_icon(svg, size, color) if svg else QIcon()
-
-
 def _perm_icon(kind: str, size: int = 16, color: str = TEXT_DIM) -> QIcon:
     """权限相关图标：统一走开源 SVG（Lucide）渲染，缺图时返回空图标不再手绘兜底"""
-    return _lucide_icon(kind, size, color)
+    svg = _PERM_SVGS.get(kind)
+    return _svg_icon(svg, size, color) if svg else QIcon()
 
 
 # Agent 权限胶囊：高度 / 三档文案（唯一事实来源：按钮、菜单、tooltip 都取这里）
@@ -23155,6 +23130,12 @@ class AgentPanel(QDialog):
         self._refresh_session_combo()
 
     # ---------- 折叠 / 展开（对话栏与左侧整栏） ----------
+    def _expand_drawer(self):
+        """展开对话栏（收起态圆形入口「对话菜单」用）：已展开时无动作。"""
+        drawer = self.__dict__.get("session_drawer")
+        if drawer is not None and drawer.is_collapsed():
+            self._toggle_drawer()
+
     def _toggle_drawer(self):
         """对话栏收起/展开：标题栏箭头与胶囊「对话栏」按钮共用本入口。"""
         drawer = self.__dict__.get("session_drawer")
@@ -24739,11 +24720,12 @@ class AgentPanel(QDialog):
             ml = QVBoxLayout(mini)
             ml.setContentsMargins(8, 8, 8, 8)
             ml.setSpacing(8)
-            for _ico, _tip, _key, _win in (
-                    (_line_icon("folder", 18, TEXT_DIM), _ui("展开文件树"),
-                     "agent_show_worktree", "wt_win"),
-                    (_lucide_icon("git-branch", 18, TEXT_DIM), _ui("展开 Git 面板"),
-                     "agent_show_git", "git_win")):
+            # 两枚圆形入口 = 「对话菜单」+「侧栏」：点击即展开对应面板（用户指定）
+            for _ico, _tip, _act in (
+                    (_line_icon("chat", 18, TEXT_DIM), _ui("展开对话栏"),
+                     self._expand_drawer),
+                    (_line_icon("panel-left", 18, TEXT_DIM), _ui("展开左栏"),
+                     lambda: self._set_leftdock_collapsed(False))):
                 _b = QPushButton(_ico, "")
                 _b.setCursor(Qt.CursorShape.PointingHandCursor)
                 _b.setAutoDefault(False)
@@ -24751,9 +24733,7 @@ class AgentPanel(QDialog):
                 _b.setIconSize(QSize(18, 18))
                 _b.setStyleSheet(_round_icon_btn_qss(38))
                 _b.setToolTip(_tip)
-                _b.clicked.connect(
-                    lambda _c=False, k=_key, w=_win: self._reveal_feature(
-                        k, ("_sync_wt_win", "_sync_git_win"), w))
+                _b.clicked.connect(lambda _c=False, fn=_act: fn())
                 ml.addWidget(_b)
             ml.addStretch(1)
             mini.hide()
@@ -24769,12 +24749,11 @@ class AgentPanel(QDialog):
         return self._dock_left if side == "left" else self._dock_right
 
     def _dock_column_qss(self, side: str) -> str:
-        """dock 栏容器皮肤：左栏收起时它本身就是一张 36px 卡片（与对话栏同套描边/圆角），
+        """dock 栏容器皮肤：左栏收起时**不着色不描边** —— 收起态只保留两枚圆形入口，
+        外面再套一圈圆角矩形卡片就成了「方框里放按钮」的多余轮廓（用户反馈）；
         展开时退回透明栏底，让栏内三张面板卡各自承担边框。"""
         if side == "left" and self._leftdock_collapsed():
-            return (f"QWidget#dockColleft {{ background: {_panel_surface('BG')};"
-                    f" border: 1px solid {_panel_stroke('BORDER')};"
-                    f" border-radius: {RADIUS_MD}px; }}")
+            return "QWidget#dockColleft { background: transparent; border: none; }"
         return (f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')};"
                 f" border: none; }}")
 

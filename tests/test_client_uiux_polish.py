@@ -342,6 +342,13 @@ def test_leftdock_collapses_whole_column(panel):
     for b in btns:
         assert b.width() == b.height() == 38, "入口按钮必须是正圆"
         assert not b.icon().isNull(), "入口按钮缺少矢量图标"
+    tips = [b.toolTip() for b in btns]
+    assert ap._ui("展开对话栏") in tips and ap._ui("展开左栏") in tips, \
+        f"两枚圆形入口应为「对话菜单」「侧栏」：{tips}"
+    # 收起态不得再套一圈圆角矩形卡片（只有两个圆形按钮浮在背景上）
+    assert "border: none" in p._dock_left.styleSheet() and \
+        "transparent" in p._dock_left.styleSheet(), \
+        f"收起态栏容器仍画方框：{p._dock_left.styleSheet()}"
     assert p._leftdock_head.isHidden(), "收起态标题条（箭头）应被圆形入口取代"
     for w in order:
         assert w.isHidden(), "收起时栏内面板必须全部让位"
@@ -611,6 +618,36 @@ def test_checkbox_indicator_has_contrast_border():
 def test_model_tune_popover_lift_is_five_px(panel):
     """思考强度浮层与模型框的间距按用户要求再上移 5px。"""
     assert ap._ModelTunePopover.LIFT == 5
+
+
+def test_model_tune_popover_pops_at_fixed_position(panel):
+    """调节面板固定位置弹出：淡入过程中不移动（几何在两次弹出之间保持一致）。"""
+    pop = panel._model_tune
+    panel._open_model_tune()
+    _pump(80)
+    first = pop.geometry()
+    panel._close_model_tune()
+    _pump(300)
+    panel._open_model_tune()
+    _pump(40)
+    assert pop.geometry() == first, "调节面板弹出位置/尺寸在动画中发生变化"
+    panel._close_model_tune()
+    _pump(300)
+
+
+def test_capsule_slider_thumb_shifted_right():
+    """思考强度滑块的圆形整体右移（用户要求「往右平移一点」）。"""
+    assert ap._CapsuleSlider.THUMB_SHIFT > 0
+    sl = ap._CapsuleSlider(tick_step=1, tick_style=ap._CapsuleSlider.TICK_STYLE_LEVEL)
+    sl.setRange(0, len(ap.agent_llm.EFFORTS) - 1)
+    sl.setValue(sl.maximum())
+    _x0, x1 = sl._track_span()
+    assert sl._thumb_x() - x1 == ap._CapsuleSlider.THUMB_SHIFT
+
+
+def test_model_dropdown_fades_at_120fps(panel):
+    """模型选择下拉菜单淡入按 120fps 逐帧推进（不是 60fps 的台阶）。"""
+    assert ap.ArrowComboBox.FADE_FPS >= 120
 
 
 def test_model_tune_context_uses_switch_button(panel):

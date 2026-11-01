@@ -177,8 +177,6 @@
     "今日反馈次数已达上限（3次/天），明天再来吧～": "You've reached today's feedback limit (3 per day). Come back tomorrow!",
     "今日已达上限": "Daily Limit Reached",
     "今天能帮你做点什么呢？": "What can I help you with today?",
-    "展开文件树": "Open the file tree",
-    "展开 Git 面板": "Open the Git panel",
     "从上游获取": "Fetch from Upstream",
     "从内置预设创建工作流（如三省六部制度：中书省主 Agent + 门下省/尚书省与吏户礼兵刑工六部，共 8 个注册式子 Agent，编队共用共同上下文空间）": "Create a workflow from a built-in preset (e.g. Three Departments and Six Ministries: the Zhongshu Secretariat as the main Agent plus the Menxia and Shangshu secretariats and the six ministries of personnel, revenue, rites, war, justice and works — 8 registered sub Agents sharing a common context space)",
     "从头放映": "Play from start",
