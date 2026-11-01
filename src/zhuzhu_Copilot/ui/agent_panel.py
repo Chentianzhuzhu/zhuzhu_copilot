@@ -9933,11 +9933,7 @@ class _AgentSettingsDialog(QDialog):
 
     def _update_provider_ui(self):
         """选中反馈：删除按钮选中时变红可用、未选中灰色；状态栏提示语；卡片高亮描边。
-        同时刷新上下文上限说明（服务商增删改会改变窗口来源，用户需即时看到）。"""
-        try:
-            self._sync_context_hint()
-        except Exception:
-            pass
+        （上下文上限说明已随 1M 开关迁到主页面模型浮层，本页不再展示。）"""
         if not hasattr(self, "del_provider_btn"):   # 初始化中按钮尚未创建时跳过
             return
         sel = self._current_provider()
@@ -11223,7 +11219,7 @@ class _ProviderDialog(QDialog):
                         self._declarations[k] = dict(v)
             self._sync_declared_label()
             # 上游声明的力度级别已并入 _declarations，保存时随 model_limits 写入服务商，
-            # 主设置页打开时由 _sync_effort_declared 自动映射滑块挡位
+            # 供模型浮层/发送阶段按声明档位就近折算
             n = len([x for x in msg.split(",") if x.strip()])
             note = "" if source == "upstream" else "（上游需鉴权/不支持枚举，已使用内置已知模型列表）"
             ctx_note = (f"，读取到 {len(declared)} 个模型的上下文声明"
