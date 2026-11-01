@@ -1588,8 +1588,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_skill",
-            "description": "以用户自然语言描述为基础，自动生成市场标准 SKILL.md 技能文件并加载（写入 "
-                           "skills/<name>/SKILL.md，创建后立即生效，AI 与用户均可通过 /技能名 调用）。"
+            "description": "以用户自然语言描述为基础，自动生成市场标准 SKILL.md 技能文件并加载（写入"
+                           "用户技能目录 ~/.zhuzhu_Copilot/agent/skills/<name>/SKILL.md，创建后立即生效，"
+                           "AI 与用户均可通过 /技能名 调用）。用户要求「生成/创建技能并安装到用户目录」时"
+                           "必须用本工具，不要用 write_file 把技能写到项目目录。"
                            "若当前对话使用非默认工作流，技能会自动绑定到该工作流（仅该工作流加载）。"
                            "涉及图形化操作界面/可视化交互（仪表盘/可视化面板等）时，必须走 web 型插件"
                            "（见 create_plugin，本地 web 服务器 + 浏览器界面），浏览器操作者必须是用户本人，"

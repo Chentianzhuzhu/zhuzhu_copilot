@@ -1363,6 +1363,12 @@ def create_md_skill(name: str, description: str, instruction: str,
         if str(workflow).strip():
             agent_workflow.set_skill_state(workflow, name, True)
         msg = f"已创建技能「{name}」（{d / 'SKILL.md'}），已加载生效{bind_msg}"
+        # 技能能力关闭时文件照样写进用户技能目录，但 load_skills 会返回空 → 技能永远
+        # 不参与匹配（用户视角是「生成了却装载不上」）。这里必须明确点出开关状态，
+        # 否则 AI 只会反复重试或改用 write_file 写到项目目录。
+        if not cap_enabled("skill"):
+            msg += ("；注意：设置中「技能能力」已关闭（cap_skill=false），文件已写入用户技能目录"
+                    "但不会被加载，请在设置页开启技能能力后重试")
         warn = _skill_structure_warning(instruction)
         if warn:
             msg += "；结构提示：缺少" + "、".join(warn) + "章节（建议补充触发词/流程/参数契约/禁用约束）"

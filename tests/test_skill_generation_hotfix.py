@@ -114,6 +114,43 @@ def test_create_plugin_skill_kind_no_double_frontmatter(iso, monkeypatch):
     assert text.count("---") == 2, f"双重 frontmatter:\n{text}"
 
 
+# ---------- 5. 任务裁剪不得剔除 create_skill ----------
+
+def test_create_skill_survives_task_trimming():
+    """请求描述同时命中「文档/图片」等类别时，create_skill 仍必须留在工具表里。
+
+    历史缺陷：create_skill 不在 _CORE_TOOLS，任务裁剪只保留「核心 + 命中类别」工具，
+    像「生成一个技能，用来写周报和文档」会命中 doc 类别却命中不了 skill 类别，
+    create_skill 被剔除 → 模型根本看不到该工具，只能改用 write_file 写到项目目录，
+    技能从未落进用户技能目录（表现为「agent 无法生成技能并装载到用户目录」）。
+    """
+    from zhuzhu_Copilot.core import agent_engine
+    assert "create_skill" in agent_engine._CORE_TOOLS, "create_skill 必须常驻核心工具集"
+    text = "帮我生成一个技能，用来写周报和文档"
+    groups = agent_engine._detect_task_groups(text)
+    assert groups, "该请求应命中任务类别（这正是触发裁剪的场景）"
+    keep = set(agent_engine._CORE_TOOLS)
+    for g in groups:
+        keep |= agent_engine._TASK_GROUP_TOOLS.get(g, frozenset())
+    assert "create_skill" in keep, f"裁剪后丢失 create_skill（命中类别 {groups}）"
+
+
+def test_skill_phrasings_match_skill_group():
+    """「生成/做个/写个技能」等口语措辞必须识别为技能类别（保留 use_skill 等工具）"""
+    from zhuzhu_Copilot.core import agent_engine
+    for text in ("生成技能：周报助手", "做个技能来整理资料", "写个技能用于翻译"):
+        assert "skill" in (agent_engine._detect_task_groups(text) or []), text
+
+
+def test_create_skill_reports_disabled_skill_cap(iso, monkeypatch):
+    """技能能力关闭时：文件仍写入用户技能目录，但结果必须明确提示「不会加载」"""
+    monkeypatch.setattr(agent_skills, "cap_enabled", lambda key: False)
+    ok, msg = agent_skills.create_md_skill("cap-off", "技能能力关闭场景", _BODY)
+    assert ok, msg
+    assert (agent_skills._skills_dir() / "cap-off" / "SKILL.md").is_file()
+    assert "技能能力" in msg and "不会被加载" in msg, msg
+
+
 # ---------- 4. 工作流视图只展示该工作流实际加载的技能 ----------
 
 def test_list_skills_for_workflow_hides_foreign_bindings(iso):

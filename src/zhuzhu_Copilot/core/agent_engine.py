@@ -263,6 +263,11 @@ _CORE_TOOLS = frozenset({
     "read_docx", "read_pptx", "read_xlsx", "read_pdf", "extract_text", "view_image",
     "system_info", "get_time", "env_var", "ask_user", "clipboard",
     "use_skill",   # 对话内按名调用技能（读规范并入本任务）：任何任务都可能被要求「用 XX 技能」
+    # 生成技能：任何任务都可能被要求「把这个流程做成技能/生成一个 XX 技能」。任务裁剪靠
+    # 关键词识别类别，而「生成技能/做成技能」这类措辞常同时命中目标领域（文档/图片/表格），
+    # 只保留命中类别工具时 create_skill 会被剔除 → 模型在工具表里根本看不到它（表现为
+    # 「agent 无法生成技能」）。与 use_skill 同属技能入口，恒保留。
+    "create_skill",
     "save_memory", "load_memory", "update_todo", "list_todo", "git_info",
     "explore_project",
     "inspect_customization",   # 深度自定义总入口：任何自定义/新增功能场景都需先盘点现状
@@ -348,6 +353,8 @@ _TASK_GROUPS = [
      frozenset({"dispatch_sub_agents", "search_large"})),
     ("skill",
      ("创建技能", "新技能", "自定义技能", "下载技能", "安装技能",
+      # 「生成/做个/写个技能」等常见措辞：补进类别识别，技能生成时同步保留相关工具
+      "生成技能", "做个技能", "写个技能", "制作技能", "做成技能", "沉淀技能",
       # 对话内调用技能：「用 XX 技能 / 按 XX 规范来」等点名措辞
       "调用技能", "使用技能", "用技能", "按技能", "技能规范", "用一下技能",
       "技能调用", "调用一下", "用个技能", "技能列表", "有什么技能", "哪些技能",
