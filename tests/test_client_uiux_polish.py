@@ -332,10 +332,21 @@ def test_leftdock_collapses_whole_column(panel):
     order = p._dock_panel_order("left")
     p._set_leftdock_collapsed(True, persist=False)
     assert p._leftdock_collapsed()
-    assert p._dock_left.width() == ap._DOCK_COLLAPSED_W, "收起后左栏应为窄条"
+    assert p._dock_left.width() == ap._DOCK_COLLAPSED_W, "收起后左栏宽度应为迷你列宽"
+    # 收起态不是空窄条，而是两枚圆形入口（文件树 / Git），点击即展开
+    mini = p._leftdock_mini
+    assert mini is not None and mini.isVisible(), "收起后应显示两枚圆形入口"
+    from PyQt6.QtWidgets import QPushButton
+    btns = mini.findChildren(QPushButton)
+    assert len(btns) == 2, f"迷你列应有 2 个圆形按钮（实际 {len(btns)}）"
+    for b in btns:
+        assert b.width() == b.height() == 38, "入口按钮必须是正圆"
+        assert not b.icon().isNull(), "入口按钮缺少矢量图标"
+    assert p._leftdock_head.isHidden(), "收起态标题条（箭头）应被圆形入口取代"
     for w in order:
         assert w.isHidden(), "收起时栏内面板必须全部让位"
     p._set_leftdock_collapsed(False, persist=False)
+    assert mini.isHidden(), "展开后迷你列应隐藏"
     assert not p._leftdock_collapsed()
     assert p._dock_left.width() >= ap._DOCK_COLLAPSED_W
     for w in order:
@@ -584,3 +595,86 @@ def test_session_drawer_shows_preview_and_pins_first(panel):
     assert d.list.currentItem().data(Qt.ItemDataRole.UserRole) == "new"
     # 撤销测试数据：刷新回真实会话列表，避免影响后续用例
     panel._refresh_session_combo()
+
+
+# ---------- 7. 勾选框对比度 / 浮层偏移 / 1M 滑块 / 滚轮守卫 / 设置页对齐 ----------
+
+def test_checkbox_indicator_has_contrast_border():
+    """全局 QSS 必须给勾选框指示器画边框：系统默认在浅色卡片上是白框叠白底，几乎不可见。"""
+    from zhuzhu_Copilot.ui import styles
+    qss = styles.GLOBAL_QSS
+    assert "QCheckBox::indicator" in qss and "QCheckBox::indicator:checked" in qss
+    seg = qss.split("QCheckBox::indicator")[1][:220]
+    assert "border: 1px solid" in seg and "border-radius" in qss
+
+
+def test_model_tune_popover_lift_is_five_px(panel):
+    """思考强度浮层与模型框的间距按用户要求再上移 5px。"""
+    assert ap._ModelTunePopover.LIFT == 5
+
+
+def test_model_tune_context_uses_switch_button(panel):
+    """1M 上下文开关改为左右滑块（SwitchButton），点击即发 context_changed。"""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    pop = panel._model_tune
+    assert isinstance(pop._ctx, ap.SwitchButton), "1M 上下文应使用左右滑块开关"
+    orig = panel._context_1m
+    try:
+        pop.set_state("medium", True, False, "128K")
+        assert pop._ctx.isChecked() is False
+        seen = []
+        pop.context_changed.connect(seen.append)
+        QTest.mouseClick(pop._ctx, Qt.MouseButton.LeftButton)
+        assert seen == [True], f"滑块点击未发出开启信号：{seen}"
+    finally:
+        # 点击会触发面板的落盘回调：停掉防抖计时并还原，避免改到真实配置
+        t = panel.__dict__.get("_model_tune_save_timer")
+        if t is not None:
+            t.stop()
+        panel._context_1m = orig
+        panel._sync_model_badges()
+
+
+def test_settings_wheel_guard_ignores_unfocused_options():
+    """设置页滚轮守卫：未聚焦的下拉框不吃滚轮（避免误改选项），聚焦后才允许调节。"""
+    from PyQt6.QtCore import QPoint, QPointF, Qt
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtWidgets import QComboBox
+    guard = ap._SettingsWheelGuard()
+    combo = QComboBox()
+    combo.show()
+    _pump(10)
+    ev = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, 120),
+                     Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                     Qt.ScrollPhase.NoScrollPhase, False)
+    assert guard.eventFilter(combo, ev) is True, "未聚焦下拉框仍响应滚轮（会误改选项）"
+    combo.setFocus()
+    assert guard.eventFilter(combo, ev) is False, "聚焦后应允许滚轮微调"
+    combo.hide()
+
+
+def test_general_page_options_are_aligned():
+    """通用页所有勾选框缩进到标签列宽：左缘与上方下拉框对齐，不再参差。"""
+    from PyQt6.QtWidgets import QCheckBox
+    dlg = ap._AgentSettingsDialog()
+    try:
+        page = dlg._build_general_page({})
+        lay = dlg._page_body(page)
+        for i in range(lay.count()):
+            item = lay.itemAt(i)
+            w = item.widget() if item is not None else None
+            assert not isinstance(w, QCheckBox), f"通用页勾选框未缩进对齐：{w and w.text()}"
+        page.close()
+    finally:
+        dlg.close()
+
+
+def test_settings_combos_use_arrow_combo_for_smooth_popup():
+    """设置页下拉全部走 ArrowComboBox：弹出列表带淡入动画，不是硬弹出。"""
+    dlg = ap._AgentSettingsDialog()
+    try:
+        assert isinstance(dlg.proxy_mode_combo, ap.ArrowComboBox)
+        assert isinstance(dlg.theme_combo, ap.ArrowComboBox)
+    finally:
+        dlg.close()

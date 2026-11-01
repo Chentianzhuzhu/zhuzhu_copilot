@@ -79,6 +79,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
+    QAbstractScrollArea,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -170,7 +171,7 @@ from zhuzhu_Copilot.ui.tokens import (
 )
 from zhuzhu_Copilot.ui import window_fx
 from zhuzhu_Copilot.ui import motion
-from zhuzhu_Copilot.ui.widgets import ArrowComboBox, add_brand_footer
+from zhuzhu_Copilot.ui.widgets import ArrowComboBox, SwitchButton, add_brand_footer
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
 _THEMES = {
@@ -5200,6 +5201,36 @@ class _LoadingOverlay(QWidget):
         p.end()
 
 
+class _SettingsWheelGuard(QObject):
+    """设置页滚轮守卫：未获得焦点的选项/数值控件不吃滚轮，滚轮改为滚动所在页面。
+
+    设置项密集（通用页尤其），鼠标滚轮扫过下拉框/滑块会**误改选项**（用户反馈）。
+    只有用户先点过控件（hasFocus）才允许用滚轮微调，符合桌面惯例；
+    其余情况把滚轮转发给外层滚动区，页面照常滚动、选项不受影响。"""
+
+    _EDIT_TYPES = (QComboBox, QSpinBox, QSlider)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() != QEvent.Type.Wheel:
+            return False
+        if not isinstance(obj, self._EDIT_TYPES):
+            return False
+        try:
+            if obj.hasFocus():
+                return False
+        except Exception:
+            return False
+        try:
+            area = obj
+            while area is not None and not isinstance(area, QAbstractScrollArea):
+                area = area.parentWidget()
+            if area is not None:
+                QApplication.sendEvent(area.verticalScrollBar(), ev)
+        except Exception:
+            pass
+        return True
+
+
 class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
@@ -5462,6 +5493,29 @@ class _AgentSettingsDialog(QDialog):
         super().done(code)
 
     # ---------- 各分组页面 ----------
+    def showEvent(self, ev):
+        """打开设置时挂上滚轮守卫（关闭即卸载）：滚轮掠过下拉框不再误改选项。"""
+        super().showEvent(ev)
+        if bool(self.__dict__.get("_wheel_guard_on")):
+            return
+        guard = self.__dict__.get("_wheel_guard")
+        if guard is None:
+            guard = _SettingsWheelGuard(self)
+            self._wheel_guard = guard
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(guard)
+            self._wheel_guard_on = True
+
+    def hideEvent(self, ev):
+        app = QApplication.instance()
+        guard = self.__dict__.get("_wheel_guard")
+        if app is not None and guard is not None and bool(
+                self.__dict__.get("_wheel_guard_on")):
+            app.removeEventFilter(guard)
+            self._wheel_guard_on = False
+        super().hideEvent(ev)
+
     def _page(self, title: str) -> QWidget:
         """设置页骨架（大厂设置页同款）：标题在上，内容统一收进一张圆角卡片。
 
@@ -5885,7 +5939,8 @@ class _AgentSettingsDialog(QDialog):
         mode_lbl.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
         # 与本页「界面主题 / 界面语言」等行同宽标签列：下拉框左缘对齐（视觉对齐）
         mode_lbl.setFixedWidth(self._label_col_w())
-        self.proxy_mode_combo = QComboBox()
+        # 统一用 _ArrowComboBox：下拉列表带淡入动画（普通 QComboBox 是硬弹出）
+        self.proxy_mode_combo = _ArrowComboBox()
         self.proxy_mode_combo.addItem(_ui("全局（所有应用流量经代理）"), "global")
         self.proxy_mode_combo.addItem(_ui("回退（仅直连失败时中转）"), "fallback")
         _mode = str(s.get("proxy_mode", "global")).strip().lower()
@@ -6004,10 +6059,28 @@ class _AgentSettingsDialog(QDialog):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_row.addWidget(self.mode_combo, 1)
         lay.addLayout(mode_row)
+        # 视觉对齐：页内直接加入布局的勾选框统一缩进到标签列宽，与上方「标签 + 控件」
+        # 行里的控件左缘对齐（此前勾选框从 0 起，和下拉框形成一条参差的左边缘）
+        self._align_option_widgets(lay)
         # 工作目录已迁移到「对话流」页按会话设置（删除通用设置里的全局入口，
         # 避免两处入口语义冲突；会话未设置时仍回退历史全局默认值 agent_workdir）
         lay.addStretch(1)
         return w
+
+    def _align_option_widgets(self, lay) -> None:
+        """把页内顶层勾选框缩进到标签列宽：所有选项左缘统一对齐（通用页等密集选项页）。"""
+        indent = self._label_col_w()
+        for i in range(lay.count() - 1, -1, -1):
+            item = lay.itemAt(i)
+            w = item.widget() if item is not None else None
+            if not isinstance(w, QCheckBox):
+                continue
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            row.addSpacing(indent)
+            lay.removeWidget(w)
+            row.addWidget(w, 1)
+            lay.insertLayout(i, row)
 
     def _build_sessions_page(self, s=None) -> QWidget:
         """对话流页面：为每个对话分配独立工作目录（新建对话自动沿用上一对话目录）"""
@@ -9286,7 +9359,7 @@ class _AgentSettingsDialog(QDialog):
 
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel(_ui("支付方式：")))
-        pay_combo = QComboBox()
+        pay_combo = _ArrowComboBox()
         pay_combo.addItems([_ui("支付宝"), _ui("微信")])
         pay_combo.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid "
@@ -13841,6 +13914,7 @@ class _ModelTunePopover(QFrame):
     """
 
     SLIDE = 8                       # 弹出位移（px）：自下方上移落位
+    LIFT = 5                        # 与模型框的额外间距（px，用户要求整体再上移 5px）
     PREFERRED_WIDTH = _MODEL_TUNE_W
 
     effort_changed = pyqtSignal(str)
@@ -13897,7 +13971,12 @@ class _ModelTunePopover(QFrame):
 
         ctx = QHBoxLayout()
         ctx.setSpacing(SPACING_SM)
-        self._ctx = QCheckBox(_ui("上下文窗口"))
+        self._ctx_lbl = QLabel(_ui("上下文窗口"))
+        self._ctx_lbl.setObjectName("mtCtx")
+        ctx.addWidget(self._ctx_lbl)
+        # 左右滑块开关（与原设置页同款 SwitchButton）：勾选框太矮、和这一行其它元素
+        # 视觉不齐，且用户明确要求「左右滑块按钮」
+        self._ctx = SwitchButton(False)
         self._ctx.setToolTip(_uif(
             "按 1M 上下文窗口计算用量与压缩阈值（{a0}）；模型实际是否支持由上游决定",
             a0=_fmt_tokens(agent_llm.ONE_M_CONTEXT)))
@@ -13923,7 +14002,9 @@ class _ModelTunePopover(QFrame):
             f"#modelTunePop QLabel#mtVal {{ color: {TEXT_DIM};"
             f" font-size: {FONT_CAPTION}px; {_numeric_css()} }}"
             f"#modelTunePop QCheckBox {{ color: {TEXT};"
-            f" font-size: {FONT_SMALL}px; spacing: 8px; }}")
+            f" font-size: {FONT_SMALL}px; spacing: 8px; }}"
+            f"#modelTunePop QLabel#mtCtx {{ color: {TEXT};"
+            f" font-size: {FONT_SMALL}px; }}")
 
     # ---------- 状态 ----------
     def set_state(self, effort: str, auto: bool, long_1m: bool, window_text: str):
@@ -13977,7 +14058,7 @@ class _ModelTunePopover(QFrame):
         w = int(self.PREFERRED_WIDTH)
         gp = anchor.mapToGlobal(QPoint(anchor.width() - w, 0))
         x = gp.x()
-        y = gp.y() - h - self.SLIDE
+        y = gp.y() - h - self.SLIDE - self.LIFT
         scr = anchor.screen() or QApplication.primaryScreen()
         if scr is not None:
             area = scr.availableGeometry()
@@ -19096,7 +19177,7 @@ _RAIL_W = 56             # 胶囊宽；圆角取半宽（pill_radius），超过
 _RAIL_BTN_D = 40         # 胶囊内图标按钮 40x40（左右各留 8）
 _RAIL_DIV_W = 24         # 组间分隔线长度
 _DRAWER_COLLAPSED_W = 36  # 对话栏收起后的窄条宽（只留展开箭头）
-_DOCK_COLLAPSED_W = 36    # 左侧栏（文件树/Git/任务）收起后的窄条宽
+_DOCK_COLLAPSED_W = 54    # 左侧栏收起后的迷你列宽（两枚 38px 圆形按钮 + 左右 8px 内边距）
 _DOCK_HEAD_H = 28         # 左侧栏顶部「栏标题条」高度（内含收起箭头）
 
 # 折叠状态持久化键：与设置页开关同一 QSettings 机制，重启后保持用户选择
@@ -19662,10 +19743,24 @@ _PERM_SVGS = {
 }
 
 
+# 权限之外复用的 Lucide 图标（左栏收起态的「Git 分支」等）
+_LUCIDE_GIT_BRANCH = _lucide(
+    '<line x1="6" x2="6" y1="3" y2="15"/>'
+    '<circle cx="18" cy="6" r="3"/>'
+    '<circle cx="6" cy="18" r="3"/>'
+    '<path d="M18 9a9 9 0 0 1-9 9"/>')
+_LUCIDE_EXTRA = {"git-branch": _LUCIDE_GIT_BRANCH}
+
+
+def _lucide_icon(kind: str, size: int = 16, color: str = TEXT_DIM) -> QIcon:
+    """通用 Lucide 线条图标（权限图标与共享图标同一套渲染），缺图返回空图标"""
+    svg = _PERM_SVGS.get(kind) or _LUCIDE_EXTRA.get(kind)
+    return _svg_icon(svg, size, color) if svg else QIcon()
+
+
 def _perm_icon(kind: str, size: int = 16, color: str = TEXT_DIM) -> QIcon:
     """权限相关图标：统一走开源 SVG（Lucide）渲染，缺图时返回空图标不再手绘兜底"""
-    svg = _PERM_SVGS.get(kind)
-    return _svg_icon(svg, size, color) if svg else QIcon()
+    return _lucide_icon(kind, size, color)
 
 
 # Agent 权限胶囊：高度 / 三档文案（唯一事实来源：按钮、菜单、tooltip 都取这里）
@@ -19722,9 +19817,10 @@ class _PermPill(QWidget):
     def set_state(self, mode: str, tooltip: str):
         """按当前权限刷新图标/文案/配色（yolo 整枚转红警示）"""
         self._danger = mode == "yolo"
+        # 线条统一淡灰（与菜单行一致）；只有「全部访问」转红警示
         self.icon_lbl.setPixmap(_perm_icon(
             _PERM_ICONS.get(mode, _PERM_ICONS["ask"]), 16,
-            ERR if self._danger else ACCENT).pixmap(16, 16))
+            ERR if self._danger else TEXT_DIM).pixmap(16, 16))
         self.text_lbl.setText(_ui(_PERM_LABELS.get(mode, _PERM_LABELS["ask"])))
         self.apply_theme()
         self.setToolTip(tooltip)
@@ -23081,11 +23177,12 @@ class AgentPanel(QDialog):
         head = self.__dict__.get("_leftdock_head")
         if head is None:
             return
-        head.setVisible(bool(has))
+        on = self._leftdock_collapsed()
+        # 收起态由两枚圆形入口代替标题条，标题条（含展开箭头）整体隐藏
+        head.setVisible(bool(has) and not on)
         btn = self.__dict__.get("_leftdock_head_btn")
         if btn is None:
             return
-        on = self._leftdock_collapsed()
         # 状态没翻转就不重设图标/文案（_sync_dock_layout 在窗口 resize 时会高频触发）
         if self.__dict__.get("_leftdock_head_state") != on:
             self._leftdock_head_state = on
@@ -24634,6 +24731,34 @@ class AgentPanel(QDialog):
             self._leftdock_head_btn = btn
             self._leftdock_head_lbl = lbl
             self._leftdock_head_lay = hl
+            # 收起态不是窄条，而是两枚圆形入口（文件树 / Git）：点击即展开左栏并显示
+            # 对应面板，比「一条 36px 空条 + 小箭头」更像可点击的入口（用户要求）。
+            mini = QWidget()
+            mini.setObjectName("dockLeftMini")
+            mini.setStyleSheet("QWidget#dockLeftMini { background: transparent; }")
+            ml = QVBoxLayout(mini)
+            ml.setContentsMargins(8, 8, 8, 8)
+            ml.setSpacing(8)
+            for _ico, _tip, _key, _win in (
+                    (_line_icon("folder", 18, TEXT_DIM), _ui("展开文件树"),
+                     "agent_show_worktree", "wt_win"),
+                    (_lucide_icon("git-branch", 18, TEXT_DIM), _ui("展开 Git 面板"),
+                     "agent_show_git", "git_win")):
+                _b = QPushButton(_ico, "")
+                _b.setCursor(Qt.CursorShape.PointingHandCursor)
+                _b.setAutoDefault(False)
+                _b.setFixedSize(38, 38)
+                _b.setIconSize(QSize(18, 18))
+                _b.setStyleSheet(_round_icon_btn_qss(38))
+                _b.setToolTip(_tip)
+                _b.clicked.connect(
+                    lambda _c=False, k=_key, w=_win: self._reveal_feature(
+                        k, ("_sync_wt_win", "_sync_git_win"), w))
+                ml.addWidget(_b)
+            ml.addStretch(1)
+            mini.hide()
+            c_lay.addWidget(mini)
+            self._leftdock_mini = mini
         c_lay.addStretch(1)
         col.setProperty("_dock_lay", c_lay)
         col.setProperty("_walked", False)
@@ -24799,17 +24924,22 @@ class AgentPanel(QDialog):
                     self._sync_leftdock_head(bool(order))
                     # 收起态把栏容器本身画成卡片；展开态退回透明栏底（面板各自成卡）
                     col.setStyleSheet(self._dock_column_qss(side))
+                    mini = self.__dict__.get("_leftdock_mini")
                     if self._leftdock_collapsed():
-                        # 整栏折叠：面板全部隐藏，只保留 36px 窄条 + 展开箭头
+                        # 整栏折叠：面板全部隐藏，只留两枚圆形入口（文件树 / Git）
                         for p in order:
                             p.hide()
+                        if mini is not None:
+                            mini.setVisible(True)
                         col.setFixedWidth(_DOCK_COLLAPSED_W)
-                        col.setVisible(bool(order))
+                        col.setVisible(True)
                         try:
                             col.layout().activate()
                         except Exception:
                             pass
                         continue
+                    if mini is not None:
+                        mini.setVisible(False)
                 # 垂直份额：文件树 40 / Git 60（任务清单定高，权重只影响贴附态观感）
                 widths = []
                 for i, p in enumerate(order):

@@ -400,6 +400,32 @@ QCheckBox, QRadioButton {{
     spacing: {SPACING_SM}px;
 }}
 
+/* 勾选框/单选框指示器：必须自己画边框 —— 系统默认在浅色卡片上是「白框叠白底」，
+   对比度几乎为零（用户反馈）。未选中 = 凹陷字段底 + 次级灰描边；选中 = 主色实心。 */
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: 15px;
+    height: 15px;
+    border: 1px solid {PALETTE['text_secondary']};
+    background: {field};
+}}
+QCheckBox::indicator {{
+    border-radius: 3px;
+}}
+QRadioButton::indicator {{
+    border-radius: 8px;
+}}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+    border-color: {PALETTE['primary_hover']};
+}}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+    background: {PALETTE['primary']};
+    border-color: {PALETTE['primary']};
+}}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+    border-color: {PALETTE['border']};
+    background: {PALETTE['hover']};
+}}
+
 QSplitter::handle {{
     background: {PALETTE['border']};
 }}
