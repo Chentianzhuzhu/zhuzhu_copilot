@@ -388,14 +388,16 @@ def test_app_uses_high_contrast_mouse_cursor(panel):
 
 
 def test_input_caret_is_high_contrast(panel):
-    """光标色取极端黑白（深色纯白 / 浅色纯黑），宽度深色 3px、浅色 2px。"""
+    """光标为自绘闪烁竖线：关闭原生 cursorWidth，颜色/宽度随主题取极端值。"""
     from PyQt6.QtGui import QColor, QPalette
     inp = panel.input
     dark = QColor(ap._base_color("BG")).lightness() < 128
     expected = "#ffffff" if dark else "#000000"
+    assert getattr(inp, "_custom_caret", False), "输入框未启用自绘光标"
+    assert inp.cursorWidth() == 0, "原生光标未关闭（会与自绘光标双影）"
+    assert inp._caret_width() == (3 if dark else 2)
     assert inp.palette().color(QPalette.ColorRole.Text).name() == expected, \
         f"光标色未取极端值：{inp.palette().color(QPalette.ColorRole.Text).name()}"
-    assert inp.cursorWidth() >= (3 if dark else 2)
 
 
 def test_session_drawer_shows_preview_and_pins_first(panel):

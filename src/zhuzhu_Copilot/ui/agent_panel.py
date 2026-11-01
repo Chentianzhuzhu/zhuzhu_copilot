@@ -365,18 +365,20 @@ def apply_input_caret(widget) -> None:
     壁纸下 3px 比默认 2px 粗 50%，在花背景上更易辨认；不要加到 4px——实测是
     一根实心黑柱、压在文字上像删除线，还会把光标前后的字符挤开。
 
-    **必须保留原生光标**：Qt 没有 caret-color API，光标色只能跟随 QSS `color`，
-    而闪烁由 Qt 的闪烁计时器驱动 —— 自绘静态竖线既不闪、又会盖住原生光标。
+    `_DropTextEdit` 启用了 `_custom_caret`：Qt 原生竖线在「透明 viewport + 空文档」
+    组合下实测不绘制，故关闭原生宽度，由输入框自己按 530ms 闪烁绘制竖线；
+    其他输入控件仍走原生光标（宽度/颜色按主题取极端值）。
     """
     if widget is None:
         return
     dark = QColor(_base_color("BG")).lightness() < 128
     try:
-        if _feedback_boosted():
-            width = _CURSOR_WIDTH_ON_WALLPAPER
+        if getattr(widget, "_custom_caret", False):
+            widget.setCursorWidth(0)   # 关闭原生竖线，避免与自绘光标双影
+        elif _feedback_boosted():
+            widget.setCursorWidth(_CURSOR_WIDTH_ON_WALLPAPER)
         else:
-            width = _CURSOR_WIDTH_ON_WALLPAPER if dark else _CURSOR_WIDTH
-        widget.setCursorWidth(width)
+            widget.setCursorWidth(_CURSOR_WIDTH_ON_WALLPAPER if dark else _CURSOR_WIDTH)
     except Exception:
         pass
     # 显式写入 palette Text：QSS color 在部分后端不会同步到 palette，光标会
@@ -11952,8 +11954,16 @@ class _DropTextEdit(QPlainTextEdit):
         self.textChanged.connect(lambda: QTimer.singleShot(0, self._auto_height))
         self._ime_preedit = ""   # 输入法预编辑串（组合态未上屏内容，inputMethodEvent 维护）
         self._placeholder = ""   # 聚焦时临时清空占位文案（见 focusInEvent）
-        # 扁平模式：输入框自己不再画圆角底色，直接坐落在宿主卡片上（一体化输入卡）。
+        # 扁平滑模式：输入框自己不再画圆角底色，直接坐落在宿主卡片上（一体化输入卡）。
         self._flat_bg = False
+        # 自绘光标：Qt 原生光标在「透明 viewport + 空文档」组合下不可见（实测），
+        # 改为关闭原生竖线（cursorWidth=0）并用 530ms 定时器自绘一条会闪烁的竖线。
+        self._custom_caret = True
+        self._caret_on = True
+        self._caret_timer = QTimer(self)
+        self._caret_timer.setInterval(530)
+        self._caret_timer.timeout.connect(self._blink_caret)
+        self.cursorPositionChanged.connect(self._kick_caret)
         # 初始校准：QPlainTextEdit 默认尺寸偏高，事件循环启动后立刻按内容压回单行高
         QTimer.singleShot(0, self._auto_height)
 
@@ -11961,6 +11971,37 @@ class _DropTextEdit(QPlainTextEdit):
         # 窗口宽度变化 → 换行变化 → 高度需重新校准（去抖）
         super().resizeEvent(e)
         QTimer.singleShot(0, self._auto_height)
+
+    # ---- 自绘光标（500ms 闪烁） ----
+    def _blink_caret(self):
+        if not self.hasFocus():
+            return
+        self._caret_on = not self._caret_on
+        self.viewport().update()
+
+    def _kick_caret(self):
+        """输入/移动光标时立刻亮起并重启闪烁计时（避免刚打字时恰好处于熄灭相位）。"""
+        self._caret_on = True
+        if self.hasFocus():
+            self._caret_timer.start()
+        self.viewport().update()
+
+    def _caret_width(self) -> int:
+        return 3 if QColor(_base_color("BG")).lightness() < 128 else 2
+
+    def _paint_caret(self):
+        if not (self.hasFocus() and self._caret_on and self.window().isActiveWindow()):
+            return
+        if self.textCursor().hasSelection():
+            return
+        r = self.cursorRect()
+        if r.height() <= 0:
+            return
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        p.fillRect(QRectF(r.left(), r.top() + 2, self._caret_width(),
+                          r.height() - 4), QColor(_caret_color()))
+        p.end()
 
     def focusInEvent(self, e):
         """聚焦时隐藏占位文案：光标落在第 0 位时会与灰色占位字重叠，
@@ -11970,10 +12011,13 @@ class _DropTextEdit(QPlainTextEdit):
         if ph:
             self._placeholder = ph
             self.setPlaceholderText("")
+        self._caret_on = True
+        self._caret_timer.start()
         self.update()
 
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
+        self._caret_timer.stop()
         ph = self.__dict__.pop("_placeholder", "")
         if ph and not self.placeholderText():
             self.setPlaceholderText(ph)
@@ -12009,6 +12053,7 @@ class _DropTextEdit(QPlainTextEdit):
                               _INPUT_RADIUS, _INPUT_RADIUS)
             p.end()
         super().paintEvent(e)
+        self._paint_caret()   # 原生光标已关闭，自绘闪烁竖线
 
     def _auto_height(self):
         """高度随内容自适应：单行 42px，多行增高，最高 140px（超出内部滚动）"""
