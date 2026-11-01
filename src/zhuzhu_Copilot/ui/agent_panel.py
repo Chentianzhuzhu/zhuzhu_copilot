@@ -736,8 +736,10 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
         """把描边色以低比例压在表面上，得到「无边框的柔和填充」。"""
         return _mix_hex(BORDER, surface, ratio)
 
-    _ghost_fill = _soft_fill(PANEL)
-    _ghost_fill_hover = _soft_fill(PANEL, 0.24)
+    # 顶栏 / 抽屉 / 预览这些控件都坐在 **BG 表面**上：磨砂填充也必须按 BG 派生，
+    # 否则「齿轮」与「登录」会算出两档不同底色（截图里齿轮偏黑、登录偏灰）。
+    _ghost_fill = _soft_fill(BG)
+    _ghost_fill_hover = _soft_fill(BG, 0.24)
     _BTN_GHOST = (f"QPushButton {{ background: {_ghost_fill}; color: {TEXT_DIM};"
                   f"border: none; border-radius: {RADIUS_SM}px;"
                   f"padding: {SPACING_SM}px {SPACING_MD}px;"
@@ -826,7 +828,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                    f"border: none;"
                    f" selection-background-color: {_combo_hover};"
                    f"selection-color: {TEXT}; border-radius: 10px; padding: 4px; }}")
-    _BTN_ICON = (f"QPushButton {{ background: {_soft_fill(CARD)}; border: none;"
+    _BTN_ICON = (f"QPushButton {{ background: {_soft_fill(BG)}; border: none;"
                  f"border-radius: {RADIUS_SM}px; }}"
                  f"QPushButton:hover {{ background: {HOVER}; }}")
     _BTN_DANGER = (f"QPushButton {{ background: {ERR}; color: #FFFFFF; border: none;"
@@ -12149,7 +12151,8 @@ class TodosPanel(QWidget):
 
     DOCK_MAX_ROWS = 5   # 融入主面板时最多按 5 行计高（余量留给同栏 Git 面板）
     MARGINS = (12, 12, 12, 10)        # 常规边距（上/右/下/左）
-    MARGINS_DOCK = (12, 0, 12, 0)     # 融入栏内：上下贴边（与相邻面板之间不留底色缝隙）
+    # 融入栏内：现在是独立卡片（描边 + 圆角 + 8px 间距），内边距与贴附态一致
+    MARGINS_DOCK = (10, 10, 10, 10)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -15426,7 +15429,8 @@ class _RoundedFloatWindow(QWidget):
     _manual_h = 0         # 用户手动拖过的高度（0=未手动调过高，跟随宿主/内容）
     DEFAULT_SIZE = (280, 320)   # 默认尺寸（子类按需覆盖，见 _default_panel_size）
     MARGINS = (10, 10, 10, 10)  # 常规内容边距
-    MARGINS_DOCK = (10, 0, 10, 0)  # 融入栏内：上下贴边（与相邻面板之间不留底色缝隙）
+    # 融入栏内：现在是独立卡片（描边 + 圆角 + 8px 间距），内边距与贴附态一致
+    MARGINS_DOCK = (10, 10, 10, 10)
 
     def _install_resize_edges(self, host=None):
         """创建四边/四角 resize 热区（仅调节本面板大小，独立持久化）"""
@@ -18264,7 +18268,8 @@ class WorktreeWindow(_RoundedFloatWindow):
     WIDTH = 280      # 与 todos / git 面板同宽
     DEFAULT_SIZE = (WIDTH, 360)
     HEIGHT_MIN = 120   # 融入栏内最小高度（40:60 分栏时的绝对下限，见 dock_min_height）
-    MARGINS_DOCK = (10, 2, 10, 0)   # 融入：顶部留 2px 防标题裁切，底边贴边（缝隙并入下方 Git）
+    # 融入栏内：现在是独立卡片（描边 + 圆角 + 8px 间距），内边距与贴附态一致
+    MARGINS_DOCK = (10, 10, 10, 10)
     _wallpaper_translucent = True   # 壁纸模式透出/自绘壁纸（见 _panel_surface）
 
     file_open_requested = pyqtSignal(str)   # 双击文件 → 请求打开代码预览（文件路径）
@@ -19067,8 +19072,8 @@ class _SessionDrawer(QFrame):
         self.collapse_btn = QPushButton(_line_icon("chev-left", 14, TEXT_DIM), "")
         self.collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.collapse_btn.setAutoDefault(False)
-        self.collapse_btn.setFixedSize(22, 22)
-        self.collapse_btn.setIconSize(QSize(14, 14))
+        self.collapse_btn.setFixedSize(24, 24)
+        self.collapse_btn.setIconSize(QSize(18, 18))
         self.collapse_btn.setToolTip(_ui("收起对话栏"))
         self.collapse_btn.setStyleSheet(_drawer_icon_btn_qss())
         self.collapse_btn.clicked.connect(self.toggle_requested)
@@ -19125,7 +19130,9 @@ class _SessionDrawer(QFrame):
         self._collapsed = on
         self._full.setVisible(not on)
         self._mini.setVisible(on)
-        self._lay.setContentsMargins(4, 8, 4, 8) if on else \
+        # 窄条与左栏窄条的图标必须同高：顶部内边距取 2，26px 按钮中心与左栏 24px
+        # 按钮中心只差 1px（两列相邻时不会出现「一个高一个低」）
+        self._lay.setContentsMargins(4, 2, 4, 8) if on else \
             self._lay.setContentsMargins(10, 10, 10, 8)
         self.setFixedWidth(_DRAWER_COLLAPSED_W if on else _DRAWER_W)
         self._lay.setSpacing(0 if on else 8)
@@ -22600,7 +22607,7 @@ class AgentPanel(QDialog):
         if self.__dict__.get("_leftdock_head_state") != on:
             self._leftdock_head_state = on
             # 收起态用「左栏」图标（点击即展开），视觉上是一条有身份的窄条而非裸箭头
-            btn.setIcon(_line_icon("panel-left" if on else "chev-left", 14,
+            btn.setIcon(_line_icon("panel-left" if on else "chev-left", 18,
                                    TEXT_DIM))
             btn.setToolTip(_ui("展开左栏") if on else
                            _ui("收起左栏（文件树 / Git / 任务）"))
@@ -22608,6 +22615,13 @@ class AgentPanel(QDialog):
         lbl = self.__dict__.get("_leftdock_head_lbl")
         if lbl is not None:
             lbl.setVisible(not on)
+        # 标题条高度随状态变化：
+        # - 展开态 34px + 顶部 14px：文字中心与对话栏标题同一基线（两张卡首行对齐）；
+        # - 收起态 28px + 顶部 4px：图标中心与对话栏窄条图标同高。
+        head.setFixedHeight(28 if on else 34)
+        lay = self.__dict__.get("_leftdock_head_lay")
+        if lay is not None:
+            lay.setContentsMargins(*(6, 4, 6, 0) if on else (10, 14, 10, 0))
 
     def _set_leftdock_collapsed(self, on: bool, persist: bool = True) -> None:
         """左侧整栏（文件树 / Git / 任务清单）一次性收起或展开。
@@ -24115,17 +24129,18 @@ class AgentPanel(QDialog):
             head.setStyleSheet("QWidget#dockLeftHead { background: transparent; }")
             head.setFixedHeight(_DOCK_HEAD_H)
             hl = QHBoxLayout(head)
-            hl.setContentsMargins(4, 2, 4, 2)
+            hl.setContentsMargins(6, 2, 6, 2)
             hl.setSpacing(4)
             lbl = QLabel(_ui("侧栏"))
-            lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;")
+            lbl.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
+                              f" font-weight: {_W_STRONG};")
             hl.addWidget(lbl)
             hl.addStretch(1)
-            btn = QPushButton(_line_icon("chev-left", 14, TEXT_DIM), "")
+            btn = QPushButton(_line_icon("chev-left", 18, TEXT_DIM), "")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setAutoDefault(False)
-            btn.setFixedSize(20, 20)
-            btn.setIconSize(QSize(14, 14))
+            btn.setFixedSize(24, 24)
+            btn.setIconSize(QSize(18, 18))
             btn.setToolTip(_ui("收起左栏（文件树 / Git / 任务）"))
             btn.setStyleSheet(_drawer_icon_btn_qss())
             btn.clicked.connect(self._toggle_leftdock)
@@ -24135,6 +24150,7 @@ class AgentPanel(QDialog):
             self._leftdock_head = head
             self._leftdock_head_btn = btn
             self._leftdock_head_lbl = lbl
+            self._leftdock_head_lay = hl
         c_lay.addStretch(1)
         col.setProperty("_dock_lay", c_lay)
         col.setProperty("_walked", False)
@@ -24383,7 +24399,8 @@ class AgentPanel(QDialog):
             # 份额口径按栏内实际间距计（面板卡之间留 _DOCK_PANEL_GAP），差额由 Git 吸收。
             # 顶部「侧栏」标题条也占高（含它与首张卡之间的一段间距），份额必须扣掉
             head = self.__dict__.get("_leftdock_head")
-            head_h = _DOCK_HEAD_H if (head is not None and not head.isHidden()) else 0
+            # 标题条高度随展开/收起状态变化（34 / 28），按实际高度扣减份额
+            head_h = int(head.height()) if (head is not None and not head.isHidden()) else 0
             # 间距段数：有标题条 = 面板数（标题条→首卡→…）；无标题条 = 面板数 - 1
             gaps = self._DOCK_PANEL_GAP * max(0, len(order) - (0 if head_h else 1))
             # （self. 前缀：_DOCK_PANEL_GAP 是类属性，裸名会落到模块全局）
@@ -27430,8 +27447,8 @@ class AgentPanel(QDialog):
         if _lbl is not None:
             try:
                 _lbl.setStyleSheet(
-                    f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px;"
-                    "background: transparent;")
+                    f"color: {TEXT}; font-size: {FONT_BODY}px;"
+                    f" font-weight: {_W_STRONG}; background: transparent;")
                 self._sync_leftdock_head(bool(self._dock_panel_order("left")))
             except RuntimeError:
                 pass
