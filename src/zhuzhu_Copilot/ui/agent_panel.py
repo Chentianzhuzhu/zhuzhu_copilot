@@ -13915,8 +13915,8 @@ class _ModelTunePopover(QFrame):
     本类只负责呈现与收集：改动通过信号交给面板落盘（唯一配置来源仍是 ``model`` 段）。
     """
 
-    SLIDE = 8                       # 弹出位移（px）：自下方上移落位
-    LIFT = 5                        # 与模型框的额外间距（px，用户要求整体再上移 5px）
+    GAP = 10                        # 浮层底部与输入卡顶边的固定间距（px）
+    EDGE_PAD = 12                   # 浮层右侧与输入卡右缘的固定间距（px）
     PREFERRED_WIDTH = _MODEL_TUNE_W
 
     effort_changed = pyqtSignal(str)
@@ -14052,28 +14052,33 @@ class _ModelTunePopover(QFrame):
         anim.start()
 
     def popup_above(self, anchor: QWidget):
-        """在 anchor 正上方**固定位置**弹出：右对齐，垂直留 SLIDE + LIFT 间距。
+        """相对**输入卡**固定位置弹出：底边距卡顶 GAP、右边距卡右缘 EDGE_PAD。
 
-        「固定位置」= 几何只定位一次，淡入过程中与结束后都不移动（旧版同时做
-        8px 上移动画，观感像面板在飘）。上方空间不足时才翻到下方（兜底）。"""
+        为什么锚定输入卡而不是模型下拉框：旧版把浮层底边压在输入卡内部的工具行上方，
+        下半截（上下文窗口一行）会被输入卡/底栏盖住（用户截图反馈）。改为整块浮在
+        输入卡**上方**，既不会再被遮挡，位置也固定（不随模型名长短、下拉框尺寸变化）。
+        上方空间不足时才翻到卡下方（兜底）。"""
         self._closing = False
         self.resize(int(self.PREFERRED_WIDTH), max(1, self.sizeHint().height()))
         h = int(self.height())
         w = int(self.PREFERRED_WIDTH)
-        gp = anchor.mapToGlobal(QPoint(anchor.width() - w, 0))
-        x = gp.x()
-        y = gp.y() - h - self.SLIDE - self.LIFT
+        host = anchor.parentWidget() or anchor          # 输入卡 composer
+        gp = host.mapToGlobal(QPoint(0, 0))
+        x = gp.x() + host.width() - w - self.EDGE_PAD
+        y = gp.y() - h - self.GAP
         scr = anchor.screen() or QApplication.primaryScreen()
         if scr is not None:
             area = scr.availableGeometry()
             x = max(area.left() + 4, min(x, area.right() - w - 4))
             if y < area.top() + 4:
-                y = gp.y() + anchor.height() + self.SLIDE
+                y = gp.y() + host.height() + self.GAP
         self.setGeometry(QRect(x, y, w, h))
         eff = self._ensure_effect()
         eff.setOpacity(0.0)
         self.show()
         self.raise_()
+        # 再抬一次：输入卡/布局在下一帧可能重排子控件，确保浮层仍压在最上层
+        QTimer.singleShot(0, self.raise_)
         a_op = QPropertyAnimation(eff, b"opacity", self)
         a_op.setDuration(motion.SETTLE_MS)
         a_op.setStartValue(0.0)
@@ -30053,22 +30058,27 @@ class AgentPanel(QDialog):
         self._model_tune_dismiss_attach(True)
 
     def _pointer_over_tune(self, pad: int = 12) -> bool:
-        """指针是否仍停在模型框 / 调节浮层（各自外扩 pad 像素，覆盖两者之间的窄缝）。"""
+        """指针是否仍停在「模型框 ↔ 调节浮层」这条通道内（两矩形并集 + pad）。
+
+        浮层整块浮在输入卡上方后，从模型框向上移动到浮层必然经过输入卡内部；
+        若仍按两个矩形分别判断，中途会被判成「已离开」而收起（又是一次闪烁）。"""
         try:
             p = QCursor.pos()
+            rects = []
             combo = self.__dict__.get("model_combo")
-            if combo is not None and combo.isVisible() \
-                    and combo.rect().adjusted(-pad, -pad, pad, pad).contains(
-                        combo.mapFromGlobal(p)):
-                return True
+            if combo is not None and combo.isVisible():
+                rects.append(QRect(combo.mapToGlobal(QPoint(0, 0)), combo.size()))
             pop = self.__dict__.get("_model_tune")
-            if pop is not None and pop.isVisible() \
-                    and pop.rect().adjusted(-pad, -pad, pad, pad).contains(
-                        pop.mapFromGlobal(p)):
-                return True
+            if pop is not None and pop.isVisible():
+                rects.append(QRect(pop.mapToGlobal(QPoint(0, 0)), pop.size()))
+            if not rects:
+                return False
+            area = rects[0]
+            for r in rects[1:]:
+                area = area.united(r)
+            return area.adjusted(-pad, -pad, pad, pad).contains(p)
         except Exception:
             return False
-        return False
 
     def _maybe_close_model_tune(self):
         """离开宽限到期后复核：指针只要还在框/浮层（含中间窄缝）就保持打开。

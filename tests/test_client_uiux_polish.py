@@ -614,9 +614,24 @@ def test_checkbox_indicator_has_contrast_border():
     assert "border: 1px solid" in seg and "border-radius" in qss
 
 
-def test_model_tune_popover_lift_is_five_px(panel):
-    """思考强度浮层与模型框的间距按用户要求再上移 5px。"""
-    assert ap._ModelTunePopover.LIFT == 5
+def test_model_tune_popover_floats_above_composer(panel):
+    """调节浮层整块浮在输入卡上方：底边/右边都留固定间距，下半截不再被卡片遮挡。"""
+    from PyQt6.QtCore import QPoint
+    pop = panel._model_tune
+    panel._open_model_tune()
+    _pump(80)
+    try:
+        p_top = pop.mapToGlobal(QPoint(0, 0))
+        p_bottom = p_top.y() + pop.height()
+        c_top = panel.composer.mapToGlobal(QPoint(0, 0)).y()
+        c_right = panel.composer.mapToGlobal(QPoint(panel.composer.width(), 0)).x()
+        assert p_bottom <= c_top - ap._ModelTunePopover.GAP + 1, \
+            f"浮层仍压在输入卡内：底边 {p_bottom}，卡顶 {c_top}"
+        assert p_top.x() + pop.width() <= c_right - ap._ModelTunePopover.EDGE_PAD + 1, \
+            "浮层右侧未与输入卡留出固定间距"
+    finally:
+        panel._close_model_tune()
+        _pump(300)
 
 
 def test_model_tune_popover_pops_at_fixed_position(panel):
