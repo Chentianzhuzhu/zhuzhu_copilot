@@ -30,4 +30,7 @@
     <string name="appearance_apply">应用</string>
     <string name="appearance_cancel">取消</string>
     <string name="appearance_open_cd">背景与外观</string>
+    <string name="appearance_pick_image">选择背景图片</string>
+    <string name="appearance_change_image">更换背景图片</string>
+    <string name="appearance_clear_image">清除图片</string>
 </resources>

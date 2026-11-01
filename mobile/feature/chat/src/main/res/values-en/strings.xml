@@ -30,4 +30,7 @@
     <string name="appearance_apply">Apply</string>
     <string name="appearance_cancel">Cancel</string>
     <string name="appearance_open_cd">Background &amp; appearance</string>
+    <string name="appearance_pick_image">Choose background image</string>
+    <string name="appearance_change_image">Change background image</string>
+    <string name="appearance_clear_image">Clear image</string>
 </resources>

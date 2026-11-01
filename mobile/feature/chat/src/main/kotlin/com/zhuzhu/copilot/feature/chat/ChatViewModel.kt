@@ -184,6 +184,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.setAppearanceMode(appearance.mode.name)
             settingsRepository.setBackgroundColor(appearance.customColor)
+            settingsRepository.setBackgroundImage(appearance.backgroundImage)
         }
     }
 }

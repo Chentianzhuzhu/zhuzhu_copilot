@@ -25,7 +25,10 @@ class ZhuzhuApp : Application() {
             val mode = runCatching { AppearanceMode.valueOf(settingsRepository.appearanceMode()) }
                 .getOrDefault(AppearanceMode.DARK)
             val color = settingsRepository.backgroundColor()
-            AppearanceHolder.apply(Appearance(mode = mode, customColor = color))
+            val image = settingsRepository.backgroundImage()
+            AppearanceHolder.apply(
+                Appearance(mode = mode, customColor = color, backgroundImage = image)
+            )
         }
     }
 }

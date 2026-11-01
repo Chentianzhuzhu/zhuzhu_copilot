@@ -23,12 +23,12 @@ object GlassTokens {
     val SheetCorner = 24.dp
     val CapsuleCorner = 26.dp
 
-    const val RimWidthDp = 1.6f
-    const val ElevationDp = 18
-    const val StandardBlurDp = 24
-    const val QuietBlurDp = 18
-    const val VividBlurDp = 28
-    const val GrainOpacity = 0.18f
+    const val RimWidthDp = 2.0f
+    const val ElevationDp = 24
+    const val StandardBlurDp = 30
+    const val QuietBlurDp = 22
+    const val VividBlurDp = 34
+    const val GrainOpacity = 0.22f
 }
 
 enum class GlassLevel { QUIET, STANDARD, VIVID }

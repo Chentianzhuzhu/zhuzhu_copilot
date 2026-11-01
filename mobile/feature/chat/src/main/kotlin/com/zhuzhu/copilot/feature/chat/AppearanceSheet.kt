@@ -19,6 +19,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +52,11 @@ fun AppearanceSheet(
     var red by remember { mutableFloatStateOf(initial.red * 255f) }
     var green by remember { mutableFloatStateOf(initial.green * 255f) }
     var blue by remember { mutableFloatStateOf(initial.blue * 255f) }
+    var imageUri by remember { mutableStateOf(current.backgroundImage) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) imageUri = uri.toString()
+    }
 
     val customColor = Color(red.toInt(), green.toInt(), blue.toInt())
     val preview = when (mode) {
@@ -115,6 +122,23 @@ fun AppearanceSheet(
                     ) { blue = it }
                 }
 
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { picker.launch("image/*") }) {
+                        Text(
+                            stringResource(
+                                if (imageUri.isEmpty()) R.string.appearance_pick_image
+                                else R.string.appearance_change_image
+                            ),
+                            color = colors.accentSoft,
+                        )
+                    }
+                    if (imageUri.isNotEmpty()) {
+                        TextButton(onClick = { imageUri = "" }) {
+                            Text(stringResource(R.string.appearance_clear_image), color = colors.textSecondary)
+                        }
+                    }
+                }
+
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Box(
                         Modifier
@@ -139,6 +163,7 @@ fun AppearanceSheet(
                                 Appearance(
                                     mode = mode,
                                     customColor = customColor.toArgb().toLong() and 0xFFFFFFFFL,
+                                    backgroundImage = imageUri,
                                 )
                             )
                         }

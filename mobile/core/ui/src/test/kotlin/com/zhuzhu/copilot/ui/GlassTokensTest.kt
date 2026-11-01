@@ -10,9 +10,9 @@ import org.robolectric.RobolectricTestRunner
 class GlassTokensTest {
     @Test
     fun `standard blur and rim match spec`() {
-        assertEquals(24, GlassTokens.StandardBlurDp)
-        assertEquals(1.6f, GlassTokens.RimWidthDp, 0.01f)
-        assertEquals(18, GlassTokens.ElevationDp)
+        assertEquals(30, GlassTokens.StandardBlurDp)
+        assertEquals(2.0f, GlassTokens.RimWidthDp, 0.01f)
+        assertEquals(24, GlassTokens.ElevationDp)
     }
 
     @Test

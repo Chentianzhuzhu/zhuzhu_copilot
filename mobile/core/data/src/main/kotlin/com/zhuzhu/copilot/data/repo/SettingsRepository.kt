@@ -13,6 +13,7 @@ private val Context.settingsStore by preferencesDataStore("settings")
 class SettingsRepository(private val context: Context) {
     private val appearanceModeKey = stringPreferencesKey("appearance_mode")
     private val backgroundColorKey = longPreferencesKey("background_color")
+    private val backgroundImageKey = stringPreferencesKey("background_image")
     private val confirmModeKey = stringPreferencesKey("confirm_mode")
     private val languageKey = stringPreferencesKey("language")
 
@@ -27,6 +28,12 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setBackgroundColor(value: Long) =
         context.settingsStore.edit { it[backgroundColorKey] = value }
+
+    suspend fun backgroundImage(): String =
+        context.settingsStore.data.first()[backgroundImageKey] ?: ""
+
+    suspend fun setBackgroundImage(value: String) =
+        context.settingsStore.edit { it[backgroundImageKey] = value }
 
     suspend fun confirmMode(): String =
         context.settingsStore.data.first()[confirmModeKey] ?: "SENSITIVE_AND_ABOVE"

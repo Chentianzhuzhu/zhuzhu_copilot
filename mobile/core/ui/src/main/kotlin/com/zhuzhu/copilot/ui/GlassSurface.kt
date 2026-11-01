@@ -95,9 +95,17 @@ fun GlassSurface(
             .background(
                 Brush.verticalGradient(
                     listOf(
-                        tint.copy(alpha = spec.tintAlpha * 1.4f),
-                        tint.copy(alpha = spec.tintAlpha * 0.35f),
-                        tint.copy(alpha = spec.tintAlpha * 0.9f),
+                        if (colors.isLight) Color.White.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.22f),
+                        if (colors.isLight) Color.White.copy(alpha = 0.66f) else Color.Black.copy(alpha = 0.34f),
+                    )
+                )
+            )
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        tint.copy(alpha = spec.tintAlpha * 1.6f),
+                        tint.copy(alpha = spec.tintAlpha * 0.55f),
+                        tint.copy(alpha = spec.tintAlpha * 1.2f),
                     )
                 )
             )
