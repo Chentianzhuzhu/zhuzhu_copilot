@@ -348,8 +348,19 @@ def apply_cursor_flash() -> None:
         pass
 
 
+def _caret_color() -> str:
+    """光标颜色：深色表面用纯白、浅色表面用纯黑（与正文同源，但取极端值）。
+
+    正文色是「近白/近黑」，光标只有 2~3px 宽，取极端值才能在 1px 误差内仍清晰；
+    壁纸模式交给 `_input_fg()` 的黑白二选一。
+    """
+    if _feedback_boosted():
+        return _input_fg()
+    return "#FFFFFF" if QColor(_base_color("BG")).lightness() < 128 else "#000000"
+
+
 def apply_input_caret(widget) -> None:
-    """设定输入框光标宽度：壁纸下 3px，非壁纸 2px。
+    """设定输入框光标宽度与颜色：深色 3px 纯白，浅色 2px 纯黑，壁纸 3px。
 
     壁纸下 3px 比默认 2px 粗 50%，在花背景上更易辨认；不要加到 4px——实测是
     一根实心黑柱、压在文字上像删除线，还会把光标前后的字符挤开。
@@ -359,16 +370,21 @@ def apply_input_caret(widget) -> None:
     """
     if widget is None:
         return
+    dark = QColor(_base_color("BG")).lightness() < 128
     try:
-        widget.setCursorWidth(_CURSOR_WIDTH_ON_WALLPAPER if _feedback_boosted()
-                              else _CURSOR_WIDTH)
+        if _feedback_boosted():
+            width = _CURSOR_WIDTH_ON_WALLPAPER
+        else:
+            width = _CURSOR_WIDTH_ON_WALLPAPER if dark else _CURSOR_WIDTH
+        widget.setCursorWidth(width)
     except Exception:
         pass
-    # 光标颜色取 palette Text（QSS color 在部分后端不会同步到 palette）：
-    # 显式写入，保证深/浅主题与任意壁纸下光标与文字同色、对比度一致。
+    # 显式写入 palette Text：QSS color 在部分后端不会同步到 palette，光标会
+    # 停在旧主题的近白/近黑；这里取极端黑白（深色纯白 / 浅色纯黑），2~3px 宽度下
+    # 也能一眼看见。
     try:
         pal = widget.palette()
-        pal.setColor(QPalette.ColorRole.Text, QColor(_input_fg()))
+        pal.setColor(QPalette.ColorRole.Text, QColor(_caret_color()))
         widget.setPalette(pal)
     except Exception:
         pass

@@ -366,13 +366,15 @@ def test_drawer_refresh_keeps_scroll_position(panel):
     panel._refresh_session_combo()
 
 
-def test_input_caret_uses_theme_text_color(panel):
-    """光标色必须与正文同色（深/浅主题都高对比），而非固定灰/黑。"""
+def test_input_caret_is_high_contrast(panel):
+    """光标色取极端黑白（深色纯白 / 浅色纯黑），宽度深色 3px、浅色 2px。"""
     from PyQt6.QtGui import QColor, QPalette
     inp = panel.input
-    assert inp.cursorWidth() >= 2
-    assert inp.palette().color(QPalette.ColorRole.Text).name() == \
-        QColor(ap.TEXT).name(), "光标色未跟随当前主题正文色"
+    dark = QColor(ap._base_color("BG")).lightness() < 128
+    expected = "#ffffff" if dark else "#000000"
+    assert inp.palette().color(QPalette.ColorRole.Text).name() == expected, \
+        f"光标色未取极端值：{inp.palette().color(QPalette.ColorRole.Text).name()}"
+    assert inp.cursorWidth() >= (3 if dark else 2)
 
 
 def test_session_drawer_shows_preview_and_pins_first(panel):
