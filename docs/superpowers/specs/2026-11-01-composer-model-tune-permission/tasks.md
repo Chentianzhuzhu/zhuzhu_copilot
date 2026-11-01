@@ -64,6 +64,13 @@
 - [x] 新增回归：闸门三态、tooltip 互斥、胶囊文案/图标、菜单标题
 - [x] 三个测试文件 58 passed
 
+## T11 第三轮修订（用户反馈：图标丑 / 提示气泡打断弹层）
+- [x] 权限图标全部改用 Lucide 开源 SVG（shield / shield-alert / hand / wrench / check / chevron）
+- [x] 删除 `_line_icon` 手绘 `shield` / `warning` 分支与 kind 登记
+- [x] `_HoverHold` 增加 `on_enter`：进入模型名称即清掉提示气泡，避免打断 1s 弹层
+- [x] 回归：SVG 图标可渲染、`on_enter` 接线、进入即清空 tooltip
+- [x] 三个测试文件 58 passed
+
 ## 已按 spec 执行的决策
 - 浮层内「自动按难度」与滑块**独立**（拖滑块不会自动关掉自动模式）。
 - 权限菜单复用 `agent_mode`（ask/edit/yolo），三项即「每步确认 / 仅工具调用 / 全部访问」。

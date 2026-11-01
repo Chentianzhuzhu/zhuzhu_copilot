@@ -404,6 +404,7 @@ def test_model_tune_popover_and_hover_timers(panel):
     assert hold._hold.interval() == ap._MODEL_TUNE_HOLD_MS == 1000
     assert hold._leave.interval() == ap._MODEL_TUNE_LEAVE_MS == 250
     assert hold._gate is not None, "悬停弹层缺少「只在模型名称上触发」的闸门"
+    assert hold._on_enter is not None, "进入模型名称时未先关掉提示气泡"
 
     panel._open_model_tune()
     _pump(80)
@@ -430,7 +431,9 @@ def test_model_tune_gate_only_on_model_name(panel, monkeypatch):
 
 
 def test_tune_popover_suppresses_combo_tooltip(panel):
-    """调节浮层显示期间关掉下拉框提示气泡，收起后恢复（两套浮层不叠在一起）。"""
+    """进入模型名称即清空提示气泡（不等 1s），浮层期间不再出现提示，收起后恢复。"""
+    panel._on_model_name_enter()          # 模拟鼠标进入模型名称
+    assert panel.model_combo.toolTip() == "", "进入时未清掉提示气泡"
     panel._open_model_tune()
     _pump(40)
     assert panel.model_combo.toolTip() == "", "浮层显示时提示气泡未关闭"
@@ -478,7 +481,10 @@ def test_permission_pill_sits_right_of_optimize(panel):
     assert isinstance(pill, ap._PermPill)
     assert pill.parent() is panel.composer
     assert pill.x() > panel.optimize_btn.x()
-    assert "shield" in ap._LINE_ICON_KINDS and "warning" in ap._LINE_ICON_KINDS
+    # 权限图标全部走开源 SVG（Lucide），不再用手绘路径
+    for kind in ("shield", "shield-alert", "hand", "wrench", "check", "chevron"):
+        assert not ap._perm_icon(kind, 16, "#FFFFFF").pixmap(16, 16).isNull(), \
+            f"开源 SVG 图标 {kind} 渲染失败"
     assert not pill.icon_lbl.pixmap().isNull(), "权限图标未绘制"
     assert not pill.chev_lbl.pixmap().isNull(), "胶囊缺少下尖角"
     assert pill.text_lbl.text() == ap._ui(ap._PERM_LABELS[panel._mode])

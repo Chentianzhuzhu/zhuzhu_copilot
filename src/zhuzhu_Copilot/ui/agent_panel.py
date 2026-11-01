@@ -1846,29 +1846,6 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     elif kind == "chev-right":  # 右尖角（展开左栏）
         p.drawLine(QPointF(s * 0.38, s * 0.28), QPointF(s * 0.62, s * 0.50))
         p.drawLine(QPointF(s * 0.62, s * 0.50), QPointF(s * 0.38, s * 0.72))
-    elif kind == "shield":      # 盾牌（Agent 权限入口）
-        path = QPainterPath()
-        path.moveTo(s * 0.50, s * 0.12)
-        path.lineTo(s * 0.82, s * 0.26)
-        path.lineTo(s * 0.80, s * 0.52)
-        path.cubicTo(s * 0.78, s * 0.70, s * 0.64, s * 0.82, s * 0.50, s * 0.88)
-        path.cubicTo(s * 0.36, s * 0.82, s * 0.22, s * 0.70, s * 0.20, s * 0.52)
-        path.lineTo(s * 0.18, s * 0.26)
-        path.closeSubpath()
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
-    elif kind == "warning":     # 警告（三角 + 感叹号，全部访问风险态）
-        path = QPainterPath()
-        path.moveTo(s * 0.50, s * 0.14)
-        path.lineTo(s * 0.90, s * 0.82)
-        path.lineTo(s * 0.10, s * 0.82)
-        path.closeSubpath()
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
-        p.drawLine(QPointF(s * 0.50, s * 0.44), QPointF(s * 0.50, s * 0.62))
-        p.setBrush(QColor(color))
-        p.drawEllipse(QPointF(s * 0.50, s * 0.72), s * 0.035, s * 0.035)
-        p.setBrush(Qt.BrushStyle.NoBrush)
     p.end()
     return QIcon(pm)
 
@@ -1881,7 +1858,7 @@ _LINE_ICON_KINDS = frozenset({
     "drive", "list", "doc", "bash", "net", "folder", "apps", "user", "server",
     "puzzle", "mic", "video", "audio", "chart", "magic", "clock", "think",
     "tool", "term", "chev", "preview", "more", "chat", "panel-left",
-    "chev-left", "chev-right", "shield", "warning",
+    "chev-left", "chev-right",
 })
 
 
@@ -13798,11 +13775,12 @@ class _HoverHold(QObject):
     """
 
     def __init__(self, hold_ms: int, on_hold=None, leave_ms: int = -1,
-                 on_leave=None, parent=None, gate=None):
+                 on_leave=None, parent=None, gate=None, on_enter=None):
         super().__init__(parent)
         self._on_hold = on_hold
         self._on_leave = on_leave
         self._gate = gate       # 额外前置条件：返回 False 时不触发 on_hold（如鼠标不在文本区）
+        self._on_enter = on_enter   # 进入瞬间回调：用于先关掉会打断弹层的提示气泡
         self._target = None
         self._hold = QTimer(self)
         self._hold.setSingleShot(True)
@@ -13823,6 +13801,11 @@ class _HoverHold(QObject):
         if et == QEvent.Type.Enter:
             self._target = obj
             self._leave.stop()
+            if self._on_enter is not None:
+                try:
+                    self._on_enter()
+                except Exception:
+                    pass
             if self._hold.interval() > 0:
                 self._hold.start()
         elif et == QEvent.Type.Leave:
@@ -19649,6 +19632,47 @@ class _FadeMenu(QMenu):
             pass
 
 
+# Agent 权限图标：Lucide 开源线条矢量图（ISC 许可，v0.544.0）。
+# 不再用手绘路径：盾牌/警告这类轮廓靠 QPainter 画出来线条比例很难稳，直接用
+# 开源图形的 path 数据渲染（与语音按钮等同源，视觉风格统一）。
+_PERM_SVG_SHIELD = _lucide(
+    '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6'
+    'a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5'
+    'a1 1 0 0 1 1 1z"/>')
+_PERM_SVG_SHIELD_ALERT = _lucide(
+    '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6'
+    'a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5'
+    'a1 1 0 0 1 1 1z"/>'
+    '<path d="M12 8v4"/><path d="M12 16h.01"/>')
+_PERM_SVG_HAND = _lucide(
+    '<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/>'
+    '<path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/>'
+    '<path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/>'
+    '<path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34'
+    'l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>')
+_PERM_SVG_WRENCH = _lucide(
+    '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77'
+    'a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91'
+    'a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>')
+_PERM_SVG_CHECK = _lucide('<path d="M20 6 9 17l-5-5"/>')
+_PERM_SVG_CHEVRON = _lucide('<path d="m6 9 6 6 6-6"/>')
+
+_PERM_SVGS = {
+    "shield": _PERM_SVG_SHIELD,
+    "shield-alert": _PERM_SVG_SHIELD_ALERT,
+    "hand": _PERM_SVG_HAND,
+    "wrench": _PERM_SVG_WRENCH,
+    "check": _PERM_SVG_CHECK,
+    "chevron": _PERM_SVG_CHEVRON,
+}
+
+
+def _perm_icon(kind: str, size: int = 16, color: str = TEXT_DIM) -> QIcon:
+    """权限相关图标：统一走开源 SVG（Lucide）渲染，缺图时返回空图标不再手绘兜底"""
+    svg = _PERM_SVGS.get(kind)
+    return _svg_icon(svg, size, color) if svg else QIcon()
+
+
 # Agent 权限胶囊：高度 / 三档文案（唯一事实来源：按钮、菜单、tooltip 都取这里）
 _PERM_PILL_H = 30
 _PERM_LABELS = {"ask": "每步确认", "edit": "仅工具调用", "yolo": "全部访问"}
@@ -19700,8 +19724,8 @@ class _PermPill(QWidget):
     def set_state(self, mode: str, tooltip: str):
         """按当前权限刷新图标/文案/配色（yolo 整枚转红警示）"""
         self._danger = mode == "yolo"
-        self.icon_lbl.setPixmap(_line_icon(
-            "warning" if self._danger else "shield", 16,
+        self.icon_lbl.setPixmap(_perm_icon(
+            "shield-alert" if self._danger else "shield", 16,
             ERR if self._danger else ACCENT).pixmap(16, 16))
         self.text_lbl.setText(_ui(_PERM_LABELS.get(mode, _PERM_LABELS["ask"])))
         self.apply_theme()
@@ -19724,8 +19748,8 @@ class _PermPill(QWidget):
             f"color: {ERR if self._danger else TEXT_DIM};"
             f" font-size: {FONT_CAPTION}px; font-weight: {_W_BUTTON};"
             " background: transparent;")
-        self.chev_lbl.setPixmap(_line_icon(
-            "chev", 10, ERR if self._danger else TEXT_DIM).pixmap(10, 10))
+        self.chev_lbl.setPixmap(_perm_icon(
+            "chevron", 10, ERR if self._danger else TEXT_DIM).pixmap(10, 10))
 
     def mouseReleaseEvent(self, e):
         if (e.button() == Qt.MouseButton.LeftButton
@@ -19752,7 +19776,7 @@ class _PermRow(QWidget):
         lay.setSpacing(9)
         self.icon_lbl = QLabel(self)
         self.icon_lbl.setFixedSize(16, 16)
-        self.icon_lbl.setPixmap(_line_icon(icon_kind, 16,
+        self.icon_lbl.setPixmap(_perm_icon(icon_kind, 16,
                                           ERR if danger else TEXT_DIM).pixmap(16, 16))
         self.title_lbl = QLabel(title, self)
         self.sub_lbl = QLabel(subtitle, self)
@@ -19764,8 +19788,8 @@ class _PermRow(QWidget):
         self.check_lbl = QLabel(self)
         self.check_lbl.setFixedSize(14, 14)
         if checked:
-            self.check_lbl.setPixmap(_line_icon(
-                "ok", 14, ERR if danger else ACCENT).pixmap(14, 14))
+            self.check_lbl.setPixmap(_perm_icon(
+                "check", 14, ERR if danger else ACCENT).pixmap(14, 14))
         for w in (self.icon_lbl, self.title_lbl, self.sub_lbl, self.check_lbl):
             w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         lay.addWidget(self.icon_lbl)
@@ -21694,7 +21718,7 @@ class AgentPanel(QDialog):
         self._model_hover = _HoverHold(
             _MODEL_TUNE_HOLD_MS, self._open_model_tune,
             _MODEL_TUNE_LEAVE_MS, self._close_model_tune, self,
-            gate=self._model_tune_gate)
+            gate=self._model_tune_gate, on_enter=self._on_model_name_enter)
         self.model_combo.installEventFilter(self._model_hover)
         # 浮层自身也参与悬停保持：指针在浮层内不收起，离开 250ms 才收起
         self._model_tune_hover = _HoverHold(
@@ -29870,6 +29894,17 @@ class AgentPanel(QDialog):
         pop.set_state(self._effort, self._auto_effort, self._context_1m,
                       self._model_tune_window_text())
 
+    def _on_model_name_enter(self):
+        """指针进入模型名称即关掉下拉框提示气泡。
+
+        提示气泡默认在悬停约 0.7s 时出现，正好卡在 1s 调节浮层弹出前一瞬，会和浮层
+        互相打断（用户反馈）。进入即清空 tooltip，浮层收起或指针离开时恢复。"""
+        try:
+            QToolTip.hideText()
+            self.model_combo.setToolTip("")
+        except Exception:
+            pass
+
     def _model_tune_gate(self) -> bool:
         """悬停弹层的前置条件：指针停在模型名称**文本区**，且模型下拉列表未展开。
 
@@ -30030,7 +30065,7 @@ class AgentPanel(QDialog):
             danger = mode == "yolo"
             row = _PermRow(
                 _ui(_PERM_LABELS[mode]), _ui(_PERM_SUBTITLES[mode]),
-                "ok" if mode == "ask" else ("tool" if mode == "edit" else "warning"),
+                "hand" if mode == "ask" else ("wrench" if mode == "edit" else "shield-alert"),
                 danger=danger, checked=(mode == cur), parent=menu)
             wa = QWidgetAction(menu)
             wa.setDefaultWidget(row)
