@@ -366,6 +366,16 @@ def test_function_rail_exposes_collapse_entries(panel):
     assert "leftdock" in rail._buttons, "胶囊缺少左栏折叠入口"
 
 
+def test_leftdock_drops_side_title(panel):
+    """左栏「侧栏」标题已删除：收起入口直接是浮动按钮，不占布局高度（文件树贴栏顶）。"""
+    from PyQt6.QtWidgets import QPushButton
+    btn = panel._leftdock_head
+    assert isinstance(btn, QPushButton), "收起入口应是按钮本身，不再包一层标题条"
+    assert btn.text() == "", "「侧栏」标题未删除"
+    assert panel._dock_left.layout().indexOf(btn) == -1, "收起入口不应占据布局高度"
+    assert not hasattr(panel, "_leftdock_head_lbl"), "标题标签仍残留"
+
+
 def test_drawer_refresh_keeps_scroll_position(panel):
     """点击历史会话后重建列表不得把滚动条甩回顶部（用户反馈的「整栏跳动」）。"""
     d = _drawer(panel)
@@ -928,9 +938,9 @@ def test_ask_drawer_slides_and_fades(panel):
 
 
 def test_choice_option_is_whole_row_with_checkmark():
-    """选项整行可点：勾选后左侧圆内出现对勾，强调色底覆盖到行尾（不是只染指示器）。"""
+    """选项整行可点：勾选后左侧圆内出现对勾；交互反馈是整行阴影，不再铺底色。"""
     from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QImage
+    from PyQt6.QtGui import QColor, QImage
     row = ap._ChoiceOption("方案 A")
     assert isinstance(row, ap.QAbstractButton) and row.isCheckable()
     assert row.height() == ap._ChoiceOption.ROW_H >= 34, "点击热区应是整行高度"
@@ -947,16 +957,19 @@ def test_choice_option_is_whole_row_with_checkmark():
     cy = row.height() // 2
     on = _render(True)
     off = _render(False)
-    from PyQt6.QtGui import QColor
     # 选中：指示圆为强调色实心 + 白色对勾；未选中只有淡灰描边（不画对勾）
     assert on.pixelColor(cx, cy - 6).name() == QColor(ap.ACCENT).name(), "指示圆未填充强调色"
     assert on.pixelColor(cx, cy).lightness() > 240, "选中态缺少白色对勾"
     assert off.pixelColor(cx, cy - 6).name() != QColor(ap.ACCENT).name(), "未选中不应填充强调色"
     assert off.pixelColor(cx, cy).lightness() < on.pixelColor(cx, cy).lightness(), \
         "未选中不应画对勾"
-    # 整行底：行尾也随选中淡染（反馈覆盖整条选项，而不是只有指示器）
-    assert on.pixelColor(row.width() - 4, cy) != off.pixelColor(row.width() - 4, cy), \
-        "选中底色未覆盖到行尾"
+    # 白底抽屉：行内不再有强调色/灰底填充（避免对比衬托），只保留底部柔和阴影
+    mid = (row.width() // 2, cy)
+    assert on.pixelColor(*mid).name() == off.pixelColor(*mid).name(), \
+        "选中态不应铺整行底色"
+    assert on.pixelColor(row.width() // 2, row.height() - 5).lightness() < \
+        off.pixelColor(row.width() // 2, row.height() - 5).lightness(), \
+        "选中/悬停应有整行底部阴影反馈"
 
 
 def test_choice_option_click_anywhere_selects():
@@ -1003,6 +1016,22 @@ def test_ask_drawer_returns_selected_answer(panel):
     assert not drawer.isVisible(), "作答后抽屉应收起"
 
 
+def test_ask_drawer_reuses_after_body_deleted(panel):
+    """回归崩溃：抽屉内容重建（旧 QLineEdit 已销毁）后再次打开，不得访问野引用。"""
+    from PyQt6.QtCore import QTimer
+    drawer = panel._ask_drawer
+    QTimer.singleShot(40, lambda: drawer._cancel())
+    drawer.ask("选择方案", ["A"], False)
+    _pump(80)
+    drawer._build_confirm("run_command", {"command": "git status"}, "risky")
+    _pump(80)                      # 让旧 body 的 deleteLater 真正执行
+    assert drawer._free is None, "重建内容后仍保留已销毁的自由输入框引用"
+    drawer._finished = True
+    drawer._open_shell()           # 修复前此处抛 RuntimeError（QLineEdit 已删除）
+    drawer._stop_anims()
+    drawer.hide()
+
+
 def test_confirm_drawer_result_fields(panel):
     """确认抽屉的三种次级操作映射到独立结果字段（宿主据此批量放行/停任务）。"""
     drawer = panel._ask_drawer
@@ -1029,3 +1058,24 @@ def test_drawer_busy_guards_switch_and_stop():
     assert "drawer.busy" in switch_src, "切换对话未拦截抽屉等待中的重入"
     stop_src = inspect.getsource(ap.AgentPanel._stop)
     assert "drawer.cancel()" in stop_src, "停止任务未收起等待中的抽屉"
+
+
+def test_provider_cards_fill_row_width():
+    """服务商卡片宽度 = 列表可视宽度：蓝色选中底盖满整行，右缘不再露白边/焦点框。"""
+    dlg = ap._AgentSettingsDialog()
+    try:
+        dlg._switch_page(4)              # 「模型」页（含服务商卡片列表）
+        dlg.resize(991, 687)
+        dlg.show()
+        _pump(200)
+        lst = dlg.provider_list
+        dlg._remeasure_provider_cards()
+        _pump(60)
+        vw = lst.viewport().width()
+        assert vw > 0
+        for i in range(lst.count()):
+            cw = lst.itemWidget(lst.item(i))
+            assert cw is not None and cw.width() == vw, \
+                (i, cw.width() if cw is not None else None, vw)
+    finally:
+        dlg.close()

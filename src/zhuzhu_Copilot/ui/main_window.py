@@ -785,12 +785,6 @@ class CopilotPanel(QFrame):
             except Exception:
                 return "light"
 
-    def _brand_qss(self) -> str:
-        """品牌标识：深蓝渐变圆角方块 + 白色首字符（随主题重建）"""
-        return (f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-                f" stop:0 {PALETTE['primary_hover']}, stop:1 {PALETTE['primary_pressed']});"
-                f" color: #FFFFFF; font-size: 13px; font-weight: {_qss_weights()['title']}; border-radius: 7px;")
-
     def _msg_box_qss(self) -> str:
         """QMessageBox 等原生弹窗样式（随主题色板重建）"""
         return (
@@ -903,8 +897,6 @@ class CopilotPanel(QFrame):
             if getattr(self, "_title_lbl", None) is not None:
                 self._title_lbl.setStyleSheet(
                     f"font-size: 15px; font-weight: {_qss_weights()['title']}; color: {PALETTE['text']};")
-            if getattr(self, "_brand_lbl", None) is not None:
-                self._brand_lbl.setStyleSheet(self._brand_qss())
             if getattr(self, "_ver_lbl", None) is not None:
                 self._ver_lbl.setStyleSheet(
                     f"font-size: 11px; color: {PALETTE['text_secondary']};")
@@ -1001,12 +993,15 @@ class CopilotPanel(QFrame):
         layout.setContentsMargins(2, 0, 0, 0)
         layout.setSpacing(10)
 
-        # 品牌渐变方块标识（深蓝渐变 + 首字符），替代光秃秃的文字标题
-        brand = QLabel("z")
+        # 品牌标识直接用应用真实图标（assets/icon.ico），不再用「z」字符占位
+        brand = QLabel()
         brand.setFixedSize(22, 22)
         brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand.setStyleSheet("background: transparent;")
+        _brand_pm = QIcon(_app_icon_path()).pixmap(22, 22)
+        if not _brand_pm.isNull():
+            brand.setPixmap(_brand_pm)
         self._brand_lbl = brand
-        brand.setStyleSheet(self._brand_qss())
         layout.addWidget(brand)
 
         title = QLabel("zhuzhu Copilot")
@@ -2884,6 +2879,12 @@ def load_copilot_extensions(panel=None) -> dict:
     # 页面宿主：显式传入优先，否则用启动时登记的 MainWindow——这样
     # restart_copilot_services() 这类"只重启服务"的调用也不会漏掉页面
     host = panel if panel is not None else _COPILOT_EXT_STATE.get("host")
+    if panel is not None:
+        # **面板一创建就登记宿主**（哪怕此刻没有任何启用的插件）：
+        # 旧实现只在 register_copilot_entry 里登记宿主，启动时零插件 → host 一直是
+        # None；之后从市场下载/手动启用插件时 pages 全被静默跳过（只有服务起来），
+        # 用户看到的就是"下载了却用不了，重启后才出现页面"。
+        _COPILOT_EXT_STATE["host"] = panel
     for p in plugins:
         name = str(p.get("name") or "")
         try:

@@ -5136,6 +5136,7 @@ class _AgentSettingsDialog(QDialog):
 
     plugin_done = pyqtSignal(str, str)   # 插件创建完成（ok, message），后台线程回主线程
     copilot_plugin_done = pyqtSignal(str, str)   # Copilot 插件创建完成（ok, message）
+    copilot_toggle_done = pyqtSignal(str, str)   # Copilot 插件启停/删除完成（ok, message）
     workflow_done = pyqtSignal(str, str)  # 工作流 AI 生成完成（ok, message），后台线程回主线程
     workflow_progress = pyqtSignal(int, str)  # 工作流生成进度（百分比, 阶段提示），后台线程回主线程
     plugin_progress = pyqtSignal(int, str)    # 插件生成进度（百分比, 阶段提示），后台线程回主线程
@@ -5307,6 +5308,7 @@ class _AgentSettingsDialog(QDialog):
 
         self.plugin_done.connect(self._on_plugin_done)
         self.copilot_plugin_done.connect(self._on_coplugin_done)
+        self.copilot_toggle_done.connect(self._on_coplugin_toggle_done)
         self.market_done.connect(self._on_market_done)
         self.market_items.connect(self._on_market_items)
         self.workflow_done.connect(self._on_workflow_done)
@@ -9682,8 +9684,9 @@ class _AgentSettingsDialog(QDialog):
             card = self._make_provider_card(p)
             self.provider_list.addItem(item)
             self.provider_list.setItemWidget(item, card)
-            # 卡片高度随内容自适应（换行后不裁剪完整保存信息）；宽度留出列表内边距/卡片边距
-            w = max(self.provider_list.viewport().width() - 24, 200)
+            # 卡片宽度 = 列表可视宽度（不再内缩 24px）：蓝色选中底才能盖满整行，
+            # 不会在右缘留出一条白边 + 原生焦点框
+            w = max(self.provider_list.viewport().width(), 200)
             item.setSizeHint(QSize(0, self._card_height(card, w)))
         # 列表尚未完成布局时宽度可能为 0 → 首帧后按真实宽度重新测量
         QTimer.singleShot(0, self._remeasure_provider_cards)
@@ -9694,7 +9697,7 @@ class _AgentSettingsDialog(QDialog):
         try:
             if not hasattr(self, "provider_list"):
                 return
-            w = max(self.provider_list.viewport().width() - 24, 200)
+            w = max(self.provider_list.viewport().width(), 200)
             if w <= 200 and self.provider_list.viewport().width() <= 0:
                 QTimer.singleShot(200, self._remeasure_provider_cards)
                 return
@@ -9704,7 +9707,7 @@ class _AgentSettingsDialog(QDialog):
                 if cw is None:
                     continue
                 h = self._card_height(cw, w)
-                cw.setFixedWidth(w)
+                cw.setFixedWidth(w)      # 盖满整行：蓝色选中底不再留下右缘白边
                 try:
                     cw.setMinimumHeight(h)   # 底限高度 = 内容所需，防止行内压缩裁剪文本
                 except Exception:
@@ -11186,18 +11189,22 @@ class _ChoiceOption(QAbstractButton):
     """整行可点的选项：勾选后左侧绘制对勾，底色覆盖「指示器 + 文字」整行。
 
     不用 QRadioButton：原生指示器的点击热区只有圆点与文字，右侧留白按到无效；
-    整行做成按钮后热区即整行矩形，``paintEvent`` 画一层圆角底（悬停淡化、选中强调色
-    淡染）让反馈覆盖整个选项，符合「点哪儿都能选中」的操作直觉。
-    """
+    整行做成按钮后热区即整行矩形，``paintEvent`` 在行内留白里画一层柔和阴影
+    （悬停/按下/选中只改阴影强度，不用强调色或灰底做对比衬托），符合「点哪儿都能选中」
+    的操作直觉。"""
 
     ROW_H = 38          # 整行高度（含点击热区）
     IND_R = 8           # 指示圆半径（直径 16，与正文行高相称）
     PAD_L = 12          # 行左内边距
     GAP = 10            # 指示器与文字的间距
     PAD_R = 12
+    SHADOW_PAD = 5      # 行内留白：阴影只画在这圈留白里，不压到文字
+    SHADOW_H = 16       # 阴影渐变高度（行底向上淡出）
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
+        # 对象名给样式表一个低层级锚点：压掉全局按钮皮肤，交互反馈只由 paintEvent 画
+        self.setObjectName("choiceOption")
         self.setText(str(text))
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -11222,24 +11229,36 @@ class _ChoiceOption(QAbstractButton):
         self.update()
         super().leaveEvent(e)
 
+    @classmethod
+    def _paint_shadow(cls, p: QPainter, rect: QRectF, strength: float):
+        """底部柔和投影：不描边、不铺满底色，只在行底形成一层向上淡出的阴影。"""
+        inner = rect.adjusted(cls.SHADOW_PAD, cls.SHADOW_PAD - 1,
+                              -cls.SHADOW_PAD, -1)
+        path = QPainterPath()
+        path.addRoundedRect(inner, RADIUS_SM, RADIUS_SM)
+        p.save()
+        p.setClipPath(path)
+        g = QLinearGradient(0, inner.bottom() - cls.SHADOW_H, 0, inner.bottom())
+        g.setColorAt(0.0, QColor(0, 0, 0, 0))
+        g.setColorAt(1.0, QColor(0, 0, 0, int(34 * strength)))
+        p.fillRect(inner, g)
+        p.restore()
+
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = QRectF(self.rect())
         hover = self.underMouse()
-        accent = QColor(ACCENT)
-        # 整行底：选中态用强调色淡染、悬停态用文字色极淡填充（不描边，避免多余线条）
+        # 交互反馈只用阴影：白底抽屉上不再铺强调色/灰底做对比衬托
+        strength = 0.0
         if self.isChecked():
-            accent.setAlphaF(0.18 if hover else 0.12)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(accent)
-            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS_SM, RADIUS_SM)
+            strength = 1.0
+        elif self.isDown():
+            strength = 0.85
         elif hover:
-            tint = QColor(_base_color("TEXT"))
-            tint.setAlphaF(0.06)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(tint)
-            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS_SM, RADIUS_SM)
+            strength = 0.55
+        if strength > 0:
+            self._paint_shadow(p, r, strength)
 
         cy = r.center().y()
         cx = self.PAD_L + self.IND_R
@@ -11287,6 +11306,8 @@ class _AskDrawer(QFrame):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._composer = composer
         self._body = None
+        self._free = None          # 自由作答输入框（按需创建，重建时必须清引用）
+        self._opts = []            # 选择题行
         self._loop = None
         self._eff = None
         self._anims: list = []
@@ -11305,8 +11326,8 @@ class _AskDrawer(QFrame):
 
     # ---------- 主题 ----------
     def _apply_theme(self):
-        """浮层用 ELEVATED 分层 + 无描边；按钮沿用确认弹窗的语义色。"""
-        surf = _base_color("ELEVATED")
+        """抽屉与输入卡同为白色、不描边（不做对比衬托）；交互反馈只由行内阴影承担。"""
+        surf = _base_color("PANEL")
         field = _base_color("FIELD")
         line = _base_color("BORDER")
         self.setStyleSheet(
@@ -11323,6 +11344,9 @@ class _AskDrawer(QFrame):
             " padding: 8px; font-size: 12px; font-family: Consolas; }"
             f"#askDrawer QPushButton {{ border: none; border-radius: {RADIUS_SM}px;"
             " padding: 8px 18px; font-weight: 700; font-size: 13px; }"
+            # 选择题行是 QAbstractButton，会被全局 QPushButton 皮肤命中（灰底/描边）：
+            # 用 ID 选择器压回透明，反馈只保留自绘阴影
+            "#choiceOption { background: transparent; border: none; padding: 0; }"
             f"#askDrawer QPushButton#drawerOk, #askDrawer QPushButton#drawerAllow"
             f" {{ background: {OK}; color: #06281B; }}"
             f"#askDrawer QPushButton#drawerDeny {{ background: {ERR}; color: white; }}"
@@ -11385,8 +11409,11 @@ class _AskDrawer(QFrame):
         self._animate(start, target, 0.0, 1.0)
         # 自由作答时直接聚焦输入框：用户点开即可打字，回车提交
         free = getattr(self, "_free", None)
-        if free is not None and not free.isHidden():
-            free.setFocus(Qt.FocusReason.PopupFocusReason)
+        try:
+            if free is not None and not free.isHidden():
+                free.setFocus(Qt.FocusReason.PopupFocusReason)
+        except RuntimeError:
+            self._free = None      # 旧内容已被销毁（确认抽屉复用时）
 
     def _close_shell(self):
         self._ensure_effect()      # 兜底：未开过抽屉时也不因缺少不透明度效果而崩
@@ -11452,11 +11479,19 @@ class _AskDrawer(QFrame):
             self._body.setParent(None)
             self._body.deleteLater()
             self._body = None
+        # 旧内容里的子控件已 deleteLater：属性必须同步清空，否则下一次（如确认抽屉）
+        # 复用时仍指向已销毁的 QLineEdit → RuntimeError（用户崩溃日志 33689/11381）
+        self._free = None
+        self._opts = []
 
     def _new_body(self) -> QWidget:
         self._drop_body()
         body = QWidget(self)
         body.setObjectName("askDrawerBody")
+        # 内容层透明：抽屉整体统一白底，不靠内层灰色块做对比衬托
+        # （选择器限定在本层，避免样式级联把按钮的语义色一起冲掉）
+        body.setStyleSheet(
+            "QWidget#askDrawerBody { background: transparent; }")
         lay = QVBoxLayout(body)
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(8)
@@ -11517,6 +11552,8 @@ class _AskDrawer(QFrame):
             lay.addWidget(self._free)
         else:
             box = QWidget()
+            box.setObjectName("askDrawerOpts")
+            box.setStyleSheet("QWidget#askDrawerOpts { background: transparent; }")
             b_lay = QVBoxLayout(box)
             b_lay.setContentsMargins(0, 0, 0, 0)
             b_lay.setSpacing(2)
@@ -11533,6 +11570,8 @@ class _AskDrawer(QFrame):
             area = QScrollArea()
             area.setWidgetResizable(True)
             area.setFrameShape(QFrame.Shape.NoFrame)
+            area.viewport().setAutoFillBackground(False)   # 视口不铺底色（白底透出）
+            area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
             area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             area.setWidget(box)
             area.setFixedHeight(min(box.sizeHint().height(), _ChoiceOption.ROW_H * 4 + 6))
@@ -19428,7 +19467,6 @@ _RAIL_BTN_D = 40         # 胶囊内图标按钮 40x40（左右各留 8）
 _RAIL_DIV_W = 24         # 组间分隔线长度
 _DRAWER_COLLAPSED_W = 36  # 对话栏收起后的窄条宽（只留展开箭头）
 _DOCK_COLLAPSED_W = 42    # 左侧栏收起后的迷你列宽（两枚 38px 圆形按钮 + 2px 边距，尽量贴左）
-_DOCK_HEAD_H = 28         # 左侧栏顶部「栏标题条」高度（内含收起箭头）
 
 # 折叠状态持久化键：与设置页开关同一 QSettings 机制，重启后保持用户选择
 _STORE_DRAWER_COLLAPSED = "agent_drawer_collapsed"
@@ -23436,35 +23474,32 @@ class AgentPanel(QDialog):
         return bool(self.__dict__.get("_leftdock_collapsed_on", False))
 
     def _sync_leftdock_head(self, has: bool) -> None:
-        """左栏标题条跟随折叠状态：有面板才显示，箭头方向与 tooltip 同步翻转。"""
-        head = self.__dict__.get("_leftdock_head")
-        if head is None:
-            return
-        on = self._leftdock_collapsed()
-        # 收起态由两枚圆形入口代替标题条，标题条（含展开箭头）整体隐藏
-        head.setVisible(bool(has) and not on)
-        btn = self.__dict__.get("_leftdock_head_btn")
+        """左栏收起入口（浮动在首行右上角）：有面板才显示，箭头方向/提示随折叠状态翻转。"""
+        btn = self.__dict__.get("_leftdock_head")
         if btn is None:
             return
+        on = self._leftdock_collapsed()
+        # 收起态由两枚圆形入口代替，浮动箭头整体隐藏
+        btn.setVisible(bool(has) and not on)
+        if btn.isHidden():
+            return
+        self._place_leftdock_collapse()
         # 状态没翻转就不重设图标/文案（_sync_dock_layout 在窗口 resize 时会高频触发）
         if self.__dict__.get("_leftdock_head_state") != on:
             self._leftdock_head_state = on
-            # 收起态用「左栏」图标（点击即展开），视觉上是一条有身份的窄条而非裸箭头
             btn.setIcon(_line_icon("panel-left" if on else "chev-left", 18,
                                    TEXT_DIM))
             btn.setToolTip(_ui("展开左栏") if on else
-                           _ui("收起左栏（文件树 / Git / 任务）"))
-        # 收起成 36px 窄条时放不下「侧栏」二字，这一行只留图标
-        lbl = self.__dict__.get("_leftdock_head_lbl")
-        if lbl is not None:
-            lbl.setVisible(not on)
-        # 标题条高度随状态变化：
-        # - 展开态 34px + 顶部 14px：文字中心与对话栏标题同一基线（两张卡首行对齐）；
-        # - 收起态 28px + 顶部 4px：图标中心与对话栏窄条图标同高。
-        head.setFixedHeight(28 if on else 34)
-        lay = self.__dict__.get("_leftdock_head_lay")
-        if lay is not None:
-            lay.setContentsMargins(*(6, 4, 6, 0) if on else (10, 14, 10, 0))
+                           _ui("收起左栏（文件树 / 任务）"))
+
+    def _place_leftdock_collapse(self) -> None:
+        """把浮动收起按钮压在左栏首行右上角：不占布局高度，文件树贴栏顶排列。"""
+        col = self.__dict__.get("_dock_left")
+        btn = self.__dict__.get("_leftdock_head")
+        if col is None or btn is None:
+            return
+        btn.move(max(0, int(col.width()) - btn.width() - 4), 6)
+        btn.raise_()      # 栏内面板是子窗口，浮动按钮需保持在最上层
 
     def _set_leftdock_collapsed(self, on: bool, persist: bool = True) -> None:
         """左侧整栏（文件树 / Git / 任务清单）一次性收起或展开。
@@ -25090,35 +25125,20 @@ class AgentPanel(QDialog):
         # 右栏仍按面板卡间距排布。
         c_lay.setSpacing(0 if side == "left" else self._DOCK_PANEL_GAP)
         if side == "left":
-            # 左栏标题条：三块面板（文件树 / Git / 任务清单）共用一枚收起箭头，
-            # 一次折叠整栏；收起后本栏变成 36px 窄条，箭头翻向右侧可再展开。
-            head = QWidget()
-            head.setObjectName("dockLeftHead")
-            head.setStyleSheet("QWidget#dockLeftHead { background: transparent; }")
-            head.setFixedHeight(_DOCK_HEAD_H)
-            hl = QHBoxLayout(head)
-            hl.setContentsMargins(6, 2, 6, 2)
-            hl.setSpacing(4)
-            lbl = QLabel(_ui("侧栏"))
-            lbl.setStyleSheet(f"color: {TEXT}; font-size: {FONT_BODY}px;"
-                              f" font-weight: {_W_STRONG};")
-            hl.addWidget(lbl)
-            hl.addStretch(1)
+            # 收起入口直接浮动在栏内首行右上角（不占布局高度）：
+            # 「侧栏」标题已移除，文件树从栏顶开始，标题与内容按 3px 虚线分区。
             btn = QPushButton(_line_icon("chev-left", 18, TEXT_DIM), "")
+            btn.setParent(col)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setAutoDefault(False)
             btn.setFixedSize(24, 24)
             btn.setIconSize(QSize(18, 18))
-            btn.setToolTip(_ui("收起左栏（文件树 / Git / 任务）"))
+            btn.setToolTip(_ui("收起左栏（文件树 / 任务）"))
             btn.setStyleSheet(_drawer_icon_btn_qss())
             btn.clicked.connect(self._toggle_leftdock)
-            hl.addWidget(btn)
-            head.hide()   # 栏内没有面板时整条不显示（由 _sync_dock_layout 决定）
-            c_lay.addWidget(head)
-            self._leftdock_head = head
+            btn.hide()   # 栏内没有面板时隐藏（由 _sync_dock_layout 决定）
+            self._leftdock_head = btn
             self._leftdock_head_btn = btn
-            self._leftdock_head_lbl = lbl
-            self._leftdock_head_lay = hl
             # 收起态不是窄条，而是两枚圆形入口（文件树 / Git）：点击即展开左栏并显示
             # 对应面板，比「一条 36px 空条 + 小箭头」更像可点击的入口（用户要求）。
             mini = QWidget()
@@ -25381,6 +25401,8 @@ class AgentPanel(QDialog):
                     p.setMaximumHeight(16777215)
                 except Exception:
                     pass
+            # 浮动收起按钮按最终栏宽重新贴右上角并抬到最上层（面板 raise 后不能盖住它）
+            self._place_leftdock_collapse()
             if hasattr(self, "_request_side_sync"):
                 self._request_side_sync(0)
         except Exception:
@@ -25402,9 +25424,9 @@ class AgentPanel(QDialog):
         if side != "left" or not order:
             return
         try:
-            head = self.__dict__.get("_leftdock_head")
-            head_h = int(head.height()) if (head is not None and not head.isHidden()) else 0
-            avail = max(0, col.height() - head_h)
+            # 收起入口已改为浮动按钮（不占布局高度）：可用高度即整栏高度，
+            # 文件树从栏顶开始，标题与内容之间仍是 3px 虚线分区。
+            avail = max(0, col.height())
             by_name = {p.objectName(): p for p in order}
             wt = by_name.get("wtWin")
             todos = by_name.get("todosWin")
@@ -28429,16 +28451,11 @@ class AgentPanel(QDialog):
                     _fn()
                 except RuntimeError:
                     pass
-        # 左栏标题条（侧栏文字 + 收起箭头）同样由色板派生
-        _lbl = self.__dict__.get("_leftdock_head_lbl")
-        if _lbl is not None:
-            try:
-                _lbl.setStyleSheet(
-                    f"color: {TEXT}; font-size: {FONT_BODY}px;"
-                    f" font-weight: {_W_STRONG}; background: transparent;")
-                self._sync_leftdock_head(bool(self._dock_panel_order("left")))
-            except RuntimeError:
-                pass
+        # 左栏收起入口（浮动按钮，无标题文字）随主题同步状态与位置
+        try:
+            self._sync_leftdock_head(bool(self._dock_panel_order("left")))
+        except RuntimeError:
+            pass
         _set(getattr(self, "preview_btn", None), _BTN_GHOST)
         _set(getattr(self, "copilot_btn", None), _BTN_GHOST)
         _set(getattr(self, "token_btn", None), _BTN_GHOST)

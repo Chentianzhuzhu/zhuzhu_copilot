@@ -61,6 +61,14 @@ def test_four_tabs_and_switch(panel):
         assert panel._pages.currentIndex() == idx
 
 
+def test_title_bar_uses_real_app_icon(panel):
+    """标题栏品牌位使用应用真实图标，不再用「z」字符占位。"""
+    lbl = panel._brand_lbl
+    assert lbl.text() == "", "品牌位不应仍是文字占位"
+    pm = lbl.pixmap()
+    assert pm is not None and not pm.isNull(), "品牌位缺少应用图标"
+
+
 def test_security_and_tools_pages_hold_expected_buttons(panel):
     """防护页与工具页各自承载对应入口（原右栏按钮已按分组重新归位）"""
     texts = [b.text() for b in panel.findChildren(QPushButton)]
