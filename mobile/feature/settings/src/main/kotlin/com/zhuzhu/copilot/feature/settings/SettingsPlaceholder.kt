@@ -7,11 +7,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import com.zhuzhu.copilot.ui.GlassTokens
+import com.zhuzhu.copilot.ui.LocalAppColors
 
 @Composable
 fun SettingsPlaceholder() {
+    val colors = LocalAppColors.current
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(stringResource(R.string.settings_placeholder), color = GlassTokens.TextTertiary)
+        Text(stringResource(R.string.settings_placeholder), color = colors.textTertiary)
     }
 }

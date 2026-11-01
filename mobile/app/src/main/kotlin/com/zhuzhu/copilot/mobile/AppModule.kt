@@ -15,6 +15,7 @@ import com.zhuzhu.copilot.data.SecretStore
 import com.zhuzhu.copilot.data.db.ProviderDao
 import com.zhuzhu.copilot.data.db.ZhuzhuDatabase
 import com.zhuzhu.copilot.data.repo.ProviderRepository
+import com.zhuzhu.copilot.data.repo.SettingsRepository
 import com.zhuzhu.copilot.llm.LlmClient
 import com.zhuzhu.copilot.llm.LlmDelta
 import com.zhuzhu.copilot.llm.WireModels
@@ -35,6 +36,11 @@ object AppModule {
     @Provides
     @Singleton
     fun secretStore(@ApplicationContext context: Context): SecretStore = KeystoreSecretStore(context)
+
+    @Provides
+    @Singleton
+    fun settingsRepository(@ApplicationContext context: Context): SettingsRepository =
+        SettingsRepository(context)
 
     @Provides
     @Singleton

@@ -20,4 +20,14 @@
     <string name="provider_setup_saving">Saving…</string>
     <string name="provider_setup_cancel">Cancel</string>
     <string name="provider_setup_custom_name">Custom provider</string>
+    <string name="appearance_title">Background &amp; appearance</string>
+    <string name="appearance_dark">Dark</string>
+    <string name="appearance_light">Light</string>
+    <string name="appearance_custom">Custom</string>
+    <string name="appearance_red">Red</string>
+    <string name="appearance_green">Green</string>
+    <string name="appearance_blue">Blue</string>
+    <string name="appearance_apply">Apply</string>
+    <string name="appearance_cancel">Cancel</string>
+    <string name="appearance_open_cd">Background &amp; appearance</string>
 </resources>

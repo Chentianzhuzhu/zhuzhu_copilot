@@ -20,4 +20,14 @@
     <string name="provider_setup_saving">保存中…</string>
     <string name="provider_setup_cancel">取消</string>
     <string name="provider_setup_custom_name">自定义服务商</string>
+    <string name="appearance_title">背景与外观</string>
+    <string name="appearance_dark">深色</string>
+    <string name="appearance_light">亮色</string>
+    <string name="appearance_custom">自定义</string>
+    <string name="appearance_red">红</string>
+    <string name="appearance_green">绿</string>
+    <string name="appearance_blue">蓝</string>
+    <string name="appearance_apply">应用</string>
+    <string name="appearance_cancel">取消</string>
+    <string name="appearance_open_cd">背景与外观</string>
 </resources>

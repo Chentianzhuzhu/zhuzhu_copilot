@@ -32,6 +32,7 @@ import dev.chrisbanes.haze.HazeState
 
 @Composable
 fun GlassTopBar(title: String, hazeState: HazeState, trailing: @Composable () -> Unit = {}) {
+    val colors = LocalAppColors.current
     GlassSurface(
         modifier = Modifier
             .fillMaxWidth()
@@ -45,7 +46,7 @@ fun GlassTopBar(title: String, hazeState: HazeState, trailing: @Composable () ->
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = GlassTokens.TextPrimary)
+            Text(title, style = MaterialTheme.typography.titleMedium, color = colors.textPrimary)
             trailing()
         }
     }
@@ -57,6 +58,7 @@ fun GlassTabBar(
     hazeState: HazeState,
     onSelect: (Int) -> Unit,
 ) {
+    val colors = LocalAppColors.current
     val labels = listOf(R.string.tab_chat, R.string.tab_tasks, R.string.tab_settings)
     val icons = listOf(Icons.Outlined.AutoAwesome, Icons.Outlined.List, Icons.Outlined.Settings)
     GlassSurface(
@@ -76,8 +78,8 @@ fun GlassTabBar(
                                 Modifier.background(
                                     Brush.verticalGradient(
                                         listOf(
-                                            GlassTokens.BlueHighlight.copy(alpha = 0.75f),
-                                            GlassTokens.BluePrimary.copy(alpha = 0.55f),
+                                            colors.accentStrong.copy(alpha = 0.80f),
+                                            colors.accent.copy(alpha = 0.60f),
                                         )
                                     ),
                                     RoundedCornerShape(14.dp),
@@ -89,7 +91,7 @@ fun GlassTabBar(
                                 Modifier.border(
                                     width = 1.dp,
                                     brush = Brush.verticalGradient(
-                                        listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.06f))
+                                        listOf(Color.White.copy(alpha = 0.50f), Color.White.copy(alpha = 0.06f))
                                     ),
                                     shape = RoundedCornerShape(14.dp),
                                 )
@@ -102,13 +104,13 @@ fun GlassTabBar(
                     Icon(
                         icons[index],
                         contentDescription = label,
-                        tint = if (active) Color.White else GlassTokens.TextTertiary,
+                        tint = if (active) Color.White else colors.textTertiary,
                         modifier = Modifier.size(18.dp),
                     )
                     Text(
                         label,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (active) Color.White else GlassTokens.TextTertiary,
+                        color = if (active) Color.White else colors.textTertiary,
                     )
                 }
             }

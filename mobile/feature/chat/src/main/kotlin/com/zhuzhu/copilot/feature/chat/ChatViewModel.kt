@@ -7,9 +7,12 @@ import com.zhuzhu.copilot.agent.ConfirmationCenter
 import com.zhuzhu.copilot.agent.ConfirmationDecision
 import com.zhuzhu.copilot.agent.ToolContext
 import com.zhuzhu.copilot.data.repo.ProviderRepository
+import com.zhuzhu.copilot.data.repo.SettingsRepository
 import com.zhuzhu.copilot.model.AgentEvent
 import com.zhuzhu.copilot.model.ConfirmationRequest
 import com.zhuzhu.copilot.model.ProviderConfig
+import com.zhuzhu.copilot.ui.Appearance
+import com.zhuzhu.copilot.ui.AppearanceHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +47,7 @@ data class ToolRowUi(val callId: String, val name: String, val summary: String, 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val providerRepository: ProviderRepository,
+    private val settingsRepository: SettingsRepository,
     private val engine: AgentEngine,
     private val confirmCenter: ConfirmationCenter,
 ) : ViewModel() {
@@ -173,4 +177,13 @@ class ChatViewModel @Inject constructor(
     fun answerConfirm(decision: ConfirmationDecision) = confirmCenter.resolve(decision)
 
     fun stop() = engine.cancel()
+
+    /** 外观切换立即生效，随后异步落盘；不阻塞 UI。 */
+    fun saveAppearance(appearance: Appearance) {
+        AppearanceHolder.apply(appearance)
+        viewModelScope.launch {
+            settingsRepository.setAppearanceMode(appearance.mode.name)
+            settingsRepository.setBackgroundColor(appearance.customColor)
+        }
+    }
 }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -38,17 +39,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.zhuzhu.copilot.ui.AppearanceHolder
 import com.zhuzhu.copilot.ui.GlassSurface
 import com.zhuzhu.copilot.ui.GlassTokens
 import com.zhuzhu.copilot.ui.GlassTopBar
+import com.zhuzhu.copilot.ui.LocalAppColors
 import com.zhuzhu.copilot.ui.MotionTokens
 import dev.chrisbanes.haze.HazeState
 
 @Composable
 fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: ChatViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsState()
+    val colors = LocalAppColors.current
+    val appearance by AppearanceHolder.state.collectAsState()
     var input by remember { mutableStateOf("") }
     var showSetup by remember { mutableStateOf(false) }
+    var showAppearance by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.setupSaved) {
         if (state.setupSaved) {
@@ -60,22 +66,38 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
 
     Column(modifier.fillMaxSize()) {
         GlassTopBar("zhuzhu", hazeState) {
-            Box(
-                Modifier
-                    .size(28.dp)
-                    .clip(CircleShape)
-                    .clickable {
-                        viewModel.refreshProviderState()
-                        showSetup = true
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.Settings,
-                    contentDescription = stringResource(R.string.chat_settings_cd),
-                    tint = GlassTokens.TextSecondary,
-                    modifier = Modifier.size(17.dp),
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable { showAppearance = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Palette,
+                        contentDescription = stringResource(R.string.appearance_open_cd),
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable {
+                            viewModel.refreshProviderState()
+                            showSetup = true
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Settings,
+                        contentDescription = stringResource(R.string.chat_settings_cd),
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
             }
         }
 
@@ -92,11 +114,12 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                         modifier = Modifier.padding(vertical = 3.dp),
                         hazeState = hazeState,
                         corner = 16.dp,
-                        tintColor = if (bubble.fromUser) GlassTokens.BlueHighlight else Color.White,
+                        tintColor = if (bubble.fromUser) colors.accentStrong else null,
+                        liquid = false,
                     ) {
                         Text(
                             bubble.text,
-                            color = if (bubble.fromUser) Color.White else GlassTokens.TextPrimary,
+                            color = if (bubble.fromUser) Color.White else colors.textPrimary,
                             modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
                         )
                     }
@@ -104,7 +127,7 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
             }
             if (state.streaming.isNotEmpty()) {
                 item {
-                    Text(state.streaming, color = GlassTokens.TextSecondary, modifier = Modifier.padding(8.dp))
+                    Text(state.streaming, color = colors.textSecondary, modifier = Modifier.padding(8.dp))
                 }
             }
             items(state.toolRows, key = { it.callId }) { row ->
@@ -121,7 +144,7 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
         ) {
             Text(
                 errorText,
-                color = GlassTokens.Danger,
+                color = colors.danger,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
@@ -145,7 +168,7 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                     value = input,
                     onValueChange = { input = it },
                     placeholder = {
-                        Text(stringResource(R.string.chat_input_hint), color = GlassTokens.TextTertiary)
+                        Text(stringResource(R.string.chat_input_hint), color = colors.textTertiary)
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp),
@@ -154,8 +177,8 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                         unfocusedContainerColor = Color.Transparent,
                         focusedIndicatorColor = Color.Transparent,
                         unfocusedIndicatorColor = Color.Transparent,
-                        focusedTextColor = GlassTokens.TextPrimary,
-                        unfocusedTextColor = GlassTokens.TextPrimary,
+                        focusedTextColor = colors.textPrimary,
+                        unfocusedTextColor = colors.textPrimary,
                     ),
                 )
                 TextButton(
@@ -170,7 +193,7 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                 ) {
                     Text(
                         stringResource(if (state.running) R.string.chat_stop else R.string.chat_send),
-                        color = GlassTokens.BlueSoft,
+                        color = colors.accentSoft,
                     )
                 }
             }
@@ -189,6 +212,18 @@ fun ChatScreen(hazeState: HazeState, modifier: Modifier = Modifier, viewModel: C
                 viewModel.refreshProviderState()
             },
             onSave = viewModel::saveProvider,
+        )
+    }
+
+    if (showAppearance) {
+        AppearanceSheet(
+            current = appearance,
+            hazeState = hazeState,
+            onDismiss = { showAppearance = false },
+            onApply = {
+                viewModel.saveAppearance(it)
+                showAppearance = false
+            },
         )
     }
 }

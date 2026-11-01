@@ -40,6 +40,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.zhuzhu.copilot.model.ProviderConfig
 import com.zhuzhu.copilot.ui.GlassTokens
+import com.zhuzhu.copilot.ui.LocalAppColors
 
 @Composable
 fun ProviderSetupDialog(
@@ -52,6 +53,7 @@ fun ProviderSetupDialog(
     onSave: (ProviderConfig, String) -> Unit,
 ) {
     val customName = stringResource(R.string.provider_setup_custom_name)
+    val colors = LocalAppColors.current
     var name by remember(active) { mutableStateOf(active?.name.orEmpty()) }
     var baseUrl by remember(active) { mutableStateOf(active?.baseUrl.orEmpty()) }
     var model by remember(active) { mutableStateOf(active?.model.orEmpty()) }
@@ -71,10 +73,10 @@ fun ProviderSetupDialog(
                 .padding(horizontal = 20.dp, vertical = 28.dp)
                 .heightIn(max = 620.dp)
                 .clip(RoundedCornerShape(GlassTokens.SheetCorner))
-                .background(GlassTokens.BgPanel)
+                .background(colors.background)
                 .border(
                     GlassTokens.RimWidthDp.dp,
-                    GlassTokens.BluePrimary.copy(alpha = 0.7f),
+                    colors.accent.copy(alpha = 0.7f),
                     RoundedCornerShape(GlassTokens.SheetCorner),
                 )
                 .verticalScroll(rememberScrollState())
@@ -84,12 +86,12 @@ fun ProviderSetupDialog(
             Text(
                 stringResource(R.string.provider_setup_title),
                 style = MaterialTheme.typography.titleMedium,
-                color = GlassTokens.TextPrimary,
+                color = colors.textPrimary,
             )
             Text(
                 stringResource(R.string.provider_setup_notice),
                 style = MaterialTheme.typography.labelSmall,
-                color = GlassTokens.TextTertiary,
+                color = colors.textTertiary,
             )
 
             SectionLabel(stringResource(R.string.provider_setup_presets))
@@ -128,7 +130,7 @@ fun ProviderSetupDialog(
                 Text(
                     stringResource(res),
                     style = MaterialTheme.typography.labelSmall,
-                    color = GlassTokens.Danger,
+                    color = colors.danger,
                 )
             }
 
@@ -138,7 +140,7 @@ fun ProviderSetupDialog(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextButton(onClick = onDismiss) {
-                    Text(stringResource(R.string.provider_setup_cancel), color = GlassTokens.TextSecondary)
+                    Text(stringResource(R.string.provider_setup_cancel), color = colors.textSecondary)
                 }
                 TextButton(
                     onClick = {
@@ -159,7 +161,7 @@ fun ProviderSetupDialog(
                         stringResource(
                             if (saving) R.string.provider_setup_saving else R.string.provider_setup_save
                         ),
-                        color = GlassTokens.BlueSoft,
+                        color = colors.accentSoft,
                     )
                 }
             }
@@ -169,17 +171,20 @@ fun ProviderSetupDialog(
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(text, style = MaterialTheme.typography.labelSmall, color = GlassTokens.TextTertiary)
+    val colors = LocalAppColors.current
+    Text(text, style = MaterialTheme.typography.labelSmall, color = colors.textTertiary)
 }
 
 @Composable
 private fun PresetRow(preset: ProviderConfig, selected: Boolean, onClick: () -> Unit) {
+    val colors = LocalAppColors.current
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (selected) GlassTokens.BlueHighlight.copy(alpha = 0.35f) else GlassTokens.BgPanelAlt
+                if (selected) colors.accentStrong.copy(alpha = 0.35f)
+                else colors.textPrimary.copy(alpha = 0.05f)
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 7.dp),
@@ -187,18 +192,18 @@ private fun PresetRow(preset: ProviderConfig, selected: Boolean, onClick: () -> 
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Column(Modifier.weight(1f)) {
-            Text(preset.name, style = MaterialTheme.typography.bodySmall, color = GlassTokens.TextPrimary)
+            Text(preset.name, style = MaterialTheme.typography.bodySmall, color = colors.textPrimary)
             Text(
                 "${preset.model} · ${preset.baseUrl}",
                 style = MaterialTheme.typography.labelSmall,
-                color = GlassTokens.TextTertiary,
+                color = colors.textTertiary,
             )
         }
         if (selected) {
             Icon(
                 Icons.Outlined.Check,
                 contentDescription = null,
-                tint = GlassTokens.BlueSoft,
+                tint = colors.accentSoft,
                 modifier = Modifier.size(16.dp),
             )
         }
@@ -212,25 +217,26 @@ private fun SetupField(
     label: String,
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
+    val colors = LocalAppColors.current
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        label = { Text(label, color = GlassTokens.TextTertiary) },
+        label = { Text(label, color = colors.textTertiary) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         shape = RoundedCornerShape(12.dp),
         textStyle = MaterialTheme.typography.bodySmall,
         visualTransformation = visualTransformation,
         colors = OutlinedTextFieldDefaults.colors(
-            focusedTextColor = GlassTokens.TextPrimary,
-            unfocusedTextColor = GlassTokens.TextPrimary,
+            focusedTextColor = colors.textPrimary,
+            unfocusedTextColor = colors.textPrimary,
             focusedContainerColor = Color.Transparent,
             unfocusedContainerColor = Color.Transparent,
-            focusedBorderColor = GlassTokens.BlueHighlight,
-            unfocusedBorderColor = GlassTokens.Divider,
-            cursorColor = GlassTokens.BlueSoft,
-            focusedLabelColor = GlassTokens.BlueSoft,
-            unfocusedLabelColor = GlassTokens.TextTertiary,
+            focusedBorderColor = colors.accentStrong,
+            unfocusedBorderColor = colors.divider,
+            cursorColor = colors.accentSoft,
+            focusedLabelColor = colors.accentSoft,
+            unfocusedLabelColor = colors.textTertiary,
         ),
     )
 }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -20,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.zhuzhu.copilot.feature.chat.ChatScreen
 import com.zhuzhu.copilot.feature.settings.SettingsPlaceholder
 import com.zhuzhu.copilot.feature.tasks.TasksPlaceholder
+import com.zhuzhu.copilot.ui.AppearanceHolder
 import com.zhuzhu.copilot.ui.GlassTabBar
 import com.zhuzhu.copilot.ui.SceneBackground
 import com.zhuzhu.copilot.ui.ZhuzhuTheme
@@ -31,7 +33,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { ZhuzhuTheme { AppRoot() } }
+        setContent {
+            val appearance by AppearanceHolder.state.collectAsState()
+            ZhuzhuTheme(appearance) { AppRoot() }
+        }
     }
 }
 

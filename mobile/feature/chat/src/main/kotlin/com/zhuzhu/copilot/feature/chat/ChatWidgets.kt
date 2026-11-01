@@ -16,21 +16,23 @@ import com.zhuzhu.copilot.agent.ConfirmationDecision
 import com.zhuzhu.copilot.model.ConfirmationRequest
 import com.zhuzhu.copilot.model.RiskLevel
 import com.zhuzhu.copilot.ui.GlassSurface
-import com.zhuzhu.copilot.ui.GlassTokens
+import com.zhuzhu.copilot.ui.LocalAppColors
 import dev.chrisbanes.haze.HazeState
 
 @Composable
 fun ToolCallCard(row: ToolRowUi, hazeState: HazeState) {
+    val colors = LocalAppColors.current
     GlassSurface(
         Modifier.fillMaxWidth().padding(horizontal = 0.dp, vertical = 2.dp),
         hazeState,
         corner = 16.dp,
+        liquid = false,
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(row.name, color = GlassTokens.TextPrimary, style = MaterialTheme.typography.bodySmall)
+            Text(row.name, color = colors.textPrimary, style = MaterialTheme.typography.bodySmall)
             Text(
                 if (row.running) stringResource(R.string.chat_tool_running) else row.summary,
-                color = if (row.running) GlassTokens.BlueSoft else GlassTokens.TextSecondary,
+                color = if (row.running) colors.accentSoft else colors.textSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
         }
@@ -45,37 +47,38 @@ fun ConfirmSheet(
     onDecision: (ConfirmationDecision) -> Unit,
 ) {
     val risk = riskLabel(request.risk)
+    val colors = LocalAppColors.current
     GlassSurface(modifier.fillMaxWidth(), hazeState, corner = 20.dp) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 "${request.toolName} · $risk",
-                color = if (request.risk == RiskLevel.DESTRUCTIVE) GlassTokens.Danger else GlassTokens.TextPrimary,
+                color = if (request.risk == RiskLevel.DESTRUCTIVE) colors.danger else colors.textPrimary,
                 style = MaterialTheme.typography.bodyMedium,
             )
-            Text(request.summary, color = GlassTokens.TextSecondary, style = MaterialTheme.typography.labelSmall)
+            Text(request.summary, color = colors.textSecondary, style = MaterialTheme.typography.labelSmall)
             Text(
                 request.argumentsJson.take(200),
-                color = GlassTokens.TextTertiary,
+                color = colors.textTertiary,
                 style = MaterialTheme.typography.labelSmall,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextButton(onClick = { onDecision(ConfirmationDecision.DENY) }) {
                     Text(
                         stringResource(com.zhuzhu.copilot.ui.R.string.skip),
-                        color = GlassTokens.TextSecondary,
+                        color = colors.textSecondary,
                     )
                 }
                 TextButton(onClick = { onDecision(ConfirmationDecision.ALLOW_ONCE) }) {
                     Text(
                         stringResource(com.zhuzhu.copilot.ui.R.string.allow),
-                        color = GlassTokens.BlueSoft,
+                        color = colors.accentSoft,
                     )
                 }
                 if (request.risk != RiskLevel.DESTRUCTIVE) {
                     TextButton(onClick = { onDecision(ConfirmationDecision.ALLOW_SESSION) }) {
                         Text(
                             stringResource(com.zhuzhu.copilot.ui.R.string.always_allow),
-                            color = GlassTokens.TextSecondary,
+                            color = colors.textSecondary,
                         )
                     }
                 }

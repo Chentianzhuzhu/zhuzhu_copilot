@@ -27,7 +27,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
-    implementation(libs.datastore.preferences)
+    api(libs.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.hilt.android)
     ksp(libs.room.compiler)

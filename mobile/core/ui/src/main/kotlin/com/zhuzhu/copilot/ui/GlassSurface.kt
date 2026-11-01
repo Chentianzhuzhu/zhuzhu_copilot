@@ -1,6 +1,12 @@
 package com.zhuzhu.copilot.ui
 
 import android.os.Build
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -23,14 +29,12 @@ import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 
 /**
- * iOS 风格液态玻璃：
- * 1. 外部柔和投影，让玻璃悬浮于场景之上
- * 2. 背景模糊 + 白色微 tint + 颗粒，形成内部磨砂
- * 3. 整圈环形光带（右上冷白、右下深蓝、左上最强）
- * 4. 顶部 1dp 镜面高光 + 左上弧形反光
+ * 液态玻璃：
+ * - 高斯模糊 + 白色微 tint + 颗粒 = 实时磨砂
+ * - 环形光带 + 顶部镜面 = 边缘高光
+ * - 顶部/底部流动光段 + 斜向扫光 = 实时液态感
  *
- * 注意：模糊只能采样同窗口内容。调用方必须用 SceneBackground + hazeSource 提供底层场景，
- * 否则纯黑背景会让模糊退化成实色面板。
+ * 模糊只能采样同窗口内容，调用方必须用 SceneBackground(hazeSource) 提供纯色底图。
  */
 @Composable
 fun GlassSurface(
@@ -38,11 +42,35 @@ fun GlassSurface(
     hazeState: HazeState,
     level: GlassLevel = GlassLevel.STANDARD,
     corner: Dp = GlassTokens.CardCorner,
-    tintColor: Color = Color.White,
+    tintColor: Color? = null,
+    liquid: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val spec = level.spec()
+    val colors = LocalAppColors.current
+    val tint = tintColor ?: colors.glassTint
     val shape = RoundedCornerShape(corner)
+
+    val flow: Float
+    val breathe: Float
+    if (liquid) {
+        val transition = rememberInfiniteTransition(label = "glass-liquid")
+        flow = transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(5200, easing = LinearEasing), RepeatMode.Restart),
+            label = "flow",
+        ).value
+        breathe = transition.animateFloat(
+            initialValue = 0.72f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Reverse),
+            label = "breathe",
+        ).value
+    } else {
+        flow = 0f
+        breathe = 1f
+    }
 
     Box(
         modifier
@@ -58,7 +86,7 @@ fun GlassSurface(
                 if (Build.VERSION.SDK_INT >= 31) {
                     Modifier.hazeEffect(state = hazeState) {
                         backgroundColor = Color.Transparent
-                        tints = listOf(HazeTint(tintColor.copy(alpha = spec.tintAlpha)))
+                        tints = listOf(HazeTint(tint.copy(alpha = spec.tintAlpha)))
                         blurRadius = spec.blurDp.dp
                         noiseFactor = spec.grain
                     }
@@ -67,9 +95,9 @@ fun GlassSurface(
             .background(
                 Brush.verticalGradient(
                     listOf(
-                        tintColor.copy(alpha = spec.tintAlpha * 1.5f),
-                        Color.White.copy(alpha = 0.015f),
-                        tintColor.copy(alpha = spec.tintAlpha * 0.85f),
+                        tint.copy(alpha = spec.tintAlpha * 1.4f),
+                        tint.copy(alpha = spec.tintAlpha * 0.35f),
+                        tint.copy(alpha = spec.tintAlpha * 0.9f),
                     )
                 )
             )
@@ -79,15 +107,15 @@ fun GlassSurface(
                 val cornerRadius = CornerRadius(corner.toPx(), corner.toPx())
                 val rim = GlassTokens.RimWidthDp.dp.toPx()
 
-                // 整圈液态光带：0°=右，90°=下，180°=左，270°=上
+                // 1. 整圈液态光带（静态底光，保证边缘始终清晰）
                 drawRoundRect(
                     brush = Brush.sweepGradient(
                         listOf(
-                            Color.White.copy(alpha = 0.20f * spec.rimAlpha),
-                            GlassTokens.BlueSoft.copy(alpha = 0.55f * spec.rimAlpha),
-                            Color.White.copy(alpha = 0.32f * spec.rimAlpha),
-                            Color.White.copy(alpha = 1.00f * spec.rimAlpha),
-                            Color.White.copy(alpha = 0.20f * spec.rimAlpha),
+                            colors.rimWarm.copy(alpha = 0.18f * spec.rimAlpha),
+                            colors.rimCool.copy(alpha = 0.50f * spec.rimAlpha),
+                            colors.rimWarm.copy(alpha = 0.28f * spec.rimAlpha),
+                            colors.rimWarm.copy(alpha = 0.95f * spec.rimAlpha),
+                            colors.rimWarm.copy(alpha = 0.18f * spec.rimAlpha),
                         ),
                         center = Offset(size.width * 0.5f, size.height * 0.5f),
                     ),
@@ -95,10 +123,19 @@ fun GlassSurface(
                     style = Stroke(width = rim),
                 )
 
-                // 顶部镜面高光（比整圈更亮更细）
+                // 2. 亮色主题下补一条极淡的暗边，避免白玻璃在白底上“消失”
+                if (colors.isLight) {
+                    drawRoundRect(
+                        color = Color.Black.copy(alpha = 0.10f),
+                        cornerRadius = cornerRadius,
+                        style = Stroke(width = 1.dp.toPx()),
+                    )
+                }
+
+                // 3. 顶部镜面高光（固定）
                 drawRoundRect(
                     brush = Brush.verticalGradient(
-                        listOf(Color.White.copy(alpha = 0.42f), Color.Transparent),
+                        listOf(colors.rimWarm.copy(alpha = 0.38f * breathe), Color.Transparent),
                         endY = size.height * 0.55f,
                     ),
                     topLeft = Offset(rim * 0.8f, rim * 0.8f),
@@ -107,32 +144,94 @@ fun GlassSurface(
                     style = Stroke(width = 1.dp.toPx()),
                 )
 
-                // 左上弧形反光（液态玻璃的“高光弧”）
-                drawArc(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.30f), Color.Transparent),
-                        center = Offset(size.width * 0.12f, -size.height * 0.05f),
-                        radius = size.width * 0.95f,
-                    ),
-                    startAngle = 175f,
-                    sweepAngle = 105f,
-                    useCenter = false,
-                    topLeft = Offset(-size.width * 0.04f, -size.height * 0.18f),
-                    size = Size(size.width * 0.92f, size.height * 1.15f),
-                    style = Stroke(width = 2.dp.toPx()),
-                )
-
-                // 底部冷色反光，制造厚度
+                // 4. 顶部流动光段（液态感）
                 drawLine(
                     brush = Brush.horizontalGradient(
                         listOf(
                             Color.Transparent,
-                            GlassTokens.BlueSoft.copy(alpha = 0.22f * spec.rimAlpha),
+                            colors.rimWarm.copy(alpha = 0.85f * spec.rimAlpha),
                             Color.Transparent,
-                        )
+                        ),
+                        startX = size.width * (flow - 0.35f),
+                        endX = size.width * (flow + 0.05f),
                     ),
-                    start = Offset(size.width * 0.22f, size.height - rim * 0.6f),
-                    end = Offset(size.width * 0.78f, size.height - rim * 0.6f),
+                    start = Offset(0f, rim * 0.5f),
+                    end = Offset(size.width, rim * 0.5f),
+                    strokeWidth = rim,
+                )
+
+                // 5. 底部流动冷光（反方向）
+                drawLine(
+                    brush = Brush.horizontalGradient(
+                        listOf(
+                            Color.Transparent,
+                            colors.rimCool.copy(alpha = 0.75f * spec.rimAlpha),
+                            Color.Transparent,
+                        ),
+                        startX = size.width * (1f - flow - 0.15f),
+                        endX = size.width * (1f - flow + 0.25f),
+                    ),
+                    start = Offset(0f, size.height - rim * 0.5f),
+                    end = Offset(size.width, size.height - rim * 0.5f),
+                    strokeWidth = rim,
+                )
+
+                // 6. 斜向扫光（整块玻璃缓慢流动的镜面反射）
+                drawRect(
+                    brush = Brush.linearGradient(
+                        listOf(
+                            Color.Transparent,
+                            colors.rimWarm.copy(alpha = 0.10f),
+                            Color.Transparent,
+                        ),
+                        start = Offset(size.width * (flow - 0.45f), 0f),
+                        end = Offset(size.width * (flow + 0.15f), size.height),
+                    ),
+                )
+
+                // 7. 内缘折射带：模拟光穿过玻璃厚度时的明暗弯折（顶部压亮、底部压暗）
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        listOf(
+                            colors.rimWarm.copy(alpha = 0.22f),
+                            Color.Transparent,
+                        ),
+                        endY = size.height * 0.28f,
+                    ),
+                    topLeft = Offset(rim * 1.8f, rim * 1.8f),
+                    size = Size(size.width - rim * 3.6f, size.height - rim * 3.6f),
+                    cornerRadius = CornerRadius(corner.toPx() - rim * 1.8f, corner.toPx() - rim * 1.8f),
+                    style = Stroke(width = 1.5.dp.toPx()),
+                )
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.16f),
+                        ),
+                        startY = size.height * 0.72f,
+                        endY = size.height,
+                    ),
+                    topLeft = Offset(rim * 3.2f, rim * 3.2f),
+                    size = Size(size.width - rim * 6.4f, size.height - rim * 6.4f),
+                    cornerRadius = CornerRadius(
+                        (corner.toPx() - rim * 3.2f).coerceAtLeast(0f),
+                        (corner.toPx() - rim * 3.2f).coerceAtLeast(0f),
+                    ),
+                    style = Stroke(width = 2.dp.toPx()),
+                )
+
+                // 8. 色散：边缘 1px 的冷/暖分离（顶部青、底品红），制造光学厚感
+                drawLine(
+                    color = Color(0xFF5CC8FF).copy(alpha = 0.16f),
+                    start = Offset(size.width * 0.18f, rim * 1.9f),
+                    end = Offset(size.width * 0.82f, rim * 1.9f),
+                    strokeWidth = 1.dp.toPx(),
+                )
+                drawLine(
+                    color = Color(0xFFFF6FA0).copy(alpha = 0.13f),
+                    start = Offset(size.width * 0.22f, size.height - rim * 1.9f),
+                    end = Offset(size.width * 0.78f, size.height - rim * 1.9f),
                     strokeWidth = 1.dp.toPx(),
                 )
             },
