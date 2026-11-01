@@ -120,7 +120,7 @@ python -m pytest tests/test_prompt_i18n.py -v                                   
 
 ### 2.5 安装包版本与主程序 FileVersion 对不上
 
-- **根因**：`installer\zhuzhu_Copilot.iss` 的 `#define MyAppVersion` 是**硬编码**（当前 `7.0.1`），靠 `build_release.ps1` 的「版本号同步」阶段改写；绕过脚本直接调 ISCC 就不会同步。`[静态·已核对]`
+- **根因**：`installer\zhuzhu_Copilot.iss` 的 `#define MyAppVersion` 是**硬编码**（当前 `8.0.0`），靠 `build_release.ps1` 的「版本号同步」阶段改写；绕过脚本直接调 ISCC 就不会同步。`[静态·已核对]`
 - **复现**：改 `src` 里版本号后直接 `ISCC installer\zhuzhu_Copilot.iss`。
 - **修复**：永远从脚本入口构建（README：`.\build_release.ps1` 一条命令；`installer\build_setup.bat` 是等价薄壳）。
 - **验证**：`(Get-Item "dist\zhuzhu Copilot\zhuzhu Copilot.exe").VersionInfo.FileVersion` 与安装包属性页版本、`#define MyAppVersion` 三者一致。

@@ -1,4 +1,4 @@
-; ╔══════════════════════════════════════════════════════════╗
+﻿; ╔══════════════════════════════════════════════════════════╗
 ; ║  zhuzhu Copilot - Inno Setup 7 安装脚本                 ║
 ; ║  前置：先运行 build 生成 dist\zhuzhu Copilot（已签名）    ║
 ; ║  构建入口：build_release.ps1（它负责用 -s 注册 SignTool，  ║
@@ -8,7 +8,7 @@
 ; ╚══════════════════════════════════════════════════════════╝
 
 #define MyAppName "zhuzhu Copilot"
-#define MyAppVersion "7.0.1"
+#define MyAppVersion "8.0.0"
 #define MyAppPublisher "zhutianliang"
 #define MyAppExeName "zhuzhu Copilot.exe"
 ; 旧版标识（WinAppMigrator）：仅用于卸载时清理遗留的注册表分支与用户数据目录

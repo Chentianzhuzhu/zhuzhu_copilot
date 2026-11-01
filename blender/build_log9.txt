@@ -1,0 +1,47 @@
+﻿blender.exe : TBBmalloc: skip allocation functions replacement in ucrtbase.dll: unknown prologue for function _msize
+所在位置 行:15 字符: 1129
++ ... M = 'dumb'; & "C:\Program Files\Blender Foundation\Blender 3.5\blende ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (TBBmalloc: skip...function _msize:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Blender 3.5.0 (hash 1be25cfff18b built 2023-03-29 06:36:20)
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_typing_f3.png'
+ Time: 00:11.75 (Saving: 00:06.59)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_idle_f20.png'
+ Time: 00:00.83 (Saving: 00:00.22)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_wave_f22.png'
+ Time: 00:00.73 (Saving: 00:00.25)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_excited_f6.png'
+ Time: 00:00.91 (Saving: 00:00.41)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_sleep_f48.png'
+ Time: 00:01.45 (Saving: 00:00.41)
+
+Saved: 'C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\checks\pose_stretch_f26.png'
+ Time: 00:01.21 (Saving: 00:00.41)
+
+Error: Python: Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\build_kitty_work.py", line 1076, in <module>
+    main()
+  File "C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\build_kitty_work.py", line 1055, in main
+    meta = bake_runtime(arm, made)
+  File "C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\build_kitty_work.py", line 913, in bake_runtime
+    ab_lo, ab_hi = animated_bounds(arrays, parts_meta)
+  File "C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\build_kitty_work.py", line 803, in animated_bounds
+    rot = _np_quat_mat(arrays["basis_rot"])
+  File "C:\Users\zhuzhu\Desktop\zhuzhu Copilot\blender\build_kitty_work.py", line 762, in _np_quat_mat
+    out[:, 0, 0] = 1 - 2 * (y * y + z * z)
+ValueError: could not broadcast input array from shape (346,4) into shape (346,)
+CHECK typing 3
+CHECK idle 20
+CHECK wave 22
+CHECK excited 6
+CHECK sleep 48
+CHECK stretch 26
+
+Blender quit

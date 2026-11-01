@@ -1,0 +1,168 @@
+﻿blender.exe : TBBmalloc: skip allocation functions replacement in ucrtbase.dll: unknown prologue for function _msize
+所在位置 行:15 字符: 1157
++ ... RENDER="1"; & "C:\Program Files\Blender Foundation\Blender 3.5\blende ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (TBBmalloc: skip...function _msize:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Blender 3.5.0 (hash 1be25cfff18b built 2023-03-29 06:36:20)
+Info: Total files 0 | Changed 0 | Failed 0
+Info: Saved "kitty_work.blend"
+15:47:09 | INFO: Draco mesh compression is available, use library at C:\Program Files\Blender Foundation\Blender 3.5\3.5\python\lib\site-packages\extern_draco.dll
+15:47:10 | INFO: Starting glTF 2.0 export
+15:47:10 | INFO: Extracting primitive: kitty_arm_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_arm_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_bell
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_belly
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_blush_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_blush_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_body
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_chest
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_collar
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_ear_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_ear_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_elbow_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_elbow_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_erin_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_erin_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_eye_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_eye_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_foot_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_foot_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_forearm_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_forearm_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_glass_bridge
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_glass_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_glass_r
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_glint_l
+15:47:10 | INFO: Primitives created: 1
+15:47:10 | INFO: Extracting primitive: kitty_glint_r
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_head
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_muzzle
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_nose
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_paw_l
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_paw_r
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_shoulder_l
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_shoulder_r
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_1
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_2
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_3
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_j2
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_j3
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_ring1
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_ring2
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_tail_tip
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_thigh_l
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_thigh_r
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_toe_l0
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_toe_l1
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_toe_l2
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_toe_r0
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_toe_r1
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_toe_r2
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_whisker_l0
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_whisker_l1
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_whisker_r0
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: kitty_whisker_r1
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: laptop_base
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: laptop_bezel
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: laptop_deck
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: laptop_display
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: laptop_hinge
+15:47:11 | INFO: Primitives created: 1
+15:47:11 | INFO: Extracting primitive: laptop_keys
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: laptop_lid
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: laptop_logo
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: laptop_pad
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: laptop_space
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: mouse_body
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: mouse_pad
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: mug_body
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: mug_handle
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: mug_inner
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: screen_ui_0
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: screen_ui_1
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: screen_ui_2
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: screen_ui_3
+15:47:12 | INFO: Primitives created: 1
+15:47:12 | INFO: Extracting primitive: screen_ui_4
+15:47:12 | INFO: Primitives created: 1
+15:47:21 | INFO: Finished glTF 2.0 export in 10.745246410369873 s
+
+GLB_OK 2542872
+KITTY_BUILD_OK
+{"total_verts": 18566, "total_tris": 36712, "bounds": {"min": [-0.452, -0.7007, -0.001], "max": [0.487, 0.5435, 1.4061]}, "fps": 24}
+clips: [('typing', 40, True), ('idle', 72, True), ('wave', 48, False), ('excited', 30, True), ('sleep', 96, True), ('stretch', 60, False)]
+parts: 73
+assets: C:\Users\zhuzhu\.zhuzhu_Copilot\copilot_plugins\kitty-work-pet\assets\kitty_work.npz
+
+Blender quit
