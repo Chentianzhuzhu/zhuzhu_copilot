@@ -364,6 +364,14 @@ def apply_input_caret(widget) -> None:
                               else _CURSOR_WIDTH)
     except Exception:
         pass
+    # 光标颜色取 palette Text（QSS color 在部分后端不会同步到 palette）：
+    # 显式写入，保证深/浅主题与任意壁纸下光标与文字同色、对比度一致。
+    try:
+        pal = widget.palette()
+        pal.setColor(QPalette.ColorRole.Text, QColor(_input_fg()))
+        widget.setPalette(pal)
+    except Exception:
+        pass
 
 
 def _install_focus_glow(widget) -> None:
@@ -592,15 +600,16 @@ def _input_border() -> str:
 
 
 def _input_fg() -> str:
-    """输入框前景色（文字 + **光标**）：自定义背景下固定纯黑，非壁纸模式用主题文字色。
+    """输入框前景色（文字 + **光标**）：按表面实际亮度取纯黑/纯白 / 主题文字色。
 
-    Qt 没有独立的 caret-color API —— 光标色与文字色共用 QSS 的 `color`，二者
-    无法分开设置。壁纸亮度由 app_wallpaper.rendered_luminance() 实测（含压暗纱），
-    低于 FOREGROUND_SWITCH_LUM 取纯白、高于取纯黑，保证在任意壁纸上对比度最优。
-    壁纸不可用时回退到按主题深浅取色。
+    Qt 没有独立的 caret-color API —— 光标色与文字色共用 QSS 的 `color`。壁纸亮度
+    由 app_wallpaper.rendered_luminance() 实测（含压暗纱）：亮壁纸取纯黑、暗壁纸
+    取纯白。**不能一律用纯黑**：暗壁纸 / 深色背景下黑光标几乎不可见（用户反馈
+    「光标在深色/浅色模式辨识度低」的根因）。
     """
     if _feedback_boosted():
-        return _CURSOR_COLOR_ON_WALLPAPER
+        return (_CURSOR_COLOR_ON_WALLPAPER if _input_fg_dark()
+                else _CURSOR_COLOR_ON_WALLPAPER_INVERTED)
     return TEXT
 
 
@@ -10170,7 +10179,7 @@ class _AgentSettingsDialog(QDialog):
         if not isinstance(idx, int) or not (0 <= idx < len(self._mcp_servers)):
             return
         name = str(self._mcp_servers[idx].get("name") or "")
-        menu = QMenu(self)
+        menu = _FadeMenu(self)
         restart_act = menu.addAction(_ui("重启此服务器"))
         copy_act = menu.addAction(_ui("复制此服务器配置"))
         act = menu.exec(self.mcp_list.mapToGlobal(pos))
@@ -18623,7 +18632,7 @@ class WorktreeWindow(_RoundedFloatWindow):
         if not path:
             return
         self.tree.setCurrentItem(item)
-        menu = QMenu(self)
+        menu = _FadeMenu(self)
         open_ex = menu.addAction(_ui("打开于资源管理器"))
         open_ex.triggered.connect(lambda: self._open_in_explorer(path))
         if os.path.isdir(path):
@@ -19159,7 +19168,14 @@ class _SessionDrawer(QFrame):
 
     # ---- 展示 ----
     def refresh(self, sessions: list, current_sid: str) -> None:
-        """全量重建列表（会话数在几十级，重建比增量比对更不易出错）。"""
+        """全量重建列表（会话数在几十级，重建比增量比对更不易出错）。
+
+        **滚动位置必须保留**：clear() 会把滚动条重置到顶部，点一下历史会话
+        整栏就跳回顶部（用户反馈）。这里先记位置，重建后立即恢复，并在下一帧
+        再兜底一次（列表布局完成前 maximum 尚未更新）。
+        """
+        bar = self.list.verticalScrollBar()
+        scroll_pos = bar.value()
         self.list.blockSignals(True)
         self.list.clear()
         # 置顶优先，其次按最近更新；排序只影响展示，不改磁盘里的 updated 语义
@@ -19179,6 +19195,22 @@ class _SessionDrawer(QFrame):
                 self.list.setCurrentItem(it)
         self.list.blockSignals(False)
         self._apply_filter(self.search.text())
+        bar.setValue(scroll_pos)
+
+        def _later():
+            try:
+                self._restore_scroll(scroll_pos)
+            except Exception:
+                pass          # 面板已销毁（主题重建/退出）时静默跳过
+        QTimer.singleShot(0, _later)
+
+    def _restore_scroll(self, pos: int) -> None:
+        """重建/过滤后恢复滚动位置（下一帧兜底：布局完成前 maximum 还是旧值）。"""
+        try:
+            bar = self.list.verticalScrollBar()
+            bar.setValue(min(int(pos), bar.maximum()))
+        except RuntimeError:
+            pass
 
     def refresh_status(self) -> None:
         """运行/待确认状态变化时重绘行（转圈刷新点调用）。"""
@@ -19204,7 +19236,7 @@ class _SessionDrawer(QFrame):
         if not sid:
             return
         pinned = bool(item.data(Qt.ItemDataRole.UserRole + 3))
-        menu = QMenu(self)
+        menu = _FadeMenu(self)
         pin_act = menu.addAction(_ui("取消置顶") if pinned else _ui("置顶会话"))
         menu.addSeparator()
         del_act = menu.addAction(_uif("删除对话「{a0}」", a0=item.text()))
@@ -19371,6 +19403,28 @@ class _FunctionRail(QFrame):
                    " border: none; }")
         for div in self._divs:
             div.setStyleSheet(div_qss)
+
+
+class _FadeMenu(QMenu):
+    """右键 / 「更多」菜单：弹出时 150ms 淡入（窗口透明度 0 → 1）。
+
+    QMenu.exec() 阻塞在自己的事件循环里，动画会在这个循环里正常推进；只动透明度、
+    不动尺寸与位置，避免菜单从鼠标落点「滑走」造成点错项。
+    """
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        try:
+            self.setWindowOpacity(0.0)
+            anim = QPropertyAnimation(self, b"windowOpacity", self)
+            anim.setDuration(motion.POP_MS)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(motion.settle())
+            self._pop_anim = anim      # 持有引用，避免被回收
+            anim.start()
+        except Exception:
+            pass
 
 
 class _CuteBubble(QLabel):
@@ -22722,7 +22776,7 @@ class AgentPanel(QDialog):
 
     def _open_rail_more_menu(self):
         """胶囊底部「更多」：直接跳设置页的对应分页（不新开窗口）。"""
-        menu = QMenu(self)
+        menu = _FadeMenu(self)
         entries = []
         for key, label in (("general", "通用与记忆"), ("skills", "技能"),
                            ("workflow", "工作流"), ("wallpaper", "背景"),
@@ -27761,7 +27815,7 @@ class AgentPanel(QDialog):
         因此弹窗位置与「在哪个标签上右键」无关，始终贴着光标。"""
         segs = self._bubble_segs.get(id(bubble))
         text = self._bubble_read_text(segs)
-        menu = QMenu(self)
+        menu = _FadeMenu(self)
         read_act = menu.addAction(_ui("朗读这条回复"))
         if text:
             menu.addSeparator()
@@ -30647,7 +30701,7 @@ class AgentPanel(QDialog):
             return
         name = self.session_combo.itemText(idx.row())
         orig = self.session_combo.currentIndex()   # 记录原索引，防止 popup 关闭误切换对话
-        menu = QMenu(self)
+        menu = _FadeMenu(self)
         del_act = menu.addAction(_uif("删除对话「{a0}」", a0=name))
         act = menu.exec(view.viewport().mapToGlobal(pos))
         # 菜单/下拉关闭时 QComboBox 会把高亮项同步为当前项，误触发 _on_session_selected：

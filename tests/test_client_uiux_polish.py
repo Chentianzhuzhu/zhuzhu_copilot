@@ -349,6 +349,32 @@ def test_function_rail_exposes_collapse_entries(panel):
     assert "leftdock" in rail._buttons, "胶囊缺少左栏折叠入口"
 
 
+def test_drawer_refresh_keeps_scroll_position(panel):
+    """点击历史会话后重建列表不得把滚动条甩回顶部（用户反馈的「整栏跳动」）。"""
+    d = _drawer(panel)
+    rows = [{"id": f"s{i}", "name": f"会话 {i}", "updated": i} for i in range(30)]
+    d.refresh(rows, "s0")
+    _pump(60)
+    bar = d.list.verticalScrollBar()
+    bar.setValue(120)
+    _pump(30)
+    pos = bar.value()
+    d.refresh(rows, "s10")     # 模拟点击会话后 _refresh_session_combo 的重建
+    _pump(60)
+    assert bar.value() == min(pos, bar.maximum()), \
+        f"重建后滚动位置跳动：{pos} → {bar.value()}"
+    panel._refresh_session_combo()
+
+
+def test_input_caret_uses_theme_text_color(panel):
+    """光标色必须与正文同色（深/浅主题都高对比），而非固定灰/黑。"""
+    from PyQt6.QtGui import QColor, QPalette
+    inp = panel.input
+    assert inp.cursorWidth() >= 2
+    assert inp.palette().color(QPalette.ColorRole.Text).name() == \
+        QColor(ap.TEXT).name(), "光标色未跟随当前主题正文色"
+
+
 def test_session_drawer_shows_preview_and_pins_first(panel):
     """抽屉行：最近消息预览进第二行，置顶会话排在最前（不改盘上的 updated）。"""
     from PyQt6.QtCore import Qt

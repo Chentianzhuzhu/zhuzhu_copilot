@@ -148,6 +148,37 @@ class ArrowComboBox(QComboBox):
     def showPopup(self):
         super().showPopup()
         self._run_arrow(True)
+        self._fade_popup()
+
+    def _fade_popup(self):
+        """下拉列表淡入（150ms）：Qt 的组合框弹层是独立窗口，只能整体调窗口透明度。
+
+        延后一帧再起动画：showPopup 返回时弹层刚完成定位，立刻设 0 透明度会在
+        个别后端闪一下；下一帧窗口已稳定，淡入是从 0 → 1 的干净过渡。
+        """
+        def _run():
+            try:
+                win = self.view().window()
+            except Exception:
+                return
+            if win is None or win is self.window():
+                return
+            # 只对真正的弹层容器做透明动画：某些后端 view().window() 会回落到主窗口，
+            # 对主窗口设 0 透明度会让整个应用瞬间「消失」。
+            try:
+                if not (win.windowFlags() & Qt.WindowType.Popup):
+                    return
+                win.setWindowOpacity(0.0)
+                anim = QPropertyAnimation(win, b"windowOpacity", self)
+                anim.setDuration(motion.POP_MS)
+                anim.setStartValue(0.0)
+                anim.setEndValue(1.0)
+                anim.setEasingCurve(motion.settle())
+                self._popup_anim = anim   # 持有引用，避免被回收
+                anim.start()
+            except Exception:
+                pass
+        QTimer.singleShot(0, _run)
 
     def hidePopup(self):
         super().hidePopup()
