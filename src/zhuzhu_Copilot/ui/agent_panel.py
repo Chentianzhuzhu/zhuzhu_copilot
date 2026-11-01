@@ -1293,11 +1293,6 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
         '<path d="M10 5H3"/><path d="M12 19H3"/><path d="M14 3v4"/><path d="M16 17v4"/>'
         '<path d="M21 12h-9"/><path d="M21 19h-5"/><path d="M21 5h-7"/>'
         '<path d="M8 10v4"/><path d="M8 12H3"/>'),
-    # 对话流：双向对话气泡 —— 会话列表与按会话的工作目录
-    "sessions": _lucide(
-        '<path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1'
-        ' 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286'
-        'a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/>'),
     # 自定义规则：带勾选的清单 —— 逐条生效的行为约束
     "rules": _lucide(
         '<path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/>'
@@ -1395,7 +1390,6 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
 # 设置页导航项（展示顺序 = 左侧导航顺序，与 _page_builders 的下标一一对应）
 _NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("通用与记忆", "general"),
-    ("对话流", "sessions"),
     ("自定义规则", "rules"),
     ("系统提示词", "prompt"),
     ("bash 白名单", "bash"),
@@ -4398,6 +4392,25 @@ class _CardBoard(QScrollArea):
         self._empty = None
         self._need_h = 120            # 内容所需高度（≤10 张卡片）
         self.setFixedHeight(120)      # 有内容前先占一行高，避免布局跳动
+        # 重排/高度收敛一律走 16ms 去抖：批量 add_card（clear + N 次添加）与页面切换时
+        # 的多次 resize 合并成一次，避免卡片被反复摘除/重插造成「工作流列表频繁闪烁」，
+        # 也避免 N 张卡各触发一次 O(n²) 全量重排造成切页卡顿。
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.setInterval(16)
+        self._layout_timer.timeout.connect(self._relayout)
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(16)
+        self._fit_timer.timeout.connect(self._fit_height)
+
+    def _schedule_relayout(self):
+        """合并连续重排请求（批量增删卡片、窗口连续 resize）"""
+        self._layout_timer.start()
+
+    def _schedule_fit(self):
+        """合并连续高度收敛请求"""
+        self._fit_timer.start()
 
     # ---- QListWidget 兼容接口 ----
     def setWordWrap(self, _on=True):
@@ -4443,7 +4456,7 @@ class _CardBoard(QScrollArea):
                      badges=badges, icon_text=icon_text, board=self)
         card._index = len(self._cards)
         self._cards.append(card)
-        self._relayout()
+        self._schedule_relayout()   # 批量添加只重排一次（循环结束后）
         return card
 
     def _hide_empty(self):
@@ -4484,34 +4497,57 @@ class _CardBoard(QScrollArea):
         # 只在**宽度**变化时重排：高度变化是本控件自己 setFixedHeight 引起的，
         # 若也重排会把 _fit_height 收敛后的高度又顶回内容高（死循环 + 页面被撑高）。
         w = self.viewport().width()
-        if w != getattr(self, "_last_w", -1):
+        # 宽度抖动 ≤2px 不重排：滚动条出现/消失会造成 1~2px 反复变化，
+        # 不设阈值就会陷入「重排→滚动条切换→再重排」的闪烁循环
+        if abs(w - int(getattr(self, "_last_w", -1))) > 2:
             self._last_w = w
-            self._relayout()
+            self._schedule_relayout()
 
     def showEvent(self, ev):
         """切到本页时按当前视口重算高度（懒加载页面首次显示时布局才确定）。"""
         super().showEvent(ev)
-        QTimer.singleShot(0, self._fit_height)
+        self._schedule_fit()
 
     def _relayout(self):
-        """单列重排：逐卡按当前宽度量高，总高封顶 10 张。"""
-        self._clear_rows()
+        """单列重排：逐卡按当前宽度量高，总高封顶 10 张。
+
+        不摘除已有卡片再重插（旧实现每次重排都把卡片 setParent(None) 再插回，
+        批量刷新时整列表会可见地闪一下）：只把缺失/顺序不对的卡片补进布局，
+        多余项才删除。"""
         if not self._cards:
+            self._hide_empty()
+            self._clear_rows()
             self._ensure_empty()
             self.setFixedHeight(120)
             return
+        self._hide_empty()
         avail = max(200, self.viewport().width() - 6)
         total = 0
         for i, c in enumerate(self._cards):
-            c.setParent(self._host)
+            if c.parentWidget() is not self._host:
+                c.setParent(self._host)
+            idx = self._rows_lay.indexOf(c)
+            if idx < 0:
+                self._rows_lay.insertWidget(i, c)
+            elif idx != i:
+                self._rows_lay.removeWidget(c)
+                self._rows_lay.insertWidget(i, c)
             c.set_card_width(avail)
-            self._rows_lay.insertWidget(self._rows_lay.count() - 1, c)
             if i < self.MAX_VISIBLE:
                 total += c.height() + (self.GAP if i else 0)
+        # 移除布局里多余的控件（已从 _cards 移除的卡片、旧空态提示）
+        keep = set(self._cards)
+        for j in range(self._rows_lay.count() - 1, -1, -1):
+            it = self._rows_lay.itemAt(j)
+            w = it.widget() if it is not None else None
+            if w is None or w in keep or w is self._empty:
+                continue
+            self._rows_lay.removeWidget(w)
+            w.deleteLater()
         self._need_h = max(120, total + 6)
         self.setFixedHeight(self._need_h)
         # 页面放不下时按可用高度收敛，避免「页面滚动 + 卡片区滚动」两层滚动条
-        QTimer.singleShot(0, self._fit_height)
+        self._schedule_fit()
 
     def _below_space(self) -> int:
         """卡片区下方同级控件（交互按钮行等）所需高度。
@@ -4575,7 +4611,7 @@ class _CardBoard(QScrollArea):
             if outer is not None and self.y() <= 0 and \
                     int(getattr(self, "_fit_retry", 0)) < 3:
                 self._fit_retry = int(getattr(self, "_fit_retry", 0)) + 1
-                QTimer.singleShot(0, self._fit_height)
+                self._schedule_fit()
                 return
             self._fit_retry = 0
             h = need if avail <= 0 else min(need, max(140, avail))
@@ -5269,15 +5305,15 @@ class _AgentSettingsDialog(QDialog):
     _DANGER_HOVER = "#EF4444"
     _BORDER = "#000000"
 
-    #: 保存时需要读取控件值的页数（_page_builders 下标 0..5 的连续前缀：
-    #: 通用 / 对话流 / 规则 / 提示词 / bash / 模型）。其余页（技能 / MCP / 插件 /
+    #: 保存时需要读取控件值的页数（_page_builders 下标 0..4 的连续前缀：
+    #: 通用 / 规则 / 提示词 / bash / 模型）。其余页（技能 / MCP / 插件 /
     #: Copilot 插件 / 市场 / 音乐 / Agent / 工作流 / 壁纸 / 微信 / 会员）的状态都在
     #: 各自交互发生时即时持久化，或只在用户打开过该页后才可能变化——保存时无需构建。
     #: 旧实现保存时构建全部 18 页：技能页冷扫（PBKDF2 解密 + 目录扫描）、Agent 页、
     #: 工作流页等重 I/O 页要把主线程阻塞数秒，转圈动画被卡成定格（2026-10-25 用户
-    #: 反馈「点保存后转圈极其卡顿」的根因）。页 0 在 __init__ 已构建，这里实际补 1..5。
+    #: 反馈「点保存后转圈极其卡顿」的根因）。页 0 在 __init__ 已构建，这里实际补 1..4。
     #: 约束：必须是连续前缀——_switch_page 按 nav 行号直接映射 stack 下标。
-    _COLLECT_PAGE_COUNT = 6
+    _COLLECT_PAGE_COUNT = 5
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -5356,7 +5392,6 @@ class _AgentSettingsDialog(QDialog):
         self.stack = QStackedWidget()
         self._page_builders = [
             lambda: self._build_general_page(s),
-            self._build_sessions_page,
             lambda: self._build_rules_page(s),
             lambda: self._build_prompt_page(s),
             lambda: self._build_bash_page(s),
@@ -6064,8 +6099,8 @@ class _AgentSettingsDialog(QDialog):
         # 视觉对齐：页内直接加入布局的勾选框统一缩进到标签列宽，与上方「标签 + 控件」
         # 行里的控件左缘对齐（此前勾选框从 0 起，和下拉框形成一条参差的左边缘）
         self._align_option_widgets(lay)
-        # 工作目录已迁移到「对话流」页按会话设置（删除通用设置里的全局入口，
-        # 避免两处入口语义冲突；会话未设置时仍回退历史全局默认值 agent_workdir）
+        # 工作目录在主页面输入卡右侧下拉里按会话设置（设置页已不再提供入口；
+        # 会话未设置时仍回退历史全局默认值 agent_workdir）
         lay.addStretch(1)
         return w
 
@@ -6083,145 +6118,6 @@ class _AgentSettingsDialog(QDialog):
             lay.removeWidget(w)
             row.addWidget(w, 1)
             lay.insertLayout(i, row)
-
-    def _build_sessions_page(self, s=None) -> QWidget:
-        """对话流页面：为每个对话分配独立工作目录（新建对话自动沿用上一对话目录）"""
-        w = self._page(_ui("对话流"))
-        lay = self._page_body(w)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        body = QWidget()
-        body.setStyleSheet("background: transparent;")
-        body_lay = QVBoxLayout(body)
-        body_lay.setContentsMargins(0, 0, 4, 0)
-        body_lay.setSpacing(8)
-
-        self._session_wd_rows = []
-        self._wd_scroll = scroll   # 供 focus_workdir_row 滚动定位
-        try:
-            panel = self.parent()
-            lst = panel._load_session_list() if panel is not None else []
-        except Exception:
-            lst = []
-        lst = sorted(lst, key=lambda x: x.get("updated", 0), reverse=True)
-        if not lst:
-            empty = QLabel(_ui("暂无对话记录"))
-            empty.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
-            body_lay.addWidget(empty)
-        for item in lst:
-            sid = item.get("id", "")
-            name = item.get("name", "新对话") or "新对话"
-            wd = str(item.get("workdir") or "").strip()
-            # 每行外层包 QFrame：既做卡片底（视觉），也作为定位/闪烁高亮的载体
-            frame = QFrame()
-            frame.setObjectName("sessionWdRow")
-            frame.setStyleSheet(self._wd_row_qss(False))
-            row = QHBoxLayout(frame)
-            row.setContentsMargins(10, 6, 8, 6)
-            row.setSpacing(8)
-            name_lbl = QLabel(name)
-            name_lbl.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
-            name_lbl.setFixedWidth(120)
-            name_lbl.setToolTip(sid)
-            row.addWidget(name_lbl)
-            wd_edit = QLineEdit()
-            wd_edit.setPlaceholderText(_ui("留空沿用全局工作目录"))
-            wd_edit.setText(wd)
-            row.addWidget(wd_edit, 1)
-            browse = QPushButton(_line_icon("folder", 18), _ui("浏览…"))
-            browse.setFixedWidth(96)
-            browse.setFixedHeight(30)
-            browse.setStyleSheet(f"background: {self._PANEL}; color: {self._TEXT};"
-                                 f"border: 1px solid {self._BORDER}; border-radius: 8px;"
-                                 "padding: 0 10px; font-weight: 600;")
-            browse.setAutoDefault(False)
-            browse.setCursor(Qt.CursorShape.PointingHandCursor)
-            browse.setToolTip(_ui("选择该对话的工作目录"))
-            browse.clicked.connect(
-                lambda _=False, e=wd_edit: self._browse_session_workdir(e))
-            row.addWidget(browse)
-            body_lay.addWidget(frame)
-            self._session_wd_rows.append((sid, wd_edit, frame))
-        body_lay.addStretch(1)
-        scroll.setWidget(body)
-        lay.addWidget(scroll, 1)
-        return w
-
-    def _wd_row_qss(self, highlight: bool) -> str:
-        """会话工作目录行卡片样式：常态 1px 边框；闪烁高亮用深蓝 2px 边框"""
-        if highlight:
-            return (f"QFrame#sessionWdRow {{ background: {self._PANEL};"
-                    f"border: 2px solid {self._ACCENT_HOVER}; border-radius: 8px; }}")
-        return (f"QFrame#sessionWdRow {{ background: {self._PANEL};"
-                f"border: 1px solid {self._BORDER}; border-radius: 8px; }}")
-
-    def _flash_workdir_row(self, frame):
-        """边框闪烁提醒（深蓝高亮 ⇄ 常态交替 8 次），提醒用户当前对话的设置行位置"""
-        if getattr(self, "_wd_flash_timer", None) is None:
-            self._wd_flash_timer = QTimer(self)
-            self._wd_flash_timer.setInterval(220)
-            self._wd_flash_timer.timeout.connect(self._wd_flash_tick)
-        self._wd_flash_left = 8
-        self._wd_flash_frame = frame
-        self._wd_flash_timer.start()
-
-    def _wd_flash_tick(self):
-        self._wd_flash_left -= 1
-        frame = self._wd_flash_frame
-        if frame is None or not frame.isVisible():
-            self._wd_flash_timer.stop()
-            self._wd_flash_frame = None
-            return
-        frame.setStyleSheet(self._wd_row_qss(highlight=self._wd_flash_left % 2))
-        if self._wd_flash_left <= 0:
-            self._wd_flash_timer.stop()
-            self._wd_flash_frame = None
-
-    def focus_workdir_row(self, sid: str):
-        """定位到「对话流」页（第 2 项）并滚动到指定会话行、闪烁其边框，
-        用于工作目录为空时从聊天页点击「去设置」跳转过来提醒位置。"""
-        try:
-            if self.nav.count() > 1:
-                self.nav.setCurrentRow(1)   # 懒构建对话流页后切换
-            scroll = getattr(self, "_wd_scroll", None)
-            for _sid, _wd_edit, frame in getattr(self, "_session_wd_rows", []):
-                if _sid == sid:
-                    if scroll is not None:
-                        scroll.ensureWidgetVisible(frame)
-                    self._flash_workdir_row(frame)
-                    return
-        except Exception:
-            pass
-
-    def _browse_session_workdir(self, edit):
-        """为某对话选择工作目录（写入对应输入框，保存时持久化）。
-
-        两点稳健性处理（都与「点了浏览像卡死」有关）：
-        1. 防重入：原生目录对话框是模态的，按钮连点/回车重复触发会让它嵌套打开，
-           表现为界面失去响应；用标志位挡住第二次。
-        2. 起始目录必须是真实存在的**本地**目录：输入框里可能残留已删除/失效的路径，
-           交给原生对话框会被解析到网络位置或云同步占位目录，出现长时间无响应。
-           依次回退到「输入框内容 → 当前工作目录 → 用户主目录」。
-        """
-        if getattr(self, "_browsing_workdir", False):
-            return
-        self._browsing_workdir = True
-        try:
-            cands = [edit.text().strip(), str(Path.home())]
-            try:
-                from zhuzhu_Copilot.core import agent_tools
-                cands.insert(1, agent_tools.get_workdir() or "")
-            except Exception:
-                pass
-            start = next((p for p in cands if p and os.path.isdir(p)), "")
-            d = QFileDialog.getExistingDirectory(self, _ui("选择该对话的工作目录"), start)
-            if d:
-                edit.setText(d)
-        finally:
-            self._browsing_workdir = False
 
     def _on_theme_changed(self, *_):
         """主题下拉切换：立即写入 QSettings；关闭设置对话框后重建 AI 面板（即时生效，
@@ -10510,19 +10406,8 @@ class _AgentSettingsDialog(QDialog):
         # 趣味互动开关与间隔（QSettings 持久化，保存后让父面板即时生效）
         q.setValue("agent_fun", "1" if self.fun_check.isChecked() else "0")
         q.setValue("agent_fun_interval", self.fun_interval_combo.currentData() or "normal")
-        # 工作目录不在通用设置页设置（入口已迁移到「对话流」页按会话配置）；
-        # 保存后由父面板 _apply_agent_settings → _restore_workdir 按当前会话目录刷新面板。
-        # 对话流：把每个对话的独立工作目录写回会话列表（新建对话沿用/切换应用均读此处）
-        try:
-            p = self.parent()
-            for row in getattr(self, "_session_wd_rows", []):
-                if len(row) < 2:
-                    continue
-                sid, wd_edit = row[0], row[1]
-                if p is not None and hasattr(p, "_set_session_workdir"):
-                    p._set_session_workdir(sid, wd_edit.text().strip())
-        except Exception:
-            pass
+        # 工作目录改由主页面输入卡右侧下拉按会话设置（设置页已移除「对话流」页），
+        # 保存只刷新面板：_apply_agent_settings → _restore_workdir 按当前会话目录重应用。
         # 数据收集完成（遮罩已当帧在屏、转圈流畅）→ 延迟执行持久化，避免保存
         # 逻辑阻塞主线程把转圈卡成定格；_SAVE_OVERLAY_MIN_MS 保证最短展示不闪烁。
         self._pending_data = data
@@ -21748,6 +21633,17 @@ class AgentPanel(QDialog):
         self.perm_btn.clicked.connect(self._open_perm_menu)
         tools.addWidget(self.perm_btn)
         self._refresh_perm_btn()   # 按当前执行模式初始化图标/配色/tooltip
+
+        # 工作目录下拉（权限菜单右侧）：选择已有目录或添加文件夹，当前对话即时生效
+        self.wd_combo = _ArrowComboBox()
+        self.wd_combo.setMinimumWidth(118)
+        self.wd_combo.setMaximumWidth(190)
+        self.wd_combo.setIconSize(QSize(16, 16))
+        self.wd_combo.setStyleSheet(_HOME_COMBO)
+        self.wd_combo.setToolTip(_ui("当前对话的工作目录（选择已有目录或添加文件夹）"))
+        self.wd_combo.currentIndexChanged.connect(self._on_wd_combo)
+        self.wd_combo.setAcceptDrops(False)
+        tools.addWidget(self.wd_combo)
         tools.addStretch(1)   # 左侧工具组 / 右侧模型+发送，中间弹性留白
 
         # 模型名称左侧：思考强度 + 上下文窗口徽标（悬停模型框弹层可调，见 _ModelTunePopover）
@@ -21803,6 +21699,7 @@ class AgentPanel(QDialog):
             _MODEL_TUNE_LEAVE_MS, self._maybe_close_model_tune, self)
         self._model_tune.installEventFilter(self._model_tune_hover)
         self._sync_model_badges()
+        self._sync_workdir_combo()   # 工作目录下拉（会话切换/设置保存后也会刷新）
         # 排队面板：内容自适应高度（消息行数决定），紧贴输入行上方，无底部留白
         right.addWidget(self.queue_panel)
         # 后台任务状态区：紧贴输入行上方，有任务时才占位显示
@@ -23322,6 +23219,7 @@ class AgentPanel(QDialog):
         try:
             self._apply_workdir(self._effective_workdir(sid))
             self._update_wd_hint()   # 切换会话后刷新工作目录提示条显隐
+            self._sync_workdir_combo()   # 输入卡工作目录下拉跟随当前会话
         except Exception:
             pass
         self._hide_spinner()
@@ -23742,6 +23640,7 @@ class AgentPanel(QDialog):
         else:
             self._apply_workdir("")
         self._update_wd_hint()
+        self._sync_workdir_combo()   # 输入卡工作目录下拉跟随当前会话
 
     def _update_wd_hint(self):
         """当前对话未设置专属工作目录时，在输入框上方显示「去设置」提示条
@@ -23758,11 +23657,104 @@ class AgentPanel(QDialog):
         self._fit_composer()   # 提示条显隐改变卡片内容高度
 
     def _open_workdir_settings(self, *_):
-        """提示条「去设置」按钮：打开设置对话框并定位到「对话流」页当前会话行闪烁提醒"""
+        """提示条「去设置」按钮：直接展开输入卡右侧的工作目录下拉（设置页入口已移除）"""
+        combo = self.__dict__.get("wd_combo")
+        if combo is not None:
+            combo.setFocus()
+            combo.showPopup()
+            return
+        self._pick_workdir_folder()
+
+    # ---------- 工作目录下拉（输入卡内：选择已有 / 添加文件夹） ----------
+    _WD_RECENT_MAX = 8
+    _WD_RECENT_KEY = "agent_workdir_recent"
+
+    def _recent_workdirs(self) -> list:
+        """最近使用过的工作目录（QSettings JSON 列表；失效目录自动剔除）"""
+        raw = self._settings.value(self._WD_RECENT_KEY, "")
+        items = []
         try:
-            self._open_settings(highlight_sid=self._session_id)
+            if isinstance(raw, str) and raw.strip():
+                items = [str(x) for x in json.loads(raw)]
+            elif isinstance(raw, (list, tuple)):
+                items = [str(x) for x in raw]
         except Exception:
-            self._open_settings()
+            items = []
+        out = [p for p in items if p and os.path.isdir(p)]
+        return out[: self._WD_RECENT_MAX]
+
+    def _push_recent_workdir(self, path: str):
+        path = (path or "").strip()
+        if not path:
+            return
+        items = [p for p in self._recent_workdirs() if p != path]
+        items.insert(0, path)
+        try:
+            self._settings.setValue(
+                self._WD_RECENT_KEY,
+                json.dumps(items[: self._WD_RECENT_MAX], ensure_ascii=False))
+        except Exception:
+            pass
+
+    def _sync_workdir_combo(self):
+        """重建工作目录下拉：未设置占位项 + 最近目录 + 「添加文件夹…」。"""
+        combo = self.__dict__.get("wd_combo")
+        if combo is None:
+            return
+        sid = getattr(self, "_session_id", "")
+        cur = (self._effective_workdir(sid) if sid
+               else str(self._settings.value("agent_workdir", "")).strip())
+        items = self._recent_workdirs()
+        if cur and cur not in items:
+            items.insert(0, cur)
+        combo.blockSignals(True)
+        combo.clear()
+        if not cur:
+            combo.addItem(_ui("选择工作目录…"), "")
+        for p in items:
+            name = os.path.basename(p.rstrip("\\/")) or p
+            combo.addItem(_line_icon("folder", 16, TEXT_DIM), name, p)
+            combo.setItemData(combo.count() - 1, p, Qt.ItemDataRole.ToolTipRole)
+        combo.addItem(_ui("添加文件夹…"), None)
+        idx = next((i for i in range(combo.count())
+                    if combo.itemData(i) == cur), 0)
+        combo.setCurrentIndex(max(0, idx))
+        combo.blockSignals(False)
+        combo.setToolTip(cur or _ui("当前对话未设置工作目录，点此选择或添加文件夹"))
+
+    def _on_wd_combo(self, idx: int):
+        """选中已有工作目录 → 写入当前会话并即时应用；选中「添加文件夹…」→ 选目录。"""
+        combo = self.__dict__.get("wd_combo")
+        if combo is None or idx < 0:
+            return
+        val = combo.itemData(idx)
+        if not val:
+            self._pick_workdir_folder()
+            return
+        self._set_session_workdir(self._session_id, val)
+        self._apply_workdir(val)
+        self._update_wd_hint()
+        self._push_recent_workdir(val)
+        self._sync_workdir_combo()
+
+    def _pick_workdir_folder(self):
+        """原生目录选择：选中的文件夹作为当前对话的新工作目录（并记入最近列表）。"""
+        start = (self._effective_workdir(getattr(self, "_session_id", ""))
+                 or str(Path.home()))
+        d = QFileDialog.getExistingDirectory(self, _ui("选择工作目录"), start)
+        if not d:
+            self._sync_workdir_combo()
+            return
+        try:
+            if self._leftdock_collapsed():
+                self._set_leftdock_collapsed(False)   # 新目录要能看到文件树
+        except Exception:
+            pass
+        self._set_session_workdir(self._session_id, d)
+        self._apply_workdir(d)
+        self._update_wd_hint()
+        self._push_recent_workdir(d)
+        self._sync_workdir_combo()
 
     def _request_git_refresh(self):
         """防抖请求工作目录/仓库刷新：合并连续触发为单次，让出 UI 事件循环，
@@ -28030,6 +28022,7 @@ class AgentPanel(QDialog):
              f"color: {ACCENT}; font-size: 16px; font-weight: 800;")
         _set(getattr(self, "session_combo", None), _HOME_COMBO)
         _set(getattr(self, "model_combo", None), _HOME_COMBO)
+        _set(getattr(self, "wd_combo", None), _HOME_COMBO)
         _set(getattr(self, "token_label", None),
              f"color: {TEXT_DIM}; font-size: {FONT_SMALL}px;")
         _set(getattr(self, "settings_btn", None), _BTN_ICON)
@@ -29704,9 +29697,8 @@ class AgentPanel(QDialog):
         except Exception:
             pass
 
-    def _open_settings(self, *_args, highlight_sid: str = None, page_index: int = None):
+    def _open_settings(self, *_args, page_index: int = None):
         """打开 AI 设置；保存后应用（刷新纯文本/记忆状态，空闲时重建引擎）。
-        highlight_sid：打开后定位到「对话流」页该会话行并闪烁边框（工作目录提示条跳转用）
         page_index：打开后直接切到该导航分页（右侧胶囊与「更多」菜单跳转用）"""
         dlg = _AgentSettingsDialog(parent=self)
         # 首次打开挤压修复：exec 前布局未激活，窗口会以最小尺寸显示；显示后补一次
@@ -29730,14 +29722,6 @@ class AgentPanel(QDialog):
                 except Exception:
                     pass
             QTimer.singleShot(0, _go_page)
-        if highlight_sid:
-            # exec() 阻塞：对话框显示且构建完成后跳到对应行（延迟一帧+窗口就绪）
-            def _focus():
-                try:
-                    dlg.focus_workdir_row(highlight_sid)
-                except Exception:
-                    pass
-            QTimer.singleShot(80, _focus)
         if dlg.exec():
             try:
                 self._apply_agent_settings()

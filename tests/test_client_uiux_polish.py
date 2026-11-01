@@ -726,6 +726,66 @@ def test_general_page_options_are_aligned():
         dlg.close()
 
 
+def test_card_board_batches_relayout(panel):
+    """卡片看板批量添加（clear + N 张）只触发一次延迟重排，不再逐张全量重排（切页卡顿/闪烁根因）。"""
+    board = ap._CardBoard()
+    board.resize(420, 260)
+    board.show()
+    _pump(30)
+    board.clear()
+    for i in range(6):
+        board.add_card(f"wf{i}", "描述")
+    assert board._layout_timer.isActive(), "批量添加未合并重排（会逐卡闪一次）"
+    _pump(80)
+    assert board.count() == 6
+    assert board._rows_lay.count() == 7, "卡片应全部进入布局（6 卡 + 尾部弹簧）"
+    board.hide()
+
+
+def test_workdir_combo_sits_right_of_permission(panel, tmp_path):
+    """输入卡底部：权限胶囊右侧有工作目录下拉；选目录即写入当前会话并应用。"""
+    combo = panel.wd_combo
+    assert combo.parent() is panel.composer
+    assert combo.x() > panel.perm_btn.x(), "工作目录下拉应在权限菜单右侧"
+    assert any(combo.itemData(i) is None for i in range(combo.count())), \
+        "缺少「添加文件夹…」入口"
+    d = str(tmp_path)
+    orig_wd = panel._session_workdir(panel._session_id)
+    raw = panel._settings.value(ap.AgentPanel._WD_RECENT_KEY, "")
+    try:
+        panel._push_recent_workdir(d)
+        panel._sync_workdir_combo()
+        idx = combo.findData(d)
+        assert idx >= 0, "刚加入的目录未出现在下拉里"
+        combo.setCurrentIndex(idx)
+        _pump(80)
+        assert panel._session_workdir(panel._session_id) == d
+        assert panel._effective_workdir(panel._session_id) == d
+    finally:
+        panel._set_session_workdir(panel._session_id, orig_wd)
+        panel._settings.setValue(ap.AgentPanel._WD_RECENT_KEY, raw)
+        panel._sync_workdir_combo()
+
+
+def test_new_session_inherits_previous_workdir():
+    """新开对话沿用上一个对话的实际生效工作目录（接线守卫：防改动丢继承逻辑）"""
+    import inspect
+    src = inspect.getsource(ap.AgentPanel._new_session)
+    assert "_create_session(workdir=self._effective_workdir(self._session_id))" in src
+
+
+def test_settings_nav_drops_sessions_page():
+    """设置页移除「对话流」分页：导航与页面构建器一一对应且不再含 sessions。"""
+    keys = [k for _n, k in ap._NAV_ITEMS]
+    assert "sessions" not in keys
+    dlg = ap._AgentSettingsDialog()
+    try:
+        assert len(dlg._page_builders) == len(ap._NAV_ITEMS)
+        assert dlg._COLLECT_PAGE_COUNT == 5, "保存需要构建的页数应随分页移除而下调"
+    finally:
+        dlg.close()
+
+
 def test_settings_combos_use_arrow_combo_for_smooth_popup():
     """设置页下拉全部走 ArrowComboBox：弹出列表带淡入动画，不是硬弹出。"""
     dlg = ap._AgentSettingsDialog()
