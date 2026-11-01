@@ -304,12 +304,20 @@ def _apply_op(root: Path, op: dict, orig_root=None, made_dirs: set | None = None
     rel = str(target.relative_to(root))
 
     if kind == "create_file":
+        # 固定写 LF：与写入字节一致，sha_after 免读；插件新建的模块统一 LF 更干净
+        data = content.replace("\r\n", "\n")
         if target.exists():
+            # 幂等：内容完全一致 = 上一次应用已把文件写完（只是清单没落盘/被中断）。
+            # 不再报"拒绝覆盖"，否则半套状态会让插件永远启用失败，只能靠重启。
+            try:
+                cur = target.read_bytes().decode("utf-8", errors="replace")
+            except OSError:
+                cur = ""
+            if cur.replace("\r\n", "\n") == data:
+                return {"path": rel, "action": "created", "before": None, "after": data}
             raise ValueError(f"文件已存在，create_file 拒绝覆盖：{op.get('path')}"
                              "（如需整体替换请用 replace_file）")
         _ensure_dir(target.parent, made_dirs)
-        # 固定写 LF：与写入字节一致，sha_after 免读；插件新建的模块统一 LF 更干净
-        data = content.replace("\r\n", "\n")
         target.write_bytes(data.encode("utf-8"))
         return {"path": rel, "action": "created", "before": None, "after": data}
 
@@ -405,9 +413,9 @@ def _compile_targets(root: Path, texts: dict) -> tuple:
     """就地编译检查（内存 compile，不落 .pyc）+ 预热热加载代码缓存。
 
     texts = {相对路径: 实际落盘文本}（写入时已拿到，无需再读文件）。
-    原实现用 py_compile：大插件 50 个文件约 1.2s（光写 .pyc），而热加载随后还要把
-    同一份源码再编译一次。改为内存 compile，并把 code 对象按「模块名 + 源码哈希」
-    预热进 hot_reload 的代码缓存——热加载直接命中缓存 exec，插入耗时因此减半。
+    编译走 hot_reload 的代码缓存：**同一内容只编译一次**。否则"停用→启用"
+    每次都会重新 compile 全部目标文件——agent_panel 1.7MB 单次约 9s，全部卡在
+    GUI 线程上就是用户看到的"启用插件极其卡顿"。
     返回 (ok, 错误信息)。
     """
     try:
@@ -417,14 +425,14 @@ def _compile_targets(root: Path, texts: dict) -> tuple:
     for rel, text in texts.items():
         if not rel.lower().endswith(".py"):
             continue
+        name = _overlay_module_name(rel)
         try:
-            code = compile(text, str(root / rel), "exec")
+            if name and hot_reload is not None:
+                hot_reload.compile_cached(name, text.encode("utf-8"), root / rel)
+            else:
+                compile(text, str(root / rel), "exec")
         except (SyntaxError, ValueError) as e:
             return False, f"{rel}\n{str(e)[:500]}"
-        name = _overlay_module_name(rel)
-        if name and hot_reload is not None:
-            # persist=False：插入链路上不落磁盘 marshal（每个文件几毫秒 × 几十个文件）
-            hot_reload.prime_code(name, text.encode("utf-8"), root / rel, code, persist=False)
     return True, ""
 
 
@@ -474,6 +482,11 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
         return False, f"插件「{name}」不存在"
     if (d / "applied.json").is_file():
         return True, f"插件「{name}」的变更已在转译层，无需重复写入"
+    # 上次应用到一半被中断（有备份、没清单）：先把残留退回原版，再从干净基准重新写入。
+    # 否则同一份 source_ops 会在已改过的覆盖层上再插一次（重复代码），且 create_file
+    # 会因"文件已存在"永远失败——用户看到的就是"启用/禁用都不行，只有重启能凑合"。
+    if (d / "backups").is_dir():
+        _cleanup_leftovers(d)
     if ops is None:
         ops = load_source_ops_from(d)
     ok, why = validate_source_ops(ops)
@@ -544,6 +557,9 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
     try:
         (d / "applied.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 必须重新读元数据再写：写入期间可能有别的环节（校验结论库/扩展登记）
+        # 更新过 plugin.json，用函数开头那份旧快照回写会覆盖掉这些字段。
+        meta = _pkg_meta(d) or meta
         meta["source_applied"] = True
         meta["source_applied_at"] = manifest["applied_at"]
         meta["source_mode"] = mode
@@ -575,6 +591,7 @@ def apply_source_ops(pkg_dir, name: str, ops: list | None = None) -> tuple:
 
 def _rollback(root: Path, done: list) -> None:
     """依据内存记录整体回滚：创建的删除、修改的还原。"""
+    _remember_overlay()
     for rec in reversed(done):
         target = root / rec["path"]
         try:
@@ -587,17 +604,35 @@ def _rollback(root: Path, done: list) -> None:
             pass
 
 
+def _remember_overlay() -> None:
+    """回滚/删除覆盖层文件**之前**通知热加载引擎记住这些模块。
+
+    文件删掉后引擎就扫描不到它们了，而运行中的旧模块必须被重载回原版
+    （否则"停用插件后仍生效，只有重启才恢复"）。
+    """
+    try:
+        from zhuzhu_Copilot.core import hot_reload
+        hot_reload.remember_overlay()
+    except Exception:
+        pass
+
+
 def revert_source_ops(pkg_dir, name: str) -> tuple:
     """卸载回滚：按 applied.json 还原（创建的文件删除、修改的文件还原备份）。
 
-    root = 转译层（与写入时一致）。写入后已被用户手动改过的文件（内容哈希与记录
-    不符）跳过并注明，不覆盖。
+    root = 转译层（与写入时一致）。写入后已被用户手动改过的**修改型**文件
+    （内容哈希与记录不符）跳过并注明，不覆盖；插件新建的文件一律删除
+    （它就是插件自己的落地物，留着会让下次 create_file 永远冲突）。
+
+    若 applied.json 缺失（上次应用被中断/清单被删）：按插件自身的 source_ops
+    与 backups/ 清理残留，保证"停用就真的停用"，同时把半套状态修复成可再次启用。
     """
     root, _mode = apply_root()
+    _remember_overlay()
     d = Path(pkg_dir)
     mf = d / "applied.json"
     if not mf.is_file():
-        return True, f"插件「{name}」没有已写入的变更，无需回滚"
+        return _cleanup_leftovers(d)
     try:
         manifest = json.loads(mf.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -606,19 +641,19 @@ def revert_source_ops(pkg_dir, name: str) -> tuple:
     for rec in reversed(manifest.get("files") or []):
         target = root / str(rec.get("path") or "")
         try:
+            if rec.get("action") == "created":
+                # 新建文件：插件自己的落地物，删除（不存在也算已清理）
+                if target.is_file():
+                    target.unlink()
+                    removed.append(rec["path"])
+                continue
             if not target.is_file():
-                if rec.get("action") == "created":
-                    continue          # 新建文件已不在（如被用户删了），无需处理
                 skipped.append(f"{rec['path']}（文件已不存在）")
                 continue
             cur = hashlib.sha256(target.read_bytes()).hexdigest()
             if cur != str(rec.get("sha_after") or ""):
-                # 应用后被用户手动改过：不覆盖/不删除用户劳动成果，交还原说明
+                # 应用后被用户手动改过：不覆盖用户劳动成果，交还原说明
                 skipped.append(f"{rec['path']}（应用后已被修改，未覆盖）")
-                continue
-            if rec.get("action") == "created":
-                target.unlink()
-                removed.append(rec["path"])
                 continue
             bak = Path(str(rec.get("backup") or ""))
             if not bak.is_file():
@@ -653,6 +688,65 @@ def revert_source_ops(pkg_dir, name: str) -> tuple:
         parts.append("已删除新建文件：" + "、".join(removed))
     if restored:
         parts.append("已还原修改文件：" + "、".join(restored))
+    if skipped:
+        parts.append("跳过：" + "；".join(skipped))
+    return True, "\n".join(parts)
+
+
+def _cleanup_leftovers(d: Path) -> tuple:
+    """没有 applied.json 时按 source_ops + backups 清理残留（半套状态的修复）。
+
+    · 有备份的文件 → 还原备份（备份内容与原版一致则删除覆盖层副本，回落原版）；
+    · 无备份、但原版也不存在的文件 → 视为 create_file 残留，删除；
+    · 无备份、原版存在的文件 → 无法区分是否是其他插件写的，保持原样（不误删）。
+    """
+    root, _mode = apply_root()
+    ops = load_source_ops_from(d)
+    paths = []
+    for op in ops:
+        rel = str(op.get("path") or "").replace("\\", "/").strip()
+        if rel and rel not in paths:
+            paths.append(rel)
+    restored, removed, skipped = [], [], []
+    for rel in paths:
+        target = root / rel
+        bak = _backup_path(d, rel)
+        try:
+            if bak.is_file():
+                data = bak.read_bytes()
+                if target.is_file():
+                    orig = _packaged_file(rel)
+                    if orig is not None and orig.read_bytes() == data:
+                        target.unlink()
+                        removed.append(rel)
+                    else:
+                        target.write_bytes(data)
+                        restored.append(rel)
+                continue
+            if target.is_file():
+                orig = _packaged_file(rel)
+                if orig is None:          # 原版没有 = 插件新建的残留文件
+                    target.unlink()
+                    removed.append(rel)
+        except OSError as e:
+            skipped.append(f"{rel}（{e}）")
+    try:
+        import shutil
+        shutil.rmtree(d / "backups", ignore_errors=True)
+        meta = _pkg_meta(d)
+        meta.pop("source_applied", None)
+        meta.pop("source_applied_at", None)
+        meta["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _pkg_write_meta(d, meta)
+    except OSError:
+        pass
+    if not restored and not removed and not skipped:
+        return True, f"插件「{d.name}」没有已写入的变更，无需回滚"
+    parts = [f"源码插件「{d.name}」已清理残留变更。"]
+    if removed:
+        parts.append("已删除残留文件：" + "、".join(removed))
+    if restored:
+        parts.append("已还原文件：" + "、".join(restored))
     if skipped:
         parts.append("跳过：" + "；".join(skipped))
     return True, "\n".join(parts)

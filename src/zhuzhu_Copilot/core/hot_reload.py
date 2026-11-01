@@ -111,6 +111,11 @@ _CODE_CACHE_MAX = 64
 _STATS = {}
 #: 已建基线的模块内容哈希（与 _STATS 同步，变更判定的单一数据源）
 _HASHES = {}
+#: 曾经进过覆盖层的模块名（回滚删除覆盖层文件后仍需把它们重载回原版）。
+#: reload_overlay 的候选清单**只取**本集合 ∪ 当前覆盖层模块——不再扫描显然无关的
+#: 全部应用模块（开发期源码被编辑时，旧实现每次插件启停都会重编译 1.7MB 的
+#: agent_panel（实测 ~9s），这正是"启用/禁用插件极其卡顿"的根因）。
+_OVERLAID_PREV = set()
 _BASELINE_READY = False
 
 #: 事务锁：热插拔/基线建立串行化，防止并发启停互相踩到半成品命名空间
@@ -211,6 +216,17 @@ def _module_names() -> list:
             names.append(name)
     names.sort(key=lambda n: (n.count("."), n))
     return names
+
+
+def remember_overlay() -> int:
+    """把**当前**覆盖层里的模块记入 `_OVERLAID_PREV`。
+
+    必须在回滚/删除覆盖层文件**之前**调用：文件删掉后 `_module_names()` 就看不到
+    它们了，而运行中的旧模块仍需被重载回原版。返回记录数。
+    """
+    names = set(_module_names())
+    _OVERLAID_PREV.update(names)
+    return len(names)
 
 
 def _module_path(name: str, ov_root=None, orig_root=None, ov_names=None):
@@ -372,8 +388,13 @@ def _cache_put(name: str, sha: str, code, persist: bool = True) -> None:
         pass
 
 
-def _code_for(name: str, src: bytes, path) -> object:
-    """编译源码为 code 对象：内存 LRU → 磁盘 marshal → 现场 compile。"""
+def _code_for(name: str, src: bytes, path, persist: bool = True) -> object:
+    """编译源码为 code 对象：内存 LRU → 磁盘 marshal → 现场 compile。
+
+    注意：**不能**直接复用 `__pycache__` 的 .pyc（时间戳 pyc 以「秒级 mtime +
+    文件大小」判定新鲜，同一秒内等长改写会被误判为有效，热加载就会执行旧代码）。
+    原版模块的代码由 `_prime_from_pyc` 在基线建立时按当时的内容哈希安全预热。
+    """
     key = (name, _hash_source(src))
     code = _CODE_CACHE.get(key)
     if code is not None:
@@ -389,25 +410,83 @@ def _code_for(name: str, src: bytes, path) -> object:
                 return code
         except Exception:
             code = None
-    code = compile(src, str(path), "exec")
-    _cache_put(name, key[1], code)
+    code = compile(src, str(path) if path is not None else name, "exec")
+    _cache_put(name, key[1], code, persist=persist)
     return code
 
 
-def prime_code(name: str, src: bytes, path=None, code=None, persist: bool = True) -> None:
-    """预热代码缓存：源码级插件插入时的编译检查顺带把 code 对象缓存下来。
+#: 写入链路里"值得落盘 marshal"的模块大小门槛（大模块跨进程免编译；小模块落盘
+#: 的每次写盘开销（几十个文件 × 数毫秒）比重新编译还贵，按预算直接跳过）
+_PERSIST_MIN_BYTES = 300 * 1024
 
-    键与 `_code_for` 完全一致（模块名 + 归一化源码 sha256），热加载时直接命中，
-    同一份源码不再被编译两次（大型插件插入的最大单笔 CPU 开销）。
-    persist=False：只缓存在内存（写入磁盘 marshal 每个文件要数毫秒，插入链路
-    几十个文件就是几百毫秒；跨重启重新编译一次可以接受）。
+
+def _pyc_is_current(path: Path, pyc: Path) -> bool:
+    """只读校验 .pyc 头部是否与当前源码匹配（避免 get_code 触发意外编译）。"""
+    try:
+        data = pyc.read_bytes()[:16]
+        if len(data) < 16 or data[:4] != importlib.util.MAGIC_NUMBER:
+            return False
+        flags = int.from_bytes(data[4:8], "little")
+        if flags & 0x1:
+            return False                  # 哈希型 pyc：这里不做源哈希校验，直接跳过
+        st = path.stat()
+        mtime = int.from_bytes(data[8:12], "little")
+        size = int.from_bytes(data[12:16], "little")
+        return int(st.st_mtime) == mtime and int(st.st_size) == size
+    except Exception:
+        return False
+
+
+def _prime_from_pyc(names) -> int:
+    """把已导入模块的**现成 .pyc** 预热进代码缓存（只读，绝不现场编译）。
+
+    停用插件要"回落原版"，此时现场编译 agent_panel（1.7MB/3.4 万行）实测约 9s。
+    应用启动时 Python 已为这些模块生成过 .pyc，直接取回即可；.pyc 不存在/已过期
+    就跳过（不做任何编译），因此不会拖慢启动基线。
     """
-    if code is None:
+    n = 0
+    try:
+        from importlib.machinery import SourceFileLoader
+    except Exception:
+        return 0
+    for name in names:
+        if name in _HOT_SKIP or name not in sys.modules:
+            continue
+        h = _HASHES.get(name)
+        if not h or (name, h) in _CODE_CACHE:
+            continue
+        path = _module_path(name)
+        if path is None:
+            continue
         try:
-            code = compile(src, str(path or name), "exec")
+            pyc = Path(importlib.util.cache_from_source(str(path)))
         except Exception:
-            return
-    _cache_put(name, _hash_source(src), code, persist=persist)
+            continue
+        if not pyc.is_file() or not _pyc_is_current(path, pyc):
+            continue                  # 没有可用的现成字节码：跳过（绝不触发编译）
+        try:
+            code = SourceFileLoader(name, str(path)).get_code(name)
+        except Exception:
+            continue
+        if code is None:
+            continue
+        _cache_put(name, h, code, persist=True)
+        n += 1
+    return n
+
+
+def compile_cached(name: str, src, path=None):
+    """编译检查入口（插件写入链路用）：同内容只编译一次，语法错误照常抛出。
+
+    源码级插件的写入/编译检查必须与热加载共用代码缓存，否则"停用再启用"每次都会
+    重新 compile 整个模块——agent_panel 这种 1.7MB/3.4 万行的模块单次约 9s，
+    全部卡在 GUI 线程上就是用户看到的"启用插件极其卡顿"。
+    小模块不落盘 marshal（几十个文件的写盘开销比重新编译更贵，见 _PERSIST_MIN_BYTES）。
+    """
+    if isinstance(src, str):
+        src = src.encode("utf-8")
+    persist = len(src) >= _PERSIST_MIN_BYTES
+    return _code_for(name, src, path or name, persist=persist)
 
 
 def _exec_module_code(mod, code) -> None:
@@ -721,20 +800,33 @@ def _dependency_order(items: dict) -> list:
 # ---------------------------------------------------------------------------
 # 死模块清理（回滚 create_file 后的残留）
 # ---------------------------------------------------------------------------
-def drop_dead_modules(ov_root=None, orig_root=None, ov_names=None) -> list:
+def drop_dead_modules(ov_root=None, orig_root=None, ov_names=None,
+                      extra_names=None) -> list:
     """摘除"源码落点已消失"的 zhuzhu_Copilot.* 模块（插件新建模块被回滚）。
 
     不摘的话，死代码会一直活在 sys.modules 里：再次启用同名插件时会命中旧对象，
     看起来"改了没生效"。只用路径判断（_module_path），不读文件内容。
+
+    extra_names：上一轮覆盖层里的模块名。给出时只检查 `ov_names ∪ extra_names`，
+    不再遍历全部 sys.modules（每模块一次 stat，上千模块时每轮多花数百毫秒）。
     """
+    if ov_names is None and extra_names is None:
+        pool = [n for n in list(sys.modules)]
+    else:
+        pool = sorted(set(ov_names or ()) | set(extra_names or ()))
+    alive = set(ov_names or ())
     dropped = []
-    for name in list(sys.modules):
+    for name in pool:
         if not name.startswith("zhuzhu_Copilot.") or name in _HOT_SKIP:
             continue
+        if name in alive:
+            continue                       # 覆盖层里还在：模块活着
         mod = sys.modules.get(name)
+        if mod is None:
+            continue
         if getattr(mod, "__spec__", None) is None and name not in _HASHES:
             continue
-        if _module_path(name, ov_root, orig_root, ov_names) is None:
+        if _module_path(name, ov_root, orig_root, alive) is None:
             sys.modules.pop(name, None)
             _STATS.pop(name, None)
             _HASHES.pop(name, None)
@@ -914,6 +1006,9 @@ def establish_baseline(scan_all: bool = True) -> dict:
         if _BASELINE_READY:
             return {"baseline": True, "modules": len(_HASHES)}
         names = set(_module_names())
+        # 启动时已在覆盖层里的模块必须记入"曾覆盖层"：否则进程重启后停用这些插件
+        # （回滚删掉覆盖层文件）时，运行中的旧模块不会被重载回原版。
+        _OVERLAID_PREV.update(names)
         for name in list(sys.modules):
             if name.startswith("zhuzhu_Copilot.") and name not in _HOT_SKIP:
                 names.add(name)
@@ -940,8 +1035,9 @@ def establish_baseline(scan_all: bool = True) -> dict:
             if h:
                 _HASHES[name] = h
                 n += 1
+        primed = _prime_from_pyc(names)
         globals()["_BASELINE_READY"] = True
-        return {"baseline": True, "modules": n}
+        return {"baseline": True, "modules": n, "primed": primed}
 
 
 # ---------------------------------------------------------------------------
@@ -957,7 +1053,9 @@ def reload_overlay(force: bool = False, run_ui: bool | None = None) -> dict:
     不执行任何模块代码；运行期 exec 失败则停止后续模块并上报，由核心层自动回滚。
 
     高性能：① stat 快路径（没变的模块不读文件）；② 内存/磁盘代码缓存（同一内容
-    只编译一次）；③ 启动基线已建立时只处理真正变化的模块。
+    只编译一次）；③ 启动基线已建立时只处理真正变化的模块；④ **候选只取覆盖层
+    相关模块**（当前覆盖层 ∪ 曾覆盖层）——插件变更只可能落在覆盖层，不再因为
+    开发期编辑器改了无关大模块（agent_panel 1.7MB ≈ 9s）而让每次启停卡顿。
 
     run_ui：True=本线程直接刷 UI；False=不刷（自动 marshal 到 GUI 线程）；
     None=在 GUI 线程则直接刷，否则自动 marshal。
@@ -970,6 +1068,10 @@ def reload_overlay(force: bool = False, run_ui: bool | None = None) -> dict:
 def _reload_locked(force: bool, run_ui, t0: float) -> dict:
     global _BASELINE_READY
     names = _module_names()
+    ov_names = set(names)
+    # 上一轮进过覆盖层、但这一轮已被回滚删除的模块：仍需重载回原版
+    prev_names = set(_OVERLAID_PREV)
+    _OVERLAID_PREV.update(ov_names)
     result = {"reloaded": [], "imported": [], "patched": [], "rebound": 0,
               "dropped": [], "refreshed": [], "skipped": [], "failed": [],
               "duration_ms": 0}
@@ -982,19 +1084,18 @@ def _reload_locked(force: bool, run_ui, t0: float) -> dict:
     except Exception:
         ov_root, orig_root = None, None
 
-    # 1) 死模块清理（回滚 create_file 后的残留）
+    # 1) 死模块清理（回滚 create_file 后的残留）：只看覆盖层相关模块
     try:
-        result["dropped"] = drop_dead_modules(ov_root, orig_root, set(names))
+        result["dropped"] = drop_dead_modules(ov_root, orig_root, ov_names, prev_names)
     except Exception:
         pass
 
-    # 2) 待处理清单 = 覆盖层模块 ∪ 已导入的应用模块（后者覆盖"回滚后回落原版"）
-    cand = list(names)
-    for name in list(sys.modules):
-        if name.startswith("zhuzhu_Copilot.") and name not in cand \
-                and name not in _HOT_SKIP:
-            cand.append(name)
-    cand.sort(key=lambda n: (n.count("."), n))
+    # 2) 待处理清单 = 当前覆盖层模块 ∪ 曾经覆盖层模块（后者覆盖"回滚后回落原版"）。
+    #    **不扫描无关的应用模块**：插件变更的落点只可能是覆盖层；而把全部
+    #    sys.modules 都当候选时，开发期任意源码改动都会让每次插件启停重编译大模块
+    #    （agent_panel 1.7MB ≈ 9s），这是"热插拔极其卡顿"的最大单笔开销。
+    cand = sorted(ov_names | {n for n in prev_names if n in sys.modules},
+                  key=lambda n: (n.count("."), n))
 
     # 3) 变更检测（精确基线 + stat 快路径）。
     #    只做「路径解析 + stat」：签名没变的模块**连文件都不读**（大模块 1.5MB），
@@ -1007,7 +1108,6 @@ def _reload_locked(force: bool, run_ui, t0: float) -> dict:
     todo = []
     sources = {}
     paths = {}
-    ov_names = set(names)
     for name in cand:
         if name in _HOT_SKIP:
             result["skipped"].append(name)

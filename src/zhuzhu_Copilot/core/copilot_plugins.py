@@ -494,9 +494,11 @@ def set_enabled(name: str, enabled: bool) -> tuple:
         hint = hot_reload.summary(res)
         return True, f"插件「{name}」已启用并即时生效（无需重启）：{hint}"
 
-    # 停用：先摘 UI/服务，再回滚磁盘并热卸载
+    # 停用：先摘 UI/服务，再回滚磁盘并热卸载。
+    # revert 必须无条件执行：applied.json 可能因上次应用被中断而缺失，但覆盖层里
+    # 仍留着插件文件（此时跳过 revert 会导致"停用无效、只能重启"）。
     hot_reload.emit_ui("before_disable", name)
-    if status(name).get("applied"):
+    if source_ops(name):
         ok, msg = revert(name)
         if not ok:
             return False, f"插件「{name}」停用失败：{msg}"
@@ -524,8 +526,8 @@ def delete_plugin(name: str) -> tuple:
     # 1) 先摘页面/服务/托盘/快捷键（避免服务还持着插件代码跑）
     hot_reload.emit_ui("before_disable", name)
     parts = []
-    # 2) 磁盘回滚
-    if (d / "applied.json").is_file():
+    # 2) 磁盘回滚（无条件：清单缺失时也要清理覆盖层残留，否则删了插件仍生效）
+    if source_ops(name):
         ok, msg = revert(name)
         parts.append(msg)
     # 3) agent 子包登记清理

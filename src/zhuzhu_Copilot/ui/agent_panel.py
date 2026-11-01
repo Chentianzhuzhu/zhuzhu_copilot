@@ -8075,27 +8075,20 @@ class _AgentSettingsDialog(QDialog):
         self._pbar_close()
         if ok == "1":
             self._refresh_after_plugin_install()
-            QMessageBox.information(self, _ui("Copilot 插件已创建"), msg)
+            QMessageBox.information(self, _ui("Copilot 插件"), msg)
         else:
             self._reload_coplugin_list()
-            QMessageBox.warning(self, _ui("创建失败"), msg)
+            QMessageBox.warning(self, _ui("Copilot 插件"), msg)
 
     def _on_coplugin_import_zip(self, *_):
         path, _ = QFileDialog.getOpenFileName(
             self, _ui("选择 Copilot 插件包"), "", _ui("插件包 (*.zip)"))
         if not path:
             return
-        try:
-            from zhuzhu_Copilot.core import copilot_plugins
-            ok, msg = copilot_plugins.import_plugin_zip(path)
-        except Exception as e:
-            ok, msg = False, f"导入失败: {e}"
-        if ok:
-            self._refresh_after_plugin_install()
-            QMessageBox.information(self, _ui("导入成功"), msg)
-        else:
-            self._reload_coplugin_list()
-            QMessageBox.warning(self, _ui("导入失败"), msg)
+        self._pbar_open(_ui("Copilot 插件"),
+                        _ui("正在导入插件包（安全校验与热加载可能需要几十秒）…"))
+        threading.Thread(target=self._coplugin_worker,
+                         args=("import", path), daemon=True).start()
 
     def _on_coplugin_export(self, *_):
         p = self._current_coplugin()
@@ -8117,6 +8110,39 @@ class _AgentSettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("导出失败"), msg)
 
+    def _coplugin_worker(self, action: str, name: str, target: bool = True):
+        """后台线程执行 Copilot 插件的启停 / 删除 / 导入。
+
+        这些操作会走插件校验（LLM 最长 60s）、大模块编译（agent_panel 1.7MB 约 9s）
+        与热加载；放在 GUI 线程上就是用户看到的"启用插件界面直接卡死"，必须后台执行。
+        """
+        try:
+            # 导入 main_window 即注册热插拔 UI 事件（页面/服务/托盘/快捷键挂摘）
+            from zhuzhu_Copilot.ui import main_window as _mw  # noqa: F401
+            from zhuzhu_Copilot.core import copilot_plugins
+            if action == "toggle":
+                ok, msg = copilot_plugins.set_enabled(name, target)
+            elif action == "delete":
+                ok, msg = copilot_plugins.delete_plugin(name)
+            elif action == "import":
+                ok, msg = copilot_plugins.import_plugin_zip(name)
+            else:
+                ok, msg = False, f"未知操作: {action}"
+        except Exception as e:
+            ok, msg = False, f"操作失败: {e}"
+        if action == "import":
+            self.copilot_plugin_done.emit("1" if ok else "0", msg)
+        else:
+            self.copilot_toggle_done.emit("1" if ok else "0", msg)
+
+    def _on_coplugin_toggle_done(self, ok: str, msg: str):
+        self._pbar_close()
+        self._reload_coplugin_list()
+        if ok == "1":
+            QMessageBox.information(self, _ui("Copilot 插件"), msg)
+        else:
+            QMessageBox.warning(self, _ui("操作失败"), msg)
+
     def _on_coplugin_toggle(self, *_):
         """启用/停用 Copilot 插件：核心层一站式完成 转译层写入/回滚 + 热加载 +
         失败自动回滚 + UI 挂摘（页面/服务/托盘/快捷键），全程不重启应用。"""
@@ -8126,19 +8152,11 @@ class _AgentSettingsDialog(QDialog):
             return
         name = p.get("name", "")
         target = not p.get("enabled", True)
-        try:
-            # 导入 main_window 即注册热插拔 UI 事件（页面/服务/托盘/快捷键挂摘）
-            from zhuzhu_Copilot.ui import main_window as _mw  # noqa: F401
-            from zhuzhu_Copilot.core import copilot_plugins
-            # set_enabled：磁盘事务 → 热加载 → 失败自动回滚 → UI 事件（本线程同步执行）
-            ok, msg = copilot_plugins.set_enabled(name, target)
-        except Exception as e:
-            ok, msg = False, f"操作失败: {e}"
-        self._reload_coplugin_list()
-        if ok:
-            QMessageBox.information(self, _ui("插件"), msg)
-        else:
-            QMessageBox.warning(self, _ui("操作失败"), msg)
+        self._pbar_open(_ui("Copilot 插件"),
+                        _uif("正在{op}「{n}」（安全校验 / 编译 / 热加载可能需要几十秒）…",
+                             op=_ui("启用") if target else _ui("停用"), n=name))
+        threading.Thread(target=self._coplugin_worker,
+                         args=("toggle", name, target), daemon=True).start()
 
     def _on_coplugin_delete(self, *_):
         p = self._current_coplugin()
@@ -8154,19 +8172,9 @@ class _AgentSettingsDialog(QDialog):
             QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes:
             return
-        try:
-            from zhuzhu_Copilot.ui import main_window as _mw  # noqa: F401
-            from zhuzhu_Copilot.core import copilot_plugins
-            # delete_plugin 内部顺序：摘 UI/停服务 → 回滚 → 清理 → 删目录 →
-            # 热加载卸载 → 重建其余服务（全程不重启）
-            ok, msg = copilot_plugins.delete_plugin(name)
-        except Exception as e:
-            ok, msg = False, f"删除失败: {e}"
-        self._reload_coplugin_list()
-        if ok:
-            QMessageBox.information(self, _ui("已删除"), msg)
-        else:
-            QMessageBox.warning(self, _ui("删除失败"), msg)
+        self._pbar_open(_ui("Copilot 插件"), _uif("正在删除「{n}」并回滚变更…", n=name))
+        threading.Thread(target=self._coplugin_worker,
+                         args=("delete", name), daemon=True).start()
 
     def _on_coplugin_detail(self, *_):
         """打开 Copilot 插件详情/配置对话框（双击列表项或「详情/配置」按钮）"""

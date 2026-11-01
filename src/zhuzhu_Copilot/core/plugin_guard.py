@@ -27,6 +27,7 @@
   recent_guard_events(limit)          最近校验事件（供 UI/提示展示）
 """
 
+import hashlib
 import json
 import re
 import threading
@@ -453,15 +454,63 @@ def guard_source_package(pkg_dir, name: str, llm_review=None) -> tuple:
     return (False, blocked) if blocked else review.finish()
 
 
+def _blobs_fingerprint(blobs: dict) -> str:
+    """送审内容指纹（顺序无关）：同一份内容只做一次 LLM 深度评审。
+
+    插件的启用/停用/再次启用会反复走 apply，每次都等 LLM 往返（最长 60s+）——
+    这正是"启用插件极其卡顿"的另一半根因。评审结论与内容指纹一起记在**插件目录
+    之外**的结论库里，内容没变就直接复用，不再重复等待。
+    """
+    h = hashlib.sha256()
+    for rel in sorted(blobs):
+        h.update(str(rel).encode("utf-8"))
+        h.update(b"\x00")
+        h.update(str(blobs[rel]).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+#: 评审结论库（**不放在插件包里**，避免插件作者在 plugin.json 里预埋"已通过"结论）
+_VERDICT_LOCK = threading.Lock()
+
+
+def _verdict_store_path() -> Path:
+    return agent_plugins.plugins_dir() / ".guard_verdicts.json"
+
+
+def _load_verdicts() -> dict:
+    try:
+        data = json.loads(_verdict_store_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_guard_verdict(pkg_dir, fingerprint: str) -> None:
+    """记录"该插件目录当前内容已通过 LLM 评审"（只存指纹，跨进程可复用）。"""
+    key = str(Path(pkg_dir).resolve())
+    with _VERDICT_LOCK:
+        store = _load_verdicts()
+        store[key] = {"hash": str(fingerprint), "verdict": "safe"}
+        try:
+            p = _verdict_store_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(store, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+        except OSError:
+            pass
+
+
 class SourceReview:
     """源码插件校验事务：静态规则同步判定，LLM 深审在后台线程并行。
 
-    为什么要并行：LLM 往返是 1~3s 的网络耗时，而写入转译层 + 编译是纯本地 CPU 工作，
-    两者互不依赖（LLM 只看待写入的内容，不看落盘结果），并行后总耗时 ≈ max(两者)，
-    大型插件插入才可能稳定在 3s 内。
+    为什么要并行：LLM 往返是 1~3s 的网络耗时（慢时可达 60s），而写入转译层 +
+    编译是纯本地 CPU 工作，两者互不依赖（LLM 只看待写入的内容，不看落盘结果），
+    并行后总耗时 ≈ max(两者)，大型插件插入才可能稳定在 3s 内。
 
     安全性不变：LLM 结论出来之前**不会热加载**（不做任何 exec）；判危则调用方回滚
     已写入的变更、本对象删除整个插件包——危险代码永远不会被执行。
+    内容指纹与上次已通过的结果一致时直接复用结论（不再重复等 LLM）。
     """
 
     def __init__(self, pkg_dir, name: str, llm_review=None):
@@ -473,6 +522,11 @@ class SourceReview:
         self._llm = {}
         self._thread = None
         self.blobs = _source_package_blobs(self.pkg_dir)
+        self._fp = _blobs_fingerprint(self.blobs)
+        cached = _load_verdicts().get(str(self.pkg_dir.resolve())) or {}
+        self._reused = (bool(self.blobs)
+                        and str(cached.get("hash") or "") == self._fp
+                        and str(cached.get("verdict") or "") == "safe")
 
     def blocked(self) -> str:
         """静态阶段：返回非空提示 = 已判危并处置（调用方立即返回，不写盘）。
@@ -489,7 +543,7 @@ class SourceReview:
                 self.detail["dangerous_files"][rel] = "静态规则命中：" + _findings_reason(hard)
         if self.detail["dangerous_files"]:
             return self._reject()
-        if self.blobs:
+        if self.blobs and not self._reused:
             self._thread = threading.Thread(target=self._run_llm,
                                             name="plugin-guard-llm", daemon=True)
             self._thread.start()
@@ -507,20 +561,29 @@ class SourceReview:
             self._thread.join(timeout if timeout is not None else _LLM_TIMEOUT_S + 10)
         llm = self._llm if isinstance(self._llm, dict) else {}
         used = bool(llm)
-        self.detail.update({"llm": llm, "llm_used": used,
-                            "llm_state": "used" if used else
-                            ("unavailable" if self.blobs else "skipped")})
+        if self._reused:
+            self.detail.update({"llm": {"verdict": "safe", "reason": "复用已通过的评审结论"},
+                                "llm_used": True, "llm_state": "reused"})
+        else:
+            self.detail.update({"llm": llm, "llm_used": used,
+                                "llm_state": "used" if used else
+                                ("unavailable" if self.blobs else "skipped")})
         if llm.get("verdict") == "dangerous":
             for rel in self.blobs:
                 self.detail["dangerous_files"].setdefault(
                     rel, "LLM 源码评审判定危险：" + str(llm.get("reason") or "未给出理由"))
         if self.detail["dangerous_files"]:
             return False, self._reject()
+        if llm.get("verdict") == "safe":
+            _save_guard_verdict(self.pkg_dir, self._fp)
         _log_event({"plugin": self.name, "action": "pass_source",
-                    "ops": len(self.blobs), "llm_used": used})
+                    "ops": len(self.blobs), "llm_used": used or self._reused})
         msg = f"插件「{self.name}」通过插件校验系统"
-        msg += ("（静态规则 + LLM 源码评审）" if used
-                else "（静态规则；LLM 不可用未做深度评审）")
+        if self._reused:
+            msg += "（静态规则 + 复用上次已通过的 LLM 源码评审结论）"
+        else:
+            msg += ("（静态规则 + LLM 源码评审）" if used
+                    else "（静态规则；LLM 不可用未做深度评审）")
         return True, msg
 
     def _reject(self) -> str:

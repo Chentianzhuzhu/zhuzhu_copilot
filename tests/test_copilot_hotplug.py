@@ -244,3 +244,34 @@ def test_toggle_one_plugin_keeps_other_plugins_running(app, tmp_path, monkeypatc
         mw.unload_extension_modules("alpha")
         mw.unload_extension_modules("beta")
 
+
+def test_host_registered_with_zero_plugins_then_late_plugin_mounts(app, tmp_path,
+                                                                  monkeypatch):
+    """启动时一个启用插件都没有：host 也必须登记；之后下载/启用的页面立即挂上。
+
+    回归：旧实现只在 register_copilot_entry 里登记宿主，零插件时 host 恒为 None，
+    之后从市场下载插件 → pages 被静默跳过（只有服务起来），页面重启后才出现。
+    """
+    from zhuzhu_Copilot.core import copilot_plugins
+    from zhuzhu_Copilot.ui import main_window as mw
+
+    root = tmp_path / "plugins"
+    monkeypatch.setattr(copilot_plugins, "COPILOT_PLUGINS_DIR", root)
+    state = {"started": set(), "services": [], "tray": [], "shortcuts": [],
+             "host": None, "errors": {}}
+    monkeypatch.setattr(mw, "_COPILOT_EXT_STATE", state)
+    panel = _FakePanel()
+    try:
+        mw.load_copilot_extensions(panel)
+        assert state["host"] is panel, "零插件时也必须登记页面宿主"
+
+        _make_plugin(root, "late-page")
+        ok, msg = mw.start_copilot_plugin("late-page")   # 不传 panel：走已登记的宿主
+        assert ok, msg
+        assert panel._pages.count() == 1, "启用后页面必须立即挂到宿主页签"
+        assert any(r.get("plugin") == "late-page"
+                   for r in panel._copilot_ext["pages"])
+    finally:
+        mw.unregister_copilot_plugin("late-page")
+        mw.unload_extension_modules("late-page")
+

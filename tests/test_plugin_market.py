@@ -391,18 +391,33 @@ def test_market_page_uses_card_board_and_buttons_below(market, tmp_path):
     page = page.widget() if hasattr(page, "widget") else page   # 页面套了滚动容器
     lay = page.layout()
 
-    def _row_of(widget) -> int:
-        for i in range(lay.count()):
-            it = lay.itemAt(i)
-            if it.widget() is widget:
-                return i
-            sub = it.layout()
-            if sub is not None and any(
-                    sub.itemAt(j).widget() is widget for j in range(sub.count())):
-                return i
-        return -1
+    def _path(widget):
+        """布局树里控件的位置路径（序号列表）；找不到返回 None。"""
+        def _walk(layout, acc):
+            for i in range(layout.count()):
+                it = layout.itemAt(i)
+                w = it.widget()
+                if w is widget:
+                    return acc + [i]
+                sub = it.layout()
+                if sub is not None:
+                    hit = _walk(sub, acc + [i])
+                    if hit is not None:
+                        return hit
+                if w is not None and w.layout() is not None:
+                    hit = _walk(w.layout(), acc + [i])
+                    if hit is not None:
+                        return hit
+            return None
+        return _walk(lay, [])
 
-    assert 0 <= _row_of(dlg.market_list) < _row_of(dlg.market_upload_b), \
+    pa = _path(dlg.market_list)
+    pb = _path(dlg.market_upload_b)
+    assert pa and pb, (pa, pb)
+    k = 0
+    while k < min(len(pa), len(pb)) and pa[k] == pb[k]:
+        k += 1
+    assert k < min(len(pa), len(pb)) and pa[k] < pb[k], \
         "按钮行必须在卡片看板下方"
     dlg.close()
     dlg.deleteLater()

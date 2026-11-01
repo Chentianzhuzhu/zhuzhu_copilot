@@ -314,3 +314,22 @@ def test_live_class_patch_keeps_zero_arg_super():
     # 旧实例：新实现生效，且 super() 仍然指向旧类的父类
     assert inst.value() == 21
 
+
+# ══════════════ 8. 候选收窄：无关源码改动不得进入热加载（卡顿回归） ══════════════
+
+def test_overlay_only_candidates_skip_unrelated_src_changes(lab):
+    """开发期改与插件无关的源码：reload_overlay 不得重载它。
+
+    插件变更只可能落在覆盖层；旧实现把全部 sys.modules 当候选，编辑器随手改
+    agent_panel（1.7MB）就会在下次插件启停时被重编译约 9s —— 这正是
+    "启用/禁用插件极其卡顿"的根因。显式热加载仍走 reload_module。
+    """
+    _reset_engine()
+    import lab2pkg.w1 as w1
+    assert w1.f() == 1
+    lab["write"]("w1.py", "V = 99\n\ndef f():\n    return V\n")
+    res = hr.reload_overlay()
+    assert "lab2pkg.w1" not in res["reloaded"], res["reloaded"]
+    assert w1.f() == 1, "无关模块不应被 reload_overlay 重载"
+
+

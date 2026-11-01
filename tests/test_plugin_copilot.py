@@ -482,6 +482,83 @@ def test_example_manifest_and_package_files(iso):
 
 
 # ------------------------------------------------------------
+# 半套状态修复：清单缺失也能停用 / 再启用（"只有重启才生效"回归）
+# ------------------------------------------------------------
+
+def test_disable_cleans_overlay_when_manifest_missing(frozen, iso):
+    """applied.json 缺失（上次应用被中断）时停用：覆盖层残留也必须清干净。"""
+    _mk_coplugin("left1", [
+        {"op": "insert_after", "path": "zhuzhu_Copilot/ui/styles.py",
+         "anchor": "    PALETTE.update(src)",
+         "content": '    PALETTE["left"] = 1'},
+        {"op": "create_file", "path": "zhuzhu_Copilot/core/left_mod.py",
+         "content": "VALUE = 1\n"},
+    ])
+    ov = frozen["overlay"]
+    assert copilot_plugins.apply("left1")[0]
+    (copilot_plugins.plugin_dir("left1") / "applied.json").unlink()
+    ok, msg = copilot_plugins.set_enabled("left1", False)
+    assert ok, msg
+    assert not (ov / "zhuzhu_Copilot" / "ui" / "styles.py").exists()
+    assert not (ov / "zhuzhu_Copilot" / "core" / "left_mod.py").exists()
+    assert not (copilot_plugins.plugin_dir("left1") / "backups").exists()
+
+
+def test_apply_after_interrupted_state_is_clean(frozen, iso):
+    """有备份无清单（中断态）再启用：先清理残留，按原版基准写入，不重复插入。"""
+    _mk_coplugin("left2", [
+        {"op": "insert_after", "path": "zhuzhu_Copilot/ui/styles.py",
+         "anchor": "    PALETTE.update(src)",
+         "content": '    PALETTE["left"] = 1'},
+    ])
+    ov = frozen["overlay"]
+    assert copilot_plugins.apply("left2")[0]
+    (copilot_plugins.plugin_dir("left2") / "applied.json").unlink()
+    ok, msg = copilot_plugins.set_enabled("left2", True)
+    assert ok, msg
+    text = (ov / "zhuzhu_Copilot" / "ui" / "styles.py").read_text(encoding="utf-8")
+    assert text.count('PALETTE["left"] = 1') == 1, \
+        "中断态再应用不得把同一条插入叠加两次"
+    assert copilot_plugins.status("left2")["applied"]
+
+
+def test_guard_verdict_reused_across_enable_disable(frozen, iso, monkeypatch):
+    """同一份内容只做一次 LLM 深审：反复停用/启用不得再等 LLM（卡顿回归）。"""
+    calls = {"n": 0}
+
+    def _review(blobs):
+        calls["n"] += 1
+        return {"verdict": "safe", "reason": "测试替身：安全"}
+
+    monkeypatch.setattr(plugin_guard, "_llm_review", _review)
+    _mk_coplugin("cache1", [
+        {"op": "create_file", "path": "zhuzhu_Copilot/core/cache_mod.py",
+         "content": "VALUE = 1\n"},
+    ])
+    assert copilot_plugins.set_enabled("cache1", True)[0]
+    assert calls["n"] == 1
+    assert copilot_plugins.set_enabled("cache1", False)[0]
+    assert copilot_plugins.set_enabled("cache1", True)[0]
+    assert calls["n"] == 1, "内容未变时必须复用上次评审结论"
+
+
+def test_create_file_idempotent_for_identical_content(frozen, iso):
+    """create_file 对"已存在且内容完全一致"的文件幂等（中断态可原地修复）。"""
+    _mk_coplugin("idem1", [
+        {"op": "create_file", "path": "zhuzhu_Copilot/core/idem_mod.py",
+         "content": "VALUE = 2\n"},
+    ])
+    ov = frozen["overlay"]
+    (ov / "zhuzhu_Copilot" / "core").mkdir(parents=True, exist_ok=True)
+    (ov / "zhuzhu_Copilot" / "core" / "idem_mod.py").write_text(
+        "VALUE = 2\n", encoding="utf-8")      # 模拟上次已写完整、清单缺失
+    ok, msg = copilot_plugins.apply("idem1")
+    assert ok, msg
+    assert copilot_plugins.status("idem1")["applied"]
+
+
+
+# ------------------------------------------------------------
 # 导入 / 导出 / 配置
 # ------------------------------------------------------------
 
