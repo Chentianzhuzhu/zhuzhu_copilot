@@ -403,6 +403,7 @@ def test_model_tune_popover_and_hover_timers(panel):
     hold = panel._model_hover
     assert hold._hold.interval() == ap._MODEL_TUNE_HOLD_MS == 1000
     assert hold._leave.interval() == ap._MODEL_TUNE_LEAVE_MS == 250
+    assert hold._gate is not None, "悬停弹层缺少「只在模型名称上触发」的闸门"
 
     panel._open_model_tune()
     _pump(80)
@@ -410,6 +411,33 @@ def test_model_tune_popover_and_hover_timers(panel):
     assert pop._auto.isChecked() == bool(panel._auto_effort)
     panel._close_model_tune()
     _pump(260)
+
+
+def test_model_tune_gate_only_on_model_name(panel, monkeypatch):
+    """悬停闸门：列表展开不弹；指针在右侧箭头区不弹；只有模型名称文本区才弹。"""
+    import types
+    from PyQt6.QtCore import QPoint
+    combo = panel.model_combo
+    mid = combo.mapToGlobal(QPoint(10, combo.height() // 2))
+    arrow = combo.mapToGlobal(QPoint(combo.width() - 5, combo.height() // 2))
+    monkeypatch.setattr(ap, "QCursor", types.SimpleNamespace(pos=lambda: mid))
+    monkeypatch.setattr(combo.view(), "isVisible", lambda: True)
+    assert panel._model_tune_gate() is False, "下拉列表展开时不应再弹调节浮层"
+    monkeypatch.setattr(combo.view(), "isVisible", lambda: False)
+    assert panel._model_tune_gate() is True, "指针停在模型名称文本区应允许弹层"
+    monkeypatch.setattr(ap, "QCursor", types.SimpleNamespace(pos=lambda: arrow))
+    assert panel._model_tune_gate() is False, "指针在箭头区不应触发调节浮层"
+
+
+def test_tune_popover_suppresses_combo_tooltip(panel):
+    """调节浮层显示期间关掉下拉框提示气泡，收起后恢复（两套浮层不叠在一起）。"""
+    panel._open_model_tune()
+    _pump(40)
+    assert panel.model_combo.toolTip() == "", "浮层显示时提示气泡未关闭"
+    panel._close_model_tune()
+    _pump(300)
+    assert panel.model_combo.toolTip() == ap._ui(ap._MODEL_COMBO_TIP), \
+        "浮层收起后提示语未恢复"
 
 
 def test_model_tune_drag_persists_without_auto_switch(panel):
@@ -444,12 +472,16 @@ def test_model_badges_sit_left_of_model_combo(panel):
     assert badges.x() < panel.model_combo.x(), "徽标必须在模型名左侧"
 
 
-def test_permission_button_sits_right_of_optimize(panel):
-    """权限入口紧邻提示词优化右侧，图标为盾牌矢量图。"""
-    assert panel.perm_btn.parent() is panel.composer
-    assert panel.perm_btn.x() > panel.optimize_btn.x()
+def test_permission_pill_sits_right_of_optimize(panel):
+    """权限入口紧邻提示词优化右侧：胶囊式（图标 + 当前权限文案 + 落尖角）。"""
+    pill = panel.perm_btn
+    assert isinstance(pill, ap._PermPill)
+    assert pill.parent() is panel.composer
+    assert pill.x() > panel.optimize_btn.x()
     assert "shield" in ap._LINE_ICON_KINDS and "warning" in ap._LINE_ICON_KINDS
-    assert not panel.perm_btn.icon().isNull()
+    assert not pill.icon_lbl.pixmap().isNull(), "权限图标未绘制"
+    assert not pill.chev_lbl.pixmap().isNull(), "胶囊缺少下尖角"
+    assert pill.text_lbl.text() == ap._ui(ap._PERM_LABELS[panel._mode])
 
 
 def test_perm_menu_offers_three_levels(panel, monkeypatch):
@@ -462,6 +494,7 @@ def test_perm_menu_offers_three_levels(panel, monkeypatch):
     assert menu is not None, "权限菜单未构造"
     labels = {a.text() for a in menu.actions()}
     assert {ap._ui("每步确认"), ap._ui("仅工具调用"), ap._ui("全部访问")} <= labels
+    assert ap._ui("如何批准 Agent 的操作?") in labels, "权限菜单缺少分组标题"
 
 
 def test_full_access_requires_confirmation(panel, monkeypatch):
@@ -478,6 +511,7 @@ def test_full_access_requires_confirmation(panel, monkeypatch):
         assert panel._settings.value("agent_mode") == "yolo"
         assert panel._mode == "yolo"
         assert panel.perm_btn.toolTip() == panel._perm_tooltip("yolo")
+        assert panel.perm_btn.text_lbl.text() == ap._ui(ap._PERM_LABELS["yolo"])
         for st in (panel._sess or {}).values():
             eng = st.get("engine")
             if eng is not None:

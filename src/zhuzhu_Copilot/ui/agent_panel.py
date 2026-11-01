@@ -117,6 +117,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser,
     QTextEdit,
     QToolButton,
+    QToolTip,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -13782,6 +13783,9 @@ class _ChipAnchorFilter(QObject):
 _MODEL_TUNE_HOLD_MS = 1000
 _MODEL_TUNE_LEAVE_MS = 250
 _MODEL_TUNE_W = 320
+# 模型下拉框提示语（唯一来源）：悬停调节浮层显示期间会临时清空它，
+# 避免「功能提示气泡」与「调节浮层」同时出现互相遮挡
+_MODEL_COMBO_TIP = "手动切换本次使用的模型；「自动选择」= 按工作力度路由"
 
 
 class _HoverHold(QObject):
@@ -13794,10 +13798,11 @@ class _HoverHold(QObject):
     """
 
     def __init__(self, hold_ms: int, on_hold=None, leave_ms: int = -1,
-                 on_leave=None, parent=None):
+                 on_leave=None, parent=None, gate=None):
         super().__init__(parent)
         self._on_hold = on_hold
         self._on_leave = on_leave
+        self._gate = gate       # 额外前置条件：返回 False 时不触发 on_hold（如鼠标不在文本区）
         self._target = None
         self._hold = QTimer(self)
         self._hold.setSingleShot(True)
@@ -13831,6 +13836,8 @@ class _HoverHold(QObject):
         t = self._target
         try:
             if t is not None and not t.underMouse():
+                return
+            if self._gate is not None and not self._gate():
                 return
             if self._on_hold is not None:
                 self._on_hold()
@@ -19642,6 +19649,152 @@ class _FadeMenu(QMenu):
             pass
 
 
+# Agent 权限胶囊：高度 / 三档文案（唯一事实来源：按钮、菜单、tooltip 都取这里）
+_PERM_PILL_H = 30
+_PERM_LABELS = {"ask": "每步确认", "edit": "仅工具调用", "yolo": "全部访问"}
+_PERM_SUBTITLES = {
+    "ask": "重要操作由你确认",
+    "edit": "自主调用工具，非白名单命令仍需确认",
+    "yolo": "不经审批，直接在本机运行",
+}
+
+
+class _PermPill(QWidget):
+    """Agent 权限胶囊：图标 + 当前权限文案 + 下尖角，点击弹出权限菜单。
+
+    为什么不用 QPushButton：图标、文案、尾部落尖角需要三段独立着色（全部访问时
+    图标/文字转红），QPushButton 只有一个 icon 位，装不下 icon + chevron 两枚图形。
+    """
+
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("permPill")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(_PERM_PILL_H)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(9, 0, 7, 0)
+        lay.setSpacing(5)
+        self.icon_lbl = QLabel(self)
+        self.icon_lbl.setFixedSize(16, 16)
+        self.text_lbl = QLabel("", self)
+        self.chev_lbl = QLabel(self)
+        self.chev_lbl.setFixedSize(10, 10)
+        for w in (self.icon_lbl, self.text_lbl, self.chev_lbl):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lay.addWidget(self.icon_lbl)
+        lay.addWidget(self.text_lbl)
+        lay.addWidget(self.chev_lbl)
+        self._danger = False
+        # 宽度按最长档位文案锁定：切换权限时胶囊不忽宽忽窄，右侧发送键不会跟着跳。
+        # 量宽用与 QSS 同尺寸的显式字体（控件样式表字体要等 polish 后才进 fontMetrics）
+        f = QFont(self.font())
+        f.setPixelSize(FONT_CAPTION)
+        f.setBold(True)
+        fm = QFontMetrics(f)
+        text_w = max(fm.horizontalAdvance(_ui(t)) for t in _PERM_LABELS.values())
+        self.setFixedWidth(text_w + 16 + 5 * 2 + 10 + 9 + 7 + 8)
+
+    def set_state(self, mode: str, tooltip: str):
+        """按当前权限刷新图标/文案/配色（yolo 整枚转红警示）"""
+        self._danger = mode == "yolo"
+        self.icon_lbl.setPixmap(_line_icon(
+            "warning" if self._danger else "shield", 16,
+            ERR if self._danger else ACCENT).pixmap(16, 16))
+        self.text_lbl.setText(_ui(_PERM_LABELS.get(mode, _PERM_LABELS["ask"])))
+        self.apply_theme()
+        self.setToolTip(tooltip)
+
+    def apply_theme(self):
+        base = _base_color("ELEVATED")
+        fill = _mix_hex(BORDER, base, 0.22)
+        hover = _mix_hex(BORDER, base, 0.36)
+        if self._danger:
+            c = QColor(ERR)
+            fill = f"rgba({c.red()},{c.green()},{c.blue()},0.14)"
+            hover = f"rgba({c.red()},{c.green()},{c.blue()},0.26)"
+        self.setStyleSheet(
+            f"QWidget#permPill {{ background: {fill}; border: none;"
+            f" border-radius: {_PERM_PILL_H // 2}px; }}"
+            f"QWidget#permPill:hover {{ background: {hover}; }}"
+            "QLabel { background: transparent; border: none; }")
+        self.text_lbl.setStyleSheet(
+            f"color: {ERR if self._danger else TEXT_DIM};"
+            f" font-size: {FONT_CAPTION}px; font-weight: {_W_BUTTON};"
+            " background: transparent;")
+        self.chev_lbl.setPixmap(_line_icon(
+            "chev", 10, ERR if self._danger else TEXT_DIM).pixmap(10, 10))
+
+    def mouseReleaseEvent(self, e):
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(e.position().toPoint())):
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
+class _PermRow(QWidget):
+    """权限菜单的一行：左图标 + 标题/副标题 + 右侧对勾；hover 整行磨砂高亮。
+
+    用 QWidgetAction 承载而不是普通 QAction：一行需要「标题 + 灰色副标题」两种字阶，
+    QAction 只能给单一文本；行内 QLabel 全部透明鼠标，点击事件冒泡回 QMenu 触发 QAction。
+    """
+
+    def __init__(self, title: str, subtitle: str, icon_kind: str,
+                 danger: bool = False, checked: bool = False, parent=None):
+        super().__init__(parent)
+        self._danger = bool(danger)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(11, 6, 10, 6)
+        lay.setSpacing(9)
+        self.icon_lbl = QLabel(self)
+        self.icon_lbl.setFixedSize(16, 16)
+        self.icon_lbl.setPixmap(_line_icon(icon_kind, 16,
+                                          ERR if danger else TEXT_DIM).pixmap(16, 16))
+        self.title_lbl = QLabel(title, self)
+        self.sub_lbl = QLabel(subtitle, self)
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(1)
+        col.addWidget(self.title_lbl)
+        col.addWidget(self.sub_lbl)
+        self.check_lbl = QLabel(self)
+        self.check_lbl.setFixedSize(14, 14)
+        if checked:
+            self.check_lbl.setPixmap(_line_icon(
+                "ok", 14, ERR if danger else ACCENT).pixmap(14, 14))
+        for w in (self.icon_lbl, self.title_lbl, self.sub_lbl, self.check_lbl):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lay.addWidget(self.icon_lbl)
+        lay.addLayout(col, 1)
+        lay.addWidget(self.check_lbl)
+        self.apply_theme(False)
+
+    def enterEvent(self, e):
+        self.apply_theme(True)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.apply_theme(False)
+        super().leaveEvent(e)
+
+    def apply_theme(self, hover: bool):
+        bg = _mix_hex(BORDER, _base_color("ELEVATED"), 0.30) if hover else "transparent"
+        self.setStyleSheet(
+            f"QWidget {{ background: {bg}; border: none; border-radius: {RADIUS_SM}px; }}"
+            "QLabel { background: transparent; border: none; }")
+        accent = ERR if self._danger else TEXT
+        self.title_lbl.setStyleSheet(
+            f"color: {accent}; font-size: {FONT_SMALL}px;"
+            f" font-weight: {_W_TITLE}; background: transparent;")
+        self.sub_lbl.setStyleSheet(
+            f"color: {ERR if self._danger else TEXT_DIM};"
+            f" font-size: {FONT_CAPTION}px; background: transparent;")
+
+
 class _CuteBubble(QLabel):
     """小熊糖果风锐评气泡（趣味联动特例，不受全局简约/禁 emoji 约束）。
     QLabel 的 QSS 背景在 WA_TranslucentBackground 下不会绘制，故全部用 paintEvent 手动绘制：
@@ -21490,13 +21643,8 @@ class AgentPanel(QDialog):
         self.optimize_btn.clicked.connect(self._on_optimize_clicked)
         tools.addWidget(self.optimize_btn)
 
-        # Agent 权限下拉：紧邻提示词优化右侧（每步确认 / 仅工具调用 / 全部访问）
-        self.perm_btn = QPushButton(_line_icon("shield", 20, ACCENT), "")
-        self.perm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.perm_btn.setAutoDefault(False)
-        self.perm_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
-        self.perm_btn.setIconSize(QSize(20, 20))
-        self.perm_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
+        # Agent 权限下拉（提示词优化右侧）：胶囊显示当前权限，点击弹出三档菜单
+        self.perm_btn = _PermPill()
         self.perm_btn.clicked.connect(self._open_perm_menu)
         tools.addWidget(self.perm_btn)
         self._refresh_perm_btn()   # 按当前执行模式初始化图标/配色/tooltip
@@ -21519,7 +21667,7 @@ class AgentPanel(QDialog):
         self.model_combo.setMaximumWidth(230)
         self.model_combo.setIconSize(QSize(16, 16))
         self.model_combo.setStyleSheet(_HOME_COMBO)
-        self.model_combo.setToolTip(_ui("手动切换本次使用的模型；「自动选择」= 按工作力度路由"))
+        self.model_combo.setToolTip(_ui(_MODEL_COMBO_TIP))
         self.model_combo.currentIndexChanged.connect(self._on_model_combo)
         self.model_combo.setAcceptDrops(False)   # 文件拖放由面板统一接收
         tools.addWidget(self.model_combo)
@@ -21542,9 +21690,11 @@ class AgentPanel(QDialog):
         self._model_tune.effort_changed.connect(self._on_model_tune_effort)
         self._model_tune.auto_changed.connect(self._on_model_tune_auto)
         self._model_tune.context_changed.connect(self._on_model_tune_context)
+        # 悬停计时带前置闸门：只有指针停在模型名称文本区、且下拉列表未展开时才弹层
         self._model_hover = _HoverHold(
             _MODEL_TUNE_HOLD_MS, self._open_model_tune,
-            _MODEL_TUNE_LEAVE_MS, self._close_model_tune, self)
+            _MODEL_TUNE_LEAVE_MS, self._close_model_tune, self,
+            gate=self._model_tune_gate)
         self.model_combo.installEventFilter(self._model_hover)
         # 浮层自身也参与悬停保持：指针在浮层内不收起，离开 250ms 才收起
         self._model_tune_hover = _HoverHold(
@@ -29720,6 +29870,25 @@ class AgentPanel(QDialog):
         pop.set_state(self._effort, self._auto_effort, self._context_1m,
                       self._model_tune_window_text())
 
+    def _model_tune_gate(self) -> bool:
+        """悬停弹层的前置条件：指针停在模型名称**文本区**，且模型下拉列表未展开。
+
+        下拉列表展开时不弹调节浮层：此时逐项工具提示（服务商 · 模型 ID）已经够用，
+        再叠一层调节浮层会盖住列表，两套浮层互相冲突。"""
+        combo = self.__dict__.get("model_combo")
+        if combo is None:
+            return False
+        try:
+            if combo.view().isVisible():
+                return False
+            pos = combo.mapFromGlobal(QCursor.pos())
+            if not combo.rect().contains(pos):
+                return False
+            # 右侧箭头区不算「模型名称」：指针落在箭头上不触发
+            return int(pos.x()) <= combo.width() - COMBO_ARROW_W - 2
+        except Exception:
+            return False
+
     def _open_model_tune(self):
         """悬停 1s / 浮层内悬停时显示调节浮层（幂等）"""
         pop = self.__dict__.get("_model_tune")
@@ -29729,21 +29898,32 @@ class AgentPanel(QDialog):
         if pop.isVisible():
             return
         pop.popup_above(self.model_combo)
+        # 浮层显示期间关掉下拉框的提示气泡，避免两个浮层叠在同一个位置
+        try:
+            QToolTip.hideText()
+            self.model_combo.setToolTip("")
+        except Exception:
+            pass
         self._model_tune_dismiss_attach(True)
 
     def _close_model_tune(self):
-        """收起调节浮层（离开宽限计时到期 / 选中外部 / Esc）"""
+        """收起调节浮层（离开宽限计时到期 / 点击外部 / Esc），恢复下拉框提示语"""
         pop = self.__dict__.get("_model_tune")
         if pop is None:
             return
         pop.close_animated()
+        try:
+            self.model_combo.setToolTip(_ui(_MODEL_COMBO_TIP))
+        except Exception:
+            pass
         self._model_tune_dismiss_attach(False)
 
     def _model_tune_dismiss_attach(self, on: bool):
         """挂载/卸载全局失焦守卫（点击浮层与模型框外或 Esc → 收起），幂等"""
         f = self.__dict__.get("_model_tune_dismiss")
         if f is None:
-            f = _PopoverDismissFilter(self._model_tune, self.model_combo,
+            # 触发按钮不作为「免收起点」：点击模型框会展开下拉列表，此时必须先收起调节浮层
+            f = _PopoverDismissFilter(self._model_tune, None,
                                       parent=self, on_dismiss=self._close_model_tune)
             self._model_tune_dismiss = f
         app = QApplication.instance()
@@ -29817,57 +29997,46 @@ class AgentPanel(QDialog):
         }.get(mode, _ui("Agent 权限"))
 
     def _refresh_perm_btn(self):
-        """按当前执行模式刷新权限按钮：图标 + 颜色 + tooltip（yolo 转红警示）"""
-        btn = self.__dict__.get("perm_btn")
-        if btn is None:
+        """按当前执行模式刷新权限胶囊：图标 + 文案 + 配色 + tooltip（yolo 整枚转红）"""
+        pill = self.__dict__.get("perm_btn")
+        if pill is None:
             return
         mode = str(getattr(self, "_mode", "ask") or "ask")
-        danger = mode == "yolo"
-        btn.setIcon(_line_icon("warning" if danger else "shield", 20,
-                               ERR if danger else ACCENT))
-        if danger:
-            # 全部访问进行中：红染圆盘（由错误色派生，不写死 rgb），一眼可辨「高风险开着」
-            c = QColor(ERR)
-            fill = f"rgba({c.red()},{c.green()},{c.blue()},0.16)"
-            hover = f"rgba({c.red()},{c.green()},{c.blue()},0.28)"
-            btn.setStyleSheet(
-                f"QPushButton {{ background: {fill}; border: none;"
-                f" border-radius: {_ROUND_BTN_D // 2}px; }}"
-                f"QPushButton:hover {{ background: {hover}; }}")
-        else:
-            btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
-        btn.setToolTip(self._perm_tooltip(mode))
+        pill.set_state(mode, self._perm_tooltip(mode))
 
     def _open_perm_menu(self):
-        """权限下拉：每步确认 / 仅工具调用 / 全部访问（全部访问为红色风险项）"""
+        """权限下拉（标题 + 三档带副说明的行）：每步确认 / 仅工具调用 / 全部访问。
+
+        位置在胶囊正上方：菜单从下方按钮弹出，不会盖住输入框正文；全部访问整行红色。"""
         btn = self.__dict__.get("perm_btn")
         if btn is None:
             return
         menu = _FadeMenu(self)
         cur = str(getattr(self, "_mode", "ask") or "ask")
-        for mode, text, kind in (("ask", _ui("每步确认"), "ok"),
-                                 ("edit", _ui("仅工具调用"), "tool")):
-            act = menu.addAction(_line_icon(kind, 16, TEXT), text)
-            act.setCheckable(True)
-            act.setChecked(mode == cur)
-            act.triggered.connect(lambda _c=False, m=mode: self._on_perm_action(m))
-        # 「全部访问」用红色警告行（QWidgetAction 才能单独上红字；普通 QAction 无逐项配色）
-        wa = QWidgetAction(menu)
-        holder = QWidget(menu)
-        row = QHBoxLayout(holder)
-        row.setContentsMargins(10, 5, 10, 5)
-        row.setSpacing(8)
-        ico = QLabel(holder)
-        ico.setPixmap(_line_icon("warning", 16, ERR).pixmap(16, 16))
-        txt = QLabel(_ui("全部访问"), holder)
-        txt.setStyleSheet(f"color: {ERR}; background: transparent;")
-        row.addWidget(ico)
-        row.addWidget(txt)
-        row.addStretch(1)
-        wa.setDefaultWidget(holder)
-        wa.setText(_ui("全部访问"))   # 无障碍/测试可读文案（红字由上面的 QLabel 承担）
-        wa.triggered.connect(lambda _c=False: self._on_perm_action("yolo"))
-        menu.addAction(wa)
+        # 标题行（不可点击，仅说明「这一组在调什么」）
+        head = QWidgetAction(menu)
+        hw = QWidget(menu)
+        hl = QVBoxLayout(hw)
+        hl.setContentsMargins(12, 9, 12, 3)
+        ttl = QLabel(_ui("如何批准 Agent 的操作?"), hw)
+        ttl.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: {FONT_CAPTION}px; background: transparent;")
+        hl.addWidget(ttl)
+        head.setDefaultWidget(hw)
+        head.setText(_ui("如何批准 Agent 的操作?"))   # 无障碍/测试可读文案
+        head.setEnabled(False)
+        menu.addAction(head)
+        for mode in ("ask", "edit", "yolo"):
+            danger = mode == "yolo"
+            row = _PermRow(
+                _ui(_PERM_LABELS[mode]), _ui(_PERM_SUBTITLES[mode]),
+                "ok" if mode == "ask" else ("tool" if mode == "edit" else "warning"),
+                danger=danger, checked=(mode == cur), parent=menu)
+            wa = QWidgetAction(menu)
+            wa.setDefaultWidget(row)
+            wa.setText(_ui(_PERM_LABELS[mode]))   # 无障碍/测试可读文案
+            wa.triggered.connect(lambda _c=False, m=mode: self._on_perm_action(m))
+            menu.addAction(wa)
         pos = btn.mapToGlobal(QPoint(0, -8 - menu.sizeHint().height()))
         menu.exec(pos)
 
