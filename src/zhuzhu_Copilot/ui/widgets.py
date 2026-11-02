@@ -4,18 +4,23 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
-    QCheckBox, QSizePolicy, QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
-    QFileIconProvider, QApplication, QComboBox, QMenu
+    QCheckBox, QSizePolicy, QGraphicsDropShadowEffect,
+    QStyledItemDelegate, QStyle,
+    QFileIconProvider, QApplication, QComboBox, QMenu, QFrame,
+    QListWidget, QListWidgetItem, QStyleOptionViewItem,
 )
 from PyQt6.QtCore import (
-    Qt, QSize, QRect, QFileInfo, QPoint, QTimer, QObject, QPropertyAnimation,
-    QParallelAnimationGroup, QEasingCurve, pyqtSignal, pyqtProperty
+    Qt, QSize, QRect, QRectF, QFileInfo, QPoint, QTimer, QObject, QPropertyAnimation,
+    QParallelAnimationGroup, QEasingCurve, QEvent, QVariantAnimation,
+    pyqtSignal, pyqtProperty
 )
 from PyQt6.QtGui import (QColor, QPainter, QIcon, QFont, QFontMetrics, QPixmap,
-                         QPainterPath, QPen)
+                         QPainterPath, QPen, QCursor)
 
 from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
-from zhuzhu_Copilot.ui.tokens import COMBO_ARROW_W
+from zhuzhu_Copilot.ui.tokens import (
+    COMBO_ARROW_W, FONT_BASE, RADIUS_SM, RADIUS_XS,
+)
 from zhuzhu_Copilot.ui import motion
 from zhuzhu_Copilot.core.i18n import ui as _ui, uim as _uim, uif as _uif
 
@@ -166,6 +171,401 @@ class FadeMenu(QMenu):
             pass
 
 
+def _combo_scroll_qss() -> str:
+    """下拉弹层内的极简滚动条（透明轨道 + 半透明淡灰滑块）。"""
+    handle = QColor(PALETTE["text_secondary"])
+    handle.setAlphaF(0.30)
+    hover = QColor(PALETTE["text_secondary"])
+    hover.setAlphaF(0.55)
+    hb = f"rgba({handle.red()},{handle.green()},{handle.blue()},{handle.alpha()})"
+    hv = f"rgba({hover.red()},{hover.green()},{hover.blue()},{hover.alpha()})"
+    return (
+        "QScrollBar:vertical { background: transparent; width: 10px;"
+        " margin: 2px 2px 2px 0; }"
+        f"QScrollBar::handle:vertical {{ background: {hb}; border-radius: 3px;"
+        " min-height: 28px; margin: 0 2px; }"
+        f"QScrollBar::handle:vertical:hover {{ background: {hv}; }}"
+        "QScrollBar::sub-page:vertical, QScrollBar::add-page:vertical {"
+        " background: transparent; }"
+        "QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {"
+        " background: transparent; height: 0; width: 0; }"
+    )
+
+
+class _ComboRowDelegate(QStyledItemDelegate):
+    """下拉项绘制：统一行高，并在当前生效项右侧画对勾（路径折线，不依赖字体）。"""
+
+    ROW_H = 30
+
+    def sizeHint(self, opt, idx) -> QSize:
+        s = super().sizeHint(opt, idx)
+        return QSize(s.width(), max(self.ROW_H, int(s.height())))
+
+    def paint(self, p: QPainter, opt, idx):
+        o = QStyleOptionViewItem(opt)
+        self.initStyleOption(o, idx)
+        o.text = ""                      # 文本交给父类按主题绘制
+        style = o.widget.style() if o.widget is not None else None
+        if style is not None:
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, o, p, o.widget)
+        # 文本（含图标）
+        text_rect = o.rect.adjusted(10, 0, -22, 0)
+        icon = idx.data(Qt.ItemDataRole.DecorationRole)
+        x = text_rect.left()
+        if isinstance(icon, QIcon) and not icon.isNull():
+            icon.paint(p, QRect(x, text_rect.center().y() - 8, 16, 16))
+            x += 22
+        fm = QFontMetrics(o.font)
+        txt = fm.elidedText(str(idx.data(Qt.ItemDataRole.DisplayRole) or ""),
+                            Qt.TextElideMode.ElideRight,
+                            max(10, text_rect.right() - x))
+        p.save()
+        p.setPen(QColor(PALETTE["text"]))
+        p.drawText(QRect(x, text_rect.top(), text_rect.right() - x, text_rect.height()),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), txt)
+        p.restore()
+        # 当前项对勾
+        if idx.data(Qt.ItemDataRole.UserRole + 1):
+            pen = QPen(QColor(PALETTE["primary"]))
+            pen.setWidthF(1.8)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.save()
+            p.setPen(pen)
+            cx = o.rect.right() - 14
+            cy = o.rect.center().y()
+            path = QPainterPath()
+            path.moveTo(cx - 4, cy)
+            path.lineTo(cx - 1, cy + 3)
+            path.lineTo(cx + 4, cy - 3)
+            p.drawPath(path)
+            p.restore()
+
+
+class ComboPopup(QFrame):
+    """自绘下拉弹层：**整块**平滑弹出（淡入 + 轻微上浮），不依赖原生弹层窗口。
+
+    为什么不用 QComboBox 原生弹层：原生弹层是独立原生窗口，只能动画 ``windowOpacity``，
+    且首帧会在动画启动前先上屏 —— 肉眼就是「先闪一下再淡入」。
+
+    为什么不用 QGraphicsOpacityEffect 淡入：它要求 Qt 每帧重绘整棵子树再合成，
+    列表越长越容易掉帧，掉帧时用户看到的就是**一截一截从上往下刷出**的割裂感。
+
+    本实现的做法（性能优先，且与帧率无关）：开场前先把整块内容 ``grab()`` 成一张位图，
+    动画期间隐藏真实子控件、只按当前不透明度绘制这一张整块位图。整块内容的像素在动画
+    开始前就已经定死，物理上不存在「逐行渲染」的中间态；每帧开销也从「重绘整棵列表」
+    降为「一次位图 blit」。动画结束后再把真实子控件交还（内容与位图逐像素一致，切换不可见）。
+    """
+
+    GAP = 4                  # 与下拉框的间距
+    RISE_PX = 6              # 展开位移（从下方 6px 浮起）
+    MARGIN = 6               # 距窗口边缘的最小留白
+    MAX_H = 340              # 弹层最大高度（超出在列表内滚动）
+    FADE_MS = motion.POP_MS  # 淡入时长（与动效注册表同源）
+    FADE_OUT_MS = motion.FADE_OUT_MS
+    CLOSE_RISE_PX = 4        # 收起时下移的位移
+
+    picked = pyqtSignal(int)
+
+    def __init__(self, combo):
+        super().__init__(combo.window())
+        self.setObjectName("comboPopup")
+        # 不用 QSS 背景：底必须由 paintEvent 自己画。QSS 背景由 Qt 在 paintEvent **之前**
+        # 绘制，位图叠在它上面永远是 100% 不透明 —— 淡入会彻底失效（只剩"瞬间弹出"）。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._combo = combo
+        # 整块位图遮罩：动画期间真实子控件不绘制，只画这一张图
+        self._snap: QPixmap | None = None
+        self._veiled = False        # True = 正在以位图代替子控件绘制
+        self._op = 1.0              # 位图不透明度 0~1
+        self._from = QPoint()       # 本次动画的起始 / 目标位置
+        self._to = QPoint()
+        self._o0 = 1.0              # 本次动画的起止不透明度
+        self._o1 = 1.0
+        self._hide_on_end = False   # 收起动画：结束即隐藏
+        self._anim = QVariantAnimation(self)
+        self._anim.valueChanged.connect(self._on_step)
+        self._anim.finished.connect(self._on_end)
+        self._list = QListWidget(self)
+        self._list.setObjectName("comboPopupList")
+        self._list.setFrameShape(QFrame.Shape.NoFrame)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._list.setMouseTracking(True)      # ::item:hover 需要鼠标跟踪才会刷新
+        self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._list.setItemDelegate(_ComboRowDelegate(self._list))
+        self._list.itemClicked.connect(lambda it: self._pick(it))
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(0)
+        lay.addWidget(self._list)
+        self._apply_theme()
+        self.hide()
+
+    # ---------- 主题 ----------
+    def _apply_theme(self):
+        self.setStyleSheet(
+            f"#comboPopup {{ background: transparent; border: none; }}"   # 底自绘，见 paintEvent
+            f"#comboPopupList {{ background: transparent; border: none; outline: none;"
+            f" color: {PALETTE['text']}; font-size: {FONT_BASE}px; }}"
+            f"#comboPopupList::item {{ padding: 4px 6px;"
+            f" border-radius: {RADIUS_XS}px; }}"
+            f"#comboPopupList::item:hover {{ background: {PALETTE['hover']}; }}"
+            + _combo_scroll_qss())
+
+    # ---------- 内容 ----------
+    def _reload(self):
+        combo = self._combo
+        cur = combo.currentIndex()
+        self._list.clear()
+        for i in range(combo.count()):
+            it = QListWidgetItem(combo.itemText(i))
+            ic = combo.itemIcon(i)
+            if ic is not None and not ic.isNull():
+                it.setIcon(ic)
+            it.setData(Qt.ItemDataRole.UserRole, i)
+            it.setData(Qt.ItemDataRole.UserRole + 1, i == cur)
+            tip = combo.itemData(i, Qt.ItemDataRole.ToolTipRole)
+            if tip:
+                it.setToolTip(str(tip))
+            self._list.addItem(it)
+        if 0 <= cur < self._list.count():
+            self._list.setCurrentRow(cur)
+            self._list.scrollToItem(self._list.item(cur))
+
+    def _content_width(self) -> int:
+        combo = self._combo
+        fm = QFontMetrics(self._list.font())
+        w = 0
+        has_icon = False
+        for i in range(combo.count()):
+            w = max(w, fm.horizontalAdvance(combo.itemText(i)))
+            ic = combo.itemIcon(i)
+            if ic is not None and not ic.isNull():
+                has_icon = True
+        return w + (26 if has_icon else 0) + 40      # 左右内边距 + 对勾位
+
+    def _target_rect(self) -> QRect:
+        combo = self._combo
+        host = self.parentWidget()
+        if host is None:
+            return QRect()
+        rows = max(1, self._list.count())
+        content_h = min(self.MAX_H, rows * _ComboRowDelegate.ROW_H + 10)
+        width = max(int(combo.width()), min(self._content_width(), 460))
+        width = min(width, max(120, host.width() - 2 * self.MARGIN))
+        top_left = combo.mapTo(host, QPoint(0, 0))
+        x = min(max(self.MARGIN, top_left.x()),
+                max(self.MARGIN, host.width() - width - self.MARGIN))
+        below = top_left.y() + combo.height() + self.GAP
+        above = top_left.y() - self.GAP - content_h
+        if below + content_h <= host.height() - self.MARGIN:
+            y = below
+        elif above >= self.MARGIN:
+            y = above
+        else:
+            y = max(self.MARGIN, host.height() - content_h - self.MARGIN)
+        return QRect(x, y, width, content_h)
+
+    # ---------- 整块位图（动画期间的唯一绘制源） ----------
+    def _capture(self) -> QPixmap | None:
+        """把整块内容渲染成一张位图。
+
+        已是位图态（例如入场未结束就收起）时复用旧图，避免抓到一张没有子控件的空图。
+        """
+        if self._veiled and self._snap is not None:
+            return self._snap
+        try:
+            self.ensurePolished()
+            self._list.ensurePolished()
+            lay = self.layout()
+            if lay is not None:
+                lay.activate()      # 先完成布局，位图尺寸与子控件位置才与最终画面一致
+            return self.grab()
+        except Exception:
+            return None
+
+    def _veil(self, on: bool):
+        """进入/退出位图态：进入时隐藏真实子控件，退出时交还。"""
+        self._veiled = on
+        if on:
+            self._list.hide()
+        else:
+            self._op = 1.0
+            self._list.show()
+        self.update()
+
+    # ---------- 动画（单一进度驱动位置 + 不透明度，二者天然同步） ----------
+    def _play(self, start: QPoint, end: QPoint, o0: float, o1: float, ms: int,
+              hide_on_end: bool = False):
+        self._anim.stop()
+        self._from, self._to = QPoint(start), QPoint(end)
+        self._o0, self._o1 = float(o0), float(o1)
+        self._hide_on_end = hide_on_end
+        self._anim.setDuration(ms)
+        self._anim.setEasingCurve(motion.fade_out() if hide_on_end else motion.settle())
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._on_step(0.0)          # 同步首帧：交给动画引擎前就已是起始状态
+        self._anim.start()
+
+    def _on_step(self, t):
+        t = float(t)
+        self._op = self._o0 + (self._o1 - self._o0) * t
+        y = self._from.y() + int(round((self._to.y() - self._from.y()) * t))
+        if self.pos() != QPoint(self._to.x(), y):
+            self.move(self._to.x(), y)
+        self.update()
+
+    def _on_end(self):
+        if self._hide_on_end:
+            self.hide()
+            self._veil(False)
+            self._snap = None
+            try:
+                if self._combo.isVisible():    # 焦点还给下拉框，键盘操作可继续
+                    self._combo.setFocus(Qt.FocusReason.PopupFocusReason)
+            except RuntimeError:
+                pass
+            return
+        self._veil(False)           # 入场结束：位图与真实内容逐像素一致，切换不可见
+
+    def paintEvent(self, e):
+        if self._veiled:
+            if self._snap is None:
+                return              # 还没抓到整块位图：这一帧什么都不画，绝不上半成品
+            # 动画期间只做一次整块位图合成：每帧开销恒定，与行数无关
+            p = QPainter(self)
+            p.setOpacity(max(0.0, min(1.0, self._op)))
+            p.drawPixmap(0, 0, self._snap)
+            return
+        # 常驻态：自绘圆角底（与位图里的底是同一套像素，撤掉遮罩时不会「跳」）
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(PALETTE["elevated"]))
+        p.drawRoundedRect(QRectF(self.rect()), RADIUS_SM, RADIUS_SM)
+
+    # ---------- 开合 ----------
+    def open(self):
+        self._reload()
+        target = self._target_rect()
+        self._snap = None
+        self._op = 0.0
+        self._veiled = True             # show 期间即便被要求绘制也什么都不画
+        self.setGeometry(target)        # 先按最终尺寸布局，位图才与最终画面同尺寸
+        start = QPoint(target.x(), target.y() + self.RISE_PX)
+        self.move(start)
+        self.show()
+        # 抓图必须在「常驻态」下做（底由 paintEvent 自绘，遮罩态不画底）。
+        # 这三行是纯 Python 调用，不给事件循环任何绘制机会，因此不会有半成品上屏。
+        self._veiled = False
+        self._snap = self._capture()
+        self._veil(True)
+        self.raise_()
+        self.setFocus(Qt.FocusReason.PopupFocusReason)
+        self._guard(True)
+        self._play(start, target.topLeft(), 0.0, 1.0, self.FADE_MS)
+
+    def close_animated(self):
+        if not self.isVisible():
+            return
+        self._guard(False)
+        cur = self.geometry()
+        self._snap = self._capture()    # 重新抓一张：淡出的是用户最后看到的画面
+        self._veil(True)
+        end = QPoint(cur.x(), cur.y() + self.CLOSE_RISE_PX)
+        self._play(cur.topLeft(), end, float(self._op), 0.0,
+                   self.FADE_OUT_MS, hide_on_end=True)
+
+    def close_now(self):
+        self._guard(False)
+        self._anim.stop()
+        self._veil(False)
+        self._snap = None
+        self.hide()
+
+    # ---------- 关闭守卫（点外面 / Esc / 窗口变化） ----------
+    def _guard(self, on: bool):
+        app = QApplication.instance()
+        if app is None:
+            return
+        try:
+            if on:
+                app.installEventFilter(self)
+            else:
+                app.removeEventFilter(self)
+        except Exception:
+            pass
+
+    def _inside(self, gp: QPoint) -> bool:
+        try:
+            if self.rect().contains(self.mapFromGlobal(gp)):
+                return True
+        except Exception:
+            return False
+        try:
+            combo = self._combo
+            return combo.isVisible() and combo.rect().contains(combo.mapFromGlobal(gp))
+        except Exception:
+            return False
+
+    def eventFilter(self, obj, ev):
+        if not self.isVisible():
+            return False
+        t = ev.type()
+        if t == QEvent.Type.MouseButtonPress:
+            try:
+                gp = ev.globalPosition().toPoint()
+            except Exception:
+                gp = QCursor.pos()
+            if not self._inside(gp):
+                self.close_animated()
+        elif t == QEvent.Type.Wheel:
+            try:
+                gp = ev.globalPosition().toPoint()
+            except Exception:
+                gp = QCursor.pos()
+            if not self._inside(gp):
+                self.close_animated()
+        elif t == QEvent.Type.KeyPress and ev.key() == Qt.Key.Key_Escape:
+            self.close_animated()
+            return True
+        elif t in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.Hide) \
+                and obj is self.parentWidget():
+            self.close_now()
+        return False
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        if k == Qt.Key.Key_Escape:
+            self.close_animated()
+            e.accept()
+            return
+        if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._pick(self._list.currentItem())
+            e.accept()
+            return
+        if k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            row = self._list.currentRow()
+            row += -1 if k == Qt.Key.Key_Up else 1
+            row = max(0, min(row, self._list.count() - 1))
+            self._list.setCurrentRow(row)
+            self._list.scrollToItem(self._list.item(row))
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def _pick(self, item):
+        if item is None:
+            self.close_animated()
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        self.picked.emit(int(idx) if idx is not None else -1)
+        self.close_animated()
+
+
 class ArrowComboBox(QComboBox):
     """带旋转动画下拉箭头的 QComboBox：收起时 chevron 朝下，展开后旋转 180° 朝上。
 
@@ -201,95 +601,79 @@ class ArrowComboBox(QComboBox):
 
     arrowAngle = pyqtProperty(float, get_arrowAngle, set_arrowAngle)
 
-    # ---------- 展开/收起触发旋转动画 ----------
+    # ---------- 展开/收起 ----------
     def showPopup(self):
-        super().showPopup()
-        self._run_arrow(True)
-        self._fade_popup()
+        """弹出下拉：不用 Qt 原生弹层，改用同一窗口内的子控件浮层（整体淡入）。
 
-    def _fade_popup(self):
-        """下拉列表整体淡入：弹层是独立原生窗口，只能整体调 ``windowOpacity``。
-
-        为什么用 QPropertyAnimation 而不是自建高频定时器：以 8ms 逐帧改原生窗口
-        透明度会与合成器/垂直同步抢帧，实测出现**撕裂与闪烁**；交给 Qt 动画引擎
-        （约 60fps、与刷新对齐）反而顺滑。
-
-        关键 1：opacity=0 必须**同步**设在 show() 之后、事件循环返回之前。晚一帧再设
-        会先以全不透明上屏一帧再跳回 0 → 肉眼就是闪一下。
-        关键 2：透明度**动画延后一帧**再启动。showPopup() 返回时弹层还只是刚建好，
-        首帧仍在逐行绘制；若此时同步推进透明度，用户会看到「列表从上到下刷出来」
-        的割裂感。先让整块内容在 opacity=0 下完整绘制一帧，再整体淡入。
+        原生弹层是独立原生窗口，只能动画 windowOpacity：首个全不透明帧会先上屏，
+        视觉上仍是「瞬间弹出 / 逐行刷出」。子控件浮层由 Qt 直接合成，
+        透明度渐变一定作用在**整块内容**上，见 ``ComboPopup``。
         """
-        try:
-            win = self.view().window()
-        except Exception:
+        if self.count() <= 0 or not self.isEnabled():
             return
-        if win is None or win is self.window():
-            return
-        # 只对真正的弹层容器做透明动画：某些后端 view().window() 会回落到主窗口，
-        # 对主窗口设 0 透明度会让整个应用瞬间「消失」。
-        try:
-            if not (win.windowFlags() & Qt.WindowType.Popup):
-                return
-            win.setWindowOpacity(0.0)
-            self._popup_seq = int(getattr(self, "_popup_seq", 0)) + 1
-            seq = self._popup_seq
-            # 一帧（~16ms）后再启动：此时弹层已在透明状态下整块绘制完成
-            QTimer.singleShot(16, lambda: self._start_popup_fade(win, seq))
-            # 兜底：动画被中断时不能让弹层停在透明态（否则看起来像没弹出）
-            QTimer.singleShot(400, lambda: self._popup_fade_guard(win, seq))
-        except Exception:
-            try:
-                win.setWindowOpacity(1.0)
-            except Exception:
-                pass
-
-    def _start_popup_fade(self, win, seq: int):
-        """首帧绘制完成后再整体淡入（弹层已关闭/重开则放弃本次动画）。"""
-        try:
-            if seq != getattr(self, "_popup_seq", 0):
-                return
-            if not win.isVisible() or not (win.windowFlags() & Qt.WindowType.Popup):
-                win.setWindowOpacity(1.0)
-                return
-            # 先以不透明状态同步绘制一帧，再回到 0 启动淡入：同一事件周期内完成，
-            # 合成器看不到中间态，但能保证首帧是「整块画好」的，动画期间不再逐行刷出。
-            win.setWindowOpacity(1.0)
-            win.repaint()
-            win.setWindowOpacity(0.0)
-            anim = QPropertyAnimation(win, b"windowOpacity", self)
-            anim.setDuration(max(120, int(motion.POP_MS)))
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.setEasingCurve(motion.settle())
-            self._popup_anim = anim      # 持有引用，避免被回收
-            anim.start()
-        except Exception:
-            try:
-                win.setWindowOpacity(1.0)
-            except Exception:
-                pass
-
-    def _popup_fade_guard(self, win, seq: int):
-        """兜底：动画被中断时弹层也必须可见（否则看起来像没弹出）。"""
-        try:
-            if seq == getattr(self, "_popup_seq", 0) and win.isVisible() \
-                    and win.windowOpacity() < 1.0:
-                win.setWindowOpacity(1.0)
-        except Exception:
-            pass
+        self._ensure_popup()
+        self._run_arrow(True)
+        self._popup.open()
 
     def hidePopup(self):
-        self._popup_seq = int(getattr(self, "_popup_seq", 0)) + 1
-        anim = getattr(self, "_popup_anim", None)
-        if anim is not None:
-            try:
-                anim.stop()          # 已销毁的动画对象会抛 RuntimeError，忽略即可
-            except RuntimeError:
-                pass
-            self._popup_anim = None
-        super().hidePopup()
         self._run_arrow(False)
+        pop = getattr(self, "_popup", None)
+        if pop is not None:
+            try:
+                pop.close_animated()
+            except RuntimeError:
+                self._popup = None
+
+    def isPopupOpen(self) -> bool:
+        """下拉是否展开（原生 view 不再使用，宿主判断应走本方法）。"""
+        pop = getattr(self, "_popup", None)
+        if pop is None:
+            return False
+        try:
+            return pop.isVisible()
+        except RuntimeError:
+            self._popup = None
+            return False
+
+    def _ensure_popup(self):
+        pop = getattr(self, "_popup", None)
+        if pop is not None:
+            try:
+                pop.isVisible()
+                return
+            except RuntimeError:
+                self._popup = None
+        pop = ComboPopup(self)
+        pop.picked.connect(self._on_popup_pick)
+        try:
+            self.destroyed.connect(pop.deleteLater)
+        except Exception:
+            pass
+        self._popup = pop
+
+    def _on_popup_pick(self, idx: int):
+        if 0 <= int(idx) < self.count():
+            self.setCurrentIndex(int(idx))
+            self.activated.emit(int(idx))
+        self.hidePopup()
+
+    def mousePressEvent(self, e):
+        # 点击下拉框本体：已展开则收起（与原生下拉一致的开关手感）
+        if e.button() == Qt.MouseButton.LeftButton and self.isPopupOpen():
+            self.hidePopup()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def hideEvent(self, e):
+        # 控件被隐藏（切页 / 弹窗关闭）时下拉不能停留在屏幕上
+        try:
+            pop = getattr(self, "_popup", None)
+            if pop is not None:
+                pop.close_now()
+        except RuntimeError:
+            self._popup = None
+        super().hideEvent(e)
 
     def _run_arrow(self, opening: bool):
         self._arrow_open = opening

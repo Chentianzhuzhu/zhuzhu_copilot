@@ -445,16 +445,17 @@ def test_model_tune_popover_and_hover_timers(panel):
 
 
 def test_model_tune_gate_only_on_model_name(panel, monkeypatch):
-    """悬停闸门：列表展开不弹；指针在右侧箭头区不弹；只有模型名称文本区才弹。"""
+    """悬停闸门：下拉展开不弹；指针在右侧箭头区不弹；只有模型名称文本区才弹。"""
     import types
     from PyQt6.QtCore import QPoint
     combo = panel.model_combo
     mid = combo.mapToGlobal(QPoint(10, combo.height() // 2))
     arrow = combo.mapToGlobal(QPoint(combo.width() - 5, combo.height() // 2))
     monkeypatch.setattr(ap, "QCursor", types.SimpleNamespace(pos=lambda: mid))
-    monkeypatch.setattr(combo.view(), "isVisible", lambda: True)
+    # 下拉已改为自绘浮层：展开状态由 isPopupOpen() 表达（原生 view 不再显示）
+    monkeypatch.setattr(combo, "isPopupOpen", lambda: True)
     assert panel._model_tune_gate() is False, "下拉列表展开时不应再弹调节浮层"
-    monkeypatch.setattr(combo.view(), "isVisible", lambda: False)
+    monkeypatch.setattr(combo, "isPopupOpen", lambda: False)
     assert panel._model_tune_gate() is True, "指针停在模型名称文本区应允许弹层"
     monkeypatch.setattr(ap, "QCursor", types.SimpleNamespace(pos=lambda: arrow))
     assert panel._model_tune_gate() is False, "指针在箭头区不应触发调节浮层"
@@ -680,22 +681,60 @@ def test_model_dropdown_popup_fade_is_smooth_and_safe(panel):
 
 
 def test_dropdown_popup_fades_as_one_block(panel):
-    """下拉框整体淡入：首帧保持透明，动画延后一帧才启动，最终整块不透明。"""
-    from PyQt6.QtCore import QAbstractAnimation
+    """下拉改为同一窗口内的子控件浮层：整块位图淡入 + 轻微上浮，不再用原生弹层。"""
+    from zhuzhu_Copilot.ui.widgets import ComboPopup
     combo = panel.model_combo
     combo.showPopup()
-    win = combo.view().window()
-    assert win.windowOpacity() == pytest.approx(0.0), \
-        "首帧就必须透明，否则会看到列表从上到下逐行刷出"
-    assert getattr(combo, "_popup_seq", 0) >= 1
-    _pump(40)           # 延后一帧后动画启动
-    anim = getattr(combo, "_popup_anim", None)
-    assert anim is not None, "淡入动画未启动"
-    assert anim.state() != QAbstractAnimation.State.Stopped, "淡入动画未在运行"
-    _pump(400)
-    assert win.windowOpacity() == pytest.approx(1.0), "淡入结束后弹层必须完全不透明"
+    pop = combo._popup
+    assert isinstance(pop, ComboPopup), "下拉未使用自绘浮层"
+    assert pop.isVisible(), "下拉浮层未显示"
+    assert pop.isEnabled() and combo.isPopupOpen()
+    # 整块位图：动画期间真实子控件不参与绘制 —— 物理上不可能出现逐行刷出
+    assert pop._veiled, "入场未进入位图态"
+    assert pop._snap is not None and not pop._snap.isNull(), "未抓到整块位图"
+    assert not pop._list.isVisible(), "动画期间列表仍在自行绘制（会逐行刷出）"
+    assert pop._op == pytest.approx(0.0), \
+        "浮层必须先完全透明再整块淡入，避免首帧以半成品上屏"
+    _pump(60)
+    assert pop._op > 0.0, "淡入动画未推进"
+    _pump(300)
+    assert pop._op == pytest.approx(1.0), "淡入未完成"
+    assert not pop._veiled and pop._list.isVisible(), "入场结束后应把真实列表交还"
     combo.hidePopup()
+    _pump(200)
+    assert not pop.isVisible(), "收起后浮层应隐藏"
+
+
+def test_combo_popup_geometry_and_pick(panel):
+    """浮层贴着下拉框（空间不足时上翻）、宽度不小于控件；点选后回写当前项并收起。"""
+    from PyQt6.QtCore import QPoint, QRect
+    combo = panel.wd_combo
+    combo.showPopup()
+    pop = combo._popup
+    host = combo.window()
+    target = pop._target_rect()
+    combo_rect = QRect(combo.mapTo(host, QPoint(0, 0)), combo.size())
+    assert target.width() >= combo.width(), "浮层宽度不应小于控件宽度"
+    assert not target.intersects(combo_rect), "浮层不应盖住下拉框本体"
+    assert target.left() >= 0 and target.right() <= host.width(), "浮层越出窗口"
+    combo.hidePopup()
+    _pump(200)
+    assert not combo.isPopupOpen(), "收起后浮层应关闭"
+
+    # 点选写回：用独立下拉验证（面板内的会话型下拉会重建列表，不适合做断言）
+    from zhuzhu_Copilot.ui.widgets import ArrowComboBox
+    c = ArrowComboBox()
+    c.addItem("甲")
+    c.addItem("乙")
+    c.resize(160, 30)
+    c.show()
     _pump(20)
+    c.showPopup()
+    c._popup._pick(c._popup._list.item(1))
+    _pump(200)
+    assert c.currentIndex() == 1, "点选未回写当前项"
+    assert not c.isPopupOpen(), "点选后浮层应收起"
+    c.deleteLater()
 
 
 def test_fade_menu_defers_animation_and_guard():

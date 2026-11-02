@@ -30461,7 +30461,10 @@ class AgentPanel(QDialog):
         if combo is None:
             return False
         try:
-            if combo.view().isVisible():
+            # 下拉已改为自绘子控件浮层（ComboPopup），原生 view 不再显示：
+            # 展开判断必须走 isPopupOpen()，否则浮层会被调节面板同时盖住。
+            is_open = getattr(combo, "isPopupOpen", None)
+            if callable(is_open) and is_open():
                 return False
             pos = combo.mapFromGlobal(QCursor.pos())
             if not combo.rect().contains(pos):
