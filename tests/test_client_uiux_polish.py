@@ -173,14 +173,15 @@ def _bare_settings_dialog():
 
 
 def test_settings_page_puts_body_in_a_section_card():
-    from PyQt6.QtWidgets import QFrame
+    """设置页正文收进一张玻璃卡片：圆角与底色由 paintEvent 自绘（不再是 QSS 实色）。"""
+    from zhuzhu_Copilot.ui.widgets import GlassPanel
     d = _bare_settings_dialog()
     page = d._page("通用")
-    card = page.findChild(QFrame, "settingsCard")
+    card = page.findChild(GlassPanel, "settingsCard")
     assert card is not None, "设置页正文必须收进圆角卡片"
     assert d._page_body(page) is card.layout(), "页面正文布局必须指向卡片内层"
-    assert "border-radius:" in card.styleSheet(), "卡片必须有圆角"
-    assert "background:" in card.styleSheet(), "卡片必须有分层底色"
+    assert card._g_radius > 0, "卡片必须有圆角"
+    assert card.resolved_tint() == d._PANEL2, "卡片底色必须跟随主题面板色"
 
 
 def test_settings_nav_uses_pill_selection_without_border_line():

@@ -19,8 +19,9 @@ from PyQt6.QtGui import (QColor, QPainter, QIcon, QFont, QFontMetrics, QPixmap,
 
 from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
 from zhuzhu_Copilot.ui.tokens import (
-    COMBO_ARROW_W, FONT_BASE, RADIUS_SM, RADIUS_XS,
+    COMBO_ARROW_W, FONT_BASE, RADIUS_MD, RADIUS_SM, RADIUS_XS,
 )
+from zhuzhu_Copilot.ui import glass
 from zhuzhu_Copilot.ui import motion
 from zhuzhu_Copilot.core.i18n import ui as _ui, uim as _uim, uif as _uif
 
@@ -192,16 +193,27 @@ def _combo_scroll_qss() -> str:
     )
 
 
-class _ComboRowDelegate(QStyledItemDelegate):
-    """下拉项绘制：统一行高，并在当前生效项右侧画对勾（路径折线，不依赖字体）。"""
+#: 下拉弹层整体缩放系数：字体 / 行高 / 内边距 / 图标 / 对勾全部按它等比推导。
+#: 动因（用户反馈「下拉菜单字体有点大」）：列表字号原取 FONT_BASE(14)，比下拉框
+#: 本体（FONT_SMALL=12）大两档；缩到 12 后与本体对齐，行高与留白同比缩，
+#: 避免「字小了但行还很高」的割裂。改这一个系数即可整体缩放。
+POPUP_SCALE = 0.86
 
-    ROW_H = 30
+
+class _ComboRowDelegate(QStyledItemDelegate):
+    """下拉项绘制：统一行高，并在当前生效项右侧画对勾（路径折线，不依赖字体）。
+
+    尺寸全部由 `POPUP_SCALE` 等比推导，只改一个系数就能整体缩放。
+    """
+
+    ROW_H = max(20, round(30 * POPUP_SCALE))     # 30 → 26
 
     def sizeHint(self, opt, idx) -> QSize:
         s = super().sizeHint(opt, idx)
         return QSize(s.width(), max(self.ROW_H, int(s.height())))
 
     def paint(self, p: QPainter, opt, idx):
+        k = POPUP_SCALE
         o = QStyleOptionViewItem(opt)
         self.initStyleOption(o, idx)
         o.text = ""                      # 文本交给父类按主题绘制
@@ -209,12 +221,14 @@ class _ComboRowDelegate(QStyledItemDelegate):
         if style is not None:
             style.drawControl(QStyle.ControlElement.CE_ItemViewItem, o, p, o.widget)
         # 文本（含图标）
-        text_rect = o.rect.adjusted(10, 0, -22, 0)
+        pad_l, pad_r = round(10 * k), round(22 * k)
+        icon_px, icon_adv = max(12, round(16 * k)), round(22 * k)
+        text_rect = o.rect.adjusted(pad_l, 0, -pad_r, 0)
         icon = idx.data(Qt.ItemDataRole.DecorationRole)
         x = text_rect.left()
         if isinstance(icon, QIcon) and not icon.isNull():
-            icon.paint(p, QRect(x, text_rect.center().y() - 8, 16, 16))
-            x += 22
+            icon.paint(p, QRect(x, text_rect.center().y() - icon_px // 2, icon_px, icon_px))
+            x += icon_adv
         fm = QFontMetrics(o.font)
         txt = fm.elidedText(str(idx.data(Qt.ItemDataRole.DisplayRole) or ""),
                             Qt.TextElideMode.ElideRight,
@@ -227,17 +241,18 @@ class _ComboRowDelegate(QStyledItemDelegate):
         # 当前项对勾
         if idx.data(Qt.ItemDataRole.UserRole + 1):
             pen = QPen(QColor(PALETTE["primary"]))
-            pen.setWidthF(1.8)
+            pen.setWidthF(1.8 * k)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
             p.save()
             p.setPen(pen)
-            cx = o.rect.right() - 14
+            cx = o.rect.right() - round(14 * k)
             cy = o.rect.center().y()
+            a, b = 4 * k, 3 * k
             path = QPainterPath()
-            path.moveTo(cx - 4, cy)
-            path.lineTo(cx - 1, cy + 3)
-            path.lineTo(cx + 4, cy - 3)
+            path.moveTo(cx - a, cy)
+            path.lineTo(cx - a / 4, cy + b)
+            path.lineTo(cx + a, cy - b)
             p.drawPath(path)
             p.restore()
 
@@ -286,6 +301,7 @@ class ComboPopup(QFrame):
         self._anim = QVariantAnimation(self)
         self._anim.valueChanged.connect(self._on_step)
         self._anim.finished.connect(self._on_end)
+        glass.subscribe(self.update)
         self._list = QListWidget(self)
         self._list.setObjectName("comboPopupList")
         self._list.setFrameShape(QFrame.Shape.NoFrame)
@@ -297,7 +313,8 @@ class ComboPopup(QFrame):
         self._list.setItemDelegate(_ComboRowDelegate(self._list))
         self._list.itemClicked.connect(lambda it: self._pick(it))
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
+        _m = max(2, round(4 * POPUP_SCALE))      # 弹层内边距同比缩
+        lay.setContentsMargins(_m, _m, _m, _m)
         lay.setSpacing(0)
         lay.addWidget(self._list)
         self._apply_theme()
@@ -308,8 +325,10 @@ class ComboPopup(QFrame):
         self.setStyleSheet(
             f"#comboPopup {{ background: transparent; border: none; }}"   # 底自绘，见 paintEvent
             f"#comboPopupList {{ background: transparent; border: none; outline: none;"
-            f" color: {PALETTE['text']}; font-size: {FONT_BASE}px; }}"
-            f"#comboPopupList::item {{ padding: 4px 6px;"
+            f" color: {PALETTE['text']};"
+            f" font-size: {max(10, round(FONT_BASE * POPUP_SCALE))}px; }}"
+            f"#comboPopupList::item {{"
+            f" padding: {max(2, round(4 * POPUP_SCALE))}px {max(3, round(6 * POPUP_SCALE))}px;"
             f" border-radius: {RADIUS_XS}px; }}"
             f"#comboPopupList::item:hover {{ background: {PALETTE['hover']}; }}"
             + _combo_scroll_qss())
@@ -344,7 +363,9 @@ class ComboPopup(QFrame):
             ic = combo.itemIcon(i)
             if ic is not None and not ic.isNull():
                 has_icon = True
-        return w + (26 if has_icon else 0) + 40      # 左右内边距 + 对勾位
+        # 左右内边距 + 对勾位：与 POPUP_SCALE 同源，缩放后不会挤出文字
+        return (w + (round(26 * POPUP_SCALE) if has_icon else 0)
+                + round(40 * POPUP_SCALE))
 
     def _target_rect(self) -> QRect:
         combo = self._combo
@@ -440,12 +461,12 @@ class ComboPopup(QFrame):
             p.setOpacity(max(0.0, min(1.0, self._op)))
             p.drawPixmap(0, 0, self._snap)
             return
-        # 常驻态：自绘圆角底（与位图里的底是同一套像素，撤掉遮罩时不会「跳」）
+        # 常驻态：玻璃底（磨砂 + 半透明 + 高光，与位图里的底是同一套像素，
+        # 撤掉遮罩时不会「跳」；壁纸变化由 glass 的重绘通知兜住）
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(PALETTE["elevated"]))
-        p.drawRoundedRect(QRectF(self.rect()), RADIUS_SM, RADIUS_SM)
+        glass.paint_surface(self, p, radius=RADIUS_SM, tint=PALETTE["elevated"])
+        p.end()
 
     # ---------- 开合 ----------
     def open(self):
@@ -734,8 +755,9 @@ class Card(QWidget):
     def __init__(self, title="", parent=None):
         super().__init__(parent)
         self.setObjectName("card")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._title_label = None
+        # 底改由 paintEvent 自绘（磨砂 + 半透明填充 + 边缘高光，强度见 glass.py）
+        glass.subscribe(self.update)
 
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(18, 16, 18, 16)
@@ -749,17 +771,46 @@ class Card(QWidget):
         self.apply_theme()
 
     def apply_theme(self):
-        """按当前 PALETTE 重建卡片与标题的样式（幂等，主题切换时由外层统一调用）。"""
-        self.setStyleSheet(f"""
-            QWidget#card {{
-                background-color: {PALETTE['card']};
-                border-radius: 14px;
-                border: 1px solid {PALETTE['border']};
-            }}
-        """)
+        """按当前 PALETTE 重建标题样式并重绘底（幂等，主题切换时由外层统一调用）。"""
         if self._title_label is not None:
             self._title_label.setStyleSheet(
                 f"font-size: 16px; font-weight: 700; color: {PALETTE['text']};")
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        glass.paint_surface(self, p, radius=RADIUS_MD, tint=PALETTE["card"])
+        p.end()
+
+class GlassPanel(QWidget):
+    """通用玻璃面板：磨砂底 + 半透明填充 + 边缘高光（子控件样式各自独立）。
+
+    只负责「底」；圆角与描边不进 QSS —— 与 Card 同一套绘制，观感一致。
+    """
+
+    def __init__(self, parent=None, *, radius: float | None = None,
+                 tint: str | None = None, tint_key: str | None = None,
+                 min_alpha: float = 0.0):
+        super().__init__(parent)
+        self._g_radius = RADIUS_MD if radius is None else float(radius)
+        self._g_tint = tint
+        # 色板键而不是颜色快照：控件活过主题切换时必须取实时色板，否则切深色
+        # 后仍留着浅色底（历史 bug，见 tests/test_copilot_panel.py 的回归用例）
+        self._g_key = tint_key
+        self._g_min = max(0.0, float(min_alpha))
+        glass.subscribe(self.update)
+
+    def resolved_tint(self) -> str | None:
+        return PALETTE[self._g_key] if self._g_key else self._g_tint
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        glass.paint_surface(self, p, radius=self._g_radius, tint=self.resolved_tint(),
+                            min_alpha=self._g_min)
+        p.end()
+
 
 class PrimaryButton(QPushButton):
     def __init__(self, text, parent=None):
@@ -1255,9 +1306,10 @@ class ToastNotification(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        root = QWidget(self)
+        # 通知是独立窗口（背后是桌面，没有可采样的磨砂底）：只叠半透明填充 +
+        # 边缘高光，并给足兜底不透明度，保证文字在花哨桌面壁纸上也可读
+        root = GlassPanel(self, radius=14, tint_key="card", min_alpha=0.85)
         root.setObjectName("toast")
-        root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._root = root
         shadow = QGraphicsDropShadowEffect(root)
         shadow.setBlurRadius(40)
@@ -1312,13 +1364,7 @@ class ToastNotification(QWidget):
         """)
         root = getattr(self, "_root", None)
         if root is not None:
-            root.setStyleSheet(f"""
-                QWidget#toast {{
-                    background-color: {PALETTE['card']};
-                    border: 1px solid {PALETTE['border']};
-                    border-radius: 14px;
-                }}
-            """)
+            root.setStyleSheet("QWidget#toast { background: transparent; border: none; }")
         if getattr(self, "_title", None) is not None:
             self._title.setStyleSheet(
                 f"font-size: 13px; font-weight: 700; color: {PALETTE['text']};")

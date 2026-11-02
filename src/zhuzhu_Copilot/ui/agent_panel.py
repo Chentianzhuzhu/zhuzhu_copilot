@@ -171,8 +171,11 @@ from zhuzhu_Copilot.ui.tokens import (
     pill_radius,
 )
 from zhuzhu_Copilot.ui import window_fx
+from zhuzhu_Copilot.ui import glass
 from zhuzhu_Copilot.ui import motion
-from zhuzhu_Copilot.ui.widgets import ArrowComboBox, FadeMenu, SwitchButton, add_brand_footer
+from zhuzhu_Copilot.ui.widgets import (
+    ArrowComboBox, FadeMenu, GlassPanel, SwitchButton, add_brand_footer,
+)
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
 _THEMES = {
@@ -5473,18 +5476,15 @@ class _AgentSettingsDialog(QDialog):
         t = QLabel(title)
         t.setStyleSheet(f"color: {self._TEXT}; font-size: 17px; font-weight: 600;")
         outer.addWidget(t)
-        card = QFrame()
+        # 卡片本体改为玻璃底（磨砂 + 半透明 + 高光，见 ui/glass.py）
+        card = GlassPanel(radius=RADIUS_MD, tint=self._PANEL2)
         card.setObjectName("settingsCard")
-        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         card.setStyleSheet(
-            f"QFrame#settingsCard {{ background: {self._PANEL2};"
-            f" border: 1px solid {self._BORDER};"
-            f" border-radius: {RADIUS_MD}px; }}"
             # 勾选框在卡片里会被横向拉满；样式化系统会给它铺一层 palette 底
             # （表现为文字后一条灰带）。在**卡片**这一层声明透明，比对话框层
             # 更靠近控件（控件自带 color 样式表时祖先规则更可靠地参与合并）。
-            "QFrame#settingsCard QCheckBox, QFrame#settingsCard QRadioButton,"
-            " QFrame#settingsCard QLabel { background: transparent; }")
+            "#settingsCard QCheckBox, #settingsCard QRadioButton,"
+            " #settingsCard QLabel { background: transparent; }")
         inner = QVBoxLayout(card)
         inner.setContentsMargins(16, 14, 16, 16)
         inner.setSpacing(10)
@@ -8509,6 +8509,15 @@ class _AgentSettingsDialog(QDialog):
             self._wallpaper_dim_changed)
         lay.addLayout(dim_row)
 
+        # 磨砂强度：玻璃皮肤的全局强度（0 关闭 / 50 半透明磨砂 / 100 最通透），
+        # 与上面两根同款滑杆 + 同款浮条，边拖边生效（不触发壁纸重算）
+        glass_row, self.glass_strength, _gl = self._wallpaper_slider_row(
+            _ui("磨砂强度"), glass.strength(), glass.GLASS_MAX, "%",
+            _ui("界面玻璃的磨砂与通透程度：0 关闭玻璃回归实色，50 半透明磨砂，"
+                "100 最通透"),
+            self._glass_strength_changed, live=True)
+        lay.addLayout(glass_row)
+
         self._wallpaper_refresh("")
         lay.addStretch(1)
         return w
@@ -9478,12 +9487,15 @@ class _AgentSettingsDialog(QDialog):
         self.wechat_unbind_btn.setVisible(False)
 
     def _wallpaper_slider_row(self, title: str, cur: float, top: float, unit: str,
-                              tip: str, commit):
+                              tip: str, commit, live: bool = False):
         """背景页数值行：标签 + 滑杆 + 读数。
 
         拖动时只更新读数、**松手才提交**：即时提交会让每一格都重算一次高斯模糊
         （逐像素重活），拖动过程必然掉帧；松手提交则一次拖动只算一次。
         非拖动改值（键盘方向键 / 滚轮）不会发 sliderReleased，故走 valueChanged 直提。
+
+        ``live=True`` 用于「拖动时不触发壁纸重算」的设置（如磨砂强度：只改
+        填充透明度与已缓存的磨砂层档位），此时边拖边生效，反馈最直接。
         """
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -9506,7 +9518,7 @@ class _AgentSettingsDialog(QDialog):
 
         def _on_value(v):
             val.setText(f"{v}{unit}")
-            if not getattr(sl, "_dragging", False):   # 键盘/滚轮改值：直接落地
+            if live or not getattr(sl, "_dragging", False):
                 commit(v)
 
         def _on_release():
@@ -9540,6 +9552,10 @@ class _AgentSettingsDialog(QDialog):
 
     def _wallpaper_dim_changed(self, value):
         app_wallpaper.set_fields(bg_dim=float(value))
+
+    def _glass_strength_changed(self, value):
+        """磨砂强度：写入 QSettings 并即时刷新所有玻璃表面（无需重建面板）。"""
+        glass.set_strength(int(value))
 
     # ---------- 背景页：拖动模糊 / 压暗时隐去对话框，只留浮条 ----------
     def _bg_adjust_begin(self, title: str, unit: str, slider, tick_step: int):
@@ -14249,8 +14265,8 @@ class _ModelTunePopover(QFrame):
         super().__init__(parent)
         self.setObjectName("modelTunePop")
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        glass.subscribe(self.update)     # 磨砂强度/壁纸变化后重绘玻璃底
         self._eff = None
         self._anims: list = []
         self._closing = False
@@ -14314,11 +14330,9 @@ class _ModelTunePopover(QFrame):
 
     # ---------- 样式 ----------
     def apply_theme(self):
-        """按当前主题刷新浮层配色（不描边：层级由 ELEVATED 与底色差承担）"""
-        card_bg = _base_color("ELEVATED")
+        """按当前主题刷新浮层配色（玻璃底自绘，这里只管子控件）"""
         self.setStyleSheet(
-            f"#modelTunePop {{ background: {card_bg}; border: none;"
-            f" border-radius: {RADIUS_MD}px; }}"
+            f"#modelTunePop {{ background: transparent; border: none; }}"
             f"#modelTunePop QLabel#mtTitle {{ color: {TEXT}; font-size: {FONT_BODY}px;"
             f" font-weight: {_W_TITLE}; }}"
             f"#modelTunePop QLabel#mtLevel {{ color: {ACCENT}; font-size: {FONT_BODY}px;"
@@ -14329,6 +14343,13 @@ class _ModelTunePopover(QFrame):
             f" font-size: {FONT_SMALL}px; spacing: 8px; }}"
             f"#modelTunePop QLabel#mtCtx {{ color: {TEXT};"
             f" font-size: {FONT_SMALL}px; }}")
+
+    def paintEvent(self, _e):
+        """玻璃底：磨砂 + 半透明填充 + 边缘高光（强度见 ui/glass.py）。"""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        glass.paint_surface(self, p, radius=RADIUS_MD, tint=_base_color("ELEVATED"))
+        p.end()
 
     # ---------- 状态 ----------
     def set_state(self, effort: str, auto: bool, long_1m: bool, window_text: str):
@@ -15026,7 +15047,7 @@ class _ProfilePanel(QFrame):
         super().__init__(parent)
         self.setObjectName("profilePanel")
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        glass.subscribe(self.update)     # 磨砂强度/壁纸变化后重绘玻璃底
         self._eff = None
         self._anims: list = []
         self._closing = False
@@ -15176,12 +15197,10 @@ class _ProfilePanel(QFrame):
     # ---------- 主题 ----------
     def apply_theme(self):
         """按当前主题色板重建样式（主题切换/首次显示时调用）。"""
-        card_bg = _base_color("PANEL")
         chip_bg = _base_color("HOVER")
         border = _base_color("BORDER_SOFT")
         self.setStyleSheet(
-            f"#profilePanel {{ background: {card_bg};"
-            f" border: 1px solid {border}; border-radius: {RADIUS_MD}px; }}"
+            f"#profilePanel {{ background: transparent; border: none; }}"
             f"#profilePanel QLabel#pfTitle {{ color: {TEXT}; font-size: {FONT_SMALL}px;"
             " font-weight: 700; }"
             f"#profilePanel QLabel#pfUsername {{ color: {TEXT}; font-size: {FONT_SMALL}px;"
@@ -15223,6 +15242,13 @@ class _ProfilePanel(QFrame):
             f" color: {TEXT_DIM}; border: 1px solid {border}; }}"
             f"#profilePanel QPushButton#pfCheckinBtn:disabled {{ color: {TEXT_DIM};"
             f" border: 1px solid {border}; background: transparent; }}")
+
+    def paintEvent(self, _e):
+        """玻璃底：磨砂 + 半透明填充 + 边缘高光（强度见 ui/glass.py）。"""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        glass.paint_surface(self, p, radius=RADIUS_MD, tint=_base_color("PANEL"))
+        p.end()
 
     # ---------- 尺寸自适应 ----------
     def _inner_width(self) -> int:
@@ -21012,6 +21038,8 @@ class AgentPanel(QDialog):
                             | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setObjectName("agentMainPanel")
+        # 登记为玻璃宿主：只有本窗口背后真的铺着壁纸，子表面裁它的像素做磨砂才对得上
+        glass.register_host(self)
         # 任务栏图标必须在窗口**首次 show 之前**绑定到原生窗口：任务栏按钮是 shell 在
         # 首次显示时创建的，显示后再 WM_SETICON 往往只刷新已存在的按钮 —— 于是启动后
         # 一直显示系统占位图标，直到最小化/还原重建按钮才更新（用户反馈的启动问题）。

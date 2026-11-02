@@ -300,26 +300,42 @@ def test_cards_and_dividers_follow_theme_switch(panel, monkeypatch):
         styles.set_palette("light")
         mw._regen_qss()
         panel._apply_theme()
-        for c in cards:
-            assert styles.LIGHT_PALETTE["card"] in c.styleSheet(), c.styleSheet()
+
+        # 卡片底色改为 paintEvent 取实时色板（玻璃皮肤）：直接渲染取中心像素，
+        # 比断言 QSS 字符串更贴近"切深色后卡片会不会留浅底"这个真实缺陷。
+        from PyQt6.QtGui import QColor, QPixmap
+        from zhuzhu_Copilot.ui import glass
+
+        glass.set_strength(0, persist=False)     # 实色态：像素可直接比较色板值
+        sample = Card("t")
+        sample.resize(60, 40)
+
+        def _center() -> QColor:
+            pm = QPixmap(60, 40)
+            pm.fill(QColor("#000000"))
+            sample.render(pm)
+            return pm.toImage().pixelColor(30, 20)
+
+        light_c = _center()
+        assert light_c.name().upper() == styles.LIGHT_PALETTE["card"].upper(), \
+            f"浅色下卡片底色不对：{light_c.name()}"
 
         monkeypatch.setattr(mw.CopilotPanel, "_current_theme", lambda self: "dark")
         styles.set_palette("dark")
         mw._regen_qss()
         panel._apply_theme()
-        for c in panel.findChildren(Card):
-            ss = c.styleSheet()
-            assert styles.DARK_PALETTE["card"] in ss, f"深色下卡片仍是浅色：{ss}"
-            assert styles.LIGHT_PALETTE["card"] not in ss, f"深色下残留浅色卡片：{ss}"
+        dark_c = _center()
+        assert dark_c.name().upper() == styles.DARK_PALETTE["card"].upper(), \
+            f"深色下卡片仍是浅色：{dark_c.name()}"
+        glass.set_strength(50, persist=False)
+
         for d in panel.findChildren(mw._Divider):
             assert styles.DARK_PALETTE["border"] in d.styleSheet(), d.styleSheet()
-        # 右下角通知弹窗是独立顶层窗口（无 parent），不在上面的控件树遍历里；
-        # 卡片底写在弹窗内部的 toast 容器上，故扫其整棵子树。
+        # 右下角通知弹窗是独立顶层窗口（无 parent），底色同样改为绘制期取色板：
+        # 断言它按色板键解析（而不是构建期快照），切主题后自然跟着变。
         assert panel.toast is not None
-        from PyQt6.QtWidgets import QWidget as _QW
-        toast_ss = "".join([panel.toast.styleSheet() or ""]
-                           + [w.styleSheet() or "" for w in panel.toast.findChildren(_QW)])
-        assert styles.DARK_PALETTE["card"] in toast_ss, \
+        root = getattr(panel.toast, "_root", None)
+        assert root is not None and root.resolved_tint() == styles.DARK_PALETTE["card"], \
             "深色下通知弹窗仍是浅色卡片（独立窗口需单独刷新）"
     finally:
         _restore_palette()

@@ -529,6 +529,14 @@ def _blurred(src: QPixmap, radius: float) -> QPixmap:
     return out
 
 
+def blur_pixmap(src: QPixmap, radius: float) -> QPixmap:
+    """对外暴露的高斯模糊（磨砂玻璃等场景复用）：同一张图同半径走缓存。
+
+    语义与 ``bg_blur`` 完全一致（原尺寸、原半径），调用方自己负责降采样省成本。
+    """
+    return _blurred(src, radius)
+
+
 def _gaussian_blur(src: QPixmap, radius: float) -> QPixmap:
     """真实高斯模糊：借 Qt 自带的模糊特效走场景渲染，不手写卷积。
 
