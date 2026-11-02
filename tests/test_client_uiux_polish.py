@@ -963,13 +963,13 @@ def test_choice_option_is_whole_row_with_checkmark():
     assert off.pixelColor(cx, cy - 6).name() != QColor(ap.ACCENT).name(), "未选中不应填充强调色"
     assert off.pixelColor(cx, cy).lightness() < on.pixelColor(cx, cy).lightness(), \
         "未选中不应画对勾"
-    # 白底抽屉：行内不再有强调色/灰底填充（避免对比衬托），只保留底部柔和阴影
+    # 白底抽屉：不铺强调色/灰底做对比衬托，交互反馈是覆盖整行文字的柔和阴影
     mid = (row.width() // 2, cy)
-    assert on.pixelColor(*mid).name() == off.pixelColor(*mid).name(), \
-        "选中态不应铺整行底色"
+    assert on.pixelColor(*mid).lightness() < off.pixelColor(*mid).lightness(), \
+        "选中阴影应覆盖整行文字（不是只盖底部一条）"
     assert on.pixelColor(row.width() // 2, row.height() - 5).lightness() < \
         off.pixelColor(row.width() // 2, row.height() - 5).lightness(), \
-        "选中/悬停应有整行底部阴影反馈"
+        "行底阴影应更深"
 
 
 def test_choice_option_click_anywhere_selects():

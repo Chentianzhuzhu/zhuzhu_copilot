@@ -11207,7 +11207,21 @@ class _ChoiceOption(QAbstractButton):
     GAP = 10            # 指示器与文字的间距
     PAD_R = 12
     SHADOW_PAD = 5      # 行内留白：阴影只画在这圈留白里，不压到文字
-    SHADOW_H = 16       # 阴影渐变高度（行底向上淡出）
+
+    @classmethod
+    def _paint_shadow(cls, p: QPainter, rect: QRectF, strength: float):
+        """整行阴影：圆角底铺满整行文字，上浅下深（像一张浮起的浅灰卡片）。"""
+        inner = rect.adjusted(cls.SHADOW_PAD, cls.SHADOW_PAD - 1,
+                              -cls.SHADOW_PAD, -1)
+        path = QPainterPath()
+        path.addRoundedRect(inner, RADIUS_SM, RADIUS_SM)
+        p.save()
+        p.setClipPath(path)
+        g = QLinearGradient(0, inner.top(), 0, inner.bottom())
+        g.setColorAt(0.0, QColor(0, 0, 0, int(16 * strength)))
+        g.setColorAt(1.0, QColor(0, 0, 0, int(38 * strength)))
+        p.fillRect(inner, g)
+        p.restore()
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
@@ -11236,21 +11250,6 @@ class _ChoiceOption(QAbstractButton):
     def leaveEvent(self, e):
         self.update()
         super().leaveEvent(e)
-
-    @classmethod
-    def _paint_shadow(cls, p: QPainter, rect: QRectF, strength: float):
-        """底部柔和投影：不描边、不铺满底色，只在行底形成一层向上淡出的阴影。"""
-        inner = rect.adjusted(cls.SHADOW_PAD, cls.SHADOW_PAD - 1,
-                              -cls.SHADOW_PAD, -1)
-        path = QPainterPath()
-        path.addRoundedRect(inner, RADIUS_SM, RADIUS_SM)
-        p.save()
-        p.setClipPath(path)
-        g = QLinearGradient(0, inner.bottom() - cls.SHADOW_H, 0, inner.bottom())
-        g.setColorAt(0.0, QColor(0, 0, 0, 0))
-        g.setColorAt(1.0, QColor(0, 0, 0, int(34 * strength)))
-        p.fillRect(inner, g)
-        p.restore()
 
     def paintEvent(self, _e):
         p = QPainter(self)
