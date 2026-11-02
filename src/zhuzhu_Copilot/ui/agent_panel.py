@@ -8514,11 +8514,13 @@ class _AgentSettingsDialog(QDialog):
             self._glass_strength_changed, live=True)
         lay.addLayout(glass_row)
 
-        # 组件透明度：与磨砂强度解耦 —— 强度管"糊多厉害"，这根管"透多少"
+        # 组件透明度：与磨砂强度解耦 —— 强度管"糊多厉害"，这根管"透多少"。
+        # 三套模式各存一份：自定义背景=白色填充；深色/浅色=各自模式的填充色
         alpha_row, self.glass_alpha, _ga = self._wallpaper_slider_row(
             _ui("组件透明度"), glass.alpha(), glass.GLASS_MAX, "%",
-            _ui("所有玻璃组件的通透程度：0 几乎全透明，100 不透明；"
-                "与磨砂强度配合使用"),
+            _ui("玻璃内部填充的不透明度（按当前模式单独保存）："
+                "自定义背景下调的是白色填充，深色/浅色模式下调的是该模式的填充色；"
+                "0 更透明，100 更实"),
             self._glass_alpha_changed, live=True)
         lay.addLayout(alpha_row)
 

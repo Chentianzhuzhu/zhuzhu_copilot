@@ -250,3 +250,50 @@ def test_glass_button_reflects_content_behind(tmp_path):
         red.deleteLater()
         host.close()
     glass.set_strength(glass.GLASS_DEFAULT, persist=False)
+
+
+def test_glass_alpha_is_per_mode(tmp_path):
+    """组件透明度按模式各存一份：自定义背景=白底不透明度，深/浅色各管各的。"""
+    _qapp()
+    from zhuzhu_Copilot.ui import glass
+
+    modes = ("wallpaper", "dark", "light")
+    old = {m: glass.alpha(m) for m in modes}
+    try:
+        glass.set_alpha(20, persist=False, mode_key="light")
+        glass.set_alpha(70, persist=False, mode_key="dark")
+        assert glass.alpha("light") == 20
+        assert glass.alpha("dark") == 70
+        assert glass.alpha("wallpaper") == old["wallpaper"], \
+            "调深/浅色不该改动自定义背景那份"
+
+        with _wallpaper(tmp_path):
+            assert glass.mode() == "wallpaper", "有壁纸时模式应为 wallpaper"
+            assert glass.alpha() == glass.alpha("wallpaper"), "当前模式应取白底那份"
+        assert glass.mode() in ("dark", "light")
+    finally:
+        for m, v in old.items():
+            glass.set_alpha(v, persist=False, mode_key=m)
+
+
+def test_glass_alpha_is_per_mode(tmp_path):
+    """组件透明度按模式各存一份：自定义背景=白底不透明度，深/浅色各管各的。"""
+    _qapp()
+    from zhuzhu_Copilot.ui import glass
+
+    modes = ("wallpaper", "dark", "light")
+    old = {m: glass.alpha(m) for m in modes}
+    try:
+        glass.set_alpha(20, persist=False, mode_key="light")
+        glass.set_alpha(70, persist=False, mode_key="dark")
+        assert glass.alpha("light") == 20
+        assert glass.alpha("dark") == 70
+        assert glass.alpha("wallpaper") == old["wallpaper"],             "调深/浅色不该改动自定义背景那份"
+
+        with _wallpaper(tmp_path):
+            assert glass.mode() == "wallpaper", "有壁纸时模式应为 wallpaper"
+            assert glass.alpha() == glass.alpha("wallpaper"), "当前模式应取白底那份"
+        assert glass.mode() in ("dark", "light")
+    finally:
+        for m, v in old.items():
+            glass.set_alpha(v, persist=False, mode_key=m)

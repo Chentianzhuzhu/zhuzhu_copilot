@@ -33,15 +33,26 @@ from zhuzhu_Copilot.ui.tokens import RADIUS_MD
 GLASS_MIN = 0
 GLASS_MAX = 100
 GLASS_DEFAULT = 50          # 磨砂强度默认
-ALPHA_DEFAULT = 10          # 组件透明度默认：薄薄一层白，主要靠模糊出效果
+# 各模式的默认不透明度：自定义背景薄薄一层白（主要靠模糊出效果）；
+# 深/浅色模式下背后是主题渐变，需要更实一点才看得出卡片边界
+ALPHA_DEFAULTS = {"wallpaper": 10, "dark": 55, "light": 55}
+ALPHA_DEFAULT = ALPHA_DEFAULTS["wallpaper"]
 
 _PREFS_KEY = "ui_glass"          # 磨砂强度（模糊/高光）
-_ALPHA_KEY = "ui_glass_alpha"    # UI 组件不透明度（0=全透明, 100=不透明）
+# UI 组件不透明度（0=全透明, 100=不透明）：**三套模式各存一份**。
+# 自定义背景下这一份就是「白色填充」的不透明度；深/浅色模式各自记自己那份，
+# 切换主题时不会把对方的数值带过去（浅色调很透、深色调很实是常见用法）。
+_ALPHA_KEY = "ui_glass_alpha"    # 旧版单值：仅用于迁移
+_ALPHA_KEYS = {
+    "wallpaper": "ui_glass_alpha_wallpaper",
+    "dark": "ui_glass_alpha_dark",
+    "light": "ui_glass_alpha_light",
+}
 _DOWNSCALE = 4              # 磨砂底降采样倍数（线性）：像素量降到 1/16
 _BLUR_MIN, _BLUR_MAX = 2.0, 24.0
 
 _strength: int | None = None
-_alpha: int | None = None
+_alphas: dict = {}          # mode -> 不透明度（懒加载，按需缓存）
 _listeners: list = []
 _capturing = False          # 抓场景期间禁止重入（隐藏/显示会触发重绘，重绘又来抓 → 递归）
 # pm 是「长边不超过 _LAYER_MAX_EDGE」的缩小版磨砂层，scale 为 窗口px / 图层px
@@ -85,39 +96,65 @@ def set_strength(value: int, persist: bool = True) -> int:
     return v
 
 
-def alpha() -> int:
+def mode() -> str:
+    """当前玻璃所处的底色模式：``wallpaper``（自定义背景）/ ``dark`` / ``light``。"""
+    try:
+        if app_wallpaper.active():
+            return "wallpaper"
+    except Exception:
+        pass
+    return "dark" if QColor(PALETTE["bg_top"]).lightness() < 128 else "light"
+
+
+def alpha(mode_key: str | None = None) -> int:
     """UI 组件不透明度 0~100（0=全透明，100=不透明）。
 
     与「磨砂强度」解耦：强度决定**糊多厉害**，这里决定**透多少**。
-    默认 10%：自定义背景下只留薄薄一层白，视觉主体交给磨砂后的壁纸
-    （用户要求「统一白色填充、透明度 10%」）。
+
+    按模式各存一份：自定义背景 = 白色填充的不透明度（默认 10%，主要靠模糊出
+    效果）；深色 / 浅色模式 = 该模式填充色的不透明度（默认 55%）。这样浅色调很
+    透、深色调很实互不影响，也不会切主题后判若两套。
     """
-    global _alpha
-    if _alpha is None:
-        try:
-            raw = app_identity.qsettings().value(_ALPHA_KEY, None)
-            _alpha = int(float(raw)) if raw is not None else ALPHA_DEFAULT
-        except Exception:
-            _alpha = ALPHA_DEFAULT
-        _alpha = max(GLASS_MIN, min(GLASS_MAX, _alpha))
-    return _alpha
+    key = mode_key or mode()
+    if key in _alphas:
+        return _alphas[key]
+    default = ALPHA_DEFAULTS.get(key, 50)
+    val = None
+    try:
+        raw = app_identity.qsettings().value(_ALPHA_KEYS.get(key, _ALPHA_KEY), None)
+        if raw is not None:
+            val = int(float(raw))
+        elif key == "wallpaper":
+            # 旧版只有单值，且只在自定义背景场景下被调过 → 迁移成这一份的初始值；
+            # 深/浅色模式用各自默认值（沿用旧值可能把深色面板调成全透明）
+            legacy = app_identity.qsettings().value(_ALPHA_KEY, None)
+            if legacy is not None:
+                val = int(float(legacy))
+    except Exception:
+        val = None
+    if val is None:
+        val = default
+    val = max(GLASS_MIN, min(GLASS_MAX, val))
+    _alphas[key] = val
+    return val
 
 
-def set_alpha(value: int, persist: bool = True) -> int:
-    """写入不透明度并刷新所有玻璃表面；返回落库后的值。"""
-    global _alpha
+def set_alpha(value: int, persist: bool = True, mode_key: str | None = None) -> int:
+    """写入**指定模式**（默认当前模式）的不透明度并刷新所有玻璃表面。"""
+    key = mode_key or mode()
     try:
         v = int(round(float(value)))
     except Exception:
         v = 50
-    _alpha = max(GLASS_MIN, min(GLASS_MAX, v))
+    v = max(GLASS_MIN, min(GLASS_MAX, v))
+    _alphas[key] = v
     if persist:
         try:
-            app_identity.qsettings().setValue(_ALPHA_KEY, str(_alpha))
+            app_identity.qsettings().setValue(_ALPHA_KEYS.get(key, _ALPHA_KEY), str(v))
         except Exception:
             pass
     _notify()
-    return _alpha
+    return v
 
 
 def ratio() -> float:
@@ -454,10 +491,9 @@ def paint_surface(widget, p: QPainter, rect: QRect | None = None,
             p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         return
 
-    # 无壁纸时背后是主题渐变：透明度过低会看不出卡片边界，给 0.5 的保底
+    # 不透明度完全交给「组件透明度」（分模式各存一份），这里只保留一个下限，
+    # 防止调成 0 之后卡片彻底消失、只剩描边
     a = max(min_alpha, opacity())
-    if not app_wallpaper.active():
-        a = max(a, 0.5)
     block = _glass_block(widget, rect, radius, base, a, reflect=reflect)
     p.drawPixmap(rect.topLeft(), block)
 
