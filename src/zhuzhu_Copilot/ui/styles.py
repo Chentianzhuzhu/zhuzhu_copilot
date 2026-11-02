@@ -401,7 +401,13 @@ QCheckBox, QRadioButton {{
 }}
 
 /* 勾选框/单选框指示器：必须自己画边框 —— 系统默认在浅色卡片上是「白框叠白底」，
-   对比度几乎为零（用户反馈）。未选中 = 凹陷字段底 + 次级灰描边；选中 = 主色实心。 */
+   对比度几乎为零（用户反馈）。未选中 = 凹陷字段底 + 次级灰描边；选中 = 主色实心。
+   三态都只保留**一条** 1px 边（不叠第二圈装饰线），靠「同色系深一档」拿对比：
+   - 未选中：次级灰描边（浅色 4.4:1 / 深色 7.6:1，方框轮廓清晰）；
+   - 选中：描边取 primary_pressed —— 与填充同主色的深一档，实心块有边缘但不长出外框
+     （此前 border 与 background 都是 primary，边缘等于没有）；
+   - 禁用：描边不再取 border（与 hover 底几乎同色，1.06:1 = 看不出边界），
+     改由 border 向次级灰混合，弱化但仍可辨认。 */
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 15px;
     height: 15px;
@@ -419,10 +425,10 @@ QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
 }}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
     background: {PALETTE['primary']};
-    border-color: {PALETTE['primary']};
+    border-color: {PALETTE['primary_pressed']};
 }}
 QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
-    border-color: {PALETTE['border']};
+    border-color: {_mix(PALETTE['border'], PALETTE['text_secondary'], 0.42)};
     background: {PALETTE['hover']};
 }}
 

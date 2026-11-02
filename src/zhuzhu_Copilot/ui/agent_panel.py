@@ -2788,11 +2788,16 @@ class _CapsuleSlider(QSlider):
         # 初始 y 随机（胶囊内任意一行），之后**永不改变** —— 全程水平直线运动。
         n = self.PARTICLE_COUNT
         self._offs0 = [self._rand(i, 2) for i in range(n)]
-        self._ys = [self._rand(i, 1) for i in range(n)]      # 固定行号，不再变动
+        # 固定行偏移：初始 y 随机（胶囊内任意一行）且此后恒定不变，全程水平直线运动。
+        # 只与常量有关，构造期算好 —— 热循环里省掉「乘 2 减 1 再乘 spread」。
+        spread = max(0.0, self.TRACK_H / 2.0 - self.PARTICLE_R)
+        self._dy = [(self._rand(i, 1) * 2.0 - 1.0) * spread for i in range(n)]
         self._speeds = [0.82 + 0.36 * self._rand(i, 3) for i in range(n)]
         self._offs = list(self._offs0)              # 运行中的横向进度（0..1）
         self._cache = None                          # 静态层缓存（轨道 + 覆盖区 + 圆点）
         self._cache_key = None
+        self._base = None                           # 粒子态的「静态层 + 滑块」合成缓存
+        self._base_key = None
         self._dots = None                           # 粒子白点贴图缓存（按亮度分级）
         self._dot_key = None
         self._anim = QTimer(self)
@@ -2879,24 +2884,41 @@ class _CapsuleSlider(QSlider):
 
     def paintEvent(self, _ev):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        colors = self._colors()
-        cy = self.height() / 2.0
-        x0, x1 = self._track_span()
-        tx = self._thumb_x()
         animating = self._particles and self._anim.isActive()
+        cy = self.height() / 2.0
 
         if animating:
-            # 特效帧只重绘滑块与粒子：轨道/覆盖区走缓存（渐变底色 + 隐去档位点）
-            p.drawPixmap(0, 0, self._static_layer(effect_on=True))
-        else:
-            self._paint_static(p, x0, x1, cy, colors)
-
-        self._paint_thumb(p, tx, cy, colors)
-        if animating:
-            # 粒子最后画：任何元素（滑块 / 圆环 / 圆点）都不会遮住流动
+            # 粒子帧：底图与粒子都是预渲染贴图，无需抗锯齿状态；
+            # 静态层与滑块同样静止，一次 blit 顶上（不必逐帧重画两个 AA 椭圆）
+            p.drawPixmap(0, 0, self._anim_base())
             self._paint_particles(p, cy)
+        else:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            colors = self._colors()
+            x0, x1 = self._track_span()
+            self._paint_static(p, x0, x1, cy, colors)
+            self._paint_thumb(p, self._thumb_x(), cy, colors)
         p.end()
+
+    def _anim_base(self) -> QPixmap:
+        """满档粒子态的「渐变轨道 + 滑块」合成层（动画期间完全静止，按需重建）。
+
+        粒子帧每帧只允许改粒子本身；滑块圆与圆环若逐帧重画，等于每帧白送
+        两次抗锯齿椭圆 + 两次笔刷/画笔状态切换，且这部分开销与粒子数无关，
+        会白白占满帧预算。缓存键含尺寸/数值/主题/dpr，任一变化自动重建。
+        """
+        key = (self.width(), self.height(), self.value(), self.minimum(),
+               self.maximum(), self._tick_step, self._tick_style,
+               _resolve_theme(), round(self.devicePixelRatioF(), 2))
+        if self._base is not None and self._base_key == key:
+            return self._base
+        pm = self._static_layer(effect_on=True).copy()   # copy：滑块要画在副本上
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._paint_thumb(p, self._thumb_x(), self.height() / 2.0, self._colors())
+        p.end()
+        self._base, self._base_key = pm, key
+        return pm
 
     def _paint_thumb(self, p, tx, cy, colors):
         """纯白圆滑块 + 与外圆同心的淡灰圆环。"""
@@ -2911,8 +2933,12 @@ class _CapsuleSlider(QSlider):
     def _thumb_x(self) -> float:
         x0, x1 = self._track_span()
         span_v = max(1, self.maximum() - self.minimum())
-        return (x0 + (x1 - x0) * ((self.value() - self.minimum()) / span_v)
-                + self.THUMB_SHIFT)
+        frac = (self.value() - self.minimum()) / span_v
+        # 两端各外扩 THUMB_SHIFT：极值时滑块圆要**盖住胶囊端头**。
+        # 旧版只在右端位移，最左端会露出 4px 灰胶囊尖（用户截图反馈），右端反而外溢；
+        # 现在两端对称，右端位置保持不变（此前「往右一点」的调校不回退）。
+        return (x0 - self.THUMB_SHIFT
+                + (x1 - x0 + 2.0 * self.THUMB_SHIFT) * frac)
 
     def _paint_static(self, p, x0, x1, cy, colors=None, effect_on: bool = False):
         """轨道（两端含外延）+ 覆盖区 + 档位圆点。
@@ -3008,36 +3034,54 @@ class _CapsuleSlider(QSlider):
 
         每颗的初始 y 随机（胶囊内任意一行）且此后恒定不变，因此画面上
         只有左右位移、没有任何上下晃动；整体裁进胶囊，两端仅极窄一段淡入淡出。
+
+        性能（60fps 下每帧都跑，这里是唯一的热点）：
+        - **矩形裁剪**足够：纵向粒子半径已贴内沿（spread + r == 胶囊半高），
+          两端圆头由淡入淡出遮掉 —— 省掉每帧重建 QPainterPath + 非矩形裁剪的光栅化；
+        - **整数坐标 blit**：避免逐颗走子像素采样（约 2.7px/帧 的位移下 1px 量化不可见）；
+        - 行偏移 `_dy` 构造期已算好，热循环里只剩一次加法与一次贴图。
         """
         cx0, cx1 = self._capsule_span()
         r = self.PARTICLE_R
-        sx0, sx1 = cx0 + r, cx1 - r              # 覆盖整条胶囊
-        span = max(1.0, sx1 - sx0)
-        spread = max(0.0, self.TRACK_H / 2.0 - r)
+        sx0 = cx0 + r
+        span = max(1.0, (cx1 - r) - sx0)         # 覆盖整条胶囊
         fade = max(1e-3, self.PARTICLE_FADE)
         sprites = self._dot_sprites()
         last = self.ALPHA_LEVELS - 1
+        offs, dy = self._offs, self._dy
         p.save()
-        p.setClipPath(self._capsule(cx0, cx1, cy, float(self.TRACK_H)))
+        p.setClipRect(QRectF(cx0, cy - self.TRACK_H / 2.0,
+                             max(0.0, cx1 - cx0), float(self.TRACK_H)))
         for i in range(self.PARTICLE_COUNT):
-            u = self._offs[i]
-            alpha = min(1.0, u / fade, (1.0 - u) / fade)   # 0..1
+            u = offs[i]
+            alpha = u / fade if u < 0.5 else (1.0 - u) / fade    # 两端淡入淡出
             if alpha < 0.04:
                 continue
-            y = cy + (self._ys[i] * 2.0 - 1.0) * spread     # 行号固定：纯水平直线
-            lvl = min(last, int(alpha * (last + 1)))
-            p.drawPixmap(QPointF(sx0 + span * u - r - 1.0, y - r - 1.0), sprites[lvl])
+            if alpha > 1.0:
+                alpha = 1.0
+            lvl = int(alpha * (last + 1))
+            if lvl > last:
+                lvl = last
+            p.drawPixmap(int(sx0 + span * u - r - 1.0),
+                         int(cy + dy[i] - r - 1.0), sprites[lvl])
         p.restore()
 
     # ---- 粒子动画 ----
+    def _particle_band(self) -> QRect:
+        """粒子只可能在胶囊高度内变化：每帧只脏这一条，合成面积降到约 1/3。
+
+        滑块圆比胶囊高，但动画期间它是静止的（已烧进 `_anim_base` 底图），
+        条带之外的像素无需重绘。"""
+        top = int(self.height() / 2.0 - self.TRACK_H / 2.0) - 1
+        return QRect(0, max(0, top), self.width(), self.TRACK_H + 2)
+
     def _on_tick(self):
         step = self.PARTICLE_SPEED * self._anim.interval() / 1000.0
-        for i, u in enumerate(self._offs):
-            u += step * self._speeds[i]
-            if u >= 1.0:                         # 跑完整条：回左端同一行继续向右
-                u -= 1.0
-            self._offs[i] = u
-        self.update()
+        offs, speeds = self._offs, self._speeds
+        for i in range(self.PARTICLE_COUNT):
+            u = offs[i] + step * speeds[i]
+            offs[i] = u - 1.0 if u >= 1.0 else u   # 跑完整条：回左端同一行继续向右
+        self.update(self._particle_band())
 
     def _sync_anim(self, *_):
         """仅「满档 + 可见 + 启用」时跑动画，其余情况停表省 CPU。"""
