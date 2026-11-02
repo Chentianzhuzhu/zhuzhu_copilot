@@ -32,7 +32,8 @@ from zhuzhu_Copilot.ui.tokens import RADIUS_MD
 
 GLASS_MIN = 0
 GLASS_MAX = 100
-GLASS_DEFAULT = 50
+GLASS_DEFAULT = 50          # 磨砂强度默认
+ALPHA_DEFAULT = 10          # 组件透明度默认：薄薄一层白，主要靠模糊出效果
 
 _PREFS_KEY = "ui_glass"          # 磨砂强度（模糊/高光）
 _ALPHA_KEY = "ui_glass_alpha"    # UI 组件不透明度（0=全透明, 100=不透明）
@@ -48,7 +49,7 @@ _layer: dict = {"key": None, "pm": None, "scale": 1.0}
 
 #: 磨砂层长边上限（px）。磨砂层永远是模糊的，按窗口原尺寸糊一次要 10ms 上下，
 #: 窗口拖拽改尺寸时会一顿一顿；缩到 480 再放大，观感一致，成本降到 1ms 级。
-_LAYER_MAX_EDGE = 480
+_LAYER_MAX_EDGE = 720
 
 
 # ---------------------------------------------------------------- 强度 / 派生量
@@ -88,15 +89,16 @@ def alpha() -> int:
     """UI 组件不透明度 0~100（0=全透明，100=不透明）。
 
     与「磨砂强度」解耦：强度决定**糊多厉害**，这里决定**透多少**。
-    未单独设置过时与强度同源（各 50 → 填充 50%），老用户升级后观感不变。
+    默认 10%：自定义背景下只留薄薄一层白，视觉主体交给磨砂后的壁纸
+    （用户要求「统一白色填充、透明度 10%」）。
     """
     global _alpha
     if _alpha is None:
         try:
             raw = app_identity.qsettings().value(_ALPHA_KEY, None)
-            _alpha = int(float(raw)) if raw is not None else 100 - strength()
+            _alpha = int(float(raw)) if raw is not None else ALPHA_DEFAULT
         except Exception:
-            _alpha = 100 - strength()
+            _alpha = ALPHA_DEFAULT
         _alpha = max(GLASS_MIN, min(GLASS_MAX, _alpha))
     return _alpha
 
@@ -332,7 +334,7 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
     # 用 cacheKey 而不是 id()：id 会被回收后复用，可能把旧快照当成新的（画面卡住）
     key = (_layer["key"], scene.cacheKey() if scene is not None else 0,
            rect.x(), rect.y(), rect.width(), rect.height(),
-           round(radius, 2), tint, round(min_alpha, 3), round(opacity(), 3),
+           round(radius, 2), tint, round(min_alpha, 3),
            round(dpr, 2))
     cache = widget.__dict__.get("_glass_block")
     if cache is not None and cache[0] == key:
@@ -343,6 +345,9 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # 磨砂层是缩小版，放大回目标尺寸必须走平滑插值：默认最近邻会放大成一块块
+    # 方块像素（用户截图里的"高斯模糊像素感太明显"）
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     path = QPainterPath()
     path.addRoundedRect(QRectF(0, 0, rect.width(), rect.height()), radius, radius)
 
@@ -363,7 +368,7 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
                          QRectF(pos.x() / k, pos.y() / k,
                                 rect.width() / k, rect.height() / k))
     fill = QColor(tint)
-    fill.setAlphaF(max(min_alpha, opacity()))
+    fill.setAlphaF(max(0.0, min(1.0, min_alpha)))
     p.fillPath(path, fill)
     p.end()
 
@@ -426,12 +431,17 @@ def paint_surface(widget, p: QPainter, rect: QRect | None = None,
     ``min_alpha`` 给「文字密度高、必须保证可读」的表面（通知）兜底不透明度。
     ``reflect=True`` 优先用 ``capture_scene()`` 抓到的真实场景帧（能反出背景里的
     卡片/文字），没有快照时退回壁纸层采样。
+
+    **自定义背景模式下底统一取白色**（不再是各表面的主题色）：否则深色主题的面板
+    偏黑、浅色主题的偏白，同一屏上"黑白交替"（用户截图反馈）。白色填充 + 磨砂
+    才能得到一致的玻璃观感。
     """
     rect = QRect(widget.rect()) if rect is None else QRect(rect)
     if rect.isEmpty():
         return
     radius = RADIUS_MD if radius is None else float(radius)
-    base = tint or PALETTE["card"]
+    # 壁纸模式统一白底；非壁纸模式沿用各表面的主题底色
+    base = "#FFFFFF" if app_wallpaper.active() else (tint or PALETTE["card"])
 
     if not enabled():
         # 关闭玻璃：实色圆角 + 发丝描边（与旧观感一致，且这条路最省）
@@ -444,7 +454,11 @@ def paint_surface(widget, p: QPainter, rect: QRect | None = None,
             p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         return
 
-    block = _glass_block(widget, rect, radius, base, min_alpha, reflect=reflect)
+    # 无壁纸时背后是主题渐变：透明度过低会看不出卡片边界，给 0.5 的保底
+    a = max(min_alpha, opacity())
+    if not app_wallpaper.active():
+        a = max(a, 0.5)
+    block = _glass_block(widget, rect, radius, base, a, reflect=reflect)
     p.drawPixmap(rect.topLeft(), block)
 
     if rim:

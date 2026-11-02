@@ -754,7 +754,11 @@ def test_fade_menu_defers_animation_and_guard():
     menu.addAction("x")
     menu.show()
     assert menu.windowOpacity() == pytest.approx(0.0), "菜单首帧应透明"
-    _pump(40)
+    # 动画时间轴由主线程事件驱动，重负载/CI 下会慢一拍：轮询到"动画已启动"再断言
+    for _ in range(12):
+        if getattr(menu, "_pop_anim", None) is not None:
+            break
+        _pump(30)
     anim = getattr(menu, "_pop_anim", None)
     assert anim is not None, "菜单淡入动画未启动"
     anim.stop()                          # 模拟动画被中断
