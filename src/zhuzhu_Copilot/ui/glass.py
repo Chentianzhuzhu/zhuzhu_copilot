@@ -34,11 +34,13 @@ GLASS_MIN = 0
 GLASS_MAX = 100
 GLASS_DEFAULT = 50
 
-_PREFS_KEY = "ui_glass"
+_PREFS_KEY = "ui_glass"          # 磨砂强度（模糊/高光）
+_ALPHA_KEY = "ui_glass_alpha"    # UI 组件不透明度（0=全透明, 100=不透明）
 _DOWNSCALE = 4              # 磨砂底降采样倍数（线性）：像素量降到 1/16
 _BLUR_MIN, _BLUR_MAX = 2.0, 24.0
 
 _strength: int | None = None
+_alpha: int | None = None
 _listeners: list = []
 _capturing = False          # 抓场景期间禁止重入（隐藏/显示会触发重绘，重绘又来抓 → 递归）
 # pm 是「长边不超过 _LAYER_MAX_EDGE」的缩小版磨砂层，scale 为 窗口px / 图层px
@@ -82,6 +84,40 @@ def set_strength(value: int, persist: bool = True) -> int:
     return v
 
 
+def alpha() -> int:
+    """UI 组件不透明度 0~100（0=全透明，100=不透明）。
+
+    与「磨砂强度」解耦：强度决定**糊多厉害**，这里决定**透多少**。
+    未单独设置过时与强度同源（各 50 → 填充 50%），老用户升级后观感不变。
+    """
+    global _alpha
+    if _alpha is None:
+        try:
+            raw = app_identity.qsettings().value(_ALPHA_KEY, None)
+            _alpha = int(float(raw)) if raw is not None else 100 - strength()
+        except Exception:
+            _alpha = 100 - strength()
+        _alpha = max(GLASS_MIN, min(GLASS_MAX, _alpha))
+    return _alpha
+
+
+def set_alpha(value: int, persist: bool = True) -> int:
+    """写入不透明度并刷新所有玻璃表面；返回落库后的值。"""
+    global _alpha
+    try:
+        v = int(round(float(value)))
+    except Exception:
+        v = 50
+    _alpha = max(GLASS_MIN, min(GLASS_MAX, v))
+    if persist:
+        try:
+            app_identity.qsettings().setValue(_ALPHA_KEY, str(_alpha))
+        except Exception:
+            pass
+    _notify()
+    return _alpha
+
+
 def ratio() -> float:
     """强度归一化到 0~1。"""
     return strength() / float(GLASS_MAX)
@@ -92,8 +128,12 @@ def enabled() -> bool:
 
 
 def opacity() -> float:
-    """半透明填充的不透明度：强度 0 → 1.0（实色），50 → 0.5，100 → 0.12。"""
-    return max(0.12, 1.0 - ratio())
+    """半透明填充的不透明度：由用户设定的「组件透明度」直接决定。
+
+    0（最透明）→ 0.10（仍留一点底，保证文字可读）；100（不透明）→ 1.0。
+    默认 alpha=50 → 0.5，与旧版「强度 50 = 半透明」的观感一致。
+    """
+    return max(0.10, min(1.0, alpha() / float(GLASS_MAX)))
 
 
 def blur_radius() -> float:
@@ -247,6 +287,20 @@ def capture_scene(widget, rect: QRect | None = None) -> None:
     except Exception:
         return
     widget.__dict__["_glass_scene"] = snap
+
+
+def invalidate(widget, *, scene: bool = False) -> None:
+    """丢掉控件的玻璃贴图缓存并重绘（点一下玻璃就没了时用它强制重建一次）。
+
+    scene=True 时连场景反射快照一起丢弃（下次绘制回落到壁纸层，不会出现空白底）。
+    """
+    try:
+        widget.__dict__.pop("_glass_block", None)
+        if scene:
+            widget.__dict__.pop("_glass_scene", None)
+        widget.update()
+    except RuntimeError:
+        pass
 
 
 def drop_scene(widget) -> None:

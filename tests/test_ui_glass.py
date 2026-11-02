@@ -75,22 +75,32 @@ def test_glass_strength_defaults_persists_and_clamps():
 
 
 def test_glass_strength_maps_to_opacity_and_blur():
+    """磨砂强度管「糊多厉害」，组件透明度管「透多少」——两者已解耦。"""
     _qapp()
     from zhuzhu_Copilot.ui import glass
 
+    old_s, old_a = glass.strength(), glass.alpha()
     try:
+        # 强度：只影响模糊半径与开关，不再决定填充透明度
         glass.set_strength(0, persist=False)
-        assert glass.opacity() == pytest.approx(1.0), "0 = 关闭玻璃：实色"
         assert glass.enabled() is False
+        low_blur = glass.blur_radius()
         glass.set_strength(50, persist=False)
-        assert glass.opacity() == pytest.approx(0.5), "50 = 半透明填充（用户指定的基准）"
-        assert glass.enabled() is True
         mid_blur = glass.blur_radius()
         glass.set_strength(100, persist=False)
-        assert glass.opacity() == pytest.approx(0.12), "100 = 最通透"
-        assert glass.blur_radius() > mid_blur, "强度越大磨砂越重"
+        assert glass.enabled() is True
+        assert glass.blur_radius() > mid_blur > low_blur, "强度越大磨砂越重"
+
+        # 透明度：独立设置，0→0.10（留一点底保可读），50→0.5，100→1.0
+        glass.set_alpha(0, persist=False)
+        assert glass.opacity() == pytest.approx(0.10)
+        glass.set_alpha(50, persist=False)
+        assert glass.opacity() == pytest.approx(0.5)
+        glass.set_alpha(100, persist=False)
+        assert glass.opacity() == pytest.approx(1.0)
     finally:
-        glass.set_strength(glass.GLASS_DEFAULT, persist=False)
+        glass.set_strength(old_s, persist=False)
+        glass.set_alpha(old_a, persist=False)
 
 
 def test_glass_backdrop_only_for_registered_host(tmp_path):
@@ -232,8 +242,7 @@ def test_glass_button_reflects_content_behind(tmp_path):
         pm.fill(QColor("#000000"))
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        glass.paint_surface(btn, p, radius=20, tint="#FFFFFF", reflect=True,
-                            hairline=False)
+        glass.paint_surface(btn, p, radius=20, tint="#FFFFFF", reflect=True)
         p.end()
         c = pm.toImage().pixelColor(btn.width() // 2, btn.height() // 2)
         assert c.red() > c.blue(), f"反射应以红色内容为主，实得 {c.name()}"

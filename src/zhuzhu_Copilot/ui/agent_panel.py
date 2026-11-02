@@ -8514,6 +8514,14 @@ class _AgentSettingsDialog(QDialog):
             self._glass_strength_changed, live=True)
         lay.addLayout(glass_row)
 
+        # 组件透明度：与磨砂强度解耦 —— 强度管"糊多厉害"，这根管"透多少"
+        alpha_row, self.glass_alpha, _ga = self._wallpaper_slider_row(
+            _ui("组件透明度"), glass.alpha(), glass.GLASS_MAX, "%",
+            _ui("所有玻璃组件的通透程度：0 几乎全透明，100 不透明；"
+                "与磨砂强度配合使用"),
+            self._glass_alpha_changed, live=True)
+        lay.addLayout(alpha_row)
+
         self._wallpaper_refresh("")
         lay.addStretch(1)
         return w
@@ -9552,6 +9560,10 @@ class _AgentSettingsDialog(QDialog):
     def _glass_strength_changed(self, value):
         """磨砂强度：写入 QSettings 并即时刷新所有玻璃表面（无需重建面板）。"""
         glass.set_strength(int(value))
+
+    def _glass_alpha_changed(self, value):
+        """组件透明度：只改填充不透明度，不重建磨砂层（拖动跟手）。"""
+        glass.set_alpha(int(value))
 
     # ---------- 背景页：拖动模糊 / 压暗时隐去对话框，只留浮条 ----------
     def _bg_adjust_begin(self, title: str, unit: str, slider, tick_step: int):
@@ -16045,6 +16057,12 @@ class _RoundedFloatWindow(QWidget):
     # ---- 自由拖动 + 位置持久化 ----
     _drag_handle = None    # 子类构造时调用 _install_drag_handle() 创建把手
 
+    def mousePressEvent(self, event):
+        """点击时丢掉玻璃贴图缓存：面板在 dock/悬浮切换、重绘竞态下可能缓存到
+        一张没有磨砂底的帧，表现为「点一下玻璃就没了」。重建一次即可恢复。"""
+        glass.invalidate(self)
+        super().mousePressEvent(event)
+
     def _install_drag_handle(self):
         """创建顶部拖拽把手：放当前布局最上方（子面板多为标题行在上）"""
         if getattr(self, "_drag_handle", None) is not None:
@@ -16160,6 +16178,21 @@ class _RoundedFloatWindow(QWidget):
         `painter = QPainter(self)` 在绑定前执行 → UnboundLocalError → 崩溃
         （crash_20261001_165356.log 已实证；与主面板 paintEvent 同一陷阱）。
         """
+        # 壁纸模式下：这些停靠面板统一走玻璃底（磨砂 + 半透明 + 描边高光）。
+        # 融入 dock 时采样主面板的磨砂层；悬浮时以自身窗口为基准铺同一张壁纸。
+        if _feedback_boosted() and glass.enabled():
+            glass.register_host(self)   # 悬浮形态下本窗口自己铺壁纸，需作为玻璃宿主
+            painter = QPainter(self)
+            try:
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                glass.paint_surface(self, painter, radius=self._WINDOW_RADIUS,
+                                    tint=_base_color("PANEL"))
+            finally:
+                try:
+                    painter.end()
+                except Exception:
+                    pass
+            return
         if not (self._wallpaper_translucent and _feedback_boosted()
                 and not self._dock_is_immersed()):
             super().paintEvent(event)
@@ -21774,13 +21807,12 @@ class AgentPanel(QDialog):
         self.session_combo.setParent(self)
         self.session_combo.hide()
 
-        self.settings_btn = QPushButton(_svg_icon(_GEAR_SVG, 20, TEXT_DIM), "")
-        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.settings_btn.setAutoDefault(False)
-        self.settings_btn.setFixedSize(34, 34)
+        # 玻璃按钮：透明底 + 描边高光 + 反射（底色随主题色板键，换肤即时生效）
+        self.settings_btn = GlassButton(_svg_icon(_GEAR_SVG, 20, TEXT_DIM), 34,
+                                        tint_key="elevated",
+                                        hover_tint_key="primary_light", reflect=True)
         self.settings_btn.setIconSize(QSize(18, 18))
         self.settings_btn.setToolTip(_ui("AI 设置：执行模式 / 工作目录 / 工作力度 / 规则 / 提示词 / 模型接入"))
-        self.settings_btn.setStyleSheet(_BTN_ICON)
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
 

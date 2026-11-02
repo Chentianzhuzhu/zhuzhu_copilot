@@ -512,6 +512,10 @@ class ComboPopup(QFrame):
         self.setFocus(Qt.FocusReason.PopupFocusReason)
         self._guard(True)
         self._play(start, target.topLeft(), 0.0, 1.0, self.FADE_MS)
+        # 兜底：动画时间轴被主线程重活卡住时，不能让弹层停在半透明/不可见状态
+        QTimer.singleShot(self.FADE_MS + 150, self._finish_open_guard)
+        # 兜底：动画时间轴被主线程重活卡住时，不能让弹层停在半透明/不可见状态
+        QTimer.singleShot(self.FADE_MS + 150, self._finish_open_guard)
 
     def close_animated(self):
         if not self.isVisible():
@@ -526,6 +530,22 @@ class ComboPopup(QFrame):
         # 兜底：动画时间轴可能被主线程的重活卡住（大面板上实测偶发，表现为弹层
         # "该关却不关"）。到点无条件收尾，不依赖 finished 一定送达。
         QTimer.singleShot(self.FADE_OUT_MS + 120, self._force_close)
+
+    def _finish_open_guard(self):
+        """淡入兜底：到点仍未淡完就直接置为常驻态（否则弹层看起来像"没弹出来"）。"""
+        if not self.isVisible() or self._hide_on_end:
+            return
+        if self._op < 0.99:
+            self._anim.stop()
+            self._veil(False)
+
+    def _finish_open_guard(self):
+        """淡入兜底：到点仍未淡完就直接置为常驻态（否则弹层看起来像"没弹出来"）。"""
+        if not self.isVisible() or self._hide_on_end:
+            return
+        if self._op < 0.99:
+            self._anim.stop()
+            self._veil(False)
 
     def _force_close(self):
         """兜底收尾：只在本该收起的场景生效，绝不打断正常的重新展开。"""
@@ -837,6 +857,10 @@ class Card(QWidget):
         glass.paint_surface(self, p, radius=RADIUS_MD, tint=PALETTE["card"])
         p.end()
 
+    def mousePressEvent(self, e):
+        glass.invalidate(self)
+        super().mousePressEvent(e)
+
 class GlassPanel(QWidget):
     """通用玻璃面板：磨砂底 + 半透明填充 + 边缘高光（子控件样式各自独立）。
 
@@ -864,6 +888,11 @@ class GlassPanel(QWidget):
         glass.paint_surface(self, p, radius=self._g_radius, tint=self.resolved_tint(),
                             min_alpha=self._g_min)
         p.end()
+
+    def mousePressEvent(self, e):
+        # 点击后重建一次玻璃底：极端重绘竞态下可能缓存到没有磨砂的帧
+        glass.invalidate(self)
+        super().mousePressEvent(e)
 
 
 class GlassButton(QPushButton):
@@ -916,6 +945,10 @@ class GlassButton(QPushButton):
             self.refresh_backdrop(0)
         except RuntimeError:
             pass            # 控件已被销毁（弹层式用法）：忽略迟到的抓图
+
+    def mousePressEvent(self, e):
+        glass.invalidate(self)
+        super().mousePressEvent(e)
 
     def enterEvent(self, e):
         self._g_hover = True
