@@ -30,9 +30,11 @@ from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QSize, Qt, QTimer
 from PyQt6.QtGui import QAction, QCursor, QGuiApplication
-from PyQt6.QtWidgets import QApplication, QMenu, QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from zhuzhu_Copilot.core.i18n import ui as _ui
+
+from zhuzhu_Copilot.ui.widgets import FadeMenu
 
 from .rig import PetRig
 from .view import DEFAULT_WIDTH, Pet3DView
@@ -324,7 +326,7 @@ class Pet3DWindow(QWidget):
             self._open_panel_cb()
 
     def _on_context(self, global_pos: QPoint) -> None:
-        menu = QMenu(self)
+        menu = FadeMenu(self)
         act_stay = QAction(_ui("回到右下角"), self)
         act_stay.triggered.connect(self._place_bottom_right)
         act_follow = QAction(_ui("暂停跟随鼠标") if self._follow else _ui("恢复跟随鼠标"), self)

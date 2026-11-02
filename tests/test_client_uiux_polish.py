@@ -679,6 +679,63 @@ def test_model_dropdown_popup_fade_is_smooth_and_safe(panel):
     _pump(20)
 
 
+def test_dropdown_popup_fades_as_one_block(panel):
+    """下拉框整体淡入：首帧保持透明，动画延后一帧才启动，最终整块不透明。"""
+    from PyQt6.QtCore import QAbstractAnimation
+    combo = panel.model_combo
+    combo.showPopup()
+    win = combo.view().window()
+    assert win.windowOpacity() == pytest.approx(0.0), \
+        "首帧就必须透明，否则会看到列表从上到下逐行刷出"
+    assert getattr(combo, "_popup_seq", 0) >= 1
+    _pump(40)           # 延后一帧后动画启动
+    anim = getattr(combo, "_popup_anim", None)
+    assert anim is not None, "淡入动画未启动"
+    assert anim.state() != QAbstractAnimation.State.Stopped, "淡入动画未在运行"
+    _pump(400)
+    assert win.windowOpacity() == pytest.approx(1.0), "淡入结束后弹层必须完全不透明"
+    combo.hidePopup()
+    _pump(20)
+
+
+def test_fade_menu_defers_animation_and_guard():
+    """菜单同样整体淡入：showEvent 先透明，一帧后启动动画，异常时兜底恢复可见。"""
+    from zhuzhu_Copilot.ui.widgets import FadeMenu
+    menu = FadeMenu(None)
+    menu.addAction("x")
+    menu.show()
+    assert menu.windowOpacity() == pytest.approx(0.0), "菜单首帧应透明"
+    _pump(40)
+    anim = getattr(menu, "_pop_anim", None)
+    assert anim is not None, "菜单淡入动画未启动"
+    anim.stop()                          # 模拟动画被中断
+    menu.setWindowOpacity(0.0)
+    _pump(420)                           # 兜底计时器（show 后 400ms）
+    assert menu.windowOpacity() == pytest.approx(1.0), "兜底未恢复可见（菜单会像没弹出）"
+    menu.hide()
+
+
+def test_all_comboboxes_share_arrow_combo():
+    """所有下拉框统一走 ArrowComboBox（整体淡入 + 自绘箭头），源码里不再有裸 QComboBox。"""
+    ui_dir = Path(ap.__file__).parent
+    offenders = [p.name for p in ui_dir.rglob("*.py")
+                 if "QComboBox(" in p.read_text(encoding="utf-8")]
+    assert not offenders, f"仍有裸 QComboBox（无淡入/箭头会变方块）：{offenders}"
+
+
+def test_in_app_and_tray_menus_share_fade_menu():
+    """面板内菜单、托盘菜单、桌宠菜单同源，动画手感只维护一处。"""
+    from zhuzhu_Copilot.ui import main_window as _mw
+    from zhuzhu_Copilot.ui.widgets import FadeMenu
+    assert issubclass(ap._FadeMenu, FadeMenu), "面板菜单未复用共享实现"
+    for mod in (_mw, ap):
+        assert "FadeMenu(" in Path(mod.__file__).read_text(encoding="utf-8") or \
+            "FadeMenu(self" in Path(mod.__file__).read_text(encoding="utf-8"), \
+            f"{mod.__name__} 未使用 FadeMenu"
+    pet_src = (Path(ap.__file__).parent / "desktop_pet.py").read_text(encoding="utf-8")
+    assert "FadeMenu(" in pet_src, "桌宠右键菜单未使用 FadeMenu"
+
+
 def test_model_tune_context_uses_switch_button(panel):
     """1M 上下文开关改为左右滑块（SwitchButton），点击即发 context_changed。"""
     from PyQt6.QtCore import Qt

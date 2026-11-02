@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QProgressBar,
     QTextEdit, QMessageBox, QApplication,
-    QFileDialog, QDialog, QScrollArea, QFrame, QSystemTrayIcon, QMenu,
+    QFileDialog, QDialog, QScrollArea, QFrame, QSystemTrayIcon,
     QStackedWidget, QButtonGroup, QGraphicsOpacityEffect
 )
 from PyQt6.QtCore import (
@@ -31,7 +31,8 @@ from zhuzhu_Copilot.ui.styles import PALETTE, svg_icon
 from zhuzhu_Copilot.ui.tokens import FONT_WEIGHT
 from zhuzhu_Copilot.ui.widgets import (
     Card, AppItemDelegate, DataDirDialog,
-    UninstallConfirmDialog, ToastNotification, SwitchButton, ArrowComboBox
+    UninstallConfirmDialog, ToastNotification, SwitchButton, ArrowComboBox,
+    FadeMenu,
 )
 # DownloadDialog / AgentPanel 为懒加载：打开对应面板时才导入，
 # 避免启动时加载 agent_engine→agent_llm(urllib) 等重型模块链拖慢首屏
@@ -1590,7 +1591,7 @@ class CopilotPanel(QFrame):
         """系统托盘：防护开启时显示图标，右键菜单可打开 AI 面板 / 退出，清理结果右下角弹窗"""
         self.tray = QSystemTrayIcon(QIcon(_app_icon_path()), self)
         self.tray.setToolTip(_ui("zhuzhu Copilot · 静默安全防护"))
-        menu = QMenu(self)
+        menu = FadeMenu(self)
         act_show = menu.addAction(_ui("打开 AI 面板"))
         act_show.triggered.connect(self._open_agent_panel)
         act_quit = menu.addAction(_ui("退出程序"))

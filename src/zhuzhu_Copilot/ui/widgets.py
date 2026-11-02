@@ -5,7 +5,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QCheckBox, QSizePolicy, QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
-    QFileIconProvider, QApplication, QComboBox
+    QFileIconProvider, QApplication, QComboBox, QMenu
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QFileInfo, QPoint, QTimer, QObject, QPropertyAnimation,
@@ -109,6 +109,63 @@ class SwitchButton(QWidget):
             p.drawEllipse(int(round(x)) + 1, pad + 1, d - 2, d - 2)
 
 
+class FadeMenu(QMenu):
+    """整体平滑淡入的菜单（右键 / 「更多」/ 托盘菜单共用）。
+
+    弹层是独立原生窗口，只能整体调 ``windowOpacity``；透明度动画**延后一帧**再启动：
+    showEvent 里菜单刚建好，首帧仍在逐行绘制，此时立刻推进透明度会露出「从上到下
+    刷出来」的割裂感。先让菜单在不透明态同步绘制一帧，再回到 0 整块淡入。
+
+    兜底：动画被中断/窗口提前销毁时，400ms 后强制恢复不透明，避免菜单「透明不可见」。
+    """
+
+    FADE_DELAY_MS = 16           # 首帧绘制完成后再启动（约一帧）
+    FADE_FALLBACK_MS = 400       # 兜底恢复不透明
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        try:
+            self._pop_seq = int(getattr(self, "_pop_seq", 0)) + 1
+            seq = self._pop_seq
+            self.setWindowOpacity(0.0)
+            QTimer.singleShot(self.FADE_DELAY_MS, lambda: self._start_fade(seq))
+            QTimer.singleShot(self.FADE_FALLBACK_MS, lambda: self._fade_guard(seq))
+        except Exception:
+            try:
+                self.setWindowOpacity(1.0)
+            except Exception:
+                pass
+
+    def _start_fade(self, seq: int):
+        try:
+            if seq != getattr(self, "_pop_seq", 0) or not self.isVisible():
+                return
+            self.setWindowOpacity(1.0)
+            self.repaint()          # 不透明态同步整块绘制，动画期间不再逐行刷出
+            self.setWindowOpacity(0.0)
+            anim = QPropertyAnimation(self, b"windowOpacity", self)
+            anim.setDuration(motion.POP_MS)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(motion.settle())
+            self._pop_anim = anim   # 持有引用，避免被回收
+            anim.start()
+        except Exception:
+            try:
+                self.setWindowOpacity(1.0)
+            except Exception:
+                pass
+
+    def _fade_guard(self, seq: int):
+        """兜底：动画未跑完也必须可见（否则菜单会「透明」得像没弹出）。"""
+        try:
+            if seq == getattr(self, "_pop_seq", 0) and self.isVisible() \
+                    and self.windowOpacity() < 1.0:
+                self.setWindowOpacity(1.0)
+        except Exception:
+            pass
+
+
 class ArrowComboBox(QComboBox):
     """带旋转动画下拉箭头的 QComboBox：收起时 chevron 朝下，展开后旋转 180° 朝上。
 
@@ -151,14 +208,17 @@ class ArrowComboBox(QComboBox):
         self._fade_popup()
 
     def _fade_popup(self):
-        """下拉列表淡入：弹层是独立原生窗口，只能整体调 ``windowOpacity``。
+        """下拉列表整体淡入：弹层是独立原生窗口，只能整体调 ``windowOpacity``。
 
         为什么用 QPropertyAnimation 而不是自建高频定时器：以 8ms 逐帧改原生窗口
         透明度会与合成器/垂直同步抢帧，实测出现**撕裂与闪烁**；交给 Qt 动画引擎
         （约 60fps、与刷新对齐）反而顺滑。
 
-        关键：opacity=0 必须**同步**设在 show() 之后、事件循环返回之前。晚一帧再设
-        （旧实现的 singleShot(0)）会先以全不透明上屏一帧再跳回 0 → 肉眼就是闪一下。
+        关键 1：opacity=0 必须**同步**设在 show() 之后、事件循环返回之前。晚一帧再设
+        会先以全不透明上屏一帧再跳回 0 → 肉眼就是闪一下。
+        关键 2：透明度**动画延后一帧**再启动。showPopup() 返回时弹层还只是刚建好，
+        首帧仍在逐行绘制；若此时同步推进透明度，用户会看到「列表从上到下刷出来」
+        的割裂感。先让整块内容在 opacity=0 下完整绘制一帧，再整体淡入。
         """
         try:
             win = self.view().window()
@@ -171,6 +231,31 @@ class ArrowComboBox(QComboBox):
         try:
             if not (win.windowFlags() & Qt.WindowType.Popup):
                 return
+            win.setWindowOpacity(0.0)
+            self._popup_seq = int(getattr(self, "_popup_seq", 0)) + 1
+            seq = self._popup_seq
+            # 一帧（~16ms）后再启动：此时弹层已在透明状态下整块绘制完成
+            QTimer.singleShot(16, lambda: self._start_popup_fade(win, seq))
+            # 兜底：动画被中断时不能让弹层停在透明态（否则看起来像没弹出）
+            QTimer.singleShot(400, lambda: self._popup_fade_guard(win, seq))
+        except Exception:
+            try:
+                win.setWindowOpacity(1.0)
+            except Exception:
+                pass
+
+    def _start_popup_fade(self, win, seq: int):
+        """首帧绘制完成后再整体淡入（弹层已关闭/重开则放弃本次动画）。"""
+        try:
+            if seq != getattr(self, "_popup_seq", 0):
+                return
+            if not win.isVisible() or not (win.windowFlags() & Qt.WindowType.Popup):
+                win.setWindowOpacity(1.0)
+                return
+            # 先以不透明状态同步绘制一帧，再回到 0 启动淡入：同一事件周期内完成，
+            # 合成器看不到中间态，但能保证首帧是「整块画好」的，动画期间不再逐行刷出。
+            win.setWindowOpacity(1.0)
+            win.repaint()
             win.setWindowOpacity(0.0)
             anim = QPropertyAnimation(win, b"windowOpacity", self)
             anim.setDuration(max(120, int(motion.POP_MS)))
@@ -185,7 +270,17 @@ class ArrowComboBox(QComboBox):
             except Exception:
                 pass
 
+    def _popup_fade_guard(self, win, seq: int):
+        """兜底：动画被中断时弹层也必须可见（否则看起来像没弹出）。"""
+        try:
+            if seq == getattr(self, "_popup_seq", 0) and win.isVisible() \
+                    and win.windowOpacity() < 1.0:
+                win.setWindowOpacity(1.0)
+        except Exception:
+            pass
+
     def hidePopup(self):
+        self._popup_seq = int(getattr(self, "_popup_seq", 0)) + 1
         anim = getattr(self, "_popup_anim", None)
         if anim is not None:
             try:

@@ -100,7 +100,6 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressDialog,
@@ -173,7 +172,7 @@ from zhuzhu_Copilot.ui.tokens import (
 )
 from zhuzhu_Copilot.ui import window_fx
 from zhuzhu_Copilot.ui import motion
-from zhuzhu_Copilot.ui.widgets import ArrowComboBox, SwitchButton, add_brand_footer
+from zhuzhu_Copilot.ui.widgets import ArrowComboBox, FadeMenu, SwitchButton, add_brand_footer
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
 _THEMES = {
@@ -19983,26 +19982,12 @@ class _FunctionRail(QFrame):
             div.setStyleSheet(div_qss)
 
 
-class _FadeMenu(QMenu):
-    """右键 / 「更多」菜单：弹出时 150ms 淡入（窗口透明度 0 → 1）。
+class _FadeMenu(FadeMenu):
+    """右键 / 「更多」菜单：整体平滑淡入（实现见 ``widgets.FadeMenu``）。
 
-    QMenu.exec() 阻塞在自己的事件循环里，动画会在这个循环里正常推进；只动透明度、
-    不动尺寸与位置，避免菜单从鼠标落点「滑走」造成点错项。
+    保留本别名是为了让面板内所有菜单共用同一入口，且与设置页 / 托盘菜单同源，
+    将来调整动画手感只改一处。
     """
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        try:
-            self.setWindowOpacity(0.0)
-            anim = QPropertyAnimation(self, b"windowOpacity", self)
-            anim.setDuration(motion.POP_MS)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.setEasingCurve(motion.settle())
-            self._pop_anim = anim      # 持有引用，避免被回收
-            anim.start()
-        except Exception:
-            pass
 
 
 # Agent 权限图标：Lucide 开源线条矢量图（ISC 许可，v0.544.0）。

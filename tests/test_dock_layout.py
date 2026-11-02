@@ -321,13 +321,19 @@ def test_dock_mode_disables_todos_body_drag():
 
 
 def _dock_column():
-    """构造真实 AgentPanel 并切到融入模式，返回 (panel, 左栏, 面板窗口列表)"""
+    """构造真实 AgentPanel 并切到融入模式，返回 (panel, 左栏, 面板窗口列表)
+
+    左栏折叠状态持久化在 QSettings（真实用户可能收起过）：折叠态下面板全部让位、
+    只留迷你入口，几何量不到真实分配 —— 这里先强制展开（不落盘）再测量。
+    """
     p = ap.AgentPanel()
     p.resize(1500, 1000)
     p.show()
     _pump(16)
     p._todos_enabled = lambda: True
     p._apply_panel_mode("dock")
+    if p._leftdock_collapsed():
+        p._set_leftdock_collapsed(False, persist=False)
     _pump(20)
     return p, p._dock_left, p._dock_panel_order("left")
 

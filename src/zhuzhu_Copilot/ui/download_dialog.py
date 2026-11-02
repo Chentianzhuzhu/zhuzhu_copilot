@@ -18,12 +18,12 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QProgressBar, QListWidget, QListWidgetItem, QMessageBox,
-    QFileDialog, QComboBox,
+    QFileDialog,
 )
 
 from zhuzhu_Copilot.core.fast_download import DownloadTask
 from zhuzhu_Copilot.ui.styles import PALETTE
-from zhuzhu_Copilot.ui.widgets import add_brand_footer
+from zhuzhu_Copilot.ui.widgets import ArrowComboBox, add_brand_footer
 
 _DONE_STATES = ("done", "error", "canceled")
 
@@ -221,7 +221,7 @@ class DownloadDialog(QDialog):
         opt_label = QLabel(_ui("速度档位"))
         opt_label.setStyleSheet(f"font-size: 13px; color: {PALETTE['text_secondary']};")
         opt_row.addWidget(opt_label)
-        self.seg_combo = QComboBox()
+        self.seg_combo = ArrowComboBox()   # 与其他下拉统一：整体平滑淡入
         self.seg_combo.addItem(_ui("⚡ 极限 · 32 连接（榨干带宽）"), 32)
         self.seg_combo.addItem(_ui("🚀 高速 · 16 连接"), 16)
         self.seg_combo.addItem(_ui("标准 · 8 连接"), 8)

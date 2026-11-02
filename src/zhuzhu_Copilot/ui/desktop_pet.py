@@ -15,7 +15,9 @@ from zhuzhu_Copilot.core.i18n import ui as _ui
 
 from PyQt6.QtCore import Qt, QPoint, QSize, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QAction
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel
+
+from zhuzhu_Copilot.ui.widgets import FadeMenu
 
 
 def _pet_gif_path() -> str:
@@ -200,7 +202,7 @@ class DesktopPet(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event) -> None:
-        menu = QMenu(self)
+        menu = FadeMenu(self)
         act_stay = QAction(_ui("回到右下角"), self)
         act_stay.triggered.connect(self._place_bottom_right)
         act_quit = QAction(_ui("退出"), self)
