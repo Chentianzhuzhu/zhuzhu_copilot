@@ -21,8 +21,9 @@
 
 import weakref
 
-from PyQt6.QtCore import QPoint, QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
+from PyQt6.QtGui import (QBrush, QColor, QLinearGradient, QPainter, QPainterPath,
+                         QPen, QPixmap, QRadialGradient)
 
 from zhuzhu_Copilot import app_identity
 from zhuzhu_Copilot.core import app_wallpaper
@@ -39,6 +40,7 @@ _BLUR_MIN, _BLUR_MAX = 2.0, 24.0
 
 _strength: int | None = None
 _listeners: list = []
+_capturing = False          # 抓场景期间禁止重入（隐藏/显示会触发重绘，重绘又来抓 → 递归）
 # pm 是「长边不超过 _LAYER_MAX_EDGE」的缩小版磨砂层，scale 为 窗口px / 图层px
 _layer: dict = {"key": None, "pm": None, "scale": 1.0}
 
@@ -191,6 +193,67 @@ def _frosted_layer(window) -> QPixmap | None:
     return pm
 
 
+def capture_scene(widget, rect: QRect | None = None) -> None:
+    """抓「widget 背后**真实渲染**的内容」并磨砂化，存到控件上供后续绘制使用。
+
+    与壁纸层采样的区别：壁纸层只有背景图，看不到压在上面的卡片、气泡与文字；
+    这里直接取窗口当前帧（壁纸 + 兄弟控件 + 文本），所以弹层/悬浮按钮能"反"出
+    它真正压着的东西。仅在自定义背景模式下有意义（无壁纸时背后就是主题渐变）。
+
+    抓图瞬间**暂时隐藏本控件**：否则会把自己的上一帧拍进去，形成自反射的正反馈
+    （画面表现为越描越亮的鬼影）。隐藏/显示在同一个调用栈内完成，不跑事件循环，
+    因此不会闪。
+    """
+    global _capturing
+    if _capturing or not enabled() or not app_wallpaper.active():
+        return
+    rect = QRect(widget.rect()) if rect is None else QRect(rect)
+    if rect.isEmpty():
+        return
+    try:
+        win = widget.window()
+        if win is None:
+            return
+        pos = widget.mapTo(win, rect.topLeft())
+    except RuntimeError:
+        return
+    margin = int(round(blur_radius())) + 2          # 留出模糊过渡带，避免边缘发黑
+    src = QRect(pos.x() - margin, pos.y() - margin,
+                rect.width() + margin * 2, rect.height() + margin * 2)
+    src = src.intersected(win.rect())
+    if src.isEmpty():
+        return
+    was = widget.isVisible()
+    _capturing = True
+    try:
+        if was:
+            widget.setVisible(False)
+        pm = win.grab(src)
+    except RuntimeError:
+        return
+    finally:
+        if was:
+            try:
+                widget.setVisible(True)
+            except RuntimeError:
+                pass
+        _capturing = False
+    if pm is None or pm.isNull():
+        return
+    blurred = app_wallpaper.blur_pixmap(pm, blur_radius())
+    off_x, off_y = pos.x() - src.x(), pos.y() - src.y()
+    try:
+        snap = blurred.copy(off_x, off_y, rect.width(), rect.height())
+    except Exception:
+        return
+    widget.__dict__["_glass_scene"] = snap
+
+
+def drop_scene(widget) -> None:
+    """丢弃控件上的场景反射快照（背景变了但控件还没重新抓时调用）。"""
+    widget.__dict__.pop("_glass_scene", None)
+
+
 #: 合成块缓存上限（物理像素）：超过就不缓存，避免大卡片把内存吃光。
 #: 1.5M ≈ 6MB/张，覆盖设置页卡片与各类弹层；再大（整页级卡片）改为每帧重建，
 #: 这类控件只在改尺寸/换肤时整块重绘，重建成本可接受。
@@ -198,7 +261,7 @@ _BLOCK_CACHE_MAX_PX = 1_500_000
 
 
 def _glass_block(widget, rect: QRect, radius: float, tint: str,
-                 min_alpha: float) -> QPixmap:
+                 min_alpha: float, reflect: bool = False) -> QPixmap:
     """生成（并缓存）整块玻璃贴图：**圆角磨砂底 + 半透明填充**，四角已透明。
 
     为什么预合成成一张图：磨砂底 blit（~2.2ms/950x600@2x）、半透明填充（~1.2ms）、
@@ -209,7 +272,12 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
     dpr = max(1.0, float(widget.devicePixelRatioF()))
     # 先取磨砂层（会把 _layer["key"] 算好），再拼缓存键，否则首次调用键里是 None
     layer = _frosted_layer(widget.window()) if enabled() else None
-    key = (_layer["key"], rect.x(), rect.y(), rect.width(), rect.height(),
+    scene = widget.__dict__.get("_glass_scene") if (reflect and enabled()) else None
+    if scene is not None and scene.size() != rect.size():
+        scene = None
+    # 用 cacheKey 而不是 id()：id 会被回收后复用，可能把旧快照当成新的（画面卡住）
+    key = (_layer["key"], scene.cacheKey() if scene is not None else 0,
+           rect.x(), rect.y(), rect.width(), rect.height(),
            round(radius, 2), tint, round(min_alpha, 3), round(opacity(), 3),
            round(dpr, 2))
     cache = widget.__dict__.get("_glass_block")
@@ -224,7 +292,10 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
     path = QPainterPath()
     path.addRoundedRect(QRectF(0, 0, rect.width(), rect.height()), radius, radius)
 
-    if layer is not None:
+    if scene is not None:
+        p.setClipPath(path)                  # 场景帧已裁好尺寸，只需裁圆角
+        p.drawPixmap(0, 0, scene)
+    elif layer is not None:
         try:
             pos = widget.mapTo(widget.window(), rect.topLeft())
         except RuntimeError:
@@ -248,36 +319,85 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
 
 
 def _rim(p: QPainter, rect: QRect, radius: float) -> None:
-    """边缘：**一条** 1px 描边同时承担发丝线与高光（不叠第二圈装饰线）。
+    """边缘高光：只在**左上 / 右下**两个角做高光覆盖（不再整圈描边）。
 
-    渐变沿左上 → 右下：左上是被光打亮的白边（玻璃"凸"起来），中段是主题发丝线
-    （浅色底上若无它，半透明卡片会与背景糊在一起 —— 无壁纸时尤其明显），
-    右下压一点暗色做厚度感。"""
+    做法：同一条圆角路径描两次，各自裁进对角线一侧 ——
+    左上半区用「角上亮、向中心衰减」的渐变，右下半区同样处理。
+    这样光只落在两个对角，中间四条边没有线，观感是"玻璃被斜上方光源打亮"，
+    而不是给每个控件套一圈边框。缝（中段的主题发丝线）另由 ``_hairline`` 补，
+    避免无壁纸时半透明卡片与背景糊在一起。
+    """
     hi = QColor(255, 255, 255)
-    hi.setAlphaF(min(0.80, rim_alpha() + 0.10))
-    line = QColor(PALETTE["border"])
-    line.setAlphaF(0.90)
-    lo = QColor(0, 0, 0)
-    lo.setAlphaF(0.05 + 0.06 * ratio())
+    hi.setAlphaF(min(0.85, rim_alpha() + 0.18))
     inner = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
-    grad = QLinearGradient(inner.topLeft(), inner.bottomRight())
-    grad.setColorAt(0.0, hi)
-    grad.setColorAt(0.28, line)
-    grad.setColorAt(0.78, line)
-    grad.setColorAt(1.0, lo)
-    p.setPen(QPen(grad, 1.0))
+    path = QPainterPath()
+    path.addRoundedRect(inner, radius, radius)
+
+    # 左上角高光：裁到左上三角，白 → 透明
+    p.save()
+    p.setClipRect(QRectF(rect.x(), rect.y(), rect.width(), rect.height() * 0.62))
+    grad_tl = QLinearGradient(inner.topLeft(), inner.bottomRight())
+    grad_tl.setColorAt(0.0, hi)
+    grad_tl.setColorAt(0.5, QColor(255, 255, 255, 0))
+    p.setPen(QPen(QBrush(grad_tl), 1.4))
     p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawRoundedRect(inner, radius, radius)
+    p.drawPath(path)
+    p.restore()
+
+    # 右下角高光：裁到右下三角，白 → 透明（同一条渐变反向取用）
+    p.save()
+    p.setClipRect(QRectF(rect.x(), rect.y() + rect.height() * 0.38,
+                         rect.width(), rect.height() * 0.62))
+    grad_br = QLinearGradient(inner.bottomRight(), inner.topLeft())
+    grad_br.setColorAt(0.0, hi)
+    grad_br.setColorAt(0.5, QColor(255, 255, 255, 0))
+    p.setPen(QPen(QBrush(grad_br), 1.4))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(path)
+    p.restore()
+
+    # 角部柔光：两块很淡的径向光斑压在角内侧，"覆盖"感更接近实拍玻璃
+    for cx, cy in ((rect.x(), rect.y()),
+                   (rect.x() + rect.width(), rect.y() + rect.height())):
+        rad = min(rect.width(), rect.height()) * 0.34
+        if rad < 6:
+            continue
+        glow = QRadialGradient(QPointF(cx, cy), rad)
+        c = QColor(255, 255, 255)
+        c.setAlphaF(min(0.12, rim_alpha() * 0.40))
+        glow.setColorAt(0.0, c)
+        glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.save()
+        p.setClipPath(path)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(glow))
+        p.drawRect(rect)
+        p.restore()
+
+
+def _hairline(p: QPainter, rect: QRect, radius: float) -> None:
+    """中段发丝线：只在自定义背景/玻璃态下补一层极淡的边界，防止半透明卡片糊进背景。
+
+    与角部高光同色系（主题 border），透明度压到很低，不是"第二圈边框"。
+    """
+    line = QColor(PALETTE["border"])
+    line.setAlphaF(0.55)
+    p.setPen(QPen(line, 1.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 def paint_surface(widget, p: QPainter, rect: QRect | None = None,
                   radius: float | None = None, tint: str | None = None,
-                  rim: bool = True, min_alpha: float = 0.0) -> None:
+                  rim: bool = True, min_alpha: float = 0.0,
+                  reflect: bool = False, hairline: bool = True) -> None:
     """把一个表面画成玻璃：整块贴图（磨砂 + 半透明填充）+ 边缘高光。
 
     ``tint`` 是该表面的主题底色（卡片 card / 浮层 elevated），强度决定其不透明度；
     强度为 0 时画回实色底 + 发丝描边，与旧观感一致（不走贴图，最省）。
     ``min_alpha`` 给「文字密度高、必须保证可读」的表面（通知）兜底不透明度。
+    ``reflect=True`` 优先用 ``capture_scene()`` 抓到的真实场景帧（能反出背景里的
+    卡片/文字），没有快照时退回壁纸层采样。
     """
     rect = QRect(widget.rect()) if rect is None else QRect(rect)
     if rect.isEmpty():
@@ -296,11 +416,13 @@ def paint_surface(widget, p: QPainter, rect: QRect | None = None,
             p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         return
 
-    block = _glass_block(widget, rect, radius, base, min_alpha)
+    block = _glass_block(widget, rect, radius, base, min_alpha, reflect=reflect)
     p.drawPixmap(rect.topLeft(), block)
 
     if rim:
         _rim(p, rect, radius)
+        if hairline:
+            _hairline(p, rect, radius)
 
 
 def repaint_all() -> None:

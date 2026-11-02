@@ -166,3 +166,78 @@ def test_wallpaper_page_glass_row_reuses_capsule_slider():
         assert seen == [73], f"live 行必须即时提交，实得 {seen}"
     finally:
         slider.deleteLater()
+
+
+
+def test_capture_scene_only_in_wallpaper_mode(tmp_path):
+    """场景抓取只在「自定义背景 + 玻璃开启」时发生：否则白花一次整窗渲染。"""
+    from PyQt6.QtWidgets import QWidget
+    from zhuzhu_Copilot.core import app_wallpaper
+    from zhuzhu_Copilot.ui import glass
+
+    _qapp()
+    app_wallpaper.set_fields(bg_image="", persist=False)
+    glass.set_strength(50, persist=False)
+    w = QWidget()
+    w.resize(120, 80)
+    w.show()
+    glass.capture_scene(w)
+    assert w.__dict__.get("_glass_scene") is None, "无壁纸时不该抓场景"
+
+    with _wallpaper(tmp_path):
+        glass.capture_scene(w)
+        snap = w.__dict__.get("_glass_scene")
+        assert snap is not None and snap.size() == w.size(), "有壁纸时应抓到同尺寸快照"
+    glass.drop_scene(w)
+    assert w.__dict__.get("_glass_scene") is None
+    glass.set_strength(glass.GLASS_DEFAULT, persist=False)
+
+
+def test_glass_button_reflects_content_behind(tmp_path):
+    """玻璃按钮反射的是**它压着的内容**（红色块），而不是背后的蓝色壁纸。"""
+    from PyQt6.QtWidgets import QWidget, QLabel
+    from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
+    from PyQt6.QtCore import Qt
+    from zhuzhu_Copilot.core import app_wallpaper
+    from zhuzhu_Copilot.ui import glass
+    from zhuzhu_Copilot.ui.widgets import GlassButton
+
+    _qapp()
+
+    class _Host(QWidget):
+        def paintEvent(self, _e):
+            p = QPainter(self)
+            if not app_wallpaper.paint(p, self.rect()):
+                p.fillRect(self.rect(), QColor("#000000"))
+            p.end()
+
+    with _wallpaper(tmp_path):                       # 蓝色壁纸
+        glass.set_strength(50, persist=False)
+        host = _Host()
+        host.resize(200, 160)
+        host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        glass.register_host(host)
+        red = QLabel(host)
+        red.setStyleSheet("background: #FF0000;")
+        red.setGeometry(60, 50, 90, 50)
+        btn = GlassButton(QIcon(), 40, host)
+        btn.move(80, 55)                             # 大部分压在红色块上
+        host.show()
+        _qapp().processEvents()
+
+        glass.capture_scene(btn)
+        assert btn.__dict__.get("_glass_scene") is not None, "应抓到按钮背后的场景"
+
+        pm = QPixmap(btn.size())
+        pm.fill(QColor("#000000"))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        glass.paint_surface(btn, p, radius=20, tint="#FFFFFF", reflect=True,
+                            hairline=False)
+        p.end()
+        c = pm.toImage().pixelColor(btn.width() // 2, btn.height() // 2)
+        assert c.red() > c.blue(), f"反射应以红色内容为主，实得 {c.name()}"
+        btn.deleteLater()
+        red.deleteLater()
+        host.close()
+    glass.set_strength(glass.GLASS_DEFAULT, persist=False)

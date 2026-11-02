@@ -174,7 +174,7 @@ from zhuzhu_Copilot.ui import window_fx
 from zhuzhu_Copilot.ui import glass
 from zhuzhu_Copilot.ui import motion
 from zhuzhu_Copilot.ui.widgets import (
-    ArrowComboBox, FadeMenu, GlassPanel, SwitchButton, add_brand_footer,
+    ArrowComboBox, FadeMenu, GlassButton, GlassPanel, SwitchButton, add_brand_footer,
 )
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
@@ -14348,7 +14348,8 @@ class _ModelTunePopover(QFrame):
         """玻璃底：磨砂 + 半透明填充 + 边缘高光（强度见 ui/glass.py）。"""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        glass.paint_surface(self, p, radius=RADIUS_MD, tint=_base_color("ELEVATED"))
+        glass.paint_surface(self, p, radius=RADIUS_MD, tint=_base_color("ELEVATED"),
+                            reflect=True)
         p.end()
 
     # ---------- 状态 ----------
@@ -14972,6 +14973,7 @@ class _TokenStatsPopover(QFrame):
         eff.setOpacity(0.0)
         start = QRect(rect.x(), rect.y() + self.SLIDE, rect.width(), rect.height())
         self.setGeometry(start)
+        glass.capture_scene(self)     # 显示前抓真实背景（弹层此时不可见）
         self.show()
         self.raise_()
         a_op = QPropertyAnimation(eff, b"opacity", self)
@@ -21947,21 +21949,12 @@ class AgentPanel(QDialog):
         self.msg_container = container   # 消息流容器：批量重建期整体隐藏（见 _hist_clear_stream）
         # 一键回底按钮：流式输出时用户上滚查看历史后出现，圆形悬浮于聊天区底部正中
         # （输入框上沿）。点击后滚回底部并恢复自动滚动。仅当内容可滚动且不在底部时显示。
-        self._scroll_bottom_btn = QPushButton(_line_icon("chev", 18, "#FFFFFF"), "", self.msg_area)
-        self._scroll_bottom_btn.setFixedSize(40, 40)
-        self._scroll_bottom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._scroll_bottom_btn.setAutoDefault(False)
+        # 玻璃材质：底色透明、角部高光、真实反射它压着的聊天内容（自定义背景模式下）
+        self._scroll_bottom_btn = GlassButton(
+            _line_icon("chev", 18, _base_color("TEXT")), 40, self.msg_area,
+            tint_key="elevated", hover_tint_key="primary_light", reflect=True)
         self._scroll_bottom_btn.setIconSize(QSize(18, 18))
         self._scroll_bottom_btn.setToolTip(_ui("回到底部"))
-        # 配色取自主题强调色（不再写死旧主题蓝）：深浅主题、自定义主题包
-        # 都能得到同源主色；圆盘本身即形状，按招 1 不描边。
-        _sb = QColor(ACCENT_HOVER)
-        _sb_press = QColor(ACCENT).darker(118).name()
-        self._scroll_bottom_btn.setStyleSheet(
-            f"QPushButton {{ background: rgba({_sb.red()},{_sb.green()},{_sb.blue()},0.92);"
-            " border: none; border-radius: 20px; }"
-            f"QPushButton:hover {{ background: rgba({_sb.red()},{_sb.green()},{_sb.blue()},1.0); }}"
-            f"QPushButton:pressed {{ background: {_sb_press}; }}")
         self._scroll_bottom_btn.clicked.connect(self._on_scroll_bottom_btn)
         self._scroll_bottom_btn.hide()
         self._scroll_bottom_btn.raise_()
@@ -27295,6 +27288,13 @@ class AgentPanel(QDialog):
         bar.setValue(bar.maximum())
         self._update_scroll_bottom_btn()
 
+    def _refresh_glass_backdrop(self):
+        """聊天内容滚动后刷新玻璃控件的反射帧（节流在控件内部）。"""
+        btn = getattr(self, "_scroll_bottom_btn", None)
+        refresh = getattr(btn, "refresh_backdrop", None)
+        if callable(refresh) and btn is not None and btn.isVisible():
+            refresh(150)
+
     def _on_scroll_value_changed(self):
         """滚动条位置变化：在底部则恢复自动滚动并隐藏回底按钮，否则显示按钮。"""
         bar = self.msg_area.verticalScrollBar()
@@ -27305,6 +27305,8 @@ class AgentPanel(QDialog):
             # 用户主动离开底部（滚轮/拖动）：暂停自动滚动，流式输出不再把视图拽回底部
             self._auto_scroll = False
         self._update_scroll_bottom_btn()
+        if not at_bottom:
+            self._refresh_glass_backdrop()      # 按钮压着的聊天内容变了 → 重抓反射
 
     def _update_scroll_bottom_btn(self):
         """回底按钮显隐：内容可滚动且不在底部时才显示。"""
@@ -27317,6 +27319,7 @@ class AgentPanel(QDialog):
             btn.setVisible(show)
             if show:
                 btn.raise_()
+                btn.refresh_backdrop(0)      # 刚出现：立刻抓一次真实背景
 
     def _position_scroll_bottom_btn(self):
         """把回底按钮定位到聊天区底部正中（输入框上沿）。"""
@@ -27327,6 +27330,10 @@ class AgentPanel(QDialog):
         x = (area.width() - btn.width()) // 2
         y = area.height() - btn.height() - 12
         btn.move(max(0, x), max(0, y))
+        # 位置变了 → 反射区域也变了，重新抓（节流：连续 resize 不会反复抓屏）
+        refresh = getattr(btn, "refresh_backdrop", None)
+        if callable(refresh):
+            refresh(60)
 
     def _on_scroll_bottom_btn(self):
         """点击回底按钮：滚到底部并恢复自动滚动。"""

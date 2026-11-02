@@ -1,5 +1,6 @@
 ﻿import os
 import re
+import time
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -465,7 +466,8 @@ class ComboPopup(QFrame):
         # 撤掉遮罩时不会「跳」；壁纸变化由 glass 的重绘通知兜住）
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        glass.paint_surface(self, p, radius=RADIUS_SM, tint=PALETTE["elevated"])
+        glass.paint_surface(self, p, radius=RADIUS_SM, tint=PALETTE["elevated"],
+                            reflect=True)
         p.end()
 
     # ---------- 开合 ----------
@@ -476,6 +478,9 @@ class ComboPopup(QFrame):
         self._op = 0.0
         self._veiled = True             # show 期间即便被要求绘制也什么都不画
         self.setGeometry(target)        # 先按最终尺寸布局，位图才与最终画面同尺寸
+        # 显示前抓「弹层将要压住的那块真实画面」（此时弹层不可见，不会拍到自己）：
+        # 自定义背景模式下玻璃底因此能反出下方的卡片与文字，而不只是壁纸
+        glass.capture_scene(self)
         start = QPoint(target.x(), target.y() + self.RISE_PX)
         self.move(start)
         self.show()
@@ -810,6 +815,78 @@ class GlassPanel(QWidget):
         glass.paint_surface(self, p, radius=self._g_radius, tint=self.resolved_tint(),
                             min_alpha=self._g_min)
         p.end()
+
+
+class GlassButton(QPushButton):
+    """圆形玻璃按钮：透明底 + 左上/右下角高光 + 真实背景反射。
+
+    与普通按钮的唯一区别是「底」：QSS 里底色全透明，底由 glass.paint_surface 绘制
+    （磨砂 + 半透明填充 + 角部高光）。图标仍由基类画，鼠标/焦点/快捷键行为不变。
+    """
+
+    def __init__(self, icon: QIcon, diameter: int = 40, parent=None, *,
+                 tint_key: str = "elevated", hover_tint_key: str = "primary_light",
+                 reflect: bool = True):
+        super().__init__(icon, "", parent)
+        self._g_tint_key = tint_key
+        self._g_hover_key = hover_tint_key
+        self._g_reflect = bool(reflect)
+        self._g_hover = False
+        self._g_last_capture = 0.0
+        self.setFixedSize(int(diameter), int(diameter))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAutoDefault(False)
+        # 底全透明：不让 QSS 抢走玻璃底，也不给 hover/pressed 铺色
+        self.setStyleSheet(
+            "QPushButton, QPushButton:hover, QPushButton:pressed, QPushButton:focus"
+            " { background: transparent; border: none; }")
+        glass.subscribe(self.update)
+
+    def radius(self) -> float:
+        return self.width() / 2.0
+
+    def refresh_backdrop(self, min_interval_ms: int = 120):
+        """背景变了（滚动/改尺寸/换肤）后重抓反射帧；按时间节流，滚动时不过度抓屏。"""
+        if not self._g_reflect:
+            return
+        now = time.monotonic() * 1000.0
+        if now - self._g_last_capture < max(0, int(min_interval_ms)):
+            return
+        self._g_last_capture = now
+        glass.capture_scene(self)
+
+    # ---------- 事件 ----------
+    def showEvent(self, e):
+        super().showEvent(e)
+        # 不能在 showEvent 里同步抓：抓图需要临时隐藏自己，而此刻控件正在被显示，
+        # 重入会直接把进程打崩。投递到下一回合（首帧先按壁纸层兜底，随后换上反射）。
+        QTimer.singleShot(0, self._capture_later)
+
+    def _capture_later(self):
+        try:
+            self.refresh_backdrop(0)
+        except RuntimeError:
+            pass            # 控件已被销毁（弹层式用法）：忽略迟到的抓图
+
+    def enterEvent(self, e):
+        self._g_hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._g_hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        key = self._g_hover_key if self._g_hover else self._g_tint_key
+        tint = PALETTE.get(key) or PALETTE["elevated"]     # 防自定义主题缺键
+        glass.paint_surface(self, p, radius=self.radius(), tint=tint,
+                            reflect=self._g_reflect, hairline=False)
+        p.end()
+        super().paintEvent(e)           # 图标/文字（QSS 底已透明）
 
 
 class PrimaryButton(QPushButton):

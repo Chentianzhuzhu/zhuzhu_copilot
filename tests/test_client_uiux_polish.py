@@ -99,9 +99,17 @@ def test_plugin_dialog_tabs_have_no_border():
 # ---------- 3. 主题色收敛：不写死 rgba ----------
 
 def test_scroll_bottom_button_uses_theme_accent():
-    """回到底部按钮的高亮必须由主题强调色派生，换肤后不残留旧蓝。"""
+    """回到底部按钮改为玻璃材质：底色取主题色板键，不再写死旧主题蓝。
+
+    旧实现断言「从 ACCENT_HOVER 派生 rgba 圆盘」；现在底色由 glass 按 PALETTE
+    色板键实时解析（elevated / primary_light），换肤后同样不会残留旧蓝。
+    """
     assert "rgba(47,82,216" not in SRC, "回到底部按钮仍写死旧主题蓝"
-    assert "_sb = QColor(ACCENT_HOVER)" in SRC, "回到底部按钮必须从 ACCENT_HOVER 派生"
+    assert "GlassButton(" in SRC, "回到底部按钮应改用玻璃材质"
+    assert 'tint_key="elevated"' in SRC and 'hover_tint_key="primary_light"' in SRC, \
+        "玻璃按钮的底色必须走主题色板键（换肤即时生效）"
+    assert "_line_icon(\"chev\", 18, _base_color(\"TEXT\"))" in SRC, \
+        "按钮图标颜色应取当前主题文字色（玻璃底上白/黑自适应）"
 
 
 def test_workdir_hint_uses_soft_fill_without_border():
