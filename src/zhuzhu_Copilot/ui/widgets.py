@@ -129,6 +129,23 @@ class FadeMenu(QMenu):
     FADE_DELAY_MS = 16           # 首帧绘制完成后再启动（约一帧）
     FADE_FALLBACK_MS = 400       # 兜底恢复不透明
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 菜单也是玻璃表面：窗口改半透明 + QSS 底色让位，底由 paintEvent 自绘。
+        # padding 必须显式保留（widget 级样式表会盖掉 app 级 QMenu 规则里的同名项，
+        # 丢了它菜单项会贴到窗口边缘）。
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet(
+            f"QMenu {{ background: transparent; border: none; padding: 5px; }}")
+        glass.subscribe(self.update)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        glass.paint_surface(self, p, radius=RADIUS_MD, tint=PALETTE["elevated"])
+        p.end()
+        super().paintEvent(e)        # 菜单项/分隔线/箭头（QSS 底已透明）
+
     def showEvent(self, e):
         super().showEvent(e)
         try:
@@ -276,9 +293,11 @@ class ComboPopup(QFrame):
     GAP = 4                  # 与下拉框的间距
     RISE_PX = 6              # 展开位移（从下方 6px 浮起）
     MARGIN = 6               # 距窗口边缘的最小留白
-    MAX_H = 340              # 弹层最大高度（超出在列表内滚动）
+    MAX_H = 440              # 弹层最大高度（约 16 行，超出在列表内滚动）
+    MIN_ROWS = 3             # 最少按 3 行给高度：短列表也像个菜单，不挤成一条
     FADE_MS = motion.POP_MS  # 淡入时长（与动效注册表同源）
-    FADE_OUT_MS = motion.FADE_OUT_MS
+    # 收起比淡入更快：菜单/下拉收得利索，避免"拖泥带水"；也缩短"该关未关"的窗口
+    FADE_OUT_MS = 120
     CLOSE_RISE_PX = 4        # 收起时下移的位移
 
     picked = pyqtSignal(int)
@@ -373,7 +392,7 @@ class ComboPopup(QFrame):
         host = self.parentWidget()
         if host is None:
             return QRect()
-        rows = max(1, self._list.count())
+        rows = max(self.MIN_ROWS, self._list.count())
         content_h = min(self.MAX_H, rows * _ComboRowDelegate.ROW_H + 10)
         width = max(int(combo.width()), min(self._content_width(), 460))
         width = min(width, max(120, host.width() - 2 * self.MARGIN))
@@ -504,6 +523,19 @@ class ComboPopup(QFrame):
         end = QPoint(cur.x(), cur.y() + self.CLOSE_RISE_PX)
         self._play(cur.topLeft(), end, float(self._op), 0.0,
                    self.FADE_OUT_MS, hide_on_end=True)
+        # 兜底：动画时间轴可能被主线程的重活卡住（大面板上实测偶发，表现为弹层
+        # "该关却不关"）。到点无条件收尾，不依赖 finished 一定送达。
+        QTimer.singleShot(self.FADE_OUT_MS + 120, self._force_close)
+
+    def _force_close(self):
+        """兜底收尾：只在本该收起的场景生效，绝不打断正常的重新展开。"""
+        if not self._hide_on_end:
+            return
+        if self.isVisible():
+            self._anim.stop()
+            self.hide()
+            self._veil(False)
+            self._snap = None
 
     def close_now(self):
         self._guard(False)
@@ -609,6 +641,10 @@ class ArrowComboBox(QComboBox):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 本体玻璃底：默认开启；底色由 QSS 让位（否则会盖住玻璃）。
+        # 需要实色本体的下拉（对话框里的输入型下拉）可 set_glass_body(False) 关掉。
+        self._glass_body = True
+        self._glass_tint = None
         self._arrow_angle = 0.0        # 箭头旋转角度：0=收起，180=展开
         self._arrow_open = False
         self._arrow_hover = False
@@ -722,7 +758,20 @@ class ArrowComboBox(QComboBox):
         """主题切换后重绘箭头（颜色在 paintEvent 实时取 PALETTE，只需重绘）。"""
         self.update()
 
+    def set_glass_body(self, on: bool = True, tint: str | None = None) -> None:
+        """控制本体是否绘制玻璃底（tint 为空时取主题 FIELD 色）。"""
+        self._glass_body = bool(on)
+        if tint is not None:
+            self._glass_tint = tint
+        self.update()
+
     def paintEvent(self, e):
+        if self._glass_body and glass.enabled():
+            g = QPainter(self)
+            g.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            glass.paint_surface(self, g, radius=RADIUS_SM,
+                                tint=self._glass_tint or PALETTE["field"])
+            g.end()
         super().paintEvent(e)
         # 在右侧下拉区自绘旋转箭头（∨ 形折线，展开后旋转 180° 变为 ∧）
         p = QPainter(self)
@@ -884,7 +933,7 @@ class GlassButton(QPushButton):
         key = self._g_hover_key if self._g_hover else self._g_tint_key
         tint = PALETTE.get(key) or PALETTE["elevated"]     # 防自定义主题缺键
         glass.paint_surface(self, p, radius=self.radius(), tint=tint,
-                            reflect=self._g_reflect, hairline=False)
+                            reflect=self._g_reflect)
         p.end()
         super().paintEvent(e)           # 图标/文字（QSS 底已透明）
 

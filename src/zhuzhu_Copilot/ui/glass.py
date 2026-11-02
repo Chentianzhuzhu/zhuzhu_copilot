@@ -319,78 +319,52 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
 
 
 def _rim(p: QPainter, rect: QRect, radius: float) -> None:
-    """边缘高光：只在**左上 / 右下**两个角做高光覆盖（不再整圈描边）。
+    """边缘高光：**只在边框上描一条线**，左上 / 右下两个对角最亮。
 
-    做法：同一条圆角路径描两次，各自裁进对角线一侧 ——
-    左上半区用「角上亮、向中心衰减」的渐变，右下半区同样处理。
-    这样光只落在两个对角，中间四条边没有线，观感是"玻璃被斜上方光源打亮"，
-    而不是给每个控件套一圈边框。缝（中段的主题发丝线）另由 ``_hairline`` 补，
-    避免无壁纸时半透明卡片与背景糊在一起。
+    用户明确要求「边缘描边高光，不要渐变填充到 UI 内部」，因此这里只画 stroke：
+    - 圆角路径描两次，各自裁进对角线一侧（左上 / 右下），保证光只落在两个对角；
+    - 每段的渐变从"角上纯白"衰减到"主题发丝线"，两段在中段接上 → 整圈仍是**一条**
+      连续的细线，而不是两条边框；
+    - 不往内部填任何径向光斑（旧版那块会糊进内容，已移除）。
     """
     hi = QColor(255, 255, 255)
-    hi.setAlphaF(min(0.85, rim_alpha() + 0.18))
+    hi.setAlphaF(min(0.9, rim_alpha() + 0.22))
+    line = QColor(PALETTE["border"])
+    line.setAlphaF(0.55)
     inner = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
     path = QPainterPath()
     path.addRoundedRect(inner, radius, radius)
 
-    # 左上角高光：裁到左上三角，白 → 透明
-    p.save()
-    p.setClipRect(QRectF(rect.x(), rect.y(), rect.width(), rect.height() * 0.62))
-    grad_tl = QLinearGradient(inner.topLeft(), inner.bottomRight())
-    grad_tl.setColorAt(0.0, hi)
-    grad_tl.setColorAt(0.5, QColor(255, 255, 255, 0))
-    p.setPen(QPen(QBrush(grad_tl), 1.4))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawPath(path)
-    p.restore()
-
-    # 右下角高光：裁到右下三角，白 → 透明（同一条渐变反向取用）
-    p.save()
-    p.setClipRect(QRectF(rect.x(), rect.y() + rect.height() * 0.38,
-                         rect.width(), rect.height() * 0.62))
-    grad_br = QLinearGradient(inner.bottomRight(), inner.topLeft())
-    grad_br.setColorAt(0.0, hi)
-    grad_br.setColorAt(0.5, QColor(255, 255, 255, 0))
-    p.setPen(QPen(QBrush(grad_br), 1.4))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawPath(path)
-    p.restore()
-
-    # 角部柔光：两块很淡的径向光斑压在角内侧，"覆盖"感更接近实拍玻璃
-    for cx, cy in ((rect.x(), rect.y()),
-                   (rect.x() + rect.width(), rect.y() + rect.height())):
-        rad = min(rect.width(), rect.height()) * 0.34
-        if rad < 6:
-            continue
-        glow = QRadialGradient(QPointF(cx, cy), rad)
-        c = QColor(255, 255, 255)
-        c.setAlphaF(min(0.12, rim_alpha() * 0.40))
-        glow.setColorAt(0.0, c)
-        glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+    def _stroke(grad: QLinearGradient, clip: QRectF):
         p.save()
-        p.setClipPath(path)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(glow))
-        p.drawRect(rect)
+        p.setClipRect(clip)
+        pen = QPen(QBrush(grad), 1.2)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
         p.restore()
 
+    # 左上角：角上最亮 → 中段回落到发丝线
+    g_tl = QLinearGradient(inner.topLeft(), inner.bottomRight())
+    g_tl.setColorAt(0.0, hi)
+    g_tl.setColorAt(0.45, line)
+    g_tl.setColorAt(1.0, line)
+    _stroke(g_tl, QRectF(rect.x(), rect.y(), rect.width() * 0.62, rect.height()))
 
-def _hairline(p: QPainter, rect: QRect, radius: float) -> None:
-    """中段发丝线：只在自定义背景/玻璃态下补一层极淡的边界，防止半透明卡片糊进背景。
-
-    与角部高光同色系（主题 border），透明度压到很低，不是"第二圈边框"。
-    """
-    line = QColor(PALETTE["border"])
-    line.setAlphaF(0.55)
-    p.setPen(QPen(line, 1.0))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+    # 右下角：同法，从右下角起亮
+    g_br = QLinearGradient(inner.bottomRight(), inner.topLeft())
+    g_br.setColorAt(0.0, hi)
+    g_br.setColorAt(0.45, line)
+    g_br.setColorAt(1.0, line)
+    _stroke(g_br, QRectF(rect.x() + rect.width() * 0.38, rect.y(),
+                         rect.width() * 0.62, rect.height()))
 
 
 def paint_surface(widget, p: QPainter, rect: QRect | None = None,
                   radius: float | None = None, tint: str | None = None,
                   rim: bool = True, min_alpha: float = 0.0,
-                  reflect: bool = False, hairline: bool = True) -> None:
+                  reflect: bool = False) -> None:
     """把一个表面画成玻璃：整块贴图（磨砂 + 半透明填充）+ 边缘高光。
 
     ``tint`` 是该表面的主题底色（卡片 card / 浮层 elevated），强度决定其不透明度；
@@ -421,8 +395,6 @@ def paint_surface(widget, p: QPainter, rect: QRect | None = None,
 
     if rim:
         _rim(p, rect, radius)
-        if hairline:
-            _hairline(p, rect, radius)
 
 
 def repaint_all() -> None:

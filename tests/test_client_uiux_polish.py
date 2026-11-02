@@ -141,17 +141,18 @@ def test_pill_radius_never_exceeds_half_height():
 
 def test_input_lives_inside_one_composer_card(panel):
     """输入框与工具行必须收进同一张圆角卡片，而不是横向摊成一排控件。"""
-    from PyQt6.QtWidgets import QFrame
-    assert isinstance(panel.composer, QFrame)
+    from zhuzhu_Copilot.ui.tokens import RADIUS_LG
+    from zhuzhu_Copilot.ui.widgets import GlassPanel
+    assert isinstance(panel.composer, GlassPanel), "输入卡应为玻璃面板"
     assert panel.composer.objectName() == "composerCard"
     assert panel.input.parent() is panel.composer, "输入框必须坐落在输入卡内"
     assert panel.attach_btn.parent() is panel.composer, "工具按钮必须坐落在输入卡内"
     assert panel.action_btn.parent() is panel.composer, "发送按钮必须坐落在输入卡内"
     # 扁平模式：输入框不再自绘第二层圆角底色（避免卡片里再套一个输入框）
     assert panel.input._flat_bg is True
-    qss = panel.composer.styleSheet()
-    # 统一视觉语言：输入卡保留抬升面板底，但补 1px 描边（与侧栏同一套分层）
-    assert "border-radius: 16px" in qss and "border: 1px solid" in qss
+    # 圆角与底色改由玻璃层自绘：断言令牌与色板来源，而不是 QSS 文本
+    assert panel.composer._g_radius == RADIUS_LG, "输入卡圆角必须取 RADIUS_LG 令牌"
+    assert panel.composer.resolved_tint(), "输入卡必须给出玻璃底色"
 
 
 def test_composer_height_fits_content(panel):

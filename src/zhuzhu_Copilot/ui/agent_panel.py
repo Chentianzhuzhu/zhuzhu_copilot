@@ -831,7 +831,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     _combo_bg = _base_color("FIELD")
     _combo_elev = _base_color("ELEVATED")
     _combo_hover = _base_color("HOVER")
-    _QCOMBO = (f"QComboBox {{ background: {_combo_bg}; color: {TEXT};"
+    _QCOMBO = (f"QComboBox {{ background: transparent; color: {TEXT};"
                f" border: none;"
                f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                f"font-size: {FONT_SMALL}px; }}"
@@ -849,7 +849,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
     # 与 _QCOMBO 的区别仅在本体 background：_QCOMBO 本体始终实色（用于设置对话框等
     # 独立不透明窗口），_HOME_COMBO 本体在壁纸模式下透明（用于主面板上的下拉菜单）。
     _home_surf = _panel_surface("PANEL")
-    _HOME_COMBO = (f"QComboBox {{ background: {_home_surf}; color: {TEXT};"
+    _HOME_COMBO = (f"QComboBox {{ background: transparent; color: {TEXT};"
                    f" border: none;"
                    f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                    f"font-size: {FONT_SMALL}px; }}"
@@ -952,17 +952,13 @@ def _drawer_icon_btn_qss() -> str:
             f"QPushButton:hover {{ background: {fill}; }}")
 
 
-def _composer_qss() -> str:
-    """输入卡皮肤（大厂 AI 客户端同款）：一张圆角卡片承载正文 + 工具行。
+def _composer_tint() -> str:
+    """输入卡玻璃底的主题底色（自定义背景模式下为 transparent，让壁纸透出来）。
 
-    招 1：不描边。浅色下卡片是纯白、主背景是冷灰，靠明度差浮起；
-    深色下卡片比背景亮约一档。自定义背景模式让位给壁纸（透明）。
+    卡片本体已改为玻璃自绘（见 ui/glass.py）：这里只决定"染什么色"，
+    磨砂、透明度、边缘描边高光统一由玻璃层负责。
     """
-    # 与侧栏同一套「描边分层」语言：底仍是抬升的面板色，但补 1px 淡灰描边，
-    # 浅色下卡片轮廓不再只靠明度差（壁纸模式描边自动透明）。
-    return (f"QFrame#composerCard {{ background: {_panel_surface('PANEL')};"
-            f" border: 1px solid {_panel_stroke('BORDER')};"
-            f" border-radius: {RADIUS_LG}px; }}")
+    return _panel_surface("PANEL")
 
 
 def _scrollbar_css(width: int = 8, radius: int = 4, both: bool = True) -> str:
@@ -22021,10 +22017,9 @@ class AgentPanel(QDialog):
         # 输入区：大厂 AI 客户端同款「一体化输入卡」——上方正文输入、下方工具行。
         # 旧布局把输入框与五个控件横向摊成一排，窄窗口下输入框被挤成一条细缝；
         # 收进一张圆角卡片后，输入永远占满整行宽度，工具按钮在第二行自然分组。
-        self.composer = QFrame()
+        # 玻璃输入卡：底由 paintEvent 自绘（磨砂 + 半透明填充 + 边缘描边高光）
+        self.composer = GlassPanel(radius=RADIUS_LG, tint=_composer_tint())
         self.composer.setObjectName("composerCard")
-        self.composer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.composer.setStyleSheet(_composer_qss())
         # 高度锁到内容：输入卡不该吃掉聊天区下方的剩余竖直空间（否则「多行输入」
         # 的弹性 stretch 会把它撑高，在输入文字与工具行之间留下一大片空白）。
         self.composer.setSizePolicy(
@@ -22037,7 +22032,7 @@ class AgentPanel(QDialog):
         tools = QHBoxLayout()
         tools.setSpacing(6)
         self.input = _DropTextEdit()
-        self.input._flat_bg = True        # 底色由输入卡承担（见 _composer_qss）
+        self.input._flat_bg = True        # 底色由输入卡承担（见 _composer_tint）
         self.input._on_height_changed = self._fit_composer   # 多行增高时卡片同步贴合
         _install_focus_glow(self.input)   # 聚焦边缘泛光（替代蓝色实线边框）
         apply_input_caret(self.input)     # 原生光标宽度（自定义背景下同样 2px，见常量注释）
@@ -28554,8 +28549,11 @@ class AgentPanel(QDialog):
         # 语音按钮：皮肤随录音态走（录音中是主色渐变，不能按常态皮肤刷回去）
         _set(getattr(self, "voice_btn", None), self._voice_btn_qss())
         _set(getattr(self, "action_btn", None), _BTN_PRIMARY)
-        # 输入卡（一体化输入区）：壁纸透明态翻转时底要跟着让位给壁纸
-        _set(getattr(self, "composer", None), _composer_qss())
+        # 输入卡（一体化输入区）：玻璃底色随主题/壁纸态刷新
+        _composer = getattr(self, "composer", None)
+        if _composer is not None:
+            _composer._g_tint = _composer_tint()
+            _composer.update()
         _set(getattr(self, "cmd_list", None), self._cmd_list_qss())
         # 聊天滚动区（含主题自适应滚动条）：面板保留时其 QSS 也是旧的
         _set(getattr(self, "msg_area", None),
