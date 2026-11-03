@@ -578,6 +578,14 @@ def _panel_surface(key: str = "BG") -> str:
     return "transparent" if _feedback_boosted() else _base_color(key)
 
 
+def _panel_bg() -> str:
+    """停靠面板/栏容器的底色：玻璃开启时一律 transparent（由玻璃层画磨砂+填充）。
+
+    玻璃关闭时沿用旧策略（壁纸模式透明、否则主题色），保证关掉玻璃后观感回到从前。
+    """
+    return "transparent" if glass.enabled() else _panel_surface("BG")
+
+
 def _panel_stroke(key: str = "BORDER") -> str:
     """面板描边色：壁纸生效时透明（不在自定义背景上留实色描边），否则原始色板实色。"""
     return "transparent" if _feedback_boosted() else _base_color(key)
@@ -12842,7 +12850,7 @@ class TodosPanel(QWidget):
                     " border: none; }")
             else:
                 self.setStyleSheet(
-                    f"QWidget#todosPanel {{ background: {_panel_surface('BG')};"
+                    f"QWidget#todosPanel {{ background: {_panel_bg()};"
                     f" border: {_panel_stroke('BORDER')}; }}")
             rule = getattr(self, "_rule", None)
             if rule is not None:
@@ -16454,13 +16462,19 @@ class _RoundedFloatWindow(QWidget):
         """
         # 壁纸模式下：这些停靠面板统一走玻璃底（磨砂 + 半透明 + 描边高光）。
         # 融入 dock 时采样主面板的磨砂层；悬浮时以自身窗口为基准铺同一张壁纸。
-        if _feedback_boosted() and glass.enabled():
+        if glass.enabled():
             glass.register_host(self)   # 悬浮形态下本窗口自己铺壁纸，需作为玻璃宿主
+            # 透明度下限的判定，看的是「背后到底有什么」：
+            #   自定义背景 → 背后是壁纸（玻璃层里就是同一张），用用户设定值（默认 10%）
+            #   融入 dock  → 背后是主面板渐变，同样不需要下限
+            #   独立悬浮 + 无壁纸 → 背后是桌面/窗口底色，给 0.85 保证文字可读
+            floor_alpha = 0.0 if (_feedback_boosted() or self._dock_is_immersed()) else 0.85
             painter = QPainter(self)
             try:
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                 glass.paint_surface(self, painter, radius=self._WINDOW_RADIUS,
-                                    tint=_base_color("PANEL"))
+                                    tint=_base_color("PANEL"),
+                                    min_alpha=floor_alpha)
             finally:
                 try:
                     painter.end()
@@ -16643,7 +16657,7 @@ class CodePreviewWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 表面色见 _panel_surface：壁纸模式下透明（透出主窗口壁纸），否则取色板实色
         self.setStyleSheet(
-            f"QWidget#codeWin {{ background: {_panel_surface('BG')};"
+            f"QWidget#codeWin {{ background: {_panel_bg()};"
             f" border: 1px solid {_panel_stroke('BORDER')};"
             f" border-radius: {RADIUS_MD}px; }}")
         self.setFixedWidth(self.WIDTH)   # 栏内宽度固定（高度由 dock 栏分配）
@@ -16881,7 +16895,7 @@ class CodePreviewWindow(QWidget):
         """
         try:
             self.setStyleSheet(
-                f"QWidget#codeWin {{ background: {_panel_surface('BG')};"
+                f"QWidget#codeWin {{ background: {_panel_bg()};"
                 f" border: 1px solid {_panel_stroke('BORDER')};"
                 f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
@@ -18125,7 +18139,7 @@ class TodosWindow(_RoundedFloatWindow):
                     "QWidget#todosWin { background: transparent; border: none; }")
             else:
                 self.setStyleSheet(
-                    f"QWidget#todosWin {{ background: {_panel_surface('BG')};"
+                    f"QWidget#todosWin {{ background: {_panel_bg()};"
                     f" border: 1px solid {_panel_stroke('BORDER')};"
                     f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
@@ -18435,7 +18449,7 @@ class GitLogWindow(_RoundedFloatWindow):
         # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
         # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
         self.setStyleSheet(
-            f"QWidget#gitLogWin {{ background: {_panel_surface('BG')};"
+            f"QWidget#gitLogWin {{ background: {_panel_bg()};"
             f" border: 1px solid {_panel_stroke('BORDER')};"
             f" border-radius: {RADIUS_MD}px; }}")
         self._view = "commit"   # commit / branch，默认提交历史（最新在上、最旧在下）
@@ -18557,7 +18571,7 @@ class GitLogWindow(_RoundedFloatWindow):
         """按当前表面色就地刷新本窗口（壁纸透明态变化时由主面板快路径调用）"""
         try:
             self.setStyleSheet(
-                f"QWidget#gitLogWin {{ background: {_panel_surface('BG')};"
+                f"QWidget#gitLogWin {{ background: {_panel_bg()};"
                 f" border: 1px solid {_panel_stroke('BORDER')};"
                 f" border-radius: {RADIUS_MD}px; }}")
         except Exception:
@@ -19234,7 +19248,7 @@ class WorktreeWindow(_RoundedFloatWindow):
         # 表面色见 _panel_surface：壁纸模式下透明（非壁纸取原始色板实色）。
         # 悬浮时由 _RoundedFloatWindow.paintEvent 自绘壁纸；融入 dock 时透出主窗口壁纸。
         self.setStyleSheet(
-            f"QWidget#wtWin {{ background: {_panel_surface('BG')};"
+            f"QWidget#wtWin {{ background: {_panel_bg()};"
             f" border: 1px solid {_panel_stroke('BORDER')};"
             f" border-radius: {RADIUS_MD}px; }}")
         self.resize(self.WIDTH, 360)   # 宽高均可调（四边/四角拖拽，独立持久化）
@@ -19356,7 +19370,7 @@ class WorktreeWindow(_RoundedFloatWindow):
                     "QWidget#wtWin { background: transparent; border: none; }")
             else:
                 self.setStyleSheet(
-                    f"QWidget#wtWin {{ background: {_panel_surface('BG')};"
+                    f"QWidget#wtWin {{ background: {_panel_bg()};"
                     f" border: 1px solid {_panel_stroke('BORDER')};"
                     f" border-radius: {RADIUS_MD}px; }}")
             rule = getattr(self, "_rule", None)
@@ -25512,7 +25526,7 @@ class AgentPanel(QDialog):
         col.setObjectName(f"dockCol{side}")
         col.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         col.setStyleSheet(
-            f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')}; border: none; }}")
+            f"QWidget#dockCol{side} {{ background: {_panel_bg()}; border: none; }}")
         c_lay = QVBoxLayout(col)
         c_lay.setContentsMargins(0, 0, 0, 0)
         # 左栏：文件树 + 待办清单**共用一张圆角卡片**（间距 0，卡片底由栏容器绘制）；
@@ -25576,7 +25590,7 @@ class AgentPanel(QDialog):
             # 展开：整栏就是一张圆角卡片（无描边），文件树/待办清单两段用底色对比分区
             return (f"QWidget#dockColleft {{ background: {_panel_surface('CARD')};"
                     f" border: none; border-radius: {RADIUS_LG}px; }}")
-        return (f"QWidget#dockCol{side} {{ background: {_panel_surface('BG')};"
+        return (f"QWidget#dockCol{side} {{ background: {_panel_bg()};"
                 f" border: none; }}")
 
     def _apply_dock_surface(self):
