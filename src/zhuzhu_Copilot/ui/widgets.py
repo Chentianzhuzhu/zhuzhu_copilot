@@ -895,6 +895,69 @@ class GlassPanel(QWidget):
         super().mousePressEvent(e)
 
 
+class GlassPill(QWidget):
+    """玻璃胶囊基类：自绘磨砂底 + 描边高光，圆角取半高（永远是胶囊）。
+
+    子控件（图标 / 文案 / 落尖角）由子类摆放；底色来源可注入（`tint_fn`），因为
+    面板侧的 `_base_color` 才是当前皮肤的真实底色。悬停/按下只在**内部**叠色，
+    边缘高光不动（与 GlassIconButton 同一套规则）。
+    """
+
+    def __init__(self, parent=None, *, tint_fn=None):
+        super().__init__(parent)
+        self._g_tint_fn = tint_fn
+        self._g_hover = False
+        # QWidget 没有 isDown()（那是 QAbstractButton 的）：按下态自己记，
+        # 直接在 paintEvent 里调 isDown() 会抛 AttributeError → 进程 abort
+        self._g_pressed = False
+        glass.subscribe(self.update)
+
+    # ---------- 底色 ----------
+    def glass_tint(self) -> str:
+        if self._g_tint_fn is not None:
+            try:
+                return self._g_tint_fn()
+            except Exception:
+                pass
+        return PALETTE["card"]
+
+    def paint_glass(self, p: QPainter) -> None:
+        """画玻璃底；子类要叠状态色时在自己 paintEvent 里接着调用 fill_inner。"""
+        r = self.height() / 2.0
+        glass.paint_surface(self, p, radius=r, tint=self.glass_tint())
+        if self._g_hover or self._g_pressed:
+            glass.fill_inner(self, p, radius=r, color=PALETTE["hover"],
+                             alpha=0.36 if self._g_pressed else 0.26)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self.paint_glass(p)
+        p.end()
+
+    # ---------- 交互 ----------
+    def enterEvent(self, e):
+        self._g_hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._g_hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        self._g_pressed = True
+        glass.invalidate(self)
+        self.update()
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._g_pressed = False
+        self.update()
+        super().mouseReleaseEvent(e)
+
+
 class GlassIconButton(QPushButton):
     """圆形玻璃图标按钮（输入行 / 侧栏入口 / 工具条共用）。
 

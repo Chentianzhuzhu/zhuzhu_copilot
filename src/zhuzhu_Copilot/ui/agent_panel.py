@@ -174,8 +174,8 @@ from zhuzhu_Copilot.ui import window_fx
 from zhuzhu_Copilot.ui import glass
 from zhuzhu_Copilot.ui import motion
 from zhuzhu_Copilot.ui.widgets import (
-    ArrowComboBox, FadeMenu, GlassButton, GlassIconButton, GlassPanel, SwitchButton,
-    add_brand_footer,
+    ArrowComboBox, FadeMenu, GlassButton, GlassIconButton, GlassPanel, GlassPill,
+    SwitchButton, add_brand_footer,
 )
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
@@ -20148,7 +20148,7 @@ _PERM_SUBTITLES = {
 }
 
 
-class _PermPill(QWidget):
+class _PermPill(GlassPill):
     """Agent 权限胶囊：图标 + 当前权限文案 + 下尖角，点击弹出权限菜单。
 
     为什么不用 QPushButton：图标、文案、尾部落尖角需要三段独立着色（全部访问时
@@ -20158,9 +20158,9 @@ class _PermPill(QWidget):
     clicked = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        # 底色走玻璃层（胶囊圆角取半高）；主题底色由面板的 _base_color 提供
+        super().__init__(parent, tint_fn=lambda: _base_color("PANEL"))
         self.setObjectName("permPill")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(_PERM_PILL_H)
         lay = QHBoxLayout(self)
@@ -20186,6 +20186,16 @@ class _PermPill(QWidget):
         text_w = max(fm.horizontalAdvance(_ui(t)) for t in _PERM_LABELS.values())
         self.setFixedWidth(text_w + 16 + 5 * 2 + 10 + 9 + 7 + 8)
 
+    def paintEvent(self, _e):
+        """玻璃底 + 悬停内填充；「全部访问」时在内侧叠一层红（不动描边）。"""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self.paint_glass(p)
+        if self._danger:
+            glass.fill_inner(self, p, radius=self.height() / 2.0, color=ERR,
+                             alpha=0.16)
+        p.end()
+
     def set_state(self, mode: str, tooltip: str):
         """按当前权限刷新图标/文案/配色（yolo 整枚转红警示）"""
         self._danger = mode == "yolo"
@@ -20205,11 +20215,8 @@ class _PermPill(QWidget):
             c = QColor(ERR)
             fill = f"rgba({c.red()},{c.green()},{c.blue()},0.14)"
             hover = f"rgba({c.red()},{c.green()},{c.blue()},0.26)"
-        self.setStyleSheet(
-            f"QWidget#permPill {{ background: {fill}; border: none;"
-            f" border-radius: {_PERM_PILL_H // 2}px; }}"
-            f"QWidget#permPill:hover {{ background: {hover}; }}"
-            "QLabel { background: transparent; border: none; }")
+        # 底色由玻璃层绘制（悬停/按下只叠内部），QSS 只留子标签的透明
+        self.setStyleSheet("QLabel { background: transparent; border: none; }")
         self.text_lbl.setStyleSheet(
             f"color: {ERR if self._danger else TEXT_DIM};"
             f" font-size: {FONT_CAPTION}px; font-weight: {_W_BUTTON};"
