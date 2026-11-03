@@ -1,23 +1,26 @@
-"""自定义 Agent / 子 Agent 的编辑表单（Agent 管理页共用）。
+"""自定义 Agent / 子 Agent / 群聊成员的编辑表单（管理页与群聊窗口共用）。
 
-两个入口：
-- :func:`edit_custom_agent` —— 名称 / 性格 / 系统级提示词 / 绑定对话流；
-- :func:`edit_sub_agent`    —— 名称 / 描述 / 任务指令 / 允许工具 / 性格 / 系统级提示词。
+三个入口：
+- :func:`edit_custom_agent` —— 名称 / 头像 / 性格 / 系统级提示词 / 绑定对话流；
+- :func:`edit_sub_agent`    —— 名称 / 描述 / 任务指令 / 允许工具 / 性格 / 系统级提示词；
+- :func:`edit_group_participant` —— 群聊成员：名称 / 头像 / 性格 / 提示词 / 模型。
 
-表单只有三种控件（单行 / 多行 / 下拉），统一由 ``_FormDialog`` 渲染：新增字段只
-加一条 ``Field`` 声明，不需要再写对话框类。校验只做「必填」与「名称可用」这类
-表单级判断，真正的合法性（保留名、工作流是否存在）仍由 core 层裁决 —— 单一事实
-来源，避免 UI 与存储层的规则漂移。
+表单只有四种控件（单行 / 多行 / 下拉 / 头像），统一由 ``_FormDialog`` 渲染：新增
+字段只加一条 ``Field`` 声明，不需要再写对话框类。校验只做「必填」与「名称可用」
+这类表单级判断，真正的合法性（保留名、工作流是否存在）仍由 core 层裁决 —— 单一
+事实来源，避免 UI 与存储层的规则漂移。
 """
 
 import re
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
-    QPushButton, QMessageBox,
+    QPushButton, QMessageBox, QFileDialog, QWidget,
 )
 
+from zhuzhu_Copilot.core import agent_avatar
 from zhuzhu_Copilot.core.i18n import ui as _ui
+from zhuzhu_Copilot.ui import avatars as _avatars
 from zhuzhu_Copilot.ui.styles import PALETTE
 from zhuzhu_Copilot.ui.tokens import (
     FONT_BODY, FONT_SMALL, RADIUS_SM, SPACING_MD, SPACING_SM,
@@ -31,11 +34,12 @@ _SUB_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
 
 
 class Field:
-    """一个表单字段的声明（kind: text / multiline / combo）。"""
+    """一个表单字段的声明（kind: text / multiline / combo / avatar）。"""
 
     def __init__(self, key: str, label: str, value: str = "", kind: str = "text",
                  placeholder: str = "", height: int = 96, options: list = None,
-                 required: bool = False, editable: bool = True):
+                 required: bool = False, editable: bool = True,
+                 store_kind: str = "agent"):
         self.key = key
         self.label = label
         self.value = value or ""
@@ -45,19 +49,85 @@ class Field:
         self.options = options or []      # combo: [(展示文本, 值)]
         self.required = required
         self.editable = editable
+        self.store_kind = store_kind      # avatar: agent / group
+
+
+class _AvatarPicker(QWidget):
+    """头像选择器：圆形预览 + 选择/移除。
+
+    选图即刻落盘（uuid 命名，与名称无关），返回引用；旧图不在这里删 —— 编辑中途
+    取消时若删了旧图，已保存的 Agent 会变成「头像丢失」。孤儿文件统一由
+    ``agent_avatar.gc()`` 在保存成功后按全量引用对账回收。
+    """
+
+    SIZE = 44
+
+    def __init__(self, name_hint: str, ref: str, store_kind: str = "agent",
+                 parent=None):
+        super().__init__(parent)
+        self._name = name_hint or ""
+        self._ref = str(ref or "")
+        self._kind = store_kind
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(SPACING_SM)
+        self.preview = QLabel()
+        self.preview.setFixedSize(self.SIZE, self.SIZE)
+        row.addWidget(self.preview)
+        self.pick_btn = QPushButton(_ui("选择图片"))
+        self.pick_btn.setAutoDefault(False)
+        self.pick_btn.setObjectName("formGhostBtn")
+        self.pick_btn.clicked.connect(self._pick)
+        self.clear_btn = QPushButton(_ui("移除"))
+        self.clear_btn.setAutoDefault(False)
+        self.clear_btn.setObjectName("formGhostBtn")
+        self.clear_btn.clicked.connect(self._clear)
+        row.addWidget(self.pick_btn)
+        row.addWidget(self.clear_btn)
+        self.hint = QLabel("")
+        self.hint.setObjectName("formHint")
+        row.addWidget(self.hint, 1)
+        self._refresh()
+
+    def ref(self) -> str:
+        return self._ref
+
+    def _refresh(self):
+        self.preview.setPixmap(_avatars.avatar_pixmap(
+            self._ref, self._name, self.SIZE, kind=self._kind))
+        self.hint.setText(_ui("已设置头像") if self._ref else _ui("未设置（显示名字首字）"))
+
+    def _pick(self):
+        path, _f = QFileDialog.getOpenFileName(
+            self, _ui("选择头像"), "",
+            _ui("图片 (*.png *.jpg *.jpeg *.webp *.bmp)"))
+        if not path:
+            return
+        ok, ref, msg = agent_avatar.store(path, self._kind)
+        if not ok:
+            QMessageBox.warning(self, _ui("无法使用该图片"), msg)
+            return
+        self._ref = ref
+        self._refresh()
+
+    def _clear(self):
+        self._ref = ""
+        self._refresh()
 
 
 class _FormDialog(QDialog):
     """极简表单对话框：标签在上、控件在下（多行字段在窄窗口里最易读）。"""
 
     def __init__(self, parent, title: str, fields: list,
-                 hint: str = "", width: int = 620, height: int = 620):
+                 hint: str = "", width: int = 620, height: int = 620,
+                 name_hint: str = ""):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
         self.resize(width, height)
         self._fields = fields
         self._widgets = {}
+        self._name_hint = name_hint
 
         self.setStyleSheet(
             f"QDialog {{ background: {PALETTE['card']}; }}"
@@ -67,7 +137,11 @@ class _FormDialog(QDialog):
             f" border: none; border-radius: {RADIUS_SM}px; padding: 8px;"
             f" font-size: {FONT_BODY}px; selection-background-color: {PALETTE['primary']}; }}"
             f"QPushButton {{ border-radius: {RADIUS_SM}px; padding: 7px 18px;"
-            f" font-size: {FONT_BODY}px; font-weight: 600; }}")
+            f" font-size: {FONT_BODY}px; font-weight: 600; }}"
+            f"QPushButton#formGhostBtn {{ background: transparent; color: {PALETTE['text']};"
+            f" border: 1px solid {PALETTE['border']}; padding: 5px 12px; }}"
+            f"QLabel#formHint {{ color: {PALETTE['text_secondary']};"
+            f" font-size: {FONT_SMALL}px; }}")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(SPACING_MD + 6, SPACING_MD + 6,
@@ -115,6 +189,8 @@ class _FormDialog(QDialog):
         add_brand_footer(self)
 
     def _build_widget(self, f: Field):
+        if f.kind == "avatar":
+            return _AvatarPicker(self._name_hint, f.value, f.store_kind)
         if f.kind == "multiline":
             w = QPlainTextEdit()
             w.setPlainText(f.value)
@@ -148,7 +224,9 @@ class _FormDialog(QDialog):
         out = {}
         for f in self._fields:
             w = self._widgets[f.key]
-            if f.kind == "multiline":
+            if f.kind == "avatar":
+                out[f.key] = w.ref()
+            elif f.kind == "multiline":
                 out[f.key] = w.toPlainText().strip()
             elif f.kind == "combo":
                 out[f.key] = w.currentData()
@@ -178,6 +256,8 @@ def edit_custom_agent(parent, agent: dict = None, workflows: list = None):
         Field("name", _ui("Agent 名称（@名称 调用，仅字母/数字/下划线/短横线）"),
               ag.get("name", ""), placeholder="reviewer",
               required=True, editable=not agent),
+        Field("avatar", _ui("头像"), ag.get("avatar", ""), kind="avatar",
+              store_kind="agent"),
         Field("persona", _ui("性格（人设口吻与立场）"),
               ag.get("persona", ""), kind="multiline", height=110,
               placeholder=_ui("如：你是一位谨慎的审稿人，先找问题再给建议，语气克制。")),
@@ -193,7 +273,8 @@ def edit_custom_agent(parent, agent: dict = None, workflows: list = None):
     dlg = _FormDialog(parent, _ui("自定义 Agent"), fields,
                       hint=_ui("性格与系统级提示词至少填一项；两栏会在切换时合成该 Agent "
                                "的完整人格。设置页的「全局规则」始终追加，不受影响。"),
-                      height=700 if workflows else 600)
+                      height=760 if workflows else 660,
+                      name_hint=ag.get("name", ""))
     if dlg.exec() != QDialog.DialogCode.Accepted:
         return None
     vals = dlg.values()
@@ -259,6 +340,8 @@ def edit_group_participant(parent, participant: dict = None, model_options: list
         Field("name", _ui("成员名称（群聊内称呼，可中文）"),
               p.get("name", ""), placeholder=_ui("如：架构师"),
               required=True, editable=not participant),
+        Field("avatar", _ui("头像"), p.get("avatar", ""), kind="avatar",
+              store_kind="group"),
         Field("persona", _ui("性格（人设口吻与立场）"),
               p.get("persona", ""), kind="multiline", height=110,
               placeholder=_ui("如：务实、挑剔，优先考虑可维护性与失败场景。")),
@@ -270,9 +353,9 @@ def edit_group_participant(parent, participant: dict = None, model_options: list
               options=model_options or []),
     ]
     dlg = _FormDialog(parent, _ui("群聊成员"), fields,
-                      hint=_ui("每个成员各自独立：性格、规则与模型互不影响；"
+                      hint=_ui("每个成员各自独立：性格、规则、模型与头像互不影响；"
                                "设置页的「全局规则」对所有成员都生效。"),
-                      height=640)
+                      height=700, name_hint=p.get("name", ""))
     if dlg.exec() != QDialog.DialogCode.Accepted:
         return None
     vals = dlg.values()

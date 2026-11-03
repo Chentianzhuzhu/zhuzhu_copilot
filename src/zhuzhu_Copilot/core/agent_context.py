@@ -296,6 +296,18 @@ def _fmt_entry(e: dict) -> str:
     return f"- [{ts}] {e.get('source')}（{e.get('kind')}）：{e.get('text')}"
 
 
+def render_items(items: list, header: str = "") -> str:
+    """按空间统一格式渲染一批条目（可选标题行）。
+
+    供「只注入增量」的调用方复用：群聊里每位成员只取自己上次发言之后新增的条目，
+    既避免整段空间在各自上下文里反复重发（token 会随轮数平方增长），又保证格式与
+    :func:`render` 完全一致。"""
+    lines = [_fmt_entry(e) for e in (items or [])]
+    if header:
+        lines.insert(0, header)
+    return "\n".join(lines)
+
+
 def render(space_id: str, exclude: str = "", include_seed: bool = True,
            max_chars: int = None, limit: int = 0,
            viewer: str = "") -> str:

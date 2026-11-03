@@ -149,6 +149,7 @@ from zhuzhu_Copilot.core import (
 from zhuzhu_Copilot.core.agent_mcp import McpManager
 from zhuzhu_Copilot.ui import agent_chat_bubbles as chat_bubbles
 from zhuzhu_Copilot.ui import agent_edit_dialogs
+from zhuzhu_Copilot.ui import avatars as _avatars
 from zhuzhu_Copilot.ui import brand_icons
 from zhuzhu_Copilot.ui import tool_icons
 from zhuzhu_Copilot.ui.tokens import (
@@ -2313,6 +2314,15 @@ def _render_text(raw: str) -> str:
     if raw.count("```") % 2 == 1:
         raw = raw + "\n```"
     return _md_to_html(raw)
+
+
+def render_markdown(raw: str) -> str:
+    """公开的 Markdown 渲染入口：群聊等独立窗口复用同一套解析与主题配色。
+
+    颜色取自本模块的模块级主题常量（随主题切换即时生效），故调用方**每次渲染都
+    调用本函数**，不要缓存 HTML 结果 —— 缓存会让切换主题后旧消息仍是旧配色。
+    """
+    return _render_text(raw)
 
 
 def _split_md_blocks(raw: str) -> list:
@@ -4588,7 +4598,13 @@ class _Card(QFrame):
         letter = (str(icon_text or self._title_text or "?")[:1] or "?").upper()
         self._icon.setText(letter)
         if icon is not None:
-            pm = QPixmap(str(icon))
+            # 兼容三种入参：文件路径（历史用法）/ QIcon（头像）/ QPixmap
+            if isinstance(icon, QPixmap):
+                pm = icon
+            elif isinstance(icon, QIcon):
+                pm = icon.pixmap(self._ICON, self._ICON)
+            else:
+                pm = QPixmap(str(icon))
             if not pm.isNull():
                 self._icon.setText("")
                 self._icon.setPixmap(pm.scaled(
@@ -7217,6 +7233,7 @@ class _AgentSettingsDialog(QDialog):
                 ag.get("name", ""), desc,
                 meta=_uif("绑定对话流：{a0}",
                           a0=bound or _ui("沿用当前对话流")),
+                icon=_avatars.avatar_icon(ag.get("avatar"), ag.get("name", ""), 28),
                 icon_text=ag.get("name", ""))
             card.setToolTip(desc)
             card.setData(Qt.ItemDataRole.UserRole, ag.get("name", ""))
@@ -7232,6 +7249,14 @@ class _AgentSettingsDialog(QDialog):
         if p is not None and hasattr(p, "_invalidate_cmd_cache"):
             p._invalidate_cmd_cache()
 
+    def _gc_agent_avatars(self):
+        """保存/删除后对账回收未引用的头像文件（换图、取消编辑留下的孤儿）。"""
+        try:
+            from zhuzhu_Copilot.core import agent_avatar
+            agent_avatar.gc("agent", [a.get("avatar") for a in agent_agents.list_agents()])
+        except Exception:
+            pass
+
     def _on_agent_add_custom(self, *_):
         """新建自定义 Agent（@名称 切换；性格 + 系统级提示词）"""
         vals = agent_edit_dialogs.edit_custom_agent(
@@ -7240,7 +7265,8 @@ class _AgentSettingsDialog(QDialog):
             return
         ok, msg = agent_agents.save_agent(
             vals.get("name", ""), vals.get("system_prompt", ""),
-            vals.get("bound_workflow", ""), persona=vals.get("persona", ""))
+            vals.get("bound_workflow", ""), persona=vals.get("persona", ""),
+            avatar=vals.get("avatar", ""))
         if ok:
             QMessageBox.information(self, _ui("已保存"), _uif(
                 "{a0}\n\n在输入框输入 @{a1} 即可切换该人格。", a0=msg, a1=vals.get("name", "")))
@@ -7248,6 +7274,7 @@ class _AgentSettingsDialog(QDialog):
             QMessageBox.warning(self, _ui("保存失败"), msg)
         self._refresh_agent_customs()
         self._notify_panel_agents_changed()
+        self._gc_agent_avatars()
 
     def _on_agent_edit_custom(self, *_):
         """编辑选中的自定义 Agent"""
@@ -7268,13 +7295,15 @@ class _AgentSettingsDialog(QDialog):
             return
         ok, msg = agent_agents.save_agent(
             name, vals.get("system_prompt", ""),
-            vals.get("bound_workflow", ""), persona=vals.get("persona", ""))
+            vals.get("bound_workflow", ""), persona=vals.get("persona", ""),
+            avatar=vals.get("avatar", ""))
         if ok:
             QMessageBox.information(self, _ui("已保存"), msg)
         else:
             QMessageBox.warning(self, _ui("保存失败"), msg)
         self._refresh_agent_customs()
         self._notify_panel_agents_changed()
+        self._gc_agent_avatars()
 
     def _on_agent_del_custom(self, *_):
         """删除选中的自定义 Agent"""
@@ -7296,6 +7325,7 @@ class _AgentSettingsDialog(QDialog):
             QMessageBox.warning(self, _ui("删除失败"), msg)
         self._refresh_agent_customs()
         self._notify_panel_agents_changed()
+        self._gc_agent_avatars()
 
     def _refresh_agent_subs(self):
         if not hasattr(self, "agent_sub_list"):
@@ -24244,6 +24274,15 @@ class AgentPanel(QDialog):
             return False   # 引擎已积累对话历史（首条为 system prompt）
         return True
 
+    def _sync_group_chat_theme(self):
+        """主题切换后同步群聊窗口（独立顶层窗口，不参与面板重建）。"""
+        dlg = getattr(self, "_group_chat_dlg", None)
+        if dlg is not None:
+            try:
+                dlg.apply_theme()
+            except Exception:
+                pass
+
     def _open_group_chat(self):
         """打开 AI 群聊窗口（独立窗口，单例：再次点击只把已有窗口前置）。
 
@@ -32914,6 +32953,9 @@ class AgentPanel(QDialog):
         """
         from PyQt6.QtWidgets import QApplication
         global _APP_QSS_DEFER, _APPLIED_PALETTE_REF
+        # 群聊窗口是独立顶层窗口，不随面板重建：色板落地后单独通知它换肤。
+        # 用 singleShot(0) 排到本轮事件之后 —— 此刻新色板还没应用到模块常量。
+        QTimer.singleShot(0, self._sync_group_chat_theme)
         # 0) 主题色板是否真正变化 —— **必须在销毁任何控件之前判定**。
         #
         # 这里判定有两层不可省的讲究：

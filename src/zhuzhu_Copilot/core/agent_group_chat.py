@@ -2,17 +2,21 @@
 
 设计要点（与单 Agent 会话完全隔离，不改动主面板的会话状态机）：
 
-- **成员独立**：每个成员各自持有 名称 / 性格 / 系统级提示词 / 模型（服务商 + 模型名）。
-  成员配置是本模块自己的数据（``group_chats/<id>.json``），与设置页的主 Agent 配置
-  互不影响；设置页的「全局规则」仍由引擎统一追加，对每个成员都生效。
-- **发言权**：首轮随机挑一位（这就是「系统随机发一条可以开始聊天的命令」）；之后
-  发言人可在回复首行写 ``@成员名`` 指定下一位，未指定则随机（排除自己，避免连说）。
-- **工具能力**：每个成员用 ``AgentEngine`` 跑一轮（高效模式工具集：文件 / 命令 /
-  检索 / 联网），因此群聊不仅能聊，也能真的读文件、查资料、协作干活。
-- **上下文**：每轮把「最近群聊记录」作为本轮 user 消息注入，引擎自身的 ``_messages``
-  每轮重置 —— 共享的是群聊记录，而不是各自的思维链，token 随轮数线性增长而非平方。
-- **终止**：用户随时可停（``stop()`` 置停止事件，当前轮结束后线程退出）；另有轮数
-  上限兜底，避免多个 Agent 互相客套把额度烧光。
+- **成员独立**：每个成员各自持有 名称 / 性格 / 系统级提示词 / 模型 / 头像。
+  成员配置是本模块自己的数据（``group_chats/<id>.json``）；设置页的「全局规则」
+  仍由引擎统一追加，对每个成员都生效。
+- **发言权**：首轮随机挑一位（即「系统随机发一条可以开始聊天的命令」）；之后
+  发言人可在回复首行写 ``@成员名`` 指定下一位，未指定则随机（排除自己）。
+- **共同上下文**：复用 ``agent_context`` 的共享空间（不设条目数 / 长度 / 渲染上限）。
+  每个成员的发言写入空间；每位成员只读取「自己上次发言之后新增」的条目 ——
+  增量注入让 token 随轮数线性增长，而不是把整段历史反复重发。
+- **各自的上下文窗口**：每位成员持有**独立且持久**的 AgentEngine（含自己的发言、
+  工具结果与压缩状态），窗口按其模型单独解析（``agent_llm.resolve_context``）。
+  成员之间互不干扰：A 的上下文被压缩不会影响 B。
+- **工具能力**：每个成员用高效模式工具集（文件 / 命令 / 检索 / 联网）跑一轮，
+  群聊因此不仅能聊，也能真的读文件、查资料、协作干活。
+- **暂停 / 结束**：暂停在当前一轮说完后生效（不截断半句）；结束立即中断。
+- **终止**：轮数上限兜底，避免多个 Agent 互相客套把额度烧光。
 
 存储：``~/.zhuzhu_Copilot/group_chats/<id>.json``（配置 + 聊天记录一并落盘）。
 """
@@ -24,15 +28,16 @@ import threading
 import time
 
 from zhuzhu_Copilot import app_identity
-from zhuzhu_Copilot.core import agent_engine, agent_llm, agent_prompt
+from zhuzhu_Copilot.core import (
+    agent_agents, agent_avatar, agent_context, agent_engine, agent_llm, agent_prompt,
+)
 
-#: 群聊记录注入本轮上下文的预算：超出后只保留最近的若干条（按字符截断）
-TRANSCRIPT_BUDGET = 7000
-_PER_MSG_LIMIT = 900
 #: 连续失败上限：达到后停止群聊，避免同一错误（余额/鉴权）被反复重试
 MAX_CONSEC_FAIL = 3
 #: 默认轮数上限（0 = 不限）；可在窗口里调整
 DEFAULT_MAX_ROUNDS = 30
+#: 暂停轮询间隔（秒）：暂停只是「不再开新一轮」，无需高精度
+_PAUSE_POLL = 0.1
 
 _ID_RE = re.compile(r"^g_[0-9a-zA-Z_-]{6,40}$")
 _HANDOFF_RE = re.compile(r"^\s*@([^\s@，,：:]{1,32})")
@@ -74,6 +79,8 @@ def normalize_participant(p: dict) -> dict:
         "system_prompt": str(p.get("system_prompt") or "").strip(),
         "provider": str(p.get("provider") or "").strip(),
         "model": str(p.get("model") or "").strip(),
+        # 头像引用（core/agent_avatar 的返回值，kind="group"）；空=用首字占位图
+        "avatar": str(p.get("avatar") or "").strip(),
     }
 
 
@@ -130,6 +137,10 @@ def delete_chat(cid: str) -> tuple:
     if not _ID_RE.match(cid or ""):
         return False, "群聊 id 非法"
     try:
+        old = load_chat(cid) or {}
+        for p in old.get("participants") or []:
+            if p.get("avatar"):
+                agent_avatar.remove(p.get("avatar"), "group")
         _path(cid).unlink(missing_ok=True)
         return True, "已删除"
     except OSError as e:
@@ -137,7 +148,7 @@ def delete_chat(cid: str) -> tuple:
 
 
 def resolve_endpoint(cfg: dict, provider: str = "", model: str = "") -> dict:
-    """成员模型 → 实际连接参数（base_url / api_key / protocol / model）。
+    """成员模型 → 实际连接参数（base_url / api_key / protocol / model / provider）。
 
     未指定模型时回落到用户当前的自动选择；服务商优先按名称精确匹配，
     失配时按模型名回退（与主面板路由同一套逻辑，避免同名模型串号）。
@@ -163,16 +174,36 @@ def resolve_endpoint(cfg: dict, provider: str = "", model: str = "") -> dict:
         "api_key": (sel.get("api_key") or agent_llm.DEFAULT_API_KEY),
         "protocol": (sel.get("protocol") or "chat"),
         "model": m,
+        # 供 resolve_context 读取上游声明的窗口/输出上限
+        "provider": sel,
     }
 
 
+def export_member(chat: dict, member_name: str, agent_name: str) -> tuple:
+    """把群聊成员保存为可 @ 调用的自定义 Agent（人格 / 提示词 / 头像一并带走）。
+
+    返回 (ok, 提示)。名称沿用 agent_agents 的 ASCII 规则（@名称 调用），
+    中文成员名需在此指定一个合法英文名。
+    """
+    member = next((p for p in (chat.get("participants") or [])
+                   if p.get("name") == member_name), None)
+    if not member:
+        return False, "成员不存在"
+    ref = ""
+    if member.get("avatar"):
+        ref = agent_avatar.copy_to(member.get("avatar"), "group", "agent")
+    return agent_agents.save_agent(
+        agent_name, member.get("system_prompt", ""), persona=member.get("persona", ""),
+        avatar=ref or "")
+
+
 class GroupChatRunner(threading.Thread):
-    """群聊调度线程：一轮一位发言人，直到用户停止 / 达到轮数上限 / 连续失败。
+    """群聊调度线程：一轮一位发言人，直到用户停止 / 暂停 / 达到轮数上限。
 
     回调都在本线程触发，UI 侧必须自行 marshal 到主线程（信号或 QMetaObject）。
-    - on_status(text)            状态行（"正在准备…"、"小明 正在发言"）
+    - on_status(text)            状态行
     - on_delta(name, text)       流式增量
-    - on_message(dict)           一条完整消息 {"speaker","text","ts"}
+    - on_message(dict)           一条完整消息 {"speaker","text","ts","error"?}
     - on_end(reason)             结束（reason 为可直接展示的中文原因）
     - confirm(name, args) -> bool 工具执行前确认（默认放行）
     - ask_user(args) -> str      Agent 反问用户时的回复（群聊里不应阻塞用户）
@@ -191,9 +222,12 @@ class GroupChatRunner(threading.Thread):
         self.confirm = confirm or (lambda _n, _a: True)
         self.ask_user = ask_user or (lambda _a: "")
         self._stop = threading.Event()
+        self._pause = threading.Event()      # set = 暂停中（下一轮不再开始）
         self._lock = threading.Lock()
         self._messages = list(chat.get("messages") or [])
         self._engines = {}          # 成员名 → (引擎, 端点签名)：模型变更才重建
+        self._seen = {}             # 成员名 → 已消费的「非自身」共享条目数（增量上下文）
+        self._space = ""            # 共同上下文空间 id（每个群聊一份）
         self._last_reply = ""
         self.end_reason = ""
 
@@ -201,14 +235,26 @@ class GroupChatRunner(threading.Thread):
     def stop(self):
         self._stop.set()
 
+    def pause(self):
+        """暂停：当前这一轮会说完，之后不再开新一轮（不截断半句）。"""
+        self._pause.set()
+
+    def resume(self):
+        self._pause.clear()
+
+    @property
+    def paused(self) -> bool:
+        return self._pause.is_set()
+
     def say(self, text: str) -> bool:
-        """用户插话：写入群聊记录，下一轮发言即可看到。"""
+        """用户插话：写入群聊记录与共同上下文，下一轮发言即可看到。"""
         text = (text or "").strip()
         if not text:
             return False
         msg = {"speaker": "用户", "text": text, "ts": time.time(), "user": True}
         with self._lock:
             self._messages.append(msg)
+        self._append_space("用户", text)
         self.on_message(msg)
         return True
 
@@ -219,6 +265,7 @@ class GroupChatRunner(threading.Thread):
             if len(parts) < 2:
                 self._finish("至少需要两个成员才能开始群聊")
                 return
+            self._open_space()
             speaker = random.choice(parts)
             rounds = 0
             max_rounds = int(self.chat.get("max_rounds") or 0)
@@ -227,6 +274,8 @@ class GroupChatRunner(threading.Thread):
                 if max_rounds > 0 and rounds >= max_rounds:
                     self._finish("已达轮数上限（%d 轮）" % max_rounds)
                     return
+                if not self._wait_if_paused():
+                    break
                 ok = self._turn(speaker, first=(rounds == 0))
                 rounds += 1
                 fails = 0 if ok else fails + 1
@@ -244,6 +293,12 @@ class GroupChatRunner(threading.Thread):
         except Exception as e:      # 线程内异常必须转成可读原因，否则窗口无反馈
             self._finish("群聊异常：%s" % e)
 
+    def _wait_if_paused(self) -> bool:
+        """暂停期间阻塞；返回 False 表示等待期间被停止。"""
+        while self._pause.is_set() and not self._stop.is_set():
+            time.sleep(_PAUSE_POLL)
+        return not self._stop.is_set()
+
     def _finish(self, reason: str):
         self.end_reason = reason
         self._stop.set()
@@ -252,6 +307,76 @@ class GroupChatRunner(threading.Thread):
         except Exception:
             pass
 
+    # ---------- 共同上下文 ----------
+    def _open_space(self):
+        """开启本群聊的共同上下文空间，并用已落盘的历史回填。
+
+        回填是「重开旧群聊继续聊」的关键：成员各自的内存上下文是新的，但共同空间
+        能从磁盘记录重建出完整议题脉络，不必让用户重新开场。
+        """
+        cid = str(self.chat.get("id") or "")
+        try:
+            agent_context.set_conversation(cid)
+            self._space = agent_context.open_space(
+                "gc_" + cid, seed=str(self.chat.get("title") or ""),
+                owner="群聊", activate=True)
+            for m in self._messages:
+                text = str(m.get("text") or "").strip()
+                if text:
+                    agent_context.append(
+                        self._space, source=str(m.get("speaker") or "成员"),
+                        text=text, kind="note", source_type="message")
+            self._seen.clear()
+        except Exception:
+            self._space = ""
+
+    def _append_space(self, source: str, text: str):
+        if not self._space:
+            return
+        self._in_chat_scope(
+            lambda: agent_context.append(self._space, source=source, text=text,
+                                         kind="note", source_type="message"))
+
+    def _in_chat_scope(self, fn):
+        """在本群聊自己的对话作用域内执行。
+
+        共同上下文按对话隔离：用户插话发生在**主线程**（面板当前会话的作用域），
+        若直接用 `agent_context` 会写到别的作用域里、空间找不到。这里临时切到本群聊
+        的 id，执行完复原，保证两个线程读写的都是同一份空间。
+        """
+        cid = str(self.chat.get("id") or "")
+        try:
+            prev = agent_context.thread_local_conversation()
+        except Exception:
+            prev = ""
+        try:
+            agent_context.set_conversation(cid)
+            return fn()
+        except Exception:
+            return None
+        finally:
+            try:
+                agent_context.set_conversation(prev or "")
+            except Exception:
+                pass
+
+    def _shared_delta(self, name: str) -> str:
+        """本成员上次发言之后新增的共享条目（排除自己的产出，避免自我重复）。"""
+        if not self._space:
+            return ""
+        try:
+            items = self._in_chat_scope(lambda: [
+                e for e in agent_context.entries(self._space)
+                if str(e.get("source") or "") != name]) or []
+        except Exception:
+            return ""
+        seen = int(self._seen.get(name, 0))
+        delta = items[seen:] if seen < len(items) else []
+        self._seen[name] = len(items)
+        if not delta:
+            return ""
+        return agent_context.render_items(delta)
+
     # ---------- 单轮 ----------
     def _turn(self, p: dict, first: bool) -> bool:
         name = p.get("name") or "成员"
@@ -259,7 +384,6 @@ class GroupChatRunner(threading.Thread):
             return True
         self.on_status("正在准备发言：%s" % name)
         eng = self._engine_for(p)
-        eng._messages = []          # 每轮独立：共享的是群聊记录，不是各自的对话史
         # 停止事件共用：用户点「结束」时，正在执行的这一轮也能立刻中断，
         # 而不是等它把工具跑完（引擎内部全程轮询 _stop）。
         eng._stop = self._stop
@@ -285,13 +409,12 @@ class GroupChatRunner(threading.Thread):
         # 工具执行前确认：群聊由用户事先授权的策略决定（见 UI 的「工具执行前确认」）
         eng.confirm = self.confirm
         eng.ask_user = self.ask_user
-        prompt = self._turn_prompt(p, first=first)
+        prompt = self._turn_prompt(p, first=first, shared=self._shared_delta(name))
         try:
             eng.run(prompt)
         except Exception as e:
             self._last_reply = ""
-            text = "（本轮执行失败：%s）" % e
-            self._emit(name, text)
+            self._emit(name, "本轮执行失败：%s" % e, error=True)
             return False
         text = "".join(buf).strip()
         if self._stop.is_set() and not text:
@@ -302,10 +425,14 @@ class GroupChatRunner(threading.Thread):
         self._last_reply = text
         return True
 
-    def _emit(self, name: str, text: str):
+    def _emit(self, name: str, text: str, error: bool = False):
         msg = {"speaker": name, "text": text, "ts": time.time()}
+        if error:
+            msg["error"] = True
         with self._lock:
             self._messages.append(msg)
+        if not error:
+            self._append_space(name, text)
         try:
             self.on_message(msg)
         except Exception:
@@ -335,6 +462,13 @@ class GroupChatRunner(threading.Thread):
             protocol=ep["protocol"])
         client.auto_fallback = True
         client.silent_fallback = True
+        # 上下文窗口按**该成员自己的模型**解析：不同成员可以是不同窗口、不同压缩节奏，
+        # 互不干扰（引擎按窗口自行压缩，压缩只影响本成员的私有历史）。
+        try:
+            ctx = agent_llm.resolve_context(ep["base_url"], ep["model"],
+                                            provider=ep.get("provider") or {})
+        except Exception:
+            ctx = {}
         eng = agent_engine.AgentEngine(
             client,
             text_only=True,
@@ -346,7 +480,11 @@ class GroupChatRunner(threading.Thread):
             efficient_mode=True,
             allow_subagents=False,
             persona=self._system_persona(p),
-            conversation=str(self.chat.get("id") or ""))
+            conversation=str(self.chat.get("id") or ""),
+            context_window=ctx.get("window"),
+            max_output_tokens=ctx.get("max_output") or None,
+            long_context_1m=bool(ctx.get("long_1m")),
+            window_source=str(ctx.get("source") or ""))
         self._engines[p["name"]] = (eng, sig)
         return eng
 
@@ -365,35 +503,27 @@ class GroupChatRunner(threading.Thread):
             "「某某说：」这类转述。\n"
             "3. 每次发言 1-3 段、不超过 200 字；不复述别人已说过的内容，直接推进讨论。\n"
             "4. 若想让特定成员接着发言，在回复第一行单独写「@成员名」；不写则由系统随机指定。\n"
-            "5. 这是群聊而非任务执行：默认不调用工具，只有确实需要核实事实/读文件时才调用，"
+            "5. 你们共享同一个共同上下文空间：别人的发言会作为「新增上下文」提供给你，"
+            "你的发言也会写入其中，因此不必重复别人的结论。\n"
+            "6. 这是群聊而非任务执行：默认不调用工具，只有确实需要核实事实/读文件时才调用，"
             "且不要向用户请示。\n"
             % (name, "、".join(others) or "（无）"))
         return base + rules
 
-    def _transcript(self) -> str:
-        with self._lock:
-            msgs = list(self._messages)
-        if not msgs:
-            return "（暂无发言）"
-        lines, total = [], 0
-        for m in reversed(msgs):
-            text = str(m.get("text") or "").strip()
-            if len(text) > _PER_MSG_LIMIT:
-                text = text[:_PER_MSG_LIMIT] + "…"
-            line = "[%s] %s" % (m.get("speaker") or "?", text)
-            if total + len(line) > TRANSCRIPT_BUDGET:
-                break
-            lines.append(line)
-            total += len(line)
-        lines.reverse()
-        return "\n".join(lines)
-
-    def _turn_prompt(self, p: dict, first: bool) -> str:
+    def _turn_prompt(self, p: dict, first: bool, shared: str = "") -> str:
         name = p.get("name") or "成员"
         head = ("讨论开始，请你先说第一句。" if first
                 else "现在轮到你（%s）发言。" % name)
+        ctx = (shared or "").strip()
+        if ctx:
+            ctx_block = ("【新增上下文】（其他人自你上次发言以来的内容，按时间顺序）：\n"
+                         + ctx + "\n\n")
+        elif first:
+            ctx_block = ""
+        else:
+            ctx_block = "【新增上下文】（暂无新内容，你可以主动起一个话题或回应上一位）\n\n"
         return (
-            "【群聊记录】\n%s\n\n"
-            "【本轮指令】%s\n要求：直接给出你的发言正文（可以先用一行 @成员名 指定下一位），"
-            "不要输出「好的」「收到」这类应答语，不要重复群聊记录。"
-            % (self._transcript(), head))
+            ctx_block
+            + "【本轮指令】%s\n要求：直接给出你的发言正文（可以先用一行 @成员名 指定下一位），"
+            "不要输出「好的」「收到」这类应答语，不要重复已有发言。"
+            % head)

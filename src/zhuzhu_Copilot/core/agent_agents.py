@@ -73,6 +73,7 @@ def _load(p: Path) -> Optional[dict]:
             return None
         d.setdefault("bound_workflow", "")
         d.setdefault("persona", "")
+        d.setdefault("avatar", "")
         return d
     except Exception:
         return None
@@ -91,11 +92,14 @@ def composed_prompt(agent: dict) -> str:
 
 
 def save_agent(name: str, system_prompt: str,
-               bound_workflow: str = "", persona: str = "") -> tuple:
+               bound_workflow: str = "", persona: str = "",
+               avatar=None) -> tuple:
     """新建/更新自定义 agent。成功返回 (True, 提示)，失败返回 (False, 原因)。
 
     persona: 性格（人设口吻/立场）；system_prompt: 系统级提示词（职责与规则）。
     两栏至少填一个 —— 都留空等于「没有角色」，切过去只会得到一份无身份的空提示词。
+    avatar: 头像引用（core/agent_avatar.store 的返回值）。None=保持原值，
+    空串=清除头像；调用方换图时负责回收旧文件（见 delete_agent 的同一约定）。
     """
     name = _safe_name(name)
     if not name:
@@ -120,6 +124,11 @@ def save_agent(name: str, system_prompt: str,
     }
     existing = get_agent(name)
     ag["created"] = (existing or {}).get("created", time.time())
+    # 头像：None=沿用已存引用（用户只改文字时不能把头像弄丢）
+    ag["avatar"] = str((existing or {}).get("avatar") or "") if avatar is None \
+        else str(avatar or "").strip()
+    if not ag["avatar"]:
+        ag.pop("avatar")
     try:
         agents_root().mkdir(parents=True, exist_ok=True)
         with open(agents_root() / f"{name}.json", "w", encoding="utf-8") as f:
@@ -130,11 +139,15 @@ def save_agent(name: str, system_prompt: str,
 
 
 def delete_agent(name: str) -> tuple:
-    """删除自定义 agent。成功返回 (True, 提示)，失败返回 (False, 原因)。"""
+    """删除自定义 agent（含头像文件）。成功返回 (True, 提示)，失败返回 (False, 原因)。"""
     name = _safe_name(name)
     if not name or name in RESERVED:
         return False, f"agent 名非法或为保留名: {name or '空'}"
     try:
+        old = get_agent(name)
+        if old and old.get("avatar"):
+            from zhuzhu_Copilot.core import agent_avatar
+            agent_avatar.remove(old.get("avatar"), "agent")
         (agents_root() / f"{name}.json").unlink(missing_ok=True)
         return True, f"自定义 Agent「{name}」已删除"
     except OSError as e:
