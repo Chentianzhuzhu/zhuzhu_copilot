@@ -87,11 +87,54 @@ def test_turn_prompt_carries_shared_delta_and_start_command(chats_dir):
     p = c["participants"][0]
     first = r._turn_prompt(p, first=True, shared="")
     assert "讨论开始" in first
+    assert "【讨论主题】" not in first          # 未设主题时不额外加块
     later = r._turn_prompt(p, first=False, shared="- [10:00:00] 乙（note）：先抛一个观点")
     assert "乙（note）：先抛一个观点" in later
     assert "轮到你" in later
     empty = r._turn_prompt(p, first=False, shared="")
     assert "暂无新内容" in empty
+
+
+def test_user_topic_is_injected_into_every_turn(chats_dir):
+    """用户自定义主题：首轮与后续轮都要带上（长对话防跑题）。"""
+    c = _chat()
+    c["topic"] = "给桌面应用定 v2 优先级"
+    r = gc.GroupChatRunner(c, {})
+    p = c["participants"][0]
+    first = r._turn_prompt(p, first=True)
+    assert "【讨论主题】给桌面应用定 v2 优先级" in first
+    assert "围绕上述主题" in first
+    later = r._turn_prompt(p, first=False, shared="- [10:00:00] 乙（note）：x")
+    assert "【讨论主题】给桌面应用定 v2 优先级" in later
+    assert "紧扣主题" in later
+
+
+def test_topic_used_as_shared_space_seed(chats_dir):
+    """主题同时作为共同上下文空间的议题种子（成员读空间时能看到）。"""
+    c = _chat()
+    c["topic"] = "选题 A"
+    r = gc.GroupChatRunner(c, {})
+    r._open_space()
+    assert agent_context.seed_text(r._space) == "选题 A"
+
+
+def test_group_engine_disables_full_space_snapshot(chats_dir):
+    """群聊按成员增量注入共同上下文：引擎侧必须关闭整份快照，否则 token 平方增长。"""
+    c = _chat()
+    r = gc.GroupChatRunner(c, {})
+    eng = r._engine_for(c["participants"][0])
+    assert eng.shared_snapshot is False
+    assert eng.conversation == c["id"]
+
+
+def test_topic_survives_save_and_load(chats_dir):
+    c = _chat()
+    c["topic"] = "选题 A"
+    assert gc.save_chat(c)[0]
+    assert gc.load_chat(c["id"])["topic"] == "选题 A"
+    # 旧配置文件没有 topic 字段 → 归一化后为空的字符串，不炸
+    data = {"id": c["id"], "title": "旧群聊", "participants": []}
+    assert gc.normalize_chat(data)["topic"] == ""
 
 
 def test_shared_space_is_incremental_per_member(chats_dir):

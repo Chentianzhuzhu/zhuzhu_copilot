@@ -688,7 +688,8 @@ class AgentEngine:
                  max_output_tokens: int = None,
                  long_context_1m: bool = False,
                  window_source: str = "",
-                 conversation: str = ""):
+                 conversation: str = "",
+                 shared_snapshot: bool = True):
         """
         on_delta: Callable[[str], None]      流式文本增量
         on_status: Callable[[str], None]     步骤状态（如"正在思考/执行工具 click"）
@@ -721,6 +722,9 @@ class AgentEngine:
         conversation: str 本引擎所属对话（会话 id）。共同上下文空间按对话隔离——同一对话内
                  主 Agent 与各子 Agent / 成员工作流共用一份空间，不同对话互不可见。
                  任务线程入口据此设置线程局部作用域，派发侧再下传给子 Agent 工作线程。
+        shared_snapshot: bool 是否在用户消息之前注入共同上下文空间的**整份快照**。
+                 群聊由调度层按成员做「增量注入」并自行管理空间，这里必须关闭：否则
+                 每轮都会把整份空间再拼一次且留在历史里，token 随轮数平方增长。
         efficient_mode: bool 高效模式（设置页开关）：只把最小必需工具集（_EFFICIENT_TOOLS）
                  发给上游 —— 不提供任何 MCP server 工具、插件与工作流自定义工具，也没有
                  子 Agent / 工作团 / 功能型工具；系统提示词同步精简（不注入工具手册、
@@ -728,6 +732,7 @@ class AgentEngine:
         """
         self.llm = llm
         self.conversation = str(conversation or "")
+        self.shared_snapshot = bool(shared_snapshot)
         self._ctx_window = max(4096, int(context_window or
                                          agent_llm.infer_context_window(
                                              getattr(llm, "model", None) or "")))
@@ -2943,8 +2948,8 @@ class AgentEngine:
                              "prompt.note.team_msg_head",
                              "收到来自其他 Agent 的消息：")
                                     + "\n" + "\n".join(_lines) + team_msg_note()})
-                _sid = agent_context.active_space()
-                if not _sid:
+                _sid = agent_context.active_space() if self.shared_snapshot else ""
+                if self.shared_snapshot and not _sid:
                     try:
                         _sid = agent_context.open_space(
                             seed=str(user_input or "")[:200], owner="main", activate=True)

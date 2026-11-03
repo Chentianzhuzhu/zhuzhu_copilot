@@ -9,7 +9,9 @@
   发言人可在回复首行写 ``@成员名`` 指定下一位，未指定则随机（排除自己）。
 - **共同上下文**：复用 ``agent_context`` 的共享空间（不设条目数 / 长度 / 渲染上限）。
   每个成员的发言写入空间；每位成员只读取「自己上次发言之后新增」的条目 ——
-  增量注入让 token 随轮数线性增长，而不是把整段历史反复重发。
+  增量注入让 token 随轮数线性增长，而不是把整段历史反复重发。为此成员引擎关闭了
+  「整份空间快照注入」（``shared_snapshot=False``），否则每轮会再拼一次全量快照
+  并留在历史里，token 随轮数平方增长。
 - **各自的上下文窗口**：每位成员持有**独立且持久**的 AgentEngine（含自己的发言、
   工具结果与压缩状态），窗口按其模型单独解析（``agent_llm.resolve_context``）。
   成员之间互不干扰：A 的上下文被压缩不会影响 B。
@@ -56,12 +58,17 @@ def _path(cid: str):
     return chats_root() / f"{cid}.json"
 
 
-def new_chat(participants: list = None, title: str = "", max_rounds: int = None) -> dict:
-    """新建一份群聊配置（未落盘）。"""
+def new_chat(participants: list = None, title: str = "", max_rounds: int = None,
+             topic: str = "") -> dict:
+    """新建一份群聊配置（未落盘）。
+
+    topic：用户自定义的讨论主题。留空 = 自由开聊（成员自行找话题）。
+    """
     now = time.time()
     return {
         "id": "g_%d_%d" % (int(now), random.randint(100, 999)),
         "title": (title or "AI 群聊").strip(),
+        "topic": str(topic or "").strip(),
         "created": now,
         "updated": now,
         "max_rounds": DEFAULT_MAX_ROUNDS if max_rounds is None else int(max_rounds),
@@ -87,7 +94,8 @@ def normalize_participant(p: dict) -> dict:
 def normalize_chat(d: dict) -> dict:
     d = d or {}
     out = new_chat(max_rounds=d.get("max_rounds", DEFAULT_MAX_ROUNDS))
-    out.update({k: d[k] for k in ("id", "title", "created", "updated") if d.get(k)})
+    out.update({k: d[k] for k in ("id", "title", "topic", "created", "updated")
+                if d.get(k)})
     out["participants"] = [normalize_participant(p) for p in (d.get("participants") or [])]
     out["messages"] = [m for m in (d.get("messages") or []) if isinstance(m, dict)]
     return out
@@ -313,13 +321,15 @@ class GroupChatRunner(threading.Thread):
 
         回填是「重开旧群聊继续聊」的关键：成员各自的内存上下文是新的，但共同空间
         能从磁盘记录重建出完整议题脉络，不必让用户重新开场。
+        空间的议题种子优先取用户填写的讨论主题（没有主题时退回群聊标题）。
         """
         cid = str(self.chat.get("id") or "")
         try:
             agent_context.set_conversation(cid)
+            seed = (str(self.chat.get("topic") or "").strip()
+                    or str(self.chat.get("title") or ""))
             self._space = agent_context.open_space(
-                "gc_" + cid, seed=str(self.chat.get("title") or ""),
-                owner="群聊", activate=True)
+                "gc_" + cid, seed=seed, owner="群聊", activate=True)
             for m in self._messages:
                 text = str(m.get("text") or "").strip()
                 if text:
@@ -484,7 +494,10 @@ class GroupChatRunner(threading.Thread):
             context_window=ctx.get("window"),
             max_output_tokens=ctx.get("max_output") or None,
             long_context_1m=bool(ctx.get("long_1m")),
-            window_source=str(ctx.get("source") or ""))
+            window_source=str(ctx.get("source") or ""),
+            # 共同上下文由本调度层做「成员增量注入」：引擎侧再注一次整份快照会重复，
+            # 且快照留在历史里会让 token 随轮数平方增长
+            shared_snapshot=False)
         self._engines[p["name"]] = (eng, sig)
         return eng
 
@@ -512,8 +525,13 @@ class GroupChatRunner(threading.Thread):
 
     def _turn_prompt(self, p: dict, first: bool, shared: str = "") -> str:
         name = p.get("name") or "成员"
-        head = ("讨论开始，请你先说第一句。" if first
-                else "现在轮到你（%s）发言。" % name)
+        topic = str(self.chat.get("topic") or "").strip()
+        if first:
+            head = ("讨论开始，请你围绕上述主题先说第一句。" if topic
+                    else "讨论开始，请你先说第一句。")
+        else:
+            head = ("现在轮到你（%s）发言，请紧扣主题。" % name if topic
+                    else "现在轮到你（%s）发言。" % name)
         ctx = (shared or "").strip()
         if ctx:
             ctx_block = ("【新增上下文】（其他人自你上次发言以来的内容，按时间顺序）：\n"
@@ -522,8 +540,10 @@ class GroupChatRunner(threading.Thread):
             ctx_block = ""
         else:
             ctx_block = "【新增上下文】（暂无新内容，你可以主动起一个话题或回应上一位）\n\n"
+        # 主题每轮都随消息重发：长对话里模型会逐渐跑题，system 里的约束压不住
+        topic_block = ("【讨论主题】%s\n\n" % topic) if topic else ""
         return (
-            ctx_block
+            topic_block + ctx_block
             + "【本轮指令】%s\n要求：直接给出你的发言正文（可以先用一行 @成员名 指定下一位），"
             "不要输出「好的」「收到」这类应答语，不要重复已有发言。"
             % head)

@@ -209,7 +209,7 @@ class GroupChatDialog(QDialog):
         lv.addWidget(self._section(_ui("成员")))
         self.members = QListWidget()
         self.members.setObjectName("gcMembers")
-        self.members.setMinimumHeight(170)
+        self.members.setMinimumHeight(140)
         self.members.setIconSize(QSize(_AVATAR_ITEM, _AVATAR_ITEM))
         self.members.itemDoubleClicked.connect(lambda *_: self._edit_member())
         lv.addWidget(self.members, 1)
@@ -231,6 +231,23 @@ class GroupChatDialog(QDialog):
         lv.addLayout(mrow)
 
         lv.addWidget(self._section(_ui("讨论设置")))
+        # 讨论主题：用户可自定义议题。每轮随消息重发（长对话防跑题），
+        # 同时作为共同上下文空间的议题种子。
+        self.topic_edit = QPlainTextEdit()
+        self.topic_edit.setObjectName("gcInput")
+        self.topic_edit.setPlaceholderText(_ui(
+            "讨论主题（留空则自由开聊）\n如：给桌面应用定下 v2 的功能优先级"))
+        self.topic_edit.setFixedHeight(54)
+        self.topic_edit.setToolTip(_ui("主题会随每轮发言一起发送，长对话也不跑题；讨论开始后不可修改"))
+        self.topic_edit.setPlainText(str(self._chat.get("topic") or ""))
+        self.topic_edit.textChanged.connect(self._on_topic_changed)
+        lv.addWidget(self.topic_edit)
+        # 输入即改内存，落盘去抖：避免每敲一个字都写一次 JSON
+        self._topic_save = QTimer(self)
+        self._topic_save.setSingleShot(True)
+        self._topic_save.setInterval(800)
+        self._topic_save.timeout.connect(self._persist)
+
         srow = QHBoxLayout()
         srow.setSpacing(6)
         lab = QLabel(_ui("最多轮数"))
@@ -518,6 +535,14 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
             pass
 
     # ---------- 运行 ----------
+    # ---------- 讨论设置 ----------
+    def _on_topic_changed(self):
+        """主题输入即同步到内存配置，并去抖落盘。"""
+        self._chat["topic"] = self.topic_edit.toPlainText().strip()
+        timer = getattr(self, "_topic_save", None)
+        if timer is not None:
+            timer.start()
+
     def _sync_run_buttons(self):
         running = self._runner is not None and self._runner.is_alive()
         paused = bool(running and self._runner.paused)
@@ -530,6 +555,7 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
         for b in getattr(self, "_member_btns", []):
             b.setEnabled(not running)
         self.rounds.setEnabled(not running)
+        self.topic_edit.setEnabled(not running)
 
     def _toggle_run(self):
         if self._runner is not None and self._runner.is_alive():
@@ -540,6 +566,7 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
             QMessageBox.information(self, _ui("提示"), _ui("至少需要两个成员才能开始群聊。"))
             return
         self._chat["max_rounds"] = int(self.rounds.value())
+        self._chat["topic"] = self.topic_edit.toPlainText().strip()
         ok, msg = agent_group_chat.save_chat(self._chat)
         if not ok:
             QMessageBox.warning(self, _ui("保存失败"), msg)
