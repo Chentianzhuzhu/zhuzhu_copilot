@@ -223,6 +223,8 @@ def test_glass_button_reflects_content_behind(tmp_path):
 
     with _wallpaper(tmp_path):                       # 蓝色壁纸
         glass.set_strength(50, persist=False)
+        # 填充调成全透明，剩下的像素就只能来自"反射到的内容"，断言才有意义
+        glass.set_alpha(0, persist=False, mode_key="wallpaper")
         host = _Host()
         host.resize(200, 160)
         host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -246,6 +248,7 @@ def test_glass_button_reflects_content_behind(tmp_path):
         p.end()
         c = pm.toImage().pixelColor(btn.width() // 2, btn.height() // 2)
         assert c.red() > c.blue(), f"反射应以红色内容为主，实得 {c.name()}"
+        glass.set_alpha(10, persist=False, mode_key="wallpaper")
         btn.deleteLater()
         red.deleteLater()
         host.close()

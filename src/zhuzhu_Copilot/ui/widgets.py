@@ -895,6 +895,54 @@ class GlassPanel(QWidget):
         super().mousePressEvent(e)
 
 
+class GlassIconButton(QPushButton):
+    """圆形玻璃图标按钮（输入行 / 侧栏入口 / 工具条共用）。
+
+    底由玻璃层绘制：磨砂 + 半透明填充 + 描边高光；QSS 只留图标与 hover 反馈
+    （底色一律透明，否则会把玻璃盖掉）。尺寸与圆角绑定，永远是正圆。
+    """
+
+    def __init__(self, icon: QIcon, diameter: int = 34, parent=None, *,
+                 tint_key: str = "elevated", hover_tint_key: str = "primary_light",
+                 reflect: bool = False):
+        super().__init__(icon, "", parent)
+        self._g_tint_key = tint_key
+        self._g_hover_key = hover_tint_key
+        self._g_hover = False
+        self._g_reflect = bool(reflect)
+        self.setFixedSize(int(diameter), int(diameter))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAutoDefault(False)
+        self.setStyleSheet(
+            "QPushButton, QPushButton:hover, QPushButton:pressed, QPushButton:focus"
+            " { background: transparent; border: none; }")
+        glass.subscribe(self.update)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        key = self._g_hover_key if self._g_hover else self._g_tint_key
+        tint = PALETTE.get(key) or PALETTE["elevated"]
+        glass.paint_surface(self, p, radius=self.width() / 2.0, tint=tint,
+                            reflect=self._g_reflect)
+        p.end()
+        super().paintEvent(e)          # 图标（QSS 底已透明）
+
+    def mousePressEvent(self, e):
+        glass.invalidate(self)
+        super().mousePressEvent(e)
+
+    def enterEvent(self, e):
+        self._g_hover = True
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._g_hover = False
+        self.update()
+        super().leaveEvent(e)
+
+
 class GlassButton(QPushButton):
     """圆形玻璃按钮：透明底 + 左上/右下角高光 + 真实背景反射。
 

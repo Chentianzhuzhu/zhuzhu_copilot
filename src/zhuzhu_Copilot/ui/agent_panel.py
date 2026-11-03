@@ -174,7 +174,8 @@ from zhuzhu_Copilot.ui import window_fx
 from zhuzhu_Copilot.ui import glass
 from zhuzhu_Copilot.ui import motion
 from zhuzhu_Copilot.ui.widgets import (
-    ArrowComboBox, FadeMenu, GlassButton, GlassPanel, SwitchButton, add_brand_footer,
+    ArrowComboBox, FadeMenu, GlassButton, GlassIconButton, GlassPanel, SwitchButton,
+    add_brand_footer,
 )
 from zhuzhu_Copilot.utils.helpers import is_admin, set_native_window_icon
 
@@ -905,9 +906,9 @@ def _round_icon_btn_qss(diameter: int) -> str:
     不需要线条（用户反馈「没有圆形的 UI 附着样式」的现代解法）；hover 再提亮一档。
     壁纸透明态下圆盘让位给壁纸（background 取 transparent），与输入框一致。
     """
-    disc = _mix_hex(HOVER, FIELD, 0.45) if not _feedback_boosted() else "transparent"
-    # 壁纸透明态：常态隐形（让壁纸透出），hover 用中性半透明磨砂盘 —— 任意明暗
-    # 壁纸上都看得见，又不依赖主题色（壁纸下主题对比度不可靠）
+    # 底色一律交给玻璃层（GlassIconButton 自绘磨砂 + 描边高光）：QSS 再铺一层
+    # 实心圆盘会把玻璃盖掉，故常态恒为 transparent，只保留 hover 提亮反馈
+    disc = "transparent"
     hover_disc = HOVER if not _feedback_boosted() else "rgba(148,163,184,0.28)"
     return (f"QPushButton {{ background: {disc};"
             f"border: none;"
@@ -22085,10 +22086,7 @@ class AgentPanel(QDialog):
 
         # 输入框右侧「语音输入」：科大讯飞流式语音听写，录音期间输入框上盖一层
         # 深蓝遮罩并随音量起伏（见 _VoiceOverlay / core/agent_asr.py）
-        self.voice_btn = QPushButton(_svg_icon(_MIC_SVG, 20, ACCENT), "")
-        self.voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.voice_btn.setAutoDefault(False)
-        self.voice_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
+        self.voice_btn = GlassIconButton(_svg_icon(_MIC_SVG, 20, ACCENT), _ROUND_BTN_D)
         self.voice_btn.setIconSize(QSize(20, 20))
         self.voice_btn.setToolTip(_ui("语音输入：点击开始说话（边说边出字），再次点击结束"))
         self.voice_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
@@ -22103,10 +22101,7 @@ class AgentPanel(QDialog):
 
 
         # 输入框右侧「+」上传按钮：文件选择器多选（也支持拖拽 / Ctrl+V 粘贴）
-        self.attach_btn = QPushButton(_line_icon("plus", 20, ACCENT), "")
-        self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.attach_btn.setAutoDefault(False)
-        self.attach_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
+        self.attach_btn = GlassIconButton(_line_icon("plus", 20, ACCENT), _ROUND_BTN_D)
         self.attach_btn.setIconSize(QSize(20, 20))
         self.attach_btn.setToolTip(_ui("上传文件/图片给 AI（也可拖拽文件到输入框或 Ctrl+V 粘贴截图）"))
         self.attach_btn.setStyleSheet(_round_icon_btn_qss(_ROUND_BTN_D))
@@ -22114,10 +22109,7 @@ class AgentPanel(QDialog):
         tools.addWidget(self.attach_btn)
 
         # 输入框右侧：提示词优化（基于上下文优化当前输入，异步后台调用 LLM）
-        self.optimize_btn = QPushButton(_line_icon("magic", 20, ACCENT), "")
-        self.optimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.optimize_btn.setAutoDefault(False)
-        self.optimize_btn.setFixedSize(_ROUND_BTN_D, _ROUND_BTN_D)
+        self.optimize_btn = GlassIconButton(_line_icon("magic", 20, ACCENT), _ROUND_BTN_D)
         self.optimize_btn.setIconSize(QSize(20, 20))
         self.optimize_btn.setToolTip(_ui("优化提示词：结合当前对话上下文，润色输入框中的提示词"))
         # 与「+」上传按钮同款皮肤（用户要求）：实心面板底 + 描边正圆，hover 描边转强调色
@@ -25240,12 +25232,8 @@ class AgentPanel(QDialog):
                      self._expand_drawer),
                     (_line_icon("panel-left", 18, TEXT_DIM), _ui("展开左栏"),
                      lambda: self._set_leftdock_collapsed(False))):
-                _b = QPushButton(_ico, "")
-                _b.setCursor(Qt.CursorShape.PointingHandCursor)
-                _b.setAutoDefault(False)
-                _b.setFixedSize(38, 38)
+                _b = GlassIconButton(_ico, 38)
                 _b.setIconSize(QSize(18, 18))
-                _b.setStyleSheet(_round_icon_btn_qss(38))
                 _b.setToolTip(_tip)
                 _b.clicked.connect(lambda _c=False, fn=_act: fn())
                 ml.addWidget(_b)
