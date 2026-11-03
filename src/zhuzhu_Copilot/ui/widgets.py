@@ -910,6 +910,9 @@ class GlassPill(QWidget):
         # QWidget 没有 isDown()（那是 QAbstractButton 的）：按下态自己记，
         # 直接在 paintEvent 里调 isDown() 会抛 AttributeError → 进程 abort
         self._g_pressed = False
+        # 纯 QWidget 默认会先用调色板背景填一遍，会把圆角外的部分涂成实色
+        # （玻璃底就变成了"方块里套圆角"）。显式关掉系统背景填充。
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         glass.subscribe(self.update)
 
     # ---------- 底色 ----------
