@@ -117,3 +117,29 @@ def test_edge_highlight_line_present():
     assert top == "#e3e8f0", f"顶边高光应为极浅冷灰，实际 {top}"
     assert top != mid
     card.close()
+
+
+def test_update_product_changes_content_without_resizing():
+    """就地更新：内容变、控件不重建 —— 尺寸与几何完全不动（避免重建导致的跳变）。"""
+    card = _card()
+    card.resize(card.sizeHint())
+    card.show()
+    _app.processEvents()
+    before_geo = card.geometry()
+    before_btn = card.buy_btn
+
+    card.update_product(title="Max 会员", price_main="¥29", price_unit="/ 月",
+                        perks=["能力上限更高", "专属额度", "第三项卖点"],
+                        cta="升级套餐", cta_enabled=True, cta_tip="提示",
+                        recommended=False, current=False, badge="")
+
+    assert card.buy_btn is before_btn, "按钮控件不能被替换（重建会触发布局跳变）"
+    assert card._title.text() == "Max 会员"
+    assert card._price.text() == "¥29"
+    assert card.buy_btn.text() == "升级套餐"
+    assert card.geometry() == before_geo, "就地更新不得改变几何"
+    # 权益条目数量变化时：补建缺失的行，多余的隐藏（而不是丢弃或撑高卡片）
+    _app.processEvents()
+    assert len(card._perks) == 3
+    assert card._perks[2].text() == "第三项卖点"
+    assert card._perks[2].isVisible()

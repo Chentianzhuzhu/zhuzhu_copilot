@@ -9123,20 +9123,28 @@ class _AgentSettingsDialog(QDialog):
         holder = self.__dict__.get("_memb_sub_row")
         if holder is None:
             return
-        while holder.count():
-            item = holder.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()   # 摘下的旧卡片要回收，否则每次重建都漏一批控件
-        self._memb_card_widgets = {}
+        # 复用已有卡片就地更新：清空整行再填充会让布局在"空行"那一帧按没有卡片
+        # 计算（页面瞬间被挤压、卡片宽度跳一下），而且重建路径会重新加回尾部
+        # stretch，卡片会缩回最小宽度。两者都改成"不动布局结构"。
+        existing = dict(self.__dict__.get("_memb_card_widgets") or {})
+        widgets = {}
         for p in self._memb_membership_products:
-            card = self._memb_product_card(p)
-            holder.addWidget(card)
+            pid = p["id"]
+            card = existing.get(pid)
+            if card is not None:
+                self._memb_update_product_card(card, p)
+            else:
+                card = self._memb_product_card(p)
+                holder.addWidget(card)
             btn = getattr(card, "_buy_btn", None)
             if btn is not None:
-                self._memb_card_widgets[p["id"]] = (card, btn)
-        holder.addStretch(1)
+                widgets[pid] = (card, btn)
+        for pid, (card, _btn) in existing.items():
+            if pid not in widgets:          # 商品下架：才移除旧卡片
+                holder.removeWidget(card)
+                card.setParent(None)
+                card.deleteLater()
+        self._memb_card_widgets = widgets
         self._memb_apply_purchase_state()
 
     @staticmethod
@@ -9238,11 +9246,10 @@ class _AgentSettingsDialog(QDialog):
                           "margin-top: 8px;")
         return lab
 
-    def _memb_product_card(self, p: dict) -> QFrame:
-        """商品卡：黑白简约 + 圆角描边 + 边缘高光；Pro 档额外叠蓝色泛光与实心按钮。
+    def _memb_product_spec(self, p: dict) -> dict:
+        """商品卡的展示内容（标题 / 价格 / 权益 / 按钮 / 推荐态）。
 
-        视觉层级只由三件事建立：① 唯一带彩色泛光的卡；② 唯一实心反色主按钮；
-        ③ 顶部「推荐」胶囊。其余档位一律描边幽灵按钮 —— 不用大段文案喊「推荐」。
+        构建与"就地刷新"共用这一份规则，避免两套逻辑漂移。
         """
         cur = ((self._memb_auth.current_user() or {}).get("membership_type")
                if getattr(self, "_memb_auth", None) else None) or "free"
@@ -9267,7 +9274,10 @@ class _AgentSettingsDialog(QDialog):
                 price_txt = str(raw or "")
             price_main = _uif("¥{a0}", a0=price_txt)
             price_unit = _ui("/ 月") if is_plan else ""
-        card = member_cards.build_product_card(
+        # 已订阅用户不再推荐：泛光、推荐胶囊整套收掉，否则「推荐」会顶在「当前」
+        # 卡旁边，暗示用户再买一档
+        is_recommended = (tier == "pro" and cur == "free")
+        return dict(
             title=_ui(p["name"]),
             price_main=price_main,
             price_unit=price_unit,
@@ -9275,19 +9285,32 @@ class _AgentSettingsDialog(QDialog):
             cta=label,
             cta_enabled=can_buy,
             cta_tip=tip,
-            # 已订阅用户不再推荐：泛光、推荐胶囊、实心按钮整套收掉，
-            # 否则「推荐」会顶在「当前」卡旁边，暗示用户再买一档
-            recommended=(tier == "pro" and cur == "free"),
+            recommended=is_recommended,
             current=(is_plan and tier == cur),
-            badge=_ui("推荐") if (tier == "pro" and cur == "free") else "",
+            badge=_ui("推荐") if is_recommended else "",
             compact=not is_plan,
-            expand=is_plan)      # 档位卡三等分页面宽度：固定宽度会撑破页面宽度，
-                                 # 横向滚动把左侧文字裁掉（用户截图）
+            # 档位卡三等分页面宽度：固定宽度会撑破页面宽度，横向滚动把左侧文字裁掉
+            expand=is_plan,
+        )
+
+    def _memb_product_card(self, p: dict) -> QFrame:
+        """商品卡：黑白简约 + 圆角描边 + 边缘高光；Pro 档额外叠蓝色泛光与实心按钮。"""
+        card = member_cards.build_product_card(**self._memb_product_spec(p))
         prod = dict(p)
         card.buy_btn.clicked.connect(
             lambda _checked=False, pr=prod: self._memb_buy(pr))
         card._buy_btn = card.buy_btn   # 供 _memb_apply_purchase_state 后续重绘
         return card
+
+    def _memb_update_product_card(self, card, p: dict) -> None:
+        """就地刷新已有卡片（不重建控件，尺寸与位置完全不动）。"""
+        spec = self._memb_product_spec(p)
+        card.update_product(
+            title=spec["title"], price_main=spec["price_main"],
+            price_unit=spec["price_unit"], perks=spec["perks"],
+            cta=spec["cta"], cta_enabled=spec["cta_enabled"],
+            cta_tip=spec["cta_tip"], recommended=spec["recommended"],
+            current=spec["current"], badge=spec["badge"])
 
     def _memb_refresh_status(self, *_args):
         """根据登录状态刷新积分大数字 / 会员类型 / 登录提示。"""

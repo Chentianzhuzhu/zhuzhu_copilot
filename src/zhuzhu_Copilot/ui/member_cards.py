@@ -261,20 +261,7 @@ class ProductCard(EdgeCard):
 
         self._perks, self._dots = [], []
         for text in (perks or []):
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(7)
-            dot = QLabel("·")
-            dot.setObjectName("membDot")
-            dot.setFixedWidth(6)
-            row.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
-            lab = QLabel(text)
-            lab.setObjectName("membPerk")
-            lab.setWordWrap(True)
-            row.addWidget(lab, 1)
-            self._body.addLayout(row)
-            self._perks.append(lab)
-            self._dots.append(dot)
+            self._add_perk_row(text)
         self._body.addStretch(1)
 
         self.buy_btn = QPushButton(cta)
@@ -288,7 +275,64 @@ class ProductCard(EdgeCard):
         self._badge = _Badge(badge, self) if badge else None
         self.restyle()
 
+    def _add_perk_row(self, text: str) -> None:
+        """新增一条权益行（构造与就地更新共用）。"""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(7)
+        dot = QLabel("·")
+        dot.setObjectName("membDot")
+        dot.setFixedWidth(6)
+        row.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+        lab = QLabel(text)
+        lab.setObjectName("membPerk")
+        lab.setWordWrap(True)
+        row.addWidget(lab, 1)
+        self._body.addLayout(row)
+        self._perks.append(lab)
+        self._dots.append(dot)
+
     # ---------- 外部状态 ----------
+    def update_product(self, *, title: str, price_main: str, price_unit: str = "",
+                       perks=None, cta: str = "", cta_enabled: bool = True,
+                       cta_tip: str = "", recommended: bool = False,
+                       current: bool = False, badge: str = "") -> None:
+        """就地更新卡片内容（不重建控件）。
+
+        服务端商品数据回来时如果重建控件，整行会被清空再填充 —— 布局在清空的
+        那一帧按"没有卡片"计算，页面会瞬间挤压、卡片宽度也会跳一下。改成复用
+        同一批控件就地更新，尺寸与位置完全不动。
+        """
+        self._title.setText(title)
+        self._price.setText(price_main)
+        self._unit.setText(price_unit)
+        self._recommended = bool(recommended)
+        if self._chip is not None:
+            self._chip.setVisible(bool(current))
+        # 权益条目：数量可能变，多余的隐藏、不够的补建
+        perks = list(perks or [])
+        for i, text in enumerate(perks):
+            if i >= len(self._perks):
+                self._add_perk_row(text)      # 条目变多：补建，而不是丢弃
+                continue
+            self._perks[i].setText(text)
+            self._dots[i].setVisible(True)
+            self._perks[i].setVisible(True)
+        for i in range(len(perks), len(self._perks)):
+            self._perks[i].setVisible(False)
+            self._dots[i].setVisible(False)
+        if badge:
+            if self._badge is None:
+                self._badge = _Badge(badge, self)
+                self._body.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignHCenter)
+            self._badge.setText(badge)
+            self._badge.restyle()
+        elif self._badge is not None:
+            self._badge.setVisible(False)
+        self.set_cta(cta, cta_enabled, cta_tip)
+        self.restyle()
+        self._place_badge()
+
     def set_cta(self, label: str, enabled: bool, tip: str = ""):
         """刷新主按钮（购买 / 续费 / 升级 / 当前版本 / 不可购买）。"""
         self._enabled = bool(enabled)
