@@ -2585,11 +2585,14 @@ class RichBlock(_PinMixin, _EmergeMixin, QWidget):
     内容 HTML 由调用方渲染，链接点击回到面板既有处理链路。"""
 
     def __init__(self, style: ChatStyle, font_size: int = FONT_BODY,
-                 color: str = None, parent: QWidget = None):
+                 color: str = None, parent: QWidget = None,
+                 line_height: float = 1.8):
         super().__init__(parent)
         self._style = style
         self._font_size = font_size
         self._color = color
+        # 正文行距：长正文可收紧（1.5），一屏能多看几行，不必拉大窗口
+        self._line_height = float(line_height)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, SPACING_XS, 0, 0)
         root.setSpacing(0)
@@ -2637,8 +2640,18 @@ class RichBlock(_PinMixin, _EmergeMixin, QWidget):
         """正文标签 QSS（构造与 restyle 共用，避免两处漂移）"""
         self._body.setStyleSheet(
             f"background: transparent; color: {self._color or style.text};"
-            f" font-size: {self._font_size}px; line-height: 1.8;"
+            f" font-size: {self._font_size}px; line-height: {self._line_height};"
             f" font-family: {style.font_ui};")
+
+    def set_line_height(self, value: float):
+        """调整正文行距（长正文收紧用）。换行距会改变文本高度，故要重测高度。"""
+        v = float(value)
+        if abs(v - self._line_height) < 0.01:
+            return
+        self._line_height = v
+        self._apply_body_qss(self._style)
+        self._bump_content()
+        self._pin_wrapping()
 
     def restyle(self, style: ChatStyle):
         """原地换肤（透明区块）：只重设字色与浮现遮罩色，不重建控件。"""

@@ -46,6 +46,55 @@ _STREAM_MS = 60
 _AVATAR_MSG = 26
 _AVATAR_ITEM = 22
 
+#: 正文预览字数上限：超过后先只渲染前 N 字，点「展开全文」看完整内容。
+#: 否则一条长消息会把对话区撑得很长，用户得手动拉大窗口才看得全。
+BODY_PREVIEW_CHARS = 900
+#: 预览最多保留的段落块数：空行多时字符数约束不住高度（每段至少一行），
+#: 按块数再收一道，单条消息的高度才真正有上限。
+BODY_PREVIEW_BLOCKS = 12
+#: 超过该字数即收紧行距（长正文一屏能多看几行）
+BODY_COMPACT_CHARS = 600
+#: 长正文 / 常规正文的行距
+LINE_HEIGHT_COMPACT = 1.5
+LINE_HEIGHT_NORMAL = 1.8
+
+
+def _body_preview(text: str) -> tuple:
+    """长正文折叠：返回 (渲染文本, 是否被折叠)。
+
+    两道约束同时生效：段落块数（控高度）与字符数（控单段长度）。
+    按空行切块会切开代码围栏，但主面板渲染器会自动补全未闭合的 ```，
+    不会出现整段退化成纯文本。
+    """
+    t = text or ""
+    blocks = t.split("\n\n")
+    if len(t) <= BODY_PREVIEW_CHARS and len(blocks) <= BODY_PREVIEW_BLOCKS:
+        return t, False
+    kept, size = [], 0
+    for b in blocks:
+        if len(kept) >= BODY_PREVIEW_BLOCKS:
+            break
+        if size + len(b) > BODY_PREVIEW_CHARS:
+            # 单块就超长（整段没有空行）：按剩余额度截断这一块，
+            # 否则整条预览会是空的 —— 用户看不到任何内容
+            room = BODY_PREVIEW_CHARS - size
+            if room > 40:
+                kept.append(b[:room])
+                size += room
+            break
+        kept.append(b)
+        size += len(b) + 2
+    out = "\n\n".join(kept).rstrip()
+    if len(out) < len(t):
+        out += "\n…"
+    return out, True
+
+
+def _body_line_height(text: str) -> float:
+    """行距自适应：短文宽松易读，长文收紧以提高单屏信息量。"""
+    return (LINE_HEIGHT_COMPACT if len(text or "") > BODY_COMPACT_CHARS
+            else LINE_HEIGHT_NORMAL)
+
 _MD_RENDER = None
 
 
@@ -112,6 +161,15 @@ class _AgentRow(QWidget):
         # 正文缩进到头像右侧，与名字左对齐；RichBlock 的高度计算已把该边距计入
         self.body.layout().setContentsMargins(_AVATAR_MSG + 6, 2, 0, 0)
         v.addWidget(self.body)
+        # 长正文折叠：默认只渲染前 N 字，点这里展开/收起（不必拉大窗口看全文）
+        self._full_text = ""
+        self._expanded = False
+        self.more_lbl = QLabel()
+        self.more_lbl.setObjectName("gcMore")
+        self.more_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more_lbl.setVisible(False)
+        self.more_lbl.mousePressEvent = self._toggle_more
+        v.addWidget(self.more_lbl)
         self._restyle_head()
 
     def _restyle_head(self):
@@ -150,7 +208,21 @@ class _AgentRow(QWidget):
                  else "思考过程 · {a0} 字（点击展开）", a0=len(self._think_buf)))
 
     def set_markdown(self, raw: str):
-        self.body.set_html(_render_md(raw))
+        """渲染正文：长正文先折叠 + 收紧行距，点「展开全文」看完整内容。"""
+        self._full_text = raw or ""
+        preview, truncated = _body_preview(self._full_text)
+        self.body.set_line_height(_body_line_height(self._full_text))
+        if truncated and not self._expanded:
+            self.body.set_html(_render_md(preview))
+            self.more_lbl.setText(_uif("展开全文（完整 {a0} 字）", a0=len(self._full_text)))
+        else:
+            self.body.set_html(_render_md(self._full_text))
+            self.more_lbl.setText(_ui("收起") if truncated else "")
+        self.more_lbl.setVisible(truncated)
+
+    def _toggle_more(self, _ev=None):
+        self._expanded = not self._expanded
+        self.set_markdown(self._full_text)
 
     def restyle(self, style):
         self._style = style
@@ -426,6 +498,8 @@ QLabel#gcThinkBody {{ color: {c['text_secondary']}; font-size: {FONT_SMALL}px;
     background: transparent; padding-left: 10px; }}
 QLabel#gcNote {{ color: {c['text_secondary']}; font-size: {FONT_SMALL}px;
     background: transparent; }}
+QLabel#gcMore {{ color: {c['text_secondary']}; font-size: {FONT_SMALL}px;
+    background: transparent; padding-top: 2px; }}
 QPlainTextEdit#gcInput, QSpinBox {{ background: {c['field']}; color: {c['text']};
     border: none; border-radius: {RADIUS_SM}px; padding: 6px;
     selection-background-color: {c['primary']}; }}
