@@ -50,6 +50,8 @@ _ALPHA_KEYS = {
 }
 _DOWNSCALE = 4              # 磨砂底降采样倍数（线性）：像素量降到 1/16
 _BLUR_MIN, _BLUR_MAX = 2.0, 24.0
+#: 角部高光沿边的点缀长度上限（px）：定值而非等比，长条/窄高控件才不会拉出亮带
+_RIM_SPAN_MAX = 26.0
 
 _strength: int | None = None
 _alphas: dict = {}          # mode -> 不透明度（懒加载，按需缓存）
@@ -445,13 +447,16 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
 
 
 def _rim(p: QPainter, rect: QRect, radius: float) -> None:
-    """边缘高光：**只在边框上描一条线**，左上 / 右下两个对角最亮。
+    """边缘高光：**严格 1px 描边**，只在左上 / 右下两角做一小段点缀。
 
-    用户明确要求「边缘描边高光，不要渐变填充到 UI 内部」，因此这里只画 stroke：
-    - 圆角路径描两次，各自裁进对角线一侧（左上 / 右下），保证光只落在两个对角；
-    - 每段的渐变从"角上纯白"衰减到"主题发丝线"，两段在中段接上 → 整圈仍是**一条**
-      连续的细线，而不是两条边框；
-    - 不往内部填任何径向光斑（旧版那块会糊进内容，已移除）。
+    用户三次强调的点，这里逐条落实：
+    1. 不往内部加任何泛光/渐变 —— 只描线，内部完全交给磨砂底；
+    2. 线宽固定 1px（不是 1.2/1.4）：宽线在长边上会出现抗锯齿撕裂的"亮带"；
+    3. 高光长度**按像素封顶**（``_RIM_SPAN_MAX``），不随长边等比放大 —— 否则长条
+       胶囊/窄高面板上，高光会沿着边拉出很长一条，看起来像接缝。
+
+    画法：先铺一圈极淡的发丝线保证轮廓，再用「角部小方块裁剪 + 短渐变」叠两段
+    高光；方块边长 = 圆角半径 + 点缀长度，光只可能在角附近出现。
     """
     hi = QColor(255, 255, 255)
     hi.setAlphaF(min(0.9, rim_alpha() + 0.22))
@@ -462,34 +467,33 @@ def _rim(p: QPainter, rect: QRect, radius: float) -> None:
     else:
         line = QColor(PALETTE["border"])
         line.setAlphaF(0.55)
+
     inner = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
     path = QPainterPath()
     path.addRoundedRect(inner, radius, radius)
 
-    def _stroke(grad: QLinearGradient, clip: QRectF):
+    # ① 全周发丝线（1px）
+    p.setPen(QPen(line, 1.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(path)
+
+    # ② 角部短高光：高光长度按像素封顶，且不超过短边的 45%
+    span = max(8.0, min(_RIM_SPAN_MAX, min(rect.width(), rect.height()) * 0.45))
+    box = max(6.0, float(radius)) + span
+
+    for cx, cy, dx, dy in ((rect.x(), rect.y(), 1, 1),
+                           (rect.x() + rect.width(), rect.y() + rect.height(), -1, -1)):
+        box_rect = QRectF(cx, cy, dx * box, dy * box).normalized()
+        grad = QLinearGradient(QPointF(cx, cy),
+                               QPointF(cx + dx * box * 0.72, cy + dy * box * 0.72))
+        grad.setColorAt(0.0, hi)
+        grad.setColorAt(1.0, QColor(255, 255, 255, 0))
         p.save()
-        p.setClipRect(clip)
-        pen = QPen(QBrush(grad), 1.2)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
+        p.setClipRect(box_rect)
+        p.setPen(QPen(QBrush(grad), 1.0))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
         p.restore()
-
-    # 左上角：角上最亮 → 中段回落到发丝线
-    g_tl = QLinearGradient(inner.topLeft(), inner.bottomRight())
-    g_tl.setColorAt(0.0, hi)
-    g_tl.setColorAt(0.45, line)
-    g_tl.setColorAt(1.0, line)
-    _stroke(g_tl, QRectF(rect.x(), rect.y(), rect.width() * 0.62, rect.height()))
-
-    # 右下角：同法，从右下角起亮
-    g_br = QLinearGradient(inner.bottomRight(), inner.topLeft())
-    g_br.setColorAt(0.0, hi)
-    g_br.setColorAt(0.45, line)
-    g_br.setColorAt(1.0, line)
-    _stroke(g_br, QRectF(rect.x() + rect.width() * 0.38, rect.y(),
-                         rect.width() * 0.62, rect.height()))
 
 
 def paint_surface(widget, p: QPainter, rect: QRect | None = None,

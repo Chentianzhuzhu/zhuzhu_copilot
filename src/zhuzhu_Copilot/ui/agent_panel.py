@@ -16502,7 +16502,11 @@ class _RoundedFloatWindow(QWidget):
             #   自定义背景 → 背后是壁纸（玻璃层里就是同一张），用用户设定值（默认 10%）
             #   融入 dock  → 背后是主面板渐变，同样不需要下限
             #   独立悬浮 + 无壁纸 → 背后是桌面/窗口底色，给 0.85 保证文字可读
-            floor_alpha = 0.0 if (_feedback_boosted() or self._dock_is_immersed()) else 0.85
+            # 透明度下限看"背后是什么"：壁纸 / dock 内 → 用用户设定值；
+            # 独立悬浮且无壁纸时背后是窗口底色而非界面本身 → 严格同色（1.0），
+            # 否则面板会比其它元素浅一档（深色模式下尤其明显）
+            back_is_ui = _feedback_boosted() or self._dock_is_immersed()
+            floor_alpha = 0.0 if back_is_ui else 1.0
             painter = QPainter(self)
             try:
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
