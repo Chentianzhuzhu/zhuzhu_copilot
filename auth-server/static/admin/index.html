@@ -9,20 +9,27 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
     color-scheme: dark;   /* 原生控件（下拉箭头/日期图标/滚动条）按深色渲染，否则深色底上是方块 */
-    --bg: #1a1a2e;
-    --card: #16213e;
-    --primary: #0f3460;
-    --accent: #e94560;
-    --text: #eaeaea;
-    --text-dim: #9a9ab0;
-    --border: #2a2a4a;
+    /* 图形界面与官网同源：近黑纸面 + 单一深蓝 + 1px 描边。
+       状态色（成功/警告/危险/信息）保留各自色相 —— 它们是操作员判断
+       「待处理 / 已回复 / 已拒绝」的依据，不属于品牌色。 */
+    --bg: #0A0B0D;
+    --card: #14171B;
+    --surface: #0F1114;
+    --primary: #1E40AF;
+    --primary-hover: #2A55D0;
+    --accent: #7D96E8;
+    --text: #F5F5F5;
+    --text-dim: #A9AFB8;
+    --border: rgba(200, 210, 230, .13);
+    --border-strong: rgba(200, 210, 230, .28);
+    --radius: 2px;
     --success: #2ecc71;
     --warning: #f39c12;
     --danger: #e74c3c;
     --info: #3498db;
   }
   body {
-    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
@@ -40,11 +47,10 @@
   .login-card {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius);
     padding: 40px 36px;
     width: 100%;
     max-width: 380px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
   }
   .login-card h1 {
     font-size: 20px;
@@ -70,7 +76,7 @@
     padding: 10px 12px;
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius);
     color: var(--text);
     font-size: 14px;
     outline: none;
@@ -147,15 +153,16 @@
        缺这一行时按钮会退化为浏览器默认浅灰底，配上白字就读不清了。 */
     background: var(--primary);
     border: none;
-    border-radius: 6px;
+    border-radius: var(--radius);
     cursor: pointer;
     font-size: 13px;
     color: #fff;
     transition: opacity 0.2s;
   }
-  .btn:hover { opacity: 0.85; }
+  .btn:hover { background: var(--primary-hover); }
+  .btn-warning:hover, .btn-danger:hover, .btn-success:hover, .btn-info:hover { filter: brightness(1.12); }
   .btn-primary { background: var(--primary); }
-  .btn-accent { background: var(--accent); width: 100%; padding: 11px; font-size: 15px; }
+  .btn-accent { background: var(--primary); width: 100%; padding: 11px; font-size: 15px; }
   .btn-warning { background: var(--warning); }
   .btn-danger { background: var(--danger); }
   .btn-success { background: var(--success); }
@@ -163,7 +170,7 @@
   .btn-sm { padding: 4px 10px; font-size: 12px; }
   /* 工具栏内的强调按钮：.btn-accent 撑满整行（width:100%）不适合放在 flex 工具栏里，
      故单独提供不带 width 的紧凑变体。 */
-  .btn-accent-inline { background: var(--accent); }
+  .btn-accent-inline { background: var(--primary); }
   /* 禁用态：降不透明度即可。刻意不给 background，否则会盖掉变体色，
      出现「按钮底色与文字色同源、整块糊成一片」的问题。 */
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -243,7 +250,7 @@
     padding: 8px 12px;
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius);
     color: var(--text);
     font-size: 13px;
     outline: none;
@@ -254,7 +261,7 @@
   .table-wrap {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius);
     overflow: hidden;
     overflow-x: auto;
   }
@@ -276,7 +283,7 @@
     white-space: nowrap;
   }
   tbody tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
-  tbody tr:hover { background: rgba(233,69,96,0.08); }
+  tbody tr:hover { background: rgba(126,150,232,0.06); }
   .avatar-cell {
     width: 36px; height: 36px;
     border-radius: 50%;
@@ -287,7 +294,7 @@
   .badge {
     display: inline-block;
     padding: 2px 8px;
-    border-radius: 10px;
+    border-radius: var(--radius);
     font-size: 11px;
   }
   .badge-active { background: rgba(46,204,113,0.15); color: var(--success); }
@@ -295,7 +302,7 @@
   .badge-deleted { background: rgba(231,76,60,0.15); color: var(--danger); }
   .badge-free { background: rgba(154,154,176,0.15); color: var(--text-dim); }
   .badge-pro { background: rgba(52,152,219,0.15); color: var(--info); }
-  .badge-max { background: rgba(233,69,96,0.15); color: var(--accent); }
+  .badge-max { background: rgba(30,64,175,0.28); color: var(--text); }
   .badge-pending { background: rgba(243,156,18,0.15); color: var(--warning); }
   .badge-paid { background: rgba(46,204,113,0.15); color: var(--success); }
   .badge-cancelled { background: rgba(154,154,176,0.15); color: var(--text-dim); }
@@ -322,7 +329,7 @@
   .qrcode-card {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius);
     padding: 20px;
     text-align: center;
   }
@@ -332,7 +339,7 @@
     height: 200px;
     margin: 0 auto 14px;
     background: #fff;
-    border-radius: 8px;
+    border-radius: var(--radius);
     border: 1px solid var(--border);
     display: flex;
     align-items: center;
@@ -356,11 +363,10 @@
   .modal {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--radius);
     padding: 24px;
     width: 90%;
     max-width: 400px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
   }
   .modal h3 { margin-bottom: 16px; font-size: 16px; }
   .modal .modal-body { margin-bottom: 20px; color: var(--text-dim); line-height: 1.6; font-size: 13px; }
@@ -374,7 +380,7 @@
     padding: 9px 12px;
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius);
     color: var(--text);
     font-size: 14px;
     outline: none;
@@ -391,10 +397,9 @@
     border-left: 4px solid var(--success);
     color: var(--text);
     padding: 12px 20px;
-    border-radius: 6px;
+    border-radius: var(--radius);
     font-size: 13px;
     z-index: 200;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
     opacity: 0;
     transition: opacity 0.25s;
     pointer-events: none;

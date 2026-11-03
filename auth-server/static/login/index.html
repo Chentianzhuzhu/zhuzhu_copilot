@@ -5,304 +5,351 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>zhuzhu Copilot - 登录 / 注册</title>
 <style>
-  /* ========== 全局深色主题 ========== */
+  /* =========================================================================
+     账号中心 · 与官网同一套令牌（装配说明书）
+     -------------------------------------------------------------------------
+     这里刻意不引入第二个配色体系：登录页是用户从官网点进来的第一站，
+     配色一旦换掉，"是不是同一个产品"的怀疑会先于表单出现。
+     规则与官网一致：单一深蓝、1px 描边分层、不用投影、元信息走等宽。
+     ========================================================================= */
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
-    --bg: #1a1a2e;
-    --card: #16213e;
-    --primary: #0f3460;
-    --accent: #e94560;
-    --text: #eaeaea;
-    --text-dim: #9a9ab0;
-    --border: #2a2a4a;
-    --success: #2ecc71;
-    --error: #e74c3c;
+    --bg: #0A0B0D;
+    --card: #14171B;
+    --surface: #0F1114;
+    --primary: #1E40AF;
+    --primary-hover: #2A55D0;
+    --accent: #7D96E8;
+    --text: #F5F5F5;
+    --text-dim: #A9AFB8;
+    --text-faint: #8A9099;
+    --border: rgba(200, 210, 230, .13);
+    --border-strong: rgba(200, 210, 230, .28);
+    --radius: 2px;
+    /* 状态不用色相表达：成功走深蓝，失败走描边条 + 白字。 */
+    --success: #7D96E8;
+    --error: #F5F5F5;
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   }
+  html { color-scheme: dark; }
   body {
-    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
-    background-image: radial-gradient(circle at 20% 20%, rgba(15,52,96,0.4) 0%, transparent 50%),
-                      radial-gradient(circle at 80% 80%, rgba(233,69,96,0.15) 0%, transparent 50%);
+    padding: 24px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
   }
-  /* ========== 卡片容器 ========== */
+  /* 蓝图网格：与官网同一张底纹，28px 一格，向下渐隐 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, rgba(126,150,232,.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(126,150,232,.05) 1px, transparent 1px);
+    background-size: 28px 28px;
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), rgba(0,0,0,.25));
+  }
+  a { color: var(--accent); }
+  a:hover { color: var(--text); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  /* ========== 卡片：一张单据，不是一块玻璃 ========== */
   .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 36px 32px;
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 36px 32px 30px;
     width: 100%;
-    max-width: 420px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    max-width: 400px;
   }
-  .brand {
-    text-align: center;
-    margin-bottom: 24px;
+  /* 四角定位标记：与官网图纸框同一语言 */
+  .card::before, .card::after {
+    content: "";
+    position: absolute;
+    width: 10px; height: 10px;
+    border: 1px solid var(--accent);
+    opacity: .55;
+    pointer-events: none;
   }
+  .card::before { left: -1px; top: -1px; border-right: 0; border-bottom: 0; }
+  .card::after { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+
+  /* ========== 品牌 ========== */
+  .brand { margin-bottom: 26px; }
+  .brand-mark { width: 28px; height: 28px; color: var(--text); margin-bottom: 14px; }
   .brand h1 {
-    font-size: 22px;
-    font-weight: 600;
-    color: var(--text);
+    font-size: 1.25rem;
+    font-weight: 650;
+    letter-spacing: -.01em;
+    line-height: 1.3;
   }
   .brand h1 span { color: var(--accent); }
   .brand p {
-    font-size: 13px;
-    color: var(--text-dim);
+    font-size: .8125rem;
+    color: var(--text-faint);
     margin-top: 6px;
   }
-  /* ========== Tab 切换 ========== */
+
+  /* ========== Tab：下划线式切换，不用胶囊底 ========== */
   .tabs {
     display: flex;
-    background: var(--bg);
-    border-radius: 8px;
-    padding: 4px;
+    gap: 26px;
+    border-bottom: 1px solid var(--border);
     margin-bottom: 24px;
   }
   .tab {
-    flex: 1;
-    text-align: center;
-    padding: 10px 0;
+    position: relative;
+    padding: 0 0 12px;
     cursor: pointer;
-    border-radius: 6px;
-    font-size: 14px;
+    font-size: .875rem;
     color: var(--text-dim);
-    transition: all 0.2s;
     user-select: none;
+    transition: color .18s cubic-bezier(.16,1,.3,1);
   }
-  .tab.active {
-    background: var(--primary);
-    color: var(--text);
-    font-weight: 600;
+  .tab::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: -1px;
+    height: 2px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform .3s cubic-bezier(.16,1,.3,1);
   }
-  /* ========== 人机验证（Cloudflare Turnstile） ========== */
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); font-weight: 600; }
+  .tab.active::after { transform: scaleX(1); }
+
+  /* ========== 人机验证 ========== */
   .cf-box {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 6px;
-    margin: 2px 0 16px;
+    margin: 4px 0 16px;
   }
   .cf-box.hidden { display: none; }
   .cf-hint {
-    font-size: 12px;
-    color: var(--text-dim);
+    font-size: .75rem;
+    color: var(--text-faint);
     min-height: 16px;
     text-align: center;
     line-height: 1.5;
   }
-  .cf-hint.ok { color: var(--success); }
-  .cf-hint.err { color: var(--error); }
+  .cf-hint.ok { color: var(--accent); }
+  .cf-hint.err { color: var(--text); }
+
   /* ========== 表单 ========== */
   .form-group { margin-bottom: 16px; }
   .form-group label {
     display: block;
-    font-size: 13px;
+    font-size: .8125rem;
     color: var(--text-dim);
-    margin-bottom: 6px;
+    margin-bottom: 7px;
   }
   .form-group input, .form-group select {
     width: 100%;
-    padding: 11px 12px;
+    padding: 12px 13px;
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius);
     color: var(--text);
-    font-size: 14px;
+    font-size: .9375rem;
     outline: none;
-    transition: border-color 0.2s;
+    transition: border-color .18s cubic-bezier(.16,1,.3,1);
   }
-  .form-group input:focus, .form-group select:focus {
-    border-color: var(--accent);
-  }
-  .form-group input::placeholder { color: #5a5a7a; }
-  .form-group select option { background: var(--card); }
+  .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+  .form-group input::placeholder { color: var(--text-faint); }
+  .form-group select option { background: var(--card); color: var(--text); }
+
+  /* 字段级提示：错误靠"左侧标记 + 提亮"表达，不靠红色 */
   .hint {
-    font-size: 11px;
-    color: var(--text-dim);
-    margin-top: 4px;
+    font-size: .75rem;
+    color: var(--text-faint);
+    margin-top: 6px;
+    line-height: 1.5;
   }
-  .hint.error-hint { color: var(--error); }
+  .hint.error-hint {
+    color: var(--text);
+    padding-left: 9px;
+    border-left: 2px solid var(--accent);
+  }
+
   /* ========== 头像上传 ========== */
-  .avatar-row {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
+  .avatar-row { display: flex; align-items: center; gap: 14px; }
   .avatar-preview {
-    width: 64px;
-    height: 64px;
-    border-radius: 50%;
+    width: 62px; height: 62px;
+    border-radius: var(--radius);
     background: var(--bg);
-    border: 2px dashed var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    flex-shrink: 0;
-    cursor: pointer;
-    position: relative;
+    border: 1px dashed var(--border-strong);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; flex-shrink: 0; cursor: pointer; position: relative;
+    transition: border-color .18s cubic-bezier(.16,1,.3,1);
   }
-  .avatar-preview img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-  .avatar-preview .placeholder {
-    font-size: 22px;
-    color: var(--text-dim);
-  }
+  .avatar-preview:hover { border-color: var(--accent); }
+  .avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
+  .avatar-preview .placeholder { font-size: 1.25rem; color: var(--text-faint); font-family: var(--mono); }
   .avatar-upload-btn {
     flex: 1;
-    padding: 10px;
-    background: var(--primary);
-    border: none;
-    border-radius: 6px;
-    color: var(--text);
-    font-size: 13px;
+    padding: 11px;
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    font-size: .8125rem;
     cursor: pointer;
-    transition: opacity 0.2s;
+    transition: border-color .18s cubic-bezier(.16,1,.3,1), color .18s cubic-bezier(.16,1,.3,1);
   }
-  .avatar-upload-btn:hover { opacity: 0.85; }
+  .avatar-upload-btn:hover { border-color: var(--accent); color: var(--accent); }
   #avatarInput { display: none; }
-  /* ========== 错误提示 ========== */
+
+  /* ========== 提示条 ========== */
   .alert-error {
-    background: rgba(231,76,60,0.12);
-    border: 1px solid rgba(231,76,60,0.4);
-    color: var(--error);
-    padding: 10px 14px;
-    border-radius: 6px;
-    font-size: 13px;
+    background: rgba(30, 64, 175, .18);
+    border-left: 2px solid var(--accent);
+    color: var(--text);
+    padding: 10px 13px;
+    font-size: .8125rem;
+    line-height: 1.6;
     margin-bottom: 16px;
     display: none;
   }
   .alert-error.show { display: block; }
   .alert-error.success {
-    background: rgba(46,204,113,0.12);
-    border-color: rgba(46,204,113,0.4);
-    color: var(--success);
+    background: rgba(30, 64, 175, .28);
+    border-left-color: var(--accent);
+    color: var(--text);
   }
+
   /* 忘记密码：密保问题展示框 */
   .fp-question {
-    background: rgba(255,255,255,0.06);
+    background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px 14px;
-    font-size: 13px;
+    border-left: 2px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 11px 13px;
+    font-size: .8125rem;
     color: var(--text);
     word-break: break-word;
   }
+
   /* ========== 提交按钮 ========== */
   .btn-submit {
     width: 100%;
-    padding: 12px;
-    background: var(--accent);
-    border: none;
-    border-radius: 6px;
-    color: #fff;
-    font-size: 15px;
-    font-weight: 600;
+    padding: 13px;
+    background: var(--primary);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    color: #FFFFFF;
+    font-size: .9375rem;
+    font-weight: 500;
+    letter-spacing: .02em;
     cursor: pointer;
-    transition: opacity 0.2s;
+    transition: background-color .18s cubic-bezier(.16,1,.3,1), border-color .18s cubic-bezier(.16,1,.3,1);
     margin-top: 8px;
   }
-  .btn-submit:hover { opacity: 0.9; }
-  .btn-submit:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  /* ========== Loading 旋转 ========== */
+  .btn-submit:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+  .btn-submit:disabled { opacity: .55; cursor: not-allowed; }
+
+  /* ========== 加载指示 ========== */
   .spinner {
     display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid rgba(255,255,255,0.3);
-    border-top-color: #fff;
+    width: 13px; height: 13px;
+    border: 2px solid rgba(255,255,255,.28);
+    border-top-color: #FFFFFF;
     border-radius: 50%;
-    animation: spin 0.7s linear infinite;
+    animation: spin .7s linear infinite;
     vertical-align: middle;
     margin-right: 8px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  /* ========== 底部协议 ========== */
+
+  /* ========== 页脚说明 ========== */
   .footer-note {
     text-align: center;
-    font-size: 12px;
-    color: var(--text-dim);
+    font-size: .75rem;
+    color: var(--text-faint);
     margin-top: 18px;
+    line-height: 1.6;
   }
-  .footer-note a {
-    color: var(--accent);
-    text-decoration: none;
-  }
-  /* ========== 回调成功/手动复制视图 ========== */
-  .success-view { display: none; text-align: center; padding: 20px 0; }
+  .footer-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(125,150,232,.35); }
+  .footer-note a:hover { color: var(--text); border-color: var(--text); }
+
+  /* ========== 成功视图 ========== */
+  .success-view { display: none; text-align: center; padding: 16px 0; }
   .success-view.show { display: block; }
   .success-view .icon-ok {
-    width: 56px; height: 56px;
-    border-radius: 50%;
-    background: rgba(46,204,113,0.15);
-    color: var(--success);
-    font-size: 30px;
-    line-height: 56px;
+    width: 44px; height: 44px;
     margin: 0 auto 16px;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 1.25rem;
+    font-family: var(--mono);
   }
-  .success-view h2 { font-size: 18px; margin-bottom: 8px; }
-  .success-view p { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+  .success-view h2 { font-size: 1.125rem; font-weight: 600; margin-bottom: 8px; }
+  .success-view p { font-size: .8125rem; color: var(--text-dim); line-height: 1.7; }
   .token-box {
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius);
     padding: 12px;
     margin: 16px 0;
     word-break: break-all;
-    font-family: Consolas, monospace;
-    font-size: 12px;
-    color: var(--success);
-    max-height: 100px;
+    font-family: var(--mono);
+    font-size: .75rem;
+    line-height: 1.6;
+    color: var(--accent);
+    max-height: 104px;
     overflow-y: auto;
     text-align: left;
   }
   .btn-copy {
-    padding: 10px 24px;
-    background: var(--primary);
-    border: none;
-    border-radius: 6px;
+    padding: 11px 24px;
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
     color: var(--text);
-    font-size: 14px;
+    font-size: .875rem;
     cursor: pointer;
+    transition: border-color .18s cubic-bezier(.16,1,.3,1), color .18s cubic-bezier(.16,1,.3,1);
   }
-  .btn-copy:hover { opacity: 0.85; }
+  .btn-copy:hover { border-color: var(--accent); color: var(--accent); }
   .hidden { display: none !important; }
-  /* ========== 语言切换（右上角悬浮） ========== */
+
+  /* ========== 语言切换 ========== */
   .lang-switch {
     position: fixed;
-    top: 16px;
-    right: 16px;
+    top: 16px; right: 16px;
     display: flex;
     gap: 6px;
     z-index: 50;
   }
   .lang-btn {
-    padding: 6px 12px;
-    font-size: 12px;
-    color: var(--text-dim);
-    background: var(--card);
+    padding: 5px 11px;
+    font-family: var(--mono);
+    font-size: .6875rem;
+    letter-spacing: .06em;
+    color: var(--text-faint);
+    background: transparent;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: color .18s cubic-bezier(.16,1,.3,1), border-color .18s cubic-bezier(.16,1,.3,1);
   }
-  .lang-btn:hover { color: var(--text); border-color: var(--accent); }
-  .lang-btn.active {
-    color: #fff;
-    background: var(--accent);
-    border-color: var(--accent);
-    font-weight: 600;
+  .lang-btn:hover { color: var(--text); border-color: var(--border-strong); }
+  .lang-btn.active { color: #FFFFFF; border-color: var(--primary); background: var(--primary); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
   }
 </style>
 </head>
@@ -316,6 +363,13 @@
 
 <div class="card">
   <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="2.2" y="2.2" width="19.6" height="19.6" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M2.2 8.8h19.6M2.2 15.4h19.6" stroke="currentColor" stroke-width="1" opacity=".38"/>
+      <rect x="5" y="4.9" width="5" height="2.6" fill="#1E40AF"/>
+      <rect x="5" y="11.5" width="5" height="2.6" fill="currentColor" opacity=".5"/>
+      <rect x="5" y="18.1" width="12" height="1.2" fill="currentColor" opacity=".5"/>
+    </svg>
     <h1>zhuzhu <span>Copilot</span></h1>
     <p data-i18n="brand.sub">登录你的账号以开始使用</p>
   </div>
