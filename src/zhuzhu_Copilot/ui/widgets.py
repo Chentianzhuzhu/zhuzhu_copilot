@@ -1011,10 +1011,14 @@ class GlassButton(QPushButton):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        key = self._g_hover_key if self._g_hover else self._g_tint_key
-        tint = PALETTE.get(key) or PALETTE["elevated"]     # 防自定义主题缺键
+        # 底与描边恒定；悬停/按下只叠内部填充，边缘高光不变
+        tint = PALETTE.get(self._g_tint_key) or PALETTE["elevated"]   # 防主题缺键
         glass.paint_surface(self, p, radius=self.radius(), tint=tint,
                             reflect=self._g_reflect)
+        if self._g_hover or self.isDown():
+            glass.fill_inner(self, p, radius=self.radius(),
+                             color=PALETTE.get(self._g_hover_key),
+                             alpha=0.30 if not self.isDown() else 0.45)
         p.end()
         super().paintEvent(e)           # 图标/文字（QSS 底已透明）
 

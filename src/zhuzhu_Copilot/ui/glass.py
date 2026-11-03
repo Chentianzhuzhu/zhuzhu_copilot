@@ -501,6 +501,29 @@ def paint_surface(widget, p: QPainter, rect: QRect | None = None,
         _rim(p, rect, radius)
 
 
+def fill_inner(widget, p: QPainter, rect: QRect | None = None,
+               radius: float | None = None, color: str | None = None,
+               alpha: float = 0.32, inset: float = 1.4) -> None:
+    """**只改内部填充**：把颜色填在描边内侧，边缘高光与磨砂底完全不动。
+
+    hover / press 用它而不是换 tint —— 换 tint 会连整块贴图（含描边高光）一起重建，
+    悬停时边缘会跟着变色/变亮，观感像"整块被点亮"。这里只在内缩 1.4px 的圆角区域
+    里叠一层色，描边保持原样。
+    """
+    rect = QRect(widget.rect()) if rect is None else QRect(rect)
+    if rect.isEmpty():
+        return
+    radius = RADIUS_MD if radius is None else float(radius)
+    inner = QRectF(rect).adjusted(inset, inset, -inset, -inset)
+    if inner.width() <= 1 or inner.height() <= 1:
+        return
+    path = QPainterPath()
+    path.addRoundedRect(inner, max(0.0, radius - inset), max(0.0, radius - inset))
+    c = QColor(color or PALETTE["primary_light"])
+    c.setAlphaF(max(0.0, min(1.0, alpha)))
+    p.fillPath(path, c)
+
+
 def repaint_all() -> None:
     """强度变化后刷新所有玻璃表面（供设置页滑杆使用）。
 
