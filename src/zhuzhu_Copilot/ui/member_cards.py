@@ -18,7 +18,7 @@
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout,
+    QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QVBoxLayout,
 )
 
 from zhuzhu_Copilot.core.i18n import ui as _ui
@@ -71,8 +71,12 @@ class EdgeCard(QFrame):
         if width:
             self.setFixedWidth(int(width))
         if height:
-            self.setFixedHeight(int(height))
+            # 只给"最小高度"：固定高度时权益条目一多，布局会把带换行的标签压扁，
+            # 文字被挤成一行（用户反馈的"文字被挤压"）。改成最小高度后卡片按内容长高。
+            self.setMinimumHeight(int(height))
         self._body = QVBoxLayout(self)
+        # 让控件的最小尺寸跟随布局：内容超了卡片自己长高，而不是压缩子控件
+        self._body.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._body.setContentsMargins(_EDGE + padding[0], _EDGE + padding[1],
                                       _EDGE + padding[2], _EDGE + padding[3])
         self._body.setSpacing(6)
@@ -83,24 +87,27 @@ class EdgeCard(QFrame):
         card = PALETTE["card"]
         border = PALETTE["border"]
         accent = PALETTE["primary"]
+        # 卡面统一为一色：深色模式纯黑、浅色模式纯白（"相反"），不再叠内部渐变
+        fill = "#000000" if dark else "#FFFFFF"
+        bg_top = bg_bottom = fill
         if dark:
-            # 卡面统一暗色平面：不再做"顶亮底暗"的竖向渐变（那是给卡面加的内部
-            # 泛光，用户明确不要），一行底色让整页元素色调一致
-            bg_top = card
             edge_top = _mix(border, "#FFFFFF", 0.42)
             edge_bottom = border
             glint = 74
+            glint_color = "#FFFFFF"
         else:
             # 浅色：顶部压一档冷灰，白色高光才有对比可依（纯白卡面上白线是看不见的）
-            bg_top = _mix(card, PALETTE["bg_top"], 0.85)
             edge_top = _mix(border, "#FFFFFF", 0.70)
             edge_bottom = border
             glint = 255
+            # 白卡面上画白线等于没画：浅色主题改用极浅冷灰，顶边高光才看得见
+            glint_color = "#E3E8F0"
         if self._glow:
             edge_top = _mix(accent, "#FFFFFF", 0.25)
             edge_bottom = accent
-        return dict(bg_top=bg_top, bg_bottom=card, edge_top=edge_top,
-                    edge_bottom=edge_bottom, glint=glint, accent=accent)
+        return dict(bg_top=bg_top, bg_bottom=bg_bottom, edge_top=edge_top,
+                    edge_bottom=edge_bottom, glint=glint,
+                    glint_color=glint_color, accent=accent)
 
     # ---------- 绘制 ----------
     def paintEvent(self, _ev):
@@ -145,9 +152,9 @@ class EdgeCard(QFrame):
         # 4) 顶部边缘高光：中间亮、两端淡出的白色细线（玻璃边缘反射）
         glint = QLinearGradient(r.left() + self._radius, 0,
                                 r.right() - self._radius, 0)
-        glint.setColorAt(0.0, _alpha("#FFFFFF", 0))
-        glint.setColorAt(0.5, _alpha("#FFFFFF", c["glint"]))
-        glint.setColorAt(1.0, _alpha("#FFFFFF", 0))
+        glint.setColorAt(0.0, _alpha(c["glint_color"], 0))
+        glint.setColorAt(0.5, _alpha(c["glint_color"], c["glint"]))
+        glint.setColorAt(1.0, _alpha(c["glint_color"], 0))
         p.setPen(QPen(glint, 1.6))
         y = r.top() + 1.4
         p.drawLine(QPointF(r.left() + self._radius, y),
@@ -310,15 +317,16 @@ class ProductCard(EdgeCard):
             qss = (f"QPushButton {{ background: transparent;"
                    f" color: {c['text_secondary']}; border: 1px solid {c['border']};"
                    " border-radius: 8px; font-size: 12.5px; font-weight: 600; }")
-        elif self._recommended:
-            # 反色实心：浅色主题黑底白字、深色主题白底黑字（黑白体系里的最强引导）
-            qss = (f"QPushButton {{ background: {c['text']}; color: {c['bg_top']};"
-                   " border: none; border-radius: 8px; font-size: 12.5px;"
-                   " font-weight: 700; }")
         else:
-            qss = (f"QPushButton {{ background: transparent; color: {c['text']};"
-                   f" border: 1px solid {c['border']}; border-radius: 8px;"
-                   " font-size: 12.5px; font-weight: 600; }")
+            # 可交互的主按钮一律实心反色：深色模式白底黑字、浅色模式黑底白字
+            # （与卡面填充"相反"，按钮在卡面上永远是最高对比的一层）
+            dark = _is_dark()
+            btn_bg = "#FFFFFF" if dark else "#000000"
+            btn_fg = "#000000" if dark else "#FFFFFF"
+            qss = (f"QPushButton {{ background: {btn_bg}; color: {btn_fg};"
+                   " border: none; border-radius: 8px; font-size: 12.5px;"
+                   " font-weight: 700; }"
+                   f"QPushButton:disabled {{ background: {btn_bg}; color: {btn_fg}; }}")
         self.buy_btn.setStyleSheet(qss)
 
     def _place_badge(self):
