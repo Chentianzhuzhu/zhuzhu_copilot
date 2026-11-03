@@ -113,14 +113,18 @@ def test_glass_backdrop_only_for_registered_host(tmp_path):
         glass.set_strength(50, persist=False)
         plain = QWidget()
         plain.resize(300, 200)
-        assert glass._frosted_layer(plain) is None, "未登记的窗口不该有磨砂底"
+        pm, _, _ = glass._frosted_layer(plain)
+        assert pm is None, "未登记的窗口不该有磨砂底"
 
         host = QWidget()
         host.resize(300, 200)
         glass.register_host(host)
-        layer = glass._frosted_layer(host)
-        assert layer is not None and not layer.isNull(), "宿主窗口应能生成磨砂底"
-        assert layer.size() == host.size()
+        pm, key, scale = glass._frosted_layer(host)
+        assert pm is not None and not pm.isNull(), "宿主窗口应能生成磨砂底"
+        assert key is not None and scale >= 1.0
+        # 同一窗口再次请求必须命中缓存（同一张位图），不能再糊一遍
+        again, key2, _ = glass._frosted_layer(host)
+        assert again is pm and key2 == key, "同窗口应命中磨砂层缓存"
     glass.set_strength(glass.GLASS_DEFAULT, persist=False)
 
 
@@ -146,7 +150,7 @@ def test_glass_block_is_cached_and_invalidated_by_strength(tmp_path):
         assert first is second, "同一状态必须命中缓存（否则每帧都在重建整块贴图）"
 
         glass.set_strength(80, persist=False)
-        glass._layer["key"] = None
+        glass.reset_layers()
         third = glass._glass_block(card, card.rect(), 12, "#FFFFFF", 0.0)
         assert third is not first, "强度变化后必须重建"
         host.close()

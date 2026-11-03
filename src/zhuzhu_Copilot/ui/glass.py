@@ -55,8 +55,11 @@ _strength: int | None = None
 _alphas: dict = {}          # mode -> 不透明度（懒加载，按需缓存）
 _listeners: list = []
 _capturing = False          # 抓场景期间禁止重入（隐藏/显示会触发重绘，重绘又来抓 → 递归）
-# pm 是「长边不超过 _LAYER_MAX_EDGE」的缩小版磨砂层，scale 为 窗口px / 图层px
-_layer: dict = {"key": None, "pm": None, "scale": 1.0}
+# 每个**窗口**各存一份磨砂层：主面板与 4 个悬浮面板各自有独立窗口，共用一个槽位
+# 会互相踩踏 —— 每次换窗口都要重算一遍 720px 的模糊（约 3~8ms），一屏多面板时
+# 每帧都在重算。用 WeakKeyDictionary：窗口销毁自动回收，不用手工清理。
+_layers: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()   # window → (key, pm, scale)
+_LAYER_CACHE_MAX = 6        # 最多缓存几个窗口的磨砂层（主面板 + 4 个浮窗 + 余量）
 
 #: 磨砂层长边上限（px）。磨砂层永远是模糊的，按窗口原尺寸糊一次要 10ms 上下，
 #: 窗口拖拽改尺寸时会一顿一顿；缩到 480 再放大，观感一致，成本降到 1ms 级。
@@ -86,7 +89,7 @@ def set_strength(value: int, persist: bool = True) -> int:
         v = GLASS_DEFAULT
     v = max(GLASS_MIN, min(GLASS_MAX, v))
     _strength = v
-    _layer["key"] = None                      # 磨砂层随强度重建
+    reset_layers()                            # 磨砂层随强度重建
     if persist:
         try:
             app_identity.qsettings().setValue(_PREFS_KEY, str(v))
@@ -187,28 +190,33 @@ def rim_alpha() -> float:
 
 # ---------------------------------------------------------------- 变更通知
 def subscribe(callback) -> None:
-    """登记重绘回调（玻璃表面在 __init__ 里调；控件销毁后自动失效）。"""
+    """登记重绘回调（玻璃表面在 __init__ 里调；控件销毁后自动失效）。
+
+    存「弱引用宿主 + 方法名」而不是 WeakMethod：Qt 的内建方法没有 ``__func__``，
+    WeakMethod 会抛 AttributeError（不是 TypeError），会把构造期直接打断。
+    """
+    owner = getattr(callback, "__self__", None)
+    name = getattr(callback, "__name__", "")
     try:
-        ref = weakref.WeakMethod(callback) if getattr(callback, "__self__", None) \
-            else weakref.ref(callback)
+        if owner is not None and name:
+            _listeners.append((weakref.ref(owner), name))
+        else:
+            _listeners.append((weakref.ref(callback), ""))
     except TypeError:
         return
-    _listeners.append(ref)
 
 
 def _notify() -> None:
     alive = []
-    for ref in _listeners:
-        cb = ref()
-        if cb is None:
-            continue
-        alive.append(ref)
+    for ref, name in _listeners:
+        obj = ref()
+        if obj is None:
+            continue                    # 控件已销毁：顺手丢掉这条登记
+        alive.append((ref, name))
         try:
-            cb()
-        except RuntimeError:
-            continue        # 控件已销毁
+            (getattr(obj, name) if name else obj)()
         except Exception:
-            continue
+            continue                    # 单个表面刷新失败不影响其它表面
     _listeners[:] = alive
 
 
@@ -236,23 +244,30 @@ def _layer_key(size) -> tuple:
             round(float(p.bg_dim), 2), app_wallpaper.active())
 
 
-def _frosted_layer(window) -> QPixmap | None:
+def reset_layers() -> None:
+    """作废所有窗口的磨砂层缓存（改强度 / 换壁纸 / 换主题后调用）。"""
+    _layers.clear()
+
+
+def _frosted_layer(window):
+    """返回 ``(磨砂层, 缓存键, 缩放比)``；``磨砂层`` 为 None 表示该窗口没有背景可采样。"""
     """整窗磨砂底（壁纸 + 压暗纱 + 玻璃额外模糊），长边不超过 ``_LAYER_MAX_EDGE``。
 
     返回的是缩小版：调用方按 ``_layer["scale"]`` 折算源矩形，绘制时放大回目标尺寸。
     非宿主窗口返回 None（对话框等独立窗口不在壁纸上，只能叠半透明填充）。
     """
     if not enabled() or window is None:
-        return None
+        return None, None, 1.0
     try:
         if not window.property("_glass_host"):
-            return None
+            return None, None, 1.0
+        size = window.size()
     except RuntimeError:
-        return None
-    size = window.size()
+        return None, None, 1.0
     key = _layer_key(size)
-    if _layer["key"] == key and _layer["pm"] is not None:
-        return _layer["pm"]
+    hit = _layers.get(window)
+    if hit is not None and hit[1] == key:      # (pm, key, scale)
+        return hit
     pm = None
     scale = 1.0
     if app_wallpaper.active() and size.width() > 1 and size.height() > 1:
@@ -268,8 +283,11 @@ def _frosted_layer(window) -> QPixmap | None:
         p.end()
         if ok:
             pm = app_wallpaper.blur_pixmap(small, blur_radius() / scale)
-    _layer["key"], _layer["pm"], _layer["scale"] = key, pm, scale
-    return pm
+    entry = (pm, key, scale)      # 顺序与返回声明一致：(磨砂层, 缓存键, 缩放比)
+    if len(_layers) >= _LAYER_CACHE_MAX:
+        _layers.clear()                 # 极端情况（大量浮窗）：整批作废，代价一次性
+    _layers[window] = entry
+    return entry
 
 
 def capture_scene(widget, rect: QRect | None = None) -> None:
@@ -303,6 +321,14 @@ def capture_scene(widget, rect: QRect | None = None) -> None:
     if src.isEmpty():
         return
     was = widget.isVisible()
+    # 布局内的控件隐藏会触发父布局重排（兄弟控件跳动）；这类表面本来也不做反射，
+    # 直接放弃抓取，回落到壁纸层采样
+    try:
+        parent = widget.parentWidget()
+        if was and parent is not None and parent.layout() is not None:
+            return
+    except RuntimeError:
+        return
     _capturing = True
     try:
         if was:
@@ -362,14 +388,18 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
     合成后每帧只剩一次整块 blit，重绘成本与「有没有玻璃」基本无关。
     键含层键/位置/尺寸/圆角/底色/不透明度/dpr，任一变化自动重建。
     """
-    dpr = max(1.0, float(widget.devicePixelRatioF()))
-    # 先取磨砂层（会把 _layer["key"] 算好），再拼缓存键，否则首次调用键里是 None
-    layer = _frosted_layer(widget.window()) if enabled() else None
+    native = max(1.0, float(widget.devicePixelRatioF()))
+    layer, layer_key, layer_scale = (_frosted_layer(widget.window()) if enabled()
+                                     else (None, None, 1.0))
     scene = widget.__dict__.get("_glass_scene") if (reflect and enabled()) else None
     if scene is not None and scene.size() != rect.size():
         scene = None
+    # 贴图一律按原生 dpr 生成：1:1 blit 是最快的路径。曾试过"大表面用 1x 省显存"，
+    # 结果每帧都要把 1x 平滑放大回 2x，实测反而从 6ms 涨到 13ms（得不偿失）
+    area_px = rect.width() * rect.height() * native * native
+    dpr = native
     # 用 cacheKey 而不是 id()：id 会被回收后复用，可能把旧快照当成新的（画面卡住）
-    key = (_layer["key"], scene.cacheKey() if scene is not None else 0,
+    key = (layer_key, scene.cacheKey() if scene is not None else 0,
            rect.x(), rect.y(), rect.width(), rect.height(),
            round(radius, 2), tint, round(min_alpha, 3),
            round(dpr, 2))
@@ -396,7 +426,7 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
             pos = widget.mapTo(widget.window(), rect.topLeft())
         except RuntimeError:
             pos = None
-        k = float(_layer.get("scale") or 1.0)
+        k = float(layer_scale or 1.0)
         if pos is not None and pos.x() >= 0 and pos.y() >= 0 \
                 and pos.x() + rect.width() <= layer.width() * k \
                 and pos.y() + rect.height() <= layer.height() * k:
@@ -409,7 +439,7 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
     p.fillPath(path, fill)
     p.end()
 
-    if rect.width() * rect.height() * dpr * dpr <= _BLOCK_CACHE_MAX_PX:
+    if area_px <= _BLOCK_CACHE_MAX_PX:
         widget.__dict__["_glass_block"] = (key, pm)
     return pm
 
@@ -425,8 +455,13 @@ def _rim(p: QPainter, rect: QRect, radius: float) -> None:
     """
     hi = QColor(255, 255, 255)
     hi.setAlphaF(min(0.9, rim_alpha() + 0.22))
-    line = QColor(PALETTE["border"])
-    line.setAlphaF(0.55)
+    # 壁纸模式下填充是白的，描边也必须同色系，否则白玻璃外面套一圈灰线
+    if app_wallpaper.active():
+        line = QColor(255, 255, 255)
+        line.setAlphaF(0.34)
+    else:
+        line = QColor(PALETTE["border"])
+        line.setAlphaF(0.55)
     inner = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
     path = QPainterPath()
     path.addRoundedRect(inner, radius, radius)
@@ -530,5 +565,5 @@ def repaint_all() -> None:
     只需作废磨砂层 + 通知订阅者：每个表面下一次绘制会用新键重新裁切，
     裁剪缓存因此自动失效（键里含层键）。
     """
-    _layer["key"] = None
+    reset_layers()
     _notify()
