@@ -10,7 +10,7 @@
         <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <rect x="2.2" y="2.2" width="19.6" height="19.6" stroke="currentColor" stroke-width="1.4"/>
           <path d="M2.2 8.8h19.6M2.2 15.4h19.6" stroke="currentColor" stroke-width="1" opacity=".38"/>
-          <rect x="5" y="4.9" width="5" height="2.6" fill="#1E40AF"/>
+          <rect x="5" y="4.9" width="5" height="2.6" fill="#2447C8"/>
           <rect x="5" y="11.5" width="5" height="2.6" fill="currentColor" opacity=".5"/>
           <rect x="5" y="18.1" width="12" height="1.2" fill="currentColor" opacity=".5"/>
         </svg>
@@ -133,7 +133,7 @@
   <div class="wrap">
     <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
     <div class="features-grid sr" id="featuresGrid">
-      <div class="tilt" th:each="f, it : ${list}">
+      <div class="tilt reveal" th:each="f, it : ${list}">
         <article class="feature-card">
           <span class="feature-num" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
           <span class="feature-icon" aria-hidden="true">
@@ -159,7 +159,7 @@
       <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
     </th:block>
     <div class="gallery-grid sr" id="galleryGrid">
-      <figure class="gallery-item" th:each="g, it : ${list}"
+      <figure class="gallery-item reveal" th:each="g, it : ${list}"
               th:classappend="${it.index % 5 == 0} ? 'wide' : ''">
         <a class="gallery-link" th:href="${g.url}" data-lightbox
            th:attr="data-src=${g.url},data-title=${g.title},data-desc=${g.desc},data-index=${it.index}">
@@ -192,7 +192,7 @@
       <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
     </th:block>
     <div class="video-wall sr" id="videoWall">
-      <article class="video-card" th:each="v : ${list}"
+      <article class="video-card reveal" th:each="v, it : ${list}"
                th:attr="data-video=${v.url},data-vtype=${v.type},data-vtitle=${v.title},data-vdesc=${v.desc},data-vposter=${v.poster}">
         <button class="video-thumb" type="button"
                 th:attr="aria-label=${'播放视频：' + (v.title ?: '产品演示')}">
@@ -232,7 +232,7 @@
               th:attr="data-target=${downloads}" th:text="${downloadsText}">0</span>
       </div>
       <div class="stats-grid sr">
-        <div class="stat" th:each="s : ${list}">
+        <div class="stat reveal" th:each="s, it : ${list}">
           <span class="stat-label" th:text="${s.label}">标签</span>
           <span class="stat-value num" th:attr="data-raw=${s.value}" th:text="${s.value}">0</span>
         </div>
@@ -247,7 +247,7 @@
   <div class="wrap">
     <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
     <div class="adv-grid sr">
-      <div class="tilt" th:each="a, it : ${list}">
+      <div class="tilt reveal" th:each="a, it : ${list}">
         <article class="adv-card">
           <span class="adv-index" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
           <h3 class="adv-title" th:text="${a.title}">优势标题</h3>

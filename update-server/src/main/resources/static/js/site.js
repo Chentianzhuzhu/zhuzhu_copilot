@@ -157,7 +157,14 @@
 
   /* 揭示动效：所有入场动画共用一个 IntersectionObserver。
      元素进入视口后立即 unobserve —— 观察器不常驻，回调不重复触发。
-     没有 IntersectionObserver 的旧浏览器直接给终态，绝不留下不可见内容。 */
+     没有 IntersectionObserver 的旧浏览器直接给终态，绝不留下不可见内容。
+
+     这里是全站唯一的"内容可见性开关"，因此必须有三重防线：
+     1. 含输入控件的容器立即放行 —— 表单"看不见、打字也看不见"的代��，
+        远高于少一次入场动画；
+     2. 观察器正常工作：进入视口即揭示；
+     3. 观察器彻底失效（离屏 webview、打印、被节流的后台标签页）：
+        4 秒后整体放行，绝不让整页停在 opacity:0。 */
   function initReveal() {
     /* 只认类名，不逐个枚举具体选择器。
        曾经的写法是白名单：'.section-head.sr, .dl-block.sr, ...' 逐个列出来。
@@ -170,9 +177,30 @@
       els.forEach(function (el) { el.classList.add('in'); });
       return;
     }
+    /* 立即放行：不依赖过渡时钟。
+       给元素加 .in 只是把过渡的目标值改了；若帧时钟不推进（离屏渲染、
+       被节流的后台标签页、某些内嵌 webview），过渡会永远停在 opacity:0，
+       元素依旧隐形 —— 那正是"反馈页打不了字"的成因。
+       所以这里直接写内联终态：可见性不依赖任何动画时钟。 */
+    function revealNow(el) {
+      el.style.transition = 'none';
+      el.style.opacity = '1';
+      el.style.transform = 'none';
+      el.classList.add('in');
+    }
+    /* 防线一：带文本输入的容器立即放行，不参与入场动画。
+       判定范围刻意排除复选框/单选/提交按钮 —— 它们不影响输入体验。 */
+    var TEXT_FIELD = 'textarea, input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), select';
+    els.forEach(function (el) {
+      if (el.matches(TEXT_FIELD) || el.querySelector(TEXT_FIELD)) {
+        revealNow(el);
+      }
+    });
+    var fired = 0;
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
         if (!en.isIntersecting) { return; }
+        fired += 1;
         en.target.classList.add('in');
         io.unobserve(en.target);
       });
@@ -182,7 +210,7 @@
        改判定「边缘是否进入」+ 底部留 10% 余量，元素多高都能触发。 */
     }, { threshold: 0, rootMargin: '0px 0px -10% 0px' });
     els.forEach(function (el) { io.observe(el); });
-    /* 最后一道兜底：2.5 秒后，凡已进入视口却仍未揭示的元素，直接放行。
+    /* 兜底一：2.5 秒后，凡已进入视口却仍未揭示的元素，直接放行。
        观察器是唯一的内容显示开关，一旦它失效（回调异常、被浏览器节流、
        元素经历过 display 切换），整块内容就是永久空白 —— 用户看到的是
        「页面坏了」，代价远高于少一次入场动画。 */
@@ -190,9 +218,18 @@
       els.forEach(function (el) {
         if (el.classList.contains('in')) { return; }
         var r = el.getBoundingClientRect();
-        if (r.top < window.innerHeight && r.bottom > 0) { el.classList.add('in'); }
+        if (r.top < window.innerHeight && r.bottom > 0) { revealNow(el); }
       });
     }, 2500);
+    /* 兜底二：4 秒后若观察器一次都没触发，说明它根本不可用（离屏渲染、
+       被节流的后台标签页、某些内嵌 webview）。此时整页放行 —— 少一次
+       入场动画的代价，远小于"整页空白且无法交互"。 */
+    window.setTimeout(function () {
+      if (fired > 0) { return; }
+      els.forEach(function (el) {
+        if (!el.classList.contains('in')) { revealNow(el); }
+      });
+    }, 4000);
   }
 
   /* 数字递增：进入视口后逐帧改 textContent。

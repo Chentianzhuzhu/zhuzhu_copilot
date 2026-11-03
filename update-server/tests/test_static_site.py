@@ -36,6 +36,7 @@ OPTIONAL_END = {"p", "li", "td", "th", "tr", "option", "dt", "dd", "thead", "tbo
 
 # 色系允许的颜色（2026-11 重构：装配说明书 / ASSEMBLY MANUAL）
 # 设计原则：
+#   0. 表面色阶之间必须有可见差值，否则整页读作一片灰；
 #   1. 全套界面只有一个彩色 —— 深蓝。它只出现在"可以操作"的地方（按钮、
 #      当前章节、焦点环、图纸标注线）。大面积铺色会稀释它的指示性。
 #   2. 中性色是四档近黑：靠表面色差与 1px 描边分层，不用阴影。
@@ -43,14 +44,15 @@ OPTIONAL_END = {"p", "li", "td", "th", "tr", "option", "dt", "dd", "thead", "tbo
 #      色觉障碍下依然可读。上一版的电光蓝 + 青绿双主色已移除（青绿是
 #      "AI 落地页"最容易被认出的配色特征之一）。
 ALLOWED_HEX = {
-    # 表面层级：越亮越靠前
-    "#0a0b0d", "#0f1114", "#14171b", "#1b1f24", "#232830",
-    # 文字三级
-    "#f5f5f5", "#a9afb8", "#8a9099",
+    # 表面层级：越亮越靠前。四档之间的差值刻意拉开 —— 差得太近时，
+    # 大面积暗底会读成一整块"灰"，这是上一版最明显的观感问题。
+    "#0a0b0d", "#121519", "#191d23", "#22272f", "#2b313a",
+    # 文字三级：标题纯白、正文提亮、注释仍高于 AA 对比度
+    "#ffffff", "#c3cad4", "#939ba7",
     # 深蓝：填充 / 悬停 / 暗底文字 / 最深底色
-    "#1e40af", "#2a55d0", "#7d96e8", "#16307f",
-    # 纯白与纯黑（反色按钮文字、视频画布）
-    "#ffffff", "#e9edfa", "#000000",
+    "#2447c8", "#3059e0", "#93aaf6", "#1a3899",
+    # 反色按钮的悬停态与视频画布
+    "#eaeffb", "#000000",
 }
 # 大写形式同样放行（不同来源的十六进制写法大小写混用）
 ALLOWED_HEX |= {c.upper() for c in list(ALLOWED_HEX)}
@@ -881,6 +883,43 @@ class TestTeamMemberLayout(unittest.TestCase):
                       "图片会按原始比例溢出框体，必须绝对定位撑满")
         self.assertIn("inset: 0", rule, "绝对定位需要 inset:0 才能四边贴合")
         self.assertIn("object-fit: cover", rule, "照片需等比裁切填满取景框")
+
+    def test_feedback_form_never_depends_on_reveal(self) -> None:
+        """表单容器不得带入场类。
+
+        入场动效把元素初始态设为 opacity:0，再由 IntersectionObserver 放行。
+        观察器在离屏 webview、打印、被节流的后台标签页里可能完全不触发，
+        那时表单会永久隐形 —— 用户"打了字也看不见"，比没有动效严重得多。
+        """
+        html = read(TEMPLATES / "feedback.html")
+        for m in re.finditer(r'class="([^"]*feedback-card[^"]*)"', html):
+            self.assertNotIn("sr", m.group(1).split(), "反馈表单容器不得依赖入场动画")
+            self.assertNotIn("reveal", m.group(1).split(), "反馈表单容器不得依赖入场动画")
+
+    def test_reveal_has_global_failsafe(self) -> None:
+        """揭示系统必须有两道兜底，不能只依赖观察器。
+
+        观察器一次都没触发时整页放行；含输入控件的容器立即放行。
+        """
+        js = read(STATIC / "js/site.js")
+        body = js[js.index("function initReveal"):]
+        body = body[:body.index("\n  function ")]
+        self.assertIn("if (fired > 0) { return; }", body,
+                      "缺少「观察器完全失效则整体放行」的兜底")
+        self.assertIn("TEXT_FIELD", body, "含输入控件的容器没有立即放行")
+        # 兜底必须直接写终态，不能只加 .in：帧时钟不推进时过渡会停在起始值
+        self.assertIn("revealNow", body, "兜底没有走直接置终态的路径")
+        self.assertIn("el.style.opacity = '1'", body, "兜底没有直接写内联不透明度")
+
+    def test_no_blur_filters(self) -> None:
+        """特效不得引入模糊滤镜。
+
+        模糊是大面积栅格化操作：一层全屏模糊会把移动端的滚动帧率直接打穿，
+        换来的只是"看起来有点氛围"。
+        """
+        css = read(STATIC / "css/site.css")
+        for banned in ("filter: blur", "filter:blur", "backdrop-filter"):
+            self.assertNotIn(banned, css, f"CSS 出现了高成本滤镜：{banned}")
 
 
 if __name__ == "__main__":

@@ -15,20 +15,20 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
     --bg: #0A0B0D;
-    --card: #14171B;
-    --surface: #0F1114;
-    --primary: #1E40AF;
-    --primary-hover: #2A55D0;
-    --accent: #7D96E8;
-    --text: #F5F5F5;
-    --text-dim: #A9AFB8;
-    --text-faint: #8A9099;
-    --border: rgba(200, 210, 230, .13);
-    --border-strong: rgba(200, 210, 230, .28);
+    --card: #191D23;
+    --surface: #121519;
+    --primary: #2447C8;
+    --primary-hover: #3059E0;
+    --accent: #93AAF6;
+    --text: #FFFFFF;
+    --text-dim: #C3CAD4;
+    --text-faint: #939BA7;
+    --border: rgba(200, 214, 236, .18);
+    --border-strong: rgba(200, 214, 236, .40);
     --radius: 2px;
     /* 状态不用色相表达：成功走深蓝，失败走描边条 + 白字。 */
-    --success: #7D96E8;
-    --error: #F5F5F5;
+    --success: #93AAF6;
+    --error: #FFFFFF;
     --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   }
   html { color-scheme: dark; }
@@ -213,7 +213,7 @@
 
   /* ========== 提示条 ========== */
   .alert-error {
-    background: rgba(30, 64, 175, .18);
+    background: rgba(36, 71, 200, .22);
     border-left: 2px solid var(--accent);
     color: var(--text);
     padding: 10px 13px;
@@ -224,7 +224,7 @@
   }
   .alert-error.show { display: block; }
   .alert-error.success {
-    background: rgba(30, 64, 175, .28);
+    background: rgba(36, 71, 200, .34);
     border-left-color: var(--accent);
     color: var(--text);
   }
@@ -366,7 +366,7 @@
     <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <rect x="2.2" y="2.2" width="19.6" height="19.6" stroke="currentColor" stroke-width="1.4"/>
       <path d="M2.2 8.8h19.6M2.2 15.4h19.6" stroke="currentColor" stroke-width="1" opacity=".38"/>
-      <rect x="5" y="4.9" width="5" height="2.6" fill="#1E40AF"/>
+      <rect x="5" y="4.9" width="5" height="2.6" fill="#2447C8"/>
       <rect x="5" y="11.5" width="5" height="2.6" fill="currentColor" opacity=".5"/>
       <rect x="5" y="18.1" width="12" height="1.2" fill="currentColor" opacity=".5"/>
     </svg>
