@@ -18,10 +18,14 @@ from zhuzhu_Copilot.core import agent_group_chat as gc
 
 
 class _FakeEngine:
-    """只做流式回放：把预设回复逐字推给 on_delta，行为与真实引擎的对外契约一致。"""
+    """只做流式回放：把预设回复逐字推给 on_delta，行为与真实引擎的对外契约一致。
 
-    def __init__(self, reply: str):
+    on_run：可选回调，在 run 期间触发（用于模拟模型调用工具后再收尾）。
+    """
+
+    def __init__(self, reply: str, on_run=None):
         self.reply = reply
+        self.on_run = on_run
         self.on_delta = None
         self.on_status = None
         self.confirm = None
@@ -32,8 +36,20 @@ class _FakeEngine:
 
     def run(self, prompt, *_a, **_kw):
         self.prompts.append(prompt)
+        if self.on_run is not None:
+            self.on_run(self)
+            return
         for ch in self.reply:
             self.on_delta(ch)
+
+
+def _thinking_on(params: dict) -> bool:
+    """判断力度参数是否开启了思考（各家参数形态不同：thinking.type / reasoning_effort）。"""
+    if not params:
+        return False
+    if (params.get("thinking") or {}).get("type") == "enabled":
+        return True
+    return params.get("reasoning_effort") not in (None, "", "none")
 
 
 @pytest.fixture()
@@ -249,3 +265,99 @@ def test_save_agent_keeps_avatar_when_not_passed(chats_dir, tmp_path, monkeypatc
     # 显式传空串 → 清除
     assert agent_agents.save_agent("a1", "规则2", persona="性格", avatar="")[0]
     assert not agent_agents.get_agent("a1").get("avatar")
+
+
+def test_member_can_exit_speech_and_hand_over_turn(chats_dir):
+    """成员可调用 exit_speech 退出发言：不产出正文，发言权交给下一位。"""
+    c = _chat(names=("甲", "乙"), max_rounds=2)
+    msgs = []
+    r = gc.GroupChatRunner(c, {}, on_message=msgs.append)
+    seen = {"n": 0}
+
+    def _eng(p):
+        def _hook(eng):
+            seen["n"] += 1
+            if seen["n"] == 1:              # 只有第一位退出
+                eng.extra_tool_handlers["exit_speech"]({"reason": "无补充"})
+                eng._stop.set()
+        return _FakeEngine("", on_run=_hook)
+
+    r._engine_for = _eng
+    r.run()
+    assert len(msgs) == 2
+    assert msgs[0].get("skip") is True and "跳过" in msgs[0]["text"]
+    assert msgs[1].get("skip") is None
+    # 退出的那一轮不写进共同上下文（没有内容可共享）
+    assert not any("跳过" in e["text"] for e in agent_context.entries(r._space))
+
+
+def test_exit_speech_tool_is_exposed_only_in_discussion(chats_dir):
+    """工具 schema 名字与描述固定（模型靠它学会「让出发言权」）。"""
+    fn = gc.EXIT_SPEECH_SCHEMA["function"]
+    assert fn["name"] == "exit_speech"
+    assert "退出" in fn["description"] and "reason" in fn["parameters"]["properties"]
+
+
+def test_group_rules_forbid_plans_in_body_and_mention_exit_tool(chats_dir):
+    """正文禁止输出执行计划；退出发言工具在规则里说明。"""
+    c = _chat()
+    r = gc.GroupChatRunner(c, {})
+    persona = r._system_persona(c["participants"][0])
+    assert "正文禁止输出执行计划" in persona
+    assert "exit_speech" in persona
+
+
+def test_effort_follows_global_thinking_setting(chats_dir):
+    """思考强度跟随全局设置：高力度开思考，低力度在 auto 下关思考。"""
+    c = _chat()
+    base = {"providers": [{"name": "P", "base_url": "http://x", "api_key": "k",
+                           "models": ["m"]}]}
+    p = c["participants"][0]
+
+    cfg = dict(base, effort="high")
+    r = gc.GroupChatRunner(c, cfg)
+    eng = r._engine_for(p)
+    r._apply_effort(eng, p, "讨论")
+    assert _thinking_on(eng.llm.effort_params), "高力度应开启思考"
+
+    cfg_low = dict(base, effort="low")
+    r2 = gc.GroupChatRunner(c, cfg_low)
+    eng2 = r2._engine_for(p)
+    r2._apply_effort(eng2, p, "讨论")
+    assert not _thinking_on(eng2.llm.effort_params), "低力度在 auto 下应关闭思考"
+
+    cfg_on = dict(base, effort="low", think_mode="on")
+    r3 = gc.GroupChatRunner(c, cfg_on)
+    eng3 = r3._engine_for(p)
+    r3._apply_effort(eng3, p, "讨论")
+    assert _thinking_on(eng3.llm.effort_params), "思考模式 on 时即使低力度也应思考"
+
+    cfg_force = dict(base, effort="low", force_think=True)
+    r4 = gc.GroupChatRunner(c, cfg_force)
+    eng4 = r4._engine_for(p)
+    r4._apply_effort(eng4, p, "讨论")
+    assert _thinking_on(eng4.llm.effort_params), "强制思考时即使低力度也应思考"
+
+
+def test_summarize_by_designated_member(chats_dir):
+    """指定成员总结：产出 kind=summary 消息；总结不写回共同上下文。"""
+    c = _chat(names=("甲", "乙"), max_rounds=1)
+    c["topic"] = "选题"
+    r = gc.GroupChatRunner(c, {})
+    r._engine_for = lambda p: _FakeEngine("结论：选 A。")
+    r._open_space()
+    r._append_space("甲", "我认为是 A")
+    msg = r.summarize("甲")
+    assert msg["kind"] == "summary" and msg["speaker"] == "甲"
+    assert msg["text"] == "结论：选 A。"
+    # 总结不进空间：否则后续成员会把它当成一条发言引用
+    assert not any("选 A" in e["text"] for e in agent_context.entries(r._space))
+    # 提示词带完整空间与固定三段式要求
+    prompt = r._summary_prompt()
+    assert "我认为是 A" in prompt and "一句话" in prompt and "不要输出执行计划" in prompt
+
+
+def test_summarize_unknown_member_returns_empty(chats_dir):
+    c = _chat()
+    r = gc.GroupChatRunner(c, {})
+    assert r.summarize("不存在") == {}

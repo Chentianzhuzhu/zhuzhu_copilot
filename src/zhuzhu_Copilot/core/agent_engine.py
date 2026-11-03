@@ -733,6 +733,11 @@ class AgentEngine:
         self.llm = llm
         self.conversation = str(conversation or "")
         self.shared_snapshot = bool(shared_snapshot)
+        # 调用方注入的额外工具（如群聊「退出发言」）：schema 与处理器分开存，
+        # 引擎只负责暴露与分发，语义完全由注入方定义（不进 agent_tools 全局表，
+        # 避免主 Agent 莫名其妙看到一个「退出发言」按钮）。
+        self.extra_tools: list = []
+        self.extra_tool_handlers: dict = {}
         self._ctx_window = max(4096, int(context_window or
                                          agent_llm.infer_context_window(
                                              getattr(llm, "model", None) or "")))
@@ -1295,7 +1300,7 @@ class AgentEngine:
         if self.efficient_mode:
             # 高效模式：只给上游最小必需工具集（无 MCP / 插件 / 工作流自定义 /
             # 子 Agent / 功能型工具），系统层面「禁用工具」仍然优先。
-            return self._efficient_tools(tools)
+            return self._efficient_tools(tools) + list(self.extra_tools)
         # 任务裁剪：user_input 明确命中某任务类别时，只暴露「核心 + 命中类别」工具，
         # 显著减小 schema token（首包更小）并降低模型选错工具概率；
         # 未命中任何类别则保留全部（保守，避免误裁影响能力）。
@@ -1359,6 +1364,9 @@ class AgentEngine:
         elif getattr(self, "_disabled_tools", None):
             tools = [t for t in tools
                      if t["function"]["name"].lower() not in self._disabled_tools]
+        # 注入的额外工具不受任务裁剪/禁用记忆等规则影响：它们由调用方按场景提供
+        # （例如群聊只在讨论模式注入「退出发言」）
+        tools.extend(self.extra_tools)
         return tools
 
     def _efficient_tools(self, tools: list) -> list:
@@ -1582,6 +1590,13 @@ class AgentEngine:
         if not self.memory_enabled and name in ("save_memory", "load_memory"):
             # 记忆关闭（系统层面）：schema 已不外露记忆工具，此处兜底硬拦
             return {"text": "[记忆已关闭] 记忆功能已在设置中禁用，本次未执行。", "images": []}
+        # 注入的额外工具（调用方自定义，如群聊「退出发言」）：直接交回注入方处理
+        handler = (self.extra_tool_handlers or {}).get(name)
+        if handler is not None:
+            try:
+                return handler(args or {}) or {"text": "", "images": []}
+            except Exception as e:
+                return {"text": f"[{name}] 执行失败: {e}", "images": []}
         if not self.allow_subagents and _is_subagent_tool(name):
             # 子 Agent / 跨工作流派发的执行层硬拦截：schema 已剔除，此处兜底提示词干预
             # （模型幻觉或被诱导直接写出工具名）。本任务判定为简单/中等复杂度 →

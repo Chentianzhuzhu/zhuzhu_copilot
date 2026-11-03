@@ -66,7 +66,7 @@ class _AgentRow(QWidget):
     """一条 Agent 发言：圆形头像 + 名字/时间 + Markdown 正文（复用 RichBlock）。"""
 
     def __init__(self, style, name: str, avatar_ref: str, ts: float = 0,
-                 error: bool = False, parent=None):
+                 error: bool = False, badge: str = "", parent=None):
         super().__init__(parent)
         self._style = style
         self._name = name
@@ -84,8 +84,29 @@ class _AgentRow(QWidget):
         self.time_lbl = QLabel(time.strftime("%H:%M", time.localtime(ts or time.time())))
         head.addWidget(self.name_lbl)
         head.addWidget(self.time_lbl)
+        self.badge_lbl = None
+        if badge:
+            self.badge_lbl = QLabel(badge)
+            self.badge_lbl.setObjectName("gcBadge")
+            head.addWidget(self.badge_lbl)
         head.addStretch(1)
         v.addLayout(head)
+        # 思考过程：默认折叠的一行「思考过程 · N 字」，点击展开。
+        # 正文用纯文本渲染 —— 思考是次要信息，不值得为它做 markdown 解析开销。
+        self._think_buf = ""
+        self._think_open = False
+        self.think_head = QLabel()
+        self.think_head.setObjectName("gcThinkHead")
+        self.think_head.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.think_head.setVisible(False)
+        self.think_head.mousePressEvent = self._toggle_think
+        v.addWidget(self.think_head)
+        self.think_body = QLabel()
+        self.think_body.setObjectName("gcThinkBody")
+        self.think_body.setWordWrap(True)
+        self.think_body.setTextFormat(Qt.TextFormat.PlainText)
+        self.think_body.setVisible(False)
+        v.addWidget(self.think_body)
         color = PALETTE["danger"] if error else None
         self.body = chat_bubbles.RichBlock(style, font_size=FONT_BODY, color=color)
         # 正文缩进到头像右侧，与名字左对齐；RichBlock 的高度计算已把该边距计入
@@ -103,6 +124,30 @@ class _AgentRow(QWidget):
         self.time_lbl.setStyleSheet(
             f"color: {c['text_secondary']}; font-size: {FONT_SMALL - 1}px;"
             " background: transparent;")
+        if self.badge_lbl is not None:
+            self.badge_lbl.setStyleSheet(
+                f"color: {c['primary']}; background: transparent;"
+                " border: 1px solid %s; border-radius: 8px; padding: 0 7px;"
+                " font-size: 10px; font-weight: 600;" % c["border"])
+
+    # ---------- 思考过程 ----------
+    def add_reasoning(self, text: str):
+        """追加思考增量（流式）。折叠态只更新字数，展开态才重排正文。"""
+        if not text:
+            return
+        self._think_buf += text
+        self.think_head.setVisible(True)
+        self.think_head.setText(_uif("思考过程 · {a0} 字（点击展开）", a0=len(self._think_buf)))
+        if self._think_open:
+            self.think_body.setText(self._think_buf)
+
+    def _toggle_think(self, _ev=None):
+        self._think_open = not self._think_open
+        self.think_body.setVisible(self._think_open)
+        self.think_body.setText(self._think_buf)
+        self.think_head.setText(
+            _uif("思考过程 · {a0} 字（点击收起）" if self._think_open
+                 else "思考过程 · {a0} 字（点击展开）", a0=len(self._think_buf)))
 
     def set_markdown(self, raw: str):
         self.body.set_html(_render_md(raw))
@@ -133,6 +178,25 @@ class _UserRow(QWidget):
         self.bubble.restyle(style)
 
 
+class _NoteRow(QWidget):
+    """一行系统提示（成员跳过、失败提示等）：弱化的一行字，不占气泡。"""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(_AVATAR_MSG + 6, 4, 0, 4)
+        v.setSpacing(0)
+        self.label = QLabel(text)
+        self.label.setObjectName("gcNote")
+        self.label.setWordWrap(True)
+        v.addWidget(self.label)
+
+    def restyle(self, _style):
+        self.label.setStyleSheet(
+            f"color: {PALETTE['text_secondary']}; font-size: {FONT_SMALL}px;"
+            " background: transparent;")
+
+
 class GroupChatDialog(QDialog):
     """AI 群聊：多成员轮流发言，用户随时可插话、暂停或结束。"""
 
@@ -153,6 +217,9 @@ class GroupChatDialog(QDialog):
         self._live_name = ""
         self._live_buf = ""
         self._live_row = None
+        self._summary_busy = False   # 正在生成总结（此时禁用全部交互）
+        self._summary_row = None     # 总结消息的行控件（流式渲染中）
+        self._summary_buf = ""       # 总结的流式文本缓冲
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(_STREAM_MS)
@@ -286,8 +353,14 @@ class GroupChatDialog(QDialog):
         self.clear_btn.setObjectName("gcGhostBtn")
         self.clear_btn.setAutoDefault(False)
         self.clear_btn.clicked.connect(self._clear_all)
+        self.summary_btn = QPushButton(_ui("总结"))
+        self.summary_btn.setObjectName("gcGhostBtn")
+        self.summary_btn.setAutoDefault(False)
+        self.summary_btn.setToolTip(_ui("指定一位成员，对整场讨论做结论总结"))
+        self.summary_btn.clicked.connect(self._summarize)
         brow.addWidget(self.run_btn, 1)
         brow.addWidget(self.pause_btn)
+        brow.addWidget(self.summary_btn)
         brow.addWidget(self.clear_btn)
         lv.addLayout(brow)
         root.addWidget(left)
@@ -347,6 +420,12 @@ QListWidget#gcMembers::item:selected {{ background: {c['primary_light']}; color:
 QScrollArea#gcLog {{ background: {c['card']}; border: none;
                      border-radius: {RADIUS_MD}px; }}
 QWidget#gcLogHost {{ background: {c['card']}; }}
+QLabel#gcThinkHead {{ color: {c['text_secondary']}; font-size: {FONT_SMALL}px;
+    background: transparent; }}
+QLabel#gcThinkBody {{ color: {c['text_secondary']}; font-size: {FONT_SMALL}px;
+    background: transparent; padding-left: 10px; }}
+QLabel#gcNote {{ color: {c['text_secondary']}; font-size: {FONT_SMALL}px;
+    background: transparent; }}
 QPlainTextEdit#gcInput, QSpinBox {{ background: {c['field']}; color: {c['text']};
     border: none; border-radius: {RADIUS_SM}px; padding: 6px;
     selection-background-color: {c['primary']}; }}
@@ -545,17 +624,19 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
 
     def _sync_run_buttons(self):
         running = self._runner is not None and self._runner.is_alive()
+        busy = bool(running or self._summary_busy)
         paused = bool(running and self._runner.paused)
         self.run_btn.setText(_ui("结束讨论") if running else _ui("开始讨论"))
-        self.run_btn.setEnabled(True)
+        self.run_btn.setEnabled(not self._summary_busy)
         self.pause_btn.setEnabled(running)
         self.pause_btn.setText(_ui("继续") if paused else _ui("暂停"))
-        self.clear_btn.setEnabled(not running)
-        self.members.setEnabled(not running)
+        self.summary_btn.setEnabled(not busy)
+        self.clear_btn.setEnabled(not busy)
+        self.members.setEnabled(not busy)
         for b in getattr(self, "_member_btns", []):
-            b.setEnabled(not running)
-        self.rounds.setEnabled(not running)
-        self.topic_edit.setEnabled(not running)
+            b.setEnabled(not busy)
+        self.rounds.setEnabled(not busy)
+        self.topic_edit.setEnabled(not busy)
 
     def _toggle_run(self):
         if self._runner is not None and self._runner.is_alive():
@@ -578,6 +659,7 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
             self._chat, cfg,
             on_status=lambda t: self.evt.emit("status", t),
             on_delta=lambda n, t: self.evt.emit("delta", (n, t)),
+            on_reasoning=lambda n, t: self.evt.emit("reason", (n, t)),
             on_message=lambda m: self.evt.emit("message", m),
             on_end=lambda r: self.evt.emit("end", r),
             confirm=self._confirm_from_worker,
@@ -618,6 +700,25 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
         elif kind == "delta":
             name, text = payload
             self._append_delta(str(name), str(text))
+        elif kind == "reason":
+            name, text = payload
+            self._append_reasoning(str(name), str(text))
+        elif kind == "sdelta":
+            name, text = payload
+            self._append_summary_delta(str(name), str(text))
+        elif kind == "sreason":
+            name, text = payload
+            if self._summary_row is not None:
+                self._summary_row.add_reasoning(str(text))
+        elif kind == "summary":
+            msg = payload
+            self._chat.setdefault("messages", []).append(msg)
+            self._persist()
+            self._finish_summary(msg)
+        elif kind == "sdone":
+            self._summary_busy = False
+            self._summary_row = None
+            self._sync_run_buttons()
         elif kind == "message":
             msg = payload
             # 落盘：群聊是独立窗口，崩溃/关窗都不该丢记录（一条几百字节，频率很低）
@@ -679,6 +780,87 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
         if not self._render_timer.isActive():
             self._render_timer.start()
 
+    def _append_reasoning(self, name: str, text: str):
+        """思考增量：只挂在当前发言行的思考块上（思考不参与正文渲染节流）。"""
+        if self._live_row is None or name != self._live_name:
+            return
+        self._live_row.add_reasoning(text)
+
+    # ---------- 总结 ----------
+    def _summarize(self):
+        """指定一位成员对整场讨论做总结。"""
+        if self._runner is not None and self._runner.is_alive() or self._summary_busy:
+            return
+        if not (self._chat.get("messages") or []):
+            QMessageBox.information(self, _ui("提示"),
+                                    _ui("还没有讨论内容，先开始讨论再总结。"))
+            return
+        names = [p["name"] for p in (self._chat.get("participants") or []) if p.get("name")]
+        if not names:
+            return
+        # 默认选最后一位发言者：总结者通常就是刚把话题收束的人
+        last = str(self._chat["messages"][-1].get("speaker") or "")
+        idx = names.index(last) if last in names else 0
+        name, ok = QInputDialog.getItem(
+            self, _ui("指定总结"), _ui("选择负责总结的成员："), names, idx, False)
+        if not ok or not name:
+            return
+        self._start_summary(name)
+
+    def _start_summary(self, name: str):
+        """在后台线程生成总结（流式渲染到一条带「讨论总结」标记的消息）。"""
+        try:
+            cfg = agent_llm.load_model_config()
+        except Exception:
+            cfg = {}
+        self._summary_busy = True
+        self._summary_row = None
+        self._sync_run_buttons()
+        self.status.setText(_uif("正在生成总结：{a0}", a0=name))
+
+        def _work():
+            try:
+                r = agent_group_chat.GroupChatRunner(
+                    self._chat, cfg,
+                    on_status=lambda t: self.evt.emit("status", t),
+                    on_reasoning=lambda n, t: self.evt.emit("sreason", (n, t)))
+                r.summarize(name, on_delta=lambda n, t: self.evt.emit("sdelta", (n, t)))
+            except Exception as e:
+                self.evt.emit("summary", {
+                    "speaker": name, "text": _uif("总结失败：{a0}", a0=e),
+                    "ts": time.time(), "kind": "summary", "error": True})
+            finally:
+                self.evt.emit("sdone", None)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _append_summary_delta(self, name: str, text: str):
+        if self._summary_row is None:
+            stick = self._at_bottom()
+            self._summary_row = _AgentRow(
+                self._style, name, self._avatar_of(name),
+                badge=_ui("讨论总结"))
+            self._insert_row(self._summary_row, stick)
+        self._summary_buf = getattr(self, "_summary_buf", "") + text
+        self._summary_row.set_markdown(self._summary_buf)
+
+    def _finish_summary(self, msg: dict):
+        """总结落地：把最终文本对齐到总结行。"""
+        text = str(msg.get("text") or "")
+        if self._summary_row is not None:
+            self._summary_row.set_markdown(text)
+            self._summary_row = None
+        else:
+            row = _AgentRow(self._style, str(msg.get("speaker") or ""),
+                            self._avatar_of(str(msg.get("speaker") or "")),
+                            ts=float(msg.get("ts") or 0),
+                            error=bool(msg.get("error")),
+                            badge=_ui("讨论总结"))
+            row.set_markdown(text)
+            self._insert_row(row)
+        self._summary_buf = ""
+        self.status.setText(_ui("总结完成"))
+
     def _flush_live(self, final: bool = False):
         if self._live_row is None:
             return
@@ -696,6 +878,17 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
         text = str(msg.get("text") or "")
         if msg.get("user"):
             self._insert_row(_UserRow(self._style, text))
+            return
+        if msg.get("skip"):
+            # 成员主动退出发言：只留一行弱化提示，不占气泡
+            self._insert_row(_NoteRow(_uif("{a0}：{a1}", a0=speaker, a1=text)))
+            return
+        if msg.get("kind") == "summary":
+            row = _AgentRow(self._style, speaker, self._avatar_of(speaker),
+                            ts=float(msg.get("ts") or 0),
+                            error=bool(msg.get("error")), badge=_ui("讨论总结"))
+            row.set_markdown(text)
+            self._insert_row(row)
             return
         if speaker == self._live_name and self._live_buf.strip() and self._live_row is not None:
             # 本轮已流式渲染完毕：把最终文本再对齐一次（避免半解析的 Markdown 残留）
@@ -734,8 +927,13 @@ QPushButton#gcPrimaryBtn:disabled {{ background: {c['border']}; color: {c['text_
             if m.get("user"):
                 self._insert_row(_UserRow(self._style, text), stick=False)
                 continue
+            if m.get("skip"):
+                self._insert_row(_NoteRow(_uif("{a0}：{a1}", a0=speaker, a1=text)),
+                                 stick=False)
+                continue
             row = _AgentRow(self._style, speaker, self._avatar_of(speaker),
-                            ts=float(m.get("ts") or 0), error=bool(m.get("error")))
+                            ts=float(m.get("ts") or 0), error=bool(m.get("error")),
+                            badge=_ui("讨论总结") if m.get("kind") == "summary" else "")
             row.set_markdown(text)
             self._insert_row(row, stick=False)
         QTimer.singleShot(0, self._scroll_bottom)

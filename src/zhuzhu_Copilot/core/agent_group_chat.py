@@ -33,6 +33,7 @@ from zhuzhu_Copilot import app_identity
 from zhuzhu_Copilot.core import (
     agent_agents, agent_avatar, agent_context, agent_engine, agent_llm, agent_prompt,
 )
+from zhuzhu_Copilot.core.i18n import ui as _ui
 
 #: 连续失败上限：达到后停止群聊，避免同一错误（余额/鉴权）被反复重试
 MAX_CONSEC_FAIL = 3
@@ -43,6 +44,26 @@ _PAUSE_POLL = 0.1
 
 _ID_RE = re.compile(r"^g_[0-9a-zA-Z_-]{6,40}$")
 _HANDOFF_RE = re.compile(r"^\s*@([^\s@，,：:]{1,32})")
+
+#: 群聊专属工具：成员可主动退出发言（无补充时把发言权交出去，避免为凑字数而重复）。
+#: 只在讨论轮次经 ``AgentEngine.extra_tools`` 注入，不进 agent_tools 全局表。
+EXIT_SPEECH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "exit_speech",
+        "description": ("退出本轮发言：当没有新观点、不想重复别人、或认为无需补充时调用，"
+                        "立即结束本轮并把发言权交给下一位成员。"
+                        "不要用它回避本应由你回答的问题。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string",
+                           "description": "一句话说明为何退出（可留空）"},
+            },
+            "required": [],
+        },
+    },
+}
 
 
 def chats_root():
@@ -167,6 +188,10 @@ def resolve_endpoint(cfg: dict, provider: str = "", model: str = "") -> dict:
         try:
             m = agent_llm.resolve_model(cfg, "medium")
         except Exception:
+            m = ""
+        # resolve_model 期望的是「模型配置」字典；传入整份配置时它可能回传非字符串，
+        # 这里统一收敛成模型名，避免把 dict 当模型名塞进 LLMClient。
+        if not isinstance(m, str) or not m.strip():
             m = agent_llm.DEFAULT_MODEL
     sel = None
     if provider:
@@ -219,7 +244,8 @@ class GroupChatRunner(threading.Thread):
 
     def __init__(self, chat: dict, llm_cfg: dict,
                  on_status=None, on_delta=None, on_message=None, on_end=None,
-                 confirm=None, ask_user=None):
+                 confirm=None, ask_user=None, on_reasoning=None,
+                 on_summary_delta=None, on_summary=None):
         super().__init__(daemon=True)
         self.chat = chat
         self.cfg = llm_cfg or {}
@@ -229,8 +255,13 @@ class GroupChatRunner(threading.Thread):
         self.on_end = on_end or (lambda _r: None)
         self.confirm = confirm or (lambda _n, _a: True)
         self.ask_user = ask_user or (lambda _a: "")
+        self.on_reasoning = on_reasoning or (lambda _n, _t: None)
+        self.on_summary_delta = on_summary_delta or (lambda _n, _t: None)
+        self.on_summary = on_summary or (lambda _m: None)
         self._stop = threading.Event()
         self._pause = threading.Event()      # set = 暂停中（下一轮不再开始）
+        self._turn_stop = threading.Event()  # 本轮专用：退出/结束都从这里中断
+        self._exit_requested = False         # 本轮成员是否调用了 exit_speech
         self._lock = threading.Lock()
         self._messages = list(chat.get("messages") or [])
         self._engines = {}          # 成员名 → (引擎, 端点签名)：模型变更才重建
@@ -242,6 +273,11 @@ class GroupChatRunner(threading.Thread):
     # ---------- 外部控制 ----------
     def stop(self):
         self._stop.set()
+        # 同时中断在途的那一轮，否则要等它把工具/输出跑完
+        try:
+            self._turn_stop.set()
+        except Exception:
+            pass
 
     def pause(self):
         """暂停：当前这一轮会说完，之后不再开新一轮（不截断半句）。"""
@@ -340,12 +376,12 @@ class GroupChatRunner(threading.Thread):
         except Exception:
             self._space = ""
 
-    def _append_space(self, source: str, text: str):
+    def _append_space(self, source: str, text: str, kind: str = "note"):
         if not self._space:
             return
         self._in_chat_scope(
             lambda: agent_context.append(self._space, source=source, text=text,
-                                         kind="note", source_type="message"))
+                                         kind=kind, source_type="message"))
 
     def _in_chat_scope(self, fn):
         """在本群聊自己的对话作用域内执行。
@@ -394,9 +430,14 @@ class GroupChatRunner(threading.Thread):
             return True
         self.on_status("正在准备发言：%s" % name)
         eng = self._engine_for(p)
-        # 停止事件共用：用户点「结束」时，正在执行的这一轮也能立刻中断，
-        # 而不是等它把工具跑完（引擎内部全程轮询 _stop）。
-        eng._stop = self._stop
+        # 每轮一个独立停止事件：用户「结束」与成员主动「退出发言」都能立刻中断本轮，
+        # 但退出只结束这一轮，不能把整场讨论停掉（共享事件会把整场一起停）。
+        self._turn_stop = threading.Event()
+        eng._stop = self._turn_stop
+        self._exit_requested = False
+        # 群聊专属工具：退出发言（只在讨论轮次暴露，主对话不受影响）
+        eng.extra_tools = [EXIT_SPEECH_SCHEMA]
+        eng.extra_tool_handlers = {"exit_speech": self._on_exit_speech}
         buf = []
 
         def _delta(s):
@@ -414,18 +455,34 @@ class GroupChatRunner(threading.Thread):
             except Exception:
                 pass
 
+        def _reason(s):
+            if not s:
+                return
+            try:
+                self.on_reasoning(name, s)
+            except Exception:
+                pass
+
         eng.on_delta = _delta
         eng.on_status = _status
+        eng.on_reasoning = _reason
         # 工具执行前确认：群聊由用户事先授权的策略决定（见 UI 的「工具执行前确认」）
         eng.confirm = self.confirm
         eng.ask_user = self.ask_user
         prompt = self._turn_prompt(p, first=first, shared=self._shared_delta(name))
+        self._apply_effort(eng, p, prompt)
         try:
             eng.run(prompt)
         except Exception as e:
             self._last_reply = ""
             self._emit(name, "本轮执行失败：%s" % e, error=True)
             return False
+        if self._exit_requested:
+            # 成员主动退出：不产出正文，只留一行「跳过」记录，发言权交给下一位
+            self._exit_requested = False
+            self._last_reply = ""
+            self._emit(name, _ui("（无补充，跳过本轮）"), skip=True)
+            return True
         text = "".join(buf).strip()
         if self._stop.is_set() and not text:
             return True
@@ -435,14 +492,27 @@ class GroupChatRunner(threading.Thread):
         self._last_reply = text
         return True
 
-    def _emit(self, name: str, text: str, error: bool = False):
+    def _on_exit_speech(self, args: dict) -> dict:
+        """成员调用「退出发言」：结束本轮并让发言权流转。"""
+        self._exit_requested = True
+        self._turn_stop.set()
+        reason = str((args or {}).get("reason") or "").strip()
+        return {"text": ("[已退出发言] " + reason) if reason else "[已退出发言]",
+                "images": []}
+
+    def _emit(self, name: str, text: str, error: bool = False, skip: bool = False,
+              kind: str = "note"):
         msg = {"speaker": name, "text": text, "ts": time.time()}
         if error:
             msg["error"] = True
+        if skip:
+            msg["skip"] = True
+        if kind != "note":
+            msg["kind"] = kind
         with self._lock:
             self._messages.append(msg)
-        if not error:
-            self._append_space(name, text)
+        if not error and not skip:
+            self._append_space(name, text, kind=kind)
         try:
             self.on_message(msg)
         except Exception:
@@ -461,6 +531,36 @@ class GroupChatRunner(threading.Thread):
         return random.choice(pool) if pool else None
 
     # ---------- 提示词 ----------
+    def _apply_effort(self, eng, p: dict, text: str = ""):
+        """按全局「思考强度 / 思考模式」给该成员的本轮请求装配力度参数。
+
+        与主面板同一套映射（agent_llm.build_effort_params）：
+        - 力度直接取全局滑块值（``model.effort``）：群聊是讨论而非任务，没有
+          「任务难度」可估，跟随滑块最贴合「跟随全局思考强度」的预期；
+        - 思考模式（``model.think_mode``）与「每次强制思考」（``model.force_think``）
+          同样生效：强制思考时即便力度低也保持思考。
+        模型不支持时该函数自身返回不启用的参数，不会发出非法请求。
+        """
+        ep = resolve_endpoint(self.cfg, p.get("provider"), p.get("model"))
+        cfg = self.cfg or {}
+        effort = str(cfg.get("effort") or "medium")
+        think = "on" if cfg.get("force_think") else str(cfg.get("think_mode") or "auto")
+        if think not in ("on", "off"):
+            think = "auto"
+        try:
+            declared = agent_llm.declared_effort_levels(
+                (ep.get("provider") or {}).get("model_limits"), ep["model"])
+        except Exception:
+            declared = []
+        llm = getattr(eng, "llm", None)
+        if llm is None:
+            return
+        try:
+            llm.effort_params = agent_llm.build_effort_params(
+                ep["model"], effort, think, declared_levels=declared)
+        except Exception:
+            llm.effort_params = {}
+
     def _engine_for(self, p: dict):
         ep = resolve_endpoint(self.cfg, p.get("provider"), p.get("model"))
         sig = (ep["base_url"], ep["model"], ep["api_key"], ep["protocol"])
@@ -520,6 +620,10 @@ class GroupChatRunner(threading.Thread):
             "你的发言也会写入其中，因此不必重复别人的结论。\n"
             "6. 这是群聊而非任务执行：默认不调用工具，只有确实需要核实事实/读文件时才调用，"
             "且不要向用户请示。\n"
+            "7. **正文禁止输出执行计划**：不要写步骤清单、「我先…然后…」式的流程说明或"
+            "待办列表；需要规划就在思考过程中完成，正文只给结论与论据。\n"
+            "8. 本轮确实没有新观点时，调用 exit_speech 工具退出发言，"
+            "不要为凑字数重复别人或输出空话。\n"
             % (name, "、".join(others) or "（无）"))
         return base + rules
 
@@ -547,3 +651,97 @@ class GroupChatRunner(threading.Thread):
             + "【本轮指令】%s\n要求：直接给出你的发言正文（可以先用一行 @成员名 指定下一位），"
             "不要输出「好的」「收到」这类应答语，不要重复已有发言。"
             % head)
+
+    # ---------- 指定成员总结 ----------
+    def summarize(self, member_name: str, on_delta=None) -> dict:
+        """让指定成员对整场讨论做总结，返回并广播一条 ``kind="summary"`` 的消息。
+
+        独立于讨论循环调用（UI 在未开始/已结束时触发，此时另起一个 runner 实例）：
+        - 总结者用**新引擎**（不带讨论期的私有历史），输入是**完整**共同上下文空间
+          （不截断）—— 覆盖所有成员的发言，避免被自己的历史偏见带偏；
+        - 窗口与思考强度同样取全局设置（与讨论轮次一致）；
+        - 总结不会写回空间：它是结论产物，不是讨论内容，否则会被后续成员当成发言引用。
+        """
+        p = next((x for x in (self.chat.get("participants") or [])
+                  if x.get("name") == member_name), None)
+        if p is None:
+            return {}
+        if not self._space:
+            self._open_space()
+        name = p.get("name") or "成员"
+        self.on_status("正在生成总结：%s" % name)
+        eng = self._engine_for(p)
+        self._turn_stop = threading.Event()
+        eng._stop = self._turn_stop
+        eng.extra_tools = []            # 总结不参与发言权流转
+        eng.extra_tool_handlers = {}
+        buf = []
+
+        def _delta(s):
+            if not s:
+                return
+            buf.append(s)
+            try:
+                on_delta(name, s)
+            except Exception:
+                pass
+
+        def _reason(s):
+            if s:
+                try:
+                    self.on_reasoning(name, s)
+                except Exception:
+                    pass
+
+        def _status(s):
+            try:
+                self.on_status("%s：%s" % (name, s))
+            except Exception:
+                pass
+
+        eng.on_delta = _delta
+        eng.on_reasoning = _reason
+        eng.on_status = _status
+        prompt = self._summary_prompt()
+        self._apply_effort(eng, p, prompt)
+        try:
+            eng.run(prompt)
+        except Exception as e:
+            text = "总结失败：%s" % e
+            msg = {"speaker": name, "text": text, "ts": time.time(),
+                   "kind": "summary", "error": True}
+            with self._lock:
+                self._messages.append(msg)
+            try:
+                self.on_summary(msg)
+            except Exception:
+                pass
+            return msg
+        text = "".join(buf).strip() or "（未产出总结）"
+        msg = {"speaker": name, "text": text, "ts": time.time(), "kind": "summary"}
+        with self._lock:
+            self._messages.append(msg)
+        try:
+            self.on_summary(msg)
+        except Exception:
+            pass
+        return msg
+
+    def _summary_prompt(self) -> str:
+        """总结提示词：完整空间 + 固定三段式输出，明确禁止计划式正文与再发起讨论。"""
+        space = ""
+        if self._space:
+            space = self._in_chat_scope(
+                lambda: agent_context.render(self._space, max_chars=0)) or ""
+        topic = str(self.chat.get("topic") or "").strip()
+        head = ("【讨论总结】请把本群%s的讨论整理成可直接阅读的结论。"
+                % (("围绕「%s」" % topic) if topic else ""))
+        return (
+            head + "\n\n"
+            + (space.strip() or "（本群暂无发言记录）") + "\n\n"
+            "【输出要求】\n"
+            "1. 先用一句话给出结论；\n"
+            "2. 再列主要分歧与各方立场（按成员名归类，没有分歧就写「无实质分歧」）；\n"
+            "3. 最后给 1-3 条可执行的下一步。\n"
+            "只输出总结正文：不要再提问、不要 @ 成员、不要复述原文，"
+            "也不要输出执行计划或思考步骤。")
