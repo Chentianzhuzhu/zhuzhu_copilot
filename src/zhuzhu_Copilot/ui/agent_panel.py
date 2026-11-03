@@ -5355,6 +5355,10 @@ class _AgentSettingsDialog(QDialog):
         self.stack.setStyleSheet(f"QStackedWidget {{ background: {self._BG}; }}")
         # 右侧内容区包滚动容器：窗口高度缩小后页面内容超出时滚动展示，避免被挤压
         self._page_scroll = QScrollArea()
+        # 页面内容宽度自适应：出现横向滚动就会把左侧标题/说明裁掉（用户截图），
+        # 统一禁掉横向滚动条，超宽内容由内部布局自适应处理
+        self._page_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._page_scroll.setWidgetResizable(True)
         self._page_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._page_scroll.setStyleSheet(
@@ -9001,7 +9005,7 @@ class _AgentSettingsDialog(QDialog):
             btn = getattr(card, "_buy_btn", None)
             if btn is not None:
                 self._memb_card_widgets[p["id"]] = (card, btn)
-        sub_row.addStretch(1)
+        # 不加尾部 stretch：三张档位卡（Expanding）自己平分整行宽度
         # 保留行容器引用：服务端商品数据回来后在原位重建，避免整页重排
         self._memb_sub_row = sub_row
         lay.addLayout(sub_row)
@@ -9276,7 +9280,9 @@ class _AgentSettingsDialog(QDialog):
             recommended=(tier == "pro" and cur == "free"),
             current=(is_plan and tier == cur),
             badge=_ui("推荐") if (tier == "pro" and cur == "free") else "",
-            compact=not is_plan)
+            compact=not is_plan,
+            expand=is_plan)      # 档位卡三等分页面宽度：固定宽度会撑破页面宽度，
+                                 # 横向滚动把左侧文字裁掉（用户截图）
         prod = dict(p)
         card.buy_btn.clicked.connect(
             lambda _checked=False, pr=prod: self._memb_buy(pr))

@@ -28,6 +28,8 @@ from zhuzhu_Copilot.ui.styles import PALETTE
 _EDGE = 14
 #: 圆角
 _RADIUS = 12
+#: 可放大卡片的最小宽度占标准宽度的比例（可缩到 78%，避免窄页面横向溢出）
+_EXPAND_MIN_RATIO = 0.78
 #: 会员卡与积分卡尺寸（含 _EDGE 外边距）
 CARD_W = 244
 CARD_H = 252
@@ -63,13 +65,23 @@ class EdgeCard(QFrame):
     """矩形圆角卡片：卡面渐变 + 上亮下暗描边 + 顶部高光（可选外发光）。"""
 
     def __init__(self, parent=None, *, glow: bool = False, radius: int = _RADIUS,
-                 width: int = 0, height: int = 0, padding=(18, 16, 18, 16)):
+                 width: int = 0, height: int = 0, padding=(18, 16, 18, 16),
+                 expand: bool = False):
         super().__init__(parent)
         self._glow = bool(glow)
         self._radius = int(radius)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         if width:
-            self.setFixedWidth(int(width))
+            if expand:
+                # 档位卡随行宽放大：三张等分页面宽度，不再因为固定宽度撑破页面
+                # （撑破会让设置页出现横向滚动，左侧文字被裁掉）
+                # 下限放宽：卡片要能在窄页面里**缩小**（否则三张卡的最小宽度之和
+                # 超过页面宽度 → 横向滚动 → 左侧文字被裁）；上限由布局决定放大
+                self.setMinimumWidth(int(width * _EXPAND_MIN_RATIO))
+                self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                   QSizePolicy.Policy.Minimum)
+            else:
+                self.setFixedWidth(int(width))
         if height:
             # 只给"最小高度"：固定高度时权益条目一多，布局会把带换行的标签压扁，
             # 文字被挤成一行（用户反馈的"文字被挤压"）。改成最小高度后卡片按内容长高。
@@ -87,8 +99,9 @@ class EdgeCard(QFrame):
         card = PALETTE["card"]
         border = PALETTE["border"]
         accent = PALETTE["primary"]
-        # 卡面统一为一色：深色模式纯黑、浅色模式纯白（"相反"），不再叠内部渐变
-        fill = "#000000" if dark else "#FFFFFF"
+        # 卡面统一为一色：深色模式取主页面同一档的淡黑（bg_top），浅色模式纯白；
+        # 不再叠内部渐变（那属于内部泛光，用户明确不要）
+        fill = PALETTE["bg_top"] if dark else "#FFFFFF"
         bg_top = bg_bottom = fill
         if dark:
             edge_top = _mix(border, "#FFFFFF", 0.42)
@@ -216,8 +229,10 @@ class ProductCard(EdgeCard):
     def __init__(self, *, title: str, price_main: str, price_unit: str = "",
                  perks=None, cta: str = "", cta_enabled: bool = True,
                  cta_tip: str = "", recommended: bool = False, current: bool = False,
-                 badge: str = "", height: int = CARD_H, parent=None):
-        super().__init__(parent, glow=recommended, width=CARD_W, height=height)
+                 badge: str = "", height: int = CARD_H, parent=None,
+                 expand: bool = False):
+        super().__init__(parent, glow=recommended, width=CARD_W, height=height,
+                         expand=expand)
         self._recommended = bool(recommended)
         self._enabled = bool(cta_enabled)
 
@@ -372,13 +387,14 @@ def build_product_card(*, title: str, price_main: str, price_unit: str = "",
                        cta_tip: str = "", recommended: bool = False,
                        current: bool = False, badge: str = "",
                        compact: bool = False, height: int = CARD_H,
-                       parent=None) -> ProductCard:
+                       expand: bool = False, parent=None) -> ProductCard:
     """工厂函数：会员档位与积分包用同一套卡片，后者更矮、内边距更紧。"""
     card = ProductCard(title=title, price_main=price_main, price_unit=price_unit,
                        perks=perks, cta=cta, cta_enabled=cta_enabled,
                        cta_tip=cta_tip, recommended=recommended,
                        current=current, badge=badge,
-                       height=(PACK_H if compact else height), parent=parent)
+                       height=(PACK_H if compact else height),
+                       expand=expand, parent=parent)
     if compact:
         card._body.setContentsMargins(_EDGE + 16, _EDGE + 14, _EDGE + 16, _EDGE + 14)
     return card
