@@ -1284,7 +1284,7 @@ html.js .reveal.in, html.js .sr.in { opacity: 1; transform: none; }
 @media print {
   html.js .reveal, html.js .sr, .reveal, .sr, .footer { opacity: 1 !important; transform: none !important; }
   .nav { position: static; border-bottom: 1px solid var(--line); }
-  .spine, .back-top, .mobile-bar, .scroll-progress { display: none !important; }
+  .spine, .back-top, .mobile-bar, .scroll-progress, .skip-link { display: none !important; }
   .section { padding: 28px 0; }
   body::before { display: none; }
 }
