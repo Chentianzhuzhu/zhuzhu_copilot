@@ -7083,6 +7083,8 @@ class _AgentSettingsDialog(QDialog):
         m_prompt = QPushButton(_ui("人格与提示词（设置页）"))
         m_prompt.setStyleSheet(self._btn_qss("ghost"))
         m_prompt.setAutoDefault(False)
+        m_prompt.setToolTip(_ui("性格与系统提示词在设置页统一配置；"
+                                "agent.py 自带人设的对话流不受影响"))
         m_prompt.clicked.connect(
             lambda: self._switch_page(_nav_index("prompt")))
         mrow.addWidget(m_edit)
@@ -7183,17 +7185,20 @@ class _AgentSettingsDialog(QDialog):
         except Exception:
             custom = False
         # 设置页的覆盖状态必须显式展示：用户改了性格却看不到生效位置时，
-        # 会误以为设置页没保存（该覆盖只在默认主 Agent 上生效）。
+        # 会误以为设置页没保存。适用范围按「是否沿用内置人设」表述而不是按对话流
+        # 名字判断 —— 预置对话流的 agent.py 也可能委托内置实现，名字判断会误报。
         from zhuzhu_Copilot.core import agent_prompt
         over = []
         if agent_prompt.main_persona():
             over.append(_ui("性格"))
         if agent_prompt.main_system_prompt():
             over.append(_ui("系统提示词"))
+        cover = (_uif("{a0}（仅对沿用内置人设的对话流生效）", a0="、".join(over))
+                 if over else _ui("未覆盖（沿用内置）"))
         self.agent_main_info.setText(_uif(
             "主 Agent 人格：{a0}\n设置页覆盖：{a1}\n核心文件：{a2}",
             a0=_ui("自定义（agent.py）") if custom else _ui("内置默认"),
-            a1=("、".join(over) if over else _ui("未覆盖（沿用内置）")),
+            a1=cover,
             a2=files))
 
     def _refresh_agent_customs(self):
