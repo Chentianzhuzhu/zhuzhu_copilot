@@ -1749,9 +1749,11 @@ def resource_allowed(kind: str, resource: str, workflow: str) -> bool:
 
 def load_settings() -> dict:
     """加载用户设置 settings.json：
-    custom_rules(规则数组) / custom_system_prompt(提示词补充) /
-    custom_safe_commands(bash 白名单) / memory_enabled(记忆开关) /
-    model({base_url, api_key, model}) — 模型配置自动解密
+    custom_rules(规则数组) / custom_safe_commands(bash 白名单) / memory_enabled(记忆开关) /
+    global_system_prompt(全局规则，任何 Agent 都追加) / main_agent_persona 与
+    main_agent_system_prompt(默认主 Agent 人格覆盖) / model(模型配置自动解密)
+
+    「个人提示词」相关的读取与分层语义统一在 core/agent_prompt.py，本函数只负责读写文件。
 
     兼容旧版明文 model 配置：若未加密则原样返回。
 
@@ -2422,12 +2424,17 @@ _EFFICIENT_MANUAL_NOTICE_ZH = (
     "限制；也不得用其它工具替代、不得跳过流程，或只描述而不真正调用。")
 
 
-def _base_prompt_parts(agent: dict) -> list:
+def _base_prompt_parts(agent: dict, main_agent: bool = False) -> list:
     """语言指令 + 人设 + 自定义系统提示词 + 严格规则（身份与纪律骨架）。
 
     默认提示词与高效模式提示词共用这段骨架：内容完全由 agent 配置决定、与工具集无关，
     因此两种模式必须给出**完全一致**的开头 —— 尤其是语言指令必须在最前（最高指令权重，
     见 prompt.lang.directive 注释），不能因为切模式就漂到后面去。
+
+    main_agent: 是否为内置默认主 Agent。True 时应用设置页「提示词与人格」的覆盖：
+    用户填写的性格 / 系统提示词**整体替换**内置对应段落（留空则沿用内置）。
+    注意用户文本不能过 ``_tp`` 查表 —— 英文提示词语言下会把用户中文人格替换成
+    内置英文人设，等于覆盖失效。
 
     只含"身份与纪律"，**不含**扩展优先级/工具硬规则/工具执行规范：这些与工具集相关，
     由两个调用方各自在合适位置追加（默认模式必须与历史顺序逐字节一致，否则服务端
@@ -2435,12 +2442,25 @@ def _base_prompt_parts(agent: dict) -> list:
     """
     parts = []
     parts.append(_tp("prompt.lang.directive", _LANG_DIRECTIVE_ZH))
-    persona = agent.get("persona")
-    if persona:
-        parts.append(_tp("prompt.persona", persona))
-    system_prompt = agent.get("system_prompt", "")
-    if system_prompt:
-        parts.append(_tp("prompt.agent.system", system_prompt))
+    persona = (agent.get("persona") or "").strip()
+    system_prompt = (agent.get("system_prompt") or "").strip()
+    if main_agent:
+        from zhuzhu_Copilot.core import agent_prompt
+        user_persona = agent_prompt.main_persona()
+        user_system = agent_prompt.main_system_prompt()
+        if user_persona:
+            parts.append(user_persona)
+        elif persona:
+            parts.append(_tp("prompt.persona", persona))
+        if user_system:
+            parts.append(user_system)
+        elif system_prompt:
+            parts.append(_tp("prompt.agent.system", system_prompt))
+    else:
+        if persona:
+            parts.append(_tp("prompt.persona", persona))
+        if system_prompt:
+            parts.append(_tp("prompt.agent.system", system_prompt))
     rules = agent.get("rules", [])
     if rules:
         rk = "prompt.rule.%d"
@@ -2466,7 +2486,9 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
     efficient: 高效模式（设置页开关）。True 时走 _efficient_prompt：只给最小工具集说明，
         **不注入**整份工具手册、技能规范、技能路由与插件规范（这些能力在高效模式下
         本就不提供给上游，注入只会浪费 token 并诱导模型调用不存在的工具）。
-    自定义规则 / 自定义系统提示词从 settings.json 读取并追加。
+    自定义规则从 settings.json 读取并追加；主 Agent 的人格覆盖也在本函数应用；
+    **全局规则不在这里拼**：它由引擎在 _system_prompt 统一追加，才能对
+    自定义人格与工作流 SYSTEM_PROMPT 同样生效（见 core/agent_prompt.py）。
 
     注意：自动匹配/手动指定的任务技能（extra_skills）不再注入 system —— 由引擎以
     对话末尾独立消息注入（_sync_skill_msg），避免每轮任务 system 变化导致
@@ -2474,10 +2496,13 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
     """
     agent = next((a for a in load_agents() if a.get("name") == agent_name), None) \
         or DEFAULT_AGENTS[0]
+    # 是否默认主 Agent：决定是否应用设置页的人格覆盖（自定义 Agent / 子 Agent 各自独立）
+    is_main = agent.get("name") == DEFAULT_AGENTS[0].get("name")
     if efficient:
         return _efficient_prompt(agent, text_only=text_only,
-                                 memory_enabled=memory_enabled, direct=direct)
-    parts = _base_prompt_parts(agent)
+                                 memory_enabled=memory_enabled, direct=direct,
+                                 main_agent=is_main)
+    parts = _base_prompt_parts(agent, main_agent=is_main)
     tool_ins = agent.get("tool_instructions") or {}
     if tool_ins:
         head = _tp("prompt.block.tool_ins_head",
@@ -2601,10 +2626,7 @@ def build_system_prompt(agent_name: str = "", extra_skills: list = None,
                       "必须调用 read_file 工具读取 %s 的 custom_rules 字段，"
                       "原样逐条如实回答；严禁凭记忆、猜测或编造规则内容。"
                       ) % rules_path
-    extra_prompt = (settings.get("custom_system_prompt") or "").strip()
-    if extra_prompt:
-        prompt += _tp("prompt.block.custom_prompt",
-                  "\n\n用户自定义系统提示词补充：\n") + extra_prompt
+    # 同上：用户补充提示词已升级为全局规则，由引擎统一追加（对自定义人格同样生效）
     # 显式规划阶段：先规划再动手、复杂任务必用 todo、执行后对照计划自检完成度
     prompt += _tp("prompt.block.exec_spec", "\n\n任务执行规范：动手前先规划——复杂/多步骤任务必须先调用 update_todo 创建任务清单"
                "（全量提交含已完成项），每完成一步立即用 update_todo 更新对应状态"
@@ -2696,7 +2718,8 @@ def runtime_env_notice() -> str:
 
 
 def _efficient_prompt(agent: dict, text_only: bool = False,
-                      memory_enabled: bool = True, direct: bool = False) -> str:
+                      memory_enabled: bool = True, direct: bool = False,
+                      main_agent: bool = False) -> str:
     """高效模式的系统提示词：身份/纪律骨架 + 最小工具集说明（不注入工具手册/技能）。
 
     刻意只保留**仍然可用**的能力引导，其余整段砍掉：
@@ -2709,7 +2732,7 @@ def _efficient_prompt(agent: dict, text_only: bool = False,
     单独成函数而不是在 build_system_prompt 里挂分支：高效模式的尾段与默认模式几乎
     没有共同内容，硬塞分支会连带改动默认路径的字节稳定性（前缀缓存敏感）。
     """
-    parts = _base_prompt_parts(agent)
+    parts = _base_prompt_parts(agent, main_agent=main_agent)
     parts.append(_tp("prompt.block.efficient", _EFFICIENT_PROMPT_ZH))
     parts.append(_tp("prompt.block.extend_rule", _extend_dont_create_rule()))
     parts.append(_tp("prompt.block.hard_rules", _tool_call_hard_rules()))
@@ -2744,10 +2767,10 @@ def _efficient_prompt(agent: dict, text_only: bool = False,
                       "必须调用 read_file 工具读取 %s 的 custom_rules 字段，"
                       "原样逐条如实回答；严禁凭记忆、猜测或编造规则内容。"
                       ) % rules_path
-    extra_prompt = (settings.get("custom_system_prompt") or "").strip()
-    if extra_prompt:
-        prompt += _tp("prompt.block.custom_prompt",
-                      "\n\n用户自定义系统提示词补充：\n") + extra_prompt
+    # 用户自定义「补充提示词」已升级为全局规则（settings.global_system_prompt），
+    # 由引擎在 _system_prompt 统一追加：它必须对 @agent 自定义人格与工作流
+    # SYSTEM_PROMPT 同样生效，放在这里会被这些「整体替换型」提示词绕过
+    # （见 core/agent_prompt.py 的分层说明）。
     prompt += _tp("prompt.block.exec_spec",
                   "\n\n任务执行规范：动手前先规划——复杂/多步骤任务必须先调用 update_todo "
                   "创建任务清单（全量提交含已完成项），每完成一步立即用 update_todo 更新"

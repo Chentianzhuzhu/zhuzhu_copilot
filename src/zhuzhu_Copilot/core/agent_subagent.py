@@ -213,21 +213,26 @@ def _sanitize_history(history: list, max_keep: int = 24) -> list:
     return msgs
 
 
-def _sub_system_prompt(persona: str = "", custom: bool = False) -> str:
-    """子 Agent 系统提示词：优先使用自定义人格（persona，用户注册时设定）；
-    未设定时，自定义子 Agent（custom=True）用不含身份声明的中性规则文本
-    （身份由注册 goal 决定，不被「你是子 Agent」等通用文本覆盖），
+def _sub_system_prompt(persona: str = "", custom: bool = False,
+                       system_prompt: str = "") -> str:
+    """子 Agent 系统提示词：优先使用自定义人格（persona / system_prompt，用户在
+    Agent 管理页设定，两栏合成一段）；未设定时，自定义子 Agent（custom=True）用不含
+    身份声明的中性规则文本（身份由注册 goal 决定，不被「你是子 Agent」等通用文本覆盖），
     内置子 Agent 用通用规则文本。用户自定义开发规则另行追加，不覆盖人格。
 
     输出语言指令对**所有分支**生效（含自定义 persona）：子 Agent 的产出会被主
     Agent 直接汇总给用户，模型不规定输出语言时默认回中文 —— 表现为英文界面下
     子 Agent 步骤说明仍是中文。persona 是用户自定义内容，不得改写，故语言指令
     前置拼在其之前而非替换。"""
-    from zhuzhu_Copilot.core import agent_skills
-    base = ((persona or "").strip() or (
+    from zhuzhu_Copilot.core import agent_skills, agent_prompt
+    custom_text = agent_prompt.compose(persona, system_prompt)
+    base = (custom_text or (
         _tp("prompt.sub.system", _CUSTOM_SYSTEM_ZH) if custom
         else _tp("prompt.sub.system_builtin", _SUB_SYSTEM_ZH)))
     base = _tp("prompt.lang.directive", agent_skills._LANG_DIRECTIVE_ZH) + "\n\n" + base
+    # 全局规则（设置页）：子 Agent 也是 Agent，切换任何 Agent 都不改变 —— 与主引擎
+    # 同源追加（core/agent_prompt.py），不在子 Agent 侧另存一份。
+    base += agent_prompt.global_block()
     rules = [str(r).strip()
              for r in (agent_skills.load_settings().get("custom_rules") or [])
              if str(r).strip()]
@@ -253,7 +258,8 @@ def run_sub_agent(llm, goal, allowed=None, stop=None, on_status=None,
                   shared_context: bool = False, space: str = "",
                   source: str = "", agent_id: str = "",
                   background: bool = False,
-                  conversation: str = None) -> str:
+                  conversation: str = None,
+                  system_prompt: str = "") -> str:
     """运行一个子 Agent，返回其最终文本总结。
 
     agent_id: 工作团控制注册 id（如 sub:<名>/@:<名>）。提供时注册 AgentControl，
@@ -265,6 +271,9 @@ def run_sub_agent(llm, goal, allowed=None, stop=None, on_status=None,
 
     persona: 自定义子 Agent 人格/系统提示词。提供时作为系统提示，不再套用内置
     通用「你是子 Agent…」身份文本（不受其干扰）。
+
+    system_prompt: 自定义子 Agent 的系统级提示词（与 persona 合成一段人格，分开存
+    只为 UI 区分「性格」与「规则」；两者任一为空即只用另一段）。
 
     custom: 是否为用户注册的自定义子 Agent。True 且未提供 persona 时，用不含
     身份声明的中性规则文本兜底——身份由注册 goal 决定，避免「你是谁」类提问
@@ -301,7 +310,7 @@ def run_sub_agent(llm, goal, allowed=None, stop=None, on_status=None,
             persona=persona, custom=custom, history=history,
             on_history=on_history, shared_context=shared_context,
             space=space, source=source, agent_id=agent_id,
-            conversation=conversation)
+            conversation=conversation, system_prompt=system_prompt)
     # 主 Agent 决策的共享上下文：绑定空间（线程局部）+ 注入空间快照，结束回写并复位
     prev_space = agent_context.thread_local_space()
     prev_source = agent_context.thread_local_source()
@@ -331,7 +340,8 @@ def run_sub_agent(llm, goal, allowed=None, stop=None, on_status=None,
                     + _tp("prompt.note.team_msg", _TEAM_MSG_NOTE_ZH))})
         except Exception:
             _ctrl = None
-    messages = [{"role": "system", "content": _sub_system_prompt(persona, custom)}]
+    messages = [{"role": "system",
+                 "content": _sub_system_prompt(persona, custom, system_prompt)}]
     messages.extend(_sanitize_history(history))
     ctx = (context or "").strip()
     if ctx:
@@ -477,7 +487,8 @@ def _run_sub_agent_background(llm, goal, allowed=None, stop=None,
                                history: list = None, on_history=None,
                                shared_context: bool = False, space: str = "",
                                source: str = "", agent_id: str = "",
-                               conversation: str = None) -> str:
+                               conversation: str = None,
+                               system_prompt: str = "") -> str:
     """后台运行单个子Agent：提交到 BackgroundTaskManager，立即返回任务ID。"""
     def _fn(bg_task):
         result = run_sub_agent(
@@ -487,7 +498,8 @@ def _run_sub_agent_background(llm, goal, allowed=None, stop=None,
             workflow=workflow, context=context, persona=persona, custom=custom,
             history=history, on_history=on_history,
             shared_context=shared_context, space=space, source=source,
-            agent_id=agent_id, conversation=conversation)
+            agent_id=agent_id, conversation=conversation,
+            system_prompt=system_prompt)
         bg_task.set_output(result)
         return result
 
@@ -563,6 +575,7 @@ def dispatch_sub_agents(llm, tasks, stop=None, on_status=None,
                                        on_sub_event=ev, workflow=workflow,
                                        context=t.get("context") or "",
                                        persona=t.get("persona") or "",
+                                       system_prompt=t.get("system_prompt") or "",
                                        custom=bool(t.get("custom")),
                                        shared_context=bool(
                                            t.get("shared_context", shared_context)),
@@ -1071,6 +1084,7 @@ def registered_subagents(workflow: str = "") -> list:
                 "goal": str(it.get("goal", "") or "").strip(),
                 "allowed": list(it.get("allowed") or []),
                 "persona": str(it.get("persona", "") or "").strip(),
+                "system_prompt": str(it.get("system_prompt", "") or "").strip(),
                 "shared_context": True if sc is None else sc,
                 "allow_chat": bool(it.get("allow_chat", True)),
                 "share_context": bool(it.get("share_context", True)),
@@ -1084,10 +1098,11 @@ def registered_subagents(workflow: str = "") -> list:
 def register_subagent(name: str, description: str, goal: str, allowed="",
                       persona: str = "", workflow: str = "",
                       shared_context: bool = True, allow_chat: bool = True,
-                      share_context: bool = True) -> tuple:
+                      share_context: bool = True, system_prompt: str = "") -> tuple:
     """向目标/当前工作流注册一个自定义子 agent（同名覆盖）。
     返回 (ok, msg)。name 校验白名单，杜绝路径穿越；allowed 与子 Agent 白名单取交集。
-    persona：（可选）自定义人格/系统提示词，设定后不再套用内置通用规则文本。
+    persona：（可选）自定义性格，设定后不再套用内置通用规则文本。
+    system_prompt：（可选）自定义系统级提示词，与 persona 合成一段人格（职责与规则）。
     shared_context：该子 Agent 参与共同上下文空间的默认开关（True=缺省开启，
     主 Agent/@调用时可直接加入共同空间；显式传 False 可关闭）。
     allow_chat：是否允许该子 Agent 参与 Agent 间聊天（chat_with 可发给它并接收回复），
@@ -1123,6 +1138,7 @@ def register_subagent(name: str, description: str, goal: str, allowed="",
                   "goal": str(goal).strip(),
                   "allowed": allow,
                   "persona": str(persona or "").strip(),
+                  "system_prompt": str(system_prompt or "").strip(),
                   "shared_context": sc,
                   "allow_chat": bool(allow_chat),
                   "share_context": bool(share_context)}

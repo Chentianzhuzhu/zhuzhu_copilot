@@ -1,13 +1,17 @@
 """自定义 Agent 管理（Cordis 独立于工作流的轻量人格）。
 
-每个自定义 agent = 名称 + 系统提示词（人格）+ 可选绑定工作流（提供 tools/skill/llm）。
+每个自定义 agent = 名称 + 人格（``persona`` 性格 + ``system_prompt`` 系统级提示词）
++ 可选绑定工作流（提供 tools/skill/llm）。
 `@<agent>` 在输入框会话级切换当前会话的人格，与工作流解耦：
-  - 人格覆盖：引擎 _system_prompt 优先使用该 agent 的 system_prompt。
+  - 人格覆盖：引擎 _system_prompt 优先使用该 agent 的人格（两栏合成一段）。
+    注意这里覆盖的是**角色层**人格，设置页的「全局规则」由引擎另行追加，不受切换影响。
   - 跨工作流：若配置 bound_workflow，切换时一并切到该工作流以获得其工具/技能；
     未配置则沿用当前会话工作流的工具/技能。
   - @_default 内置保留名：切回内置默认人格（不吃自定义 agent）。
 
 存储：~/.zhuzhu_Copilot/agents/<name>.json（可 extend 为数据库/远程，不改调用方契约）。
+旧记录只有 system_prompt（当时即整段人格），读取时 persona 为空，composed_prompt()
+仍返回原文 —— 向后兼容，无需迁移脚本。
 """
 
 from zhuzhu_Copilot import app_identity
@@ -68,21 +72,40 @@ def _load(p: Path) -> Optional[dict]:
         if not isinstance(d, dict) or not d.get("name"):
             return None
         d.setdefault("bound_workflow", "")
+        d.setdefault("persona", "")
         return d
     except Exception:
         return None
 
 
+def composed_prompt(agent: dict) -> str:
+    """把该 agent 的「性格 + 系统级提示词」合成引擎可直接使用的单段人格文本。
+
+    引擎的 persona 是整体替换型系统提示词，两栏必须在进入引擎前合并；
+    分开存储只为让用户在 Agent 管理页区分「性格」与「规则」。
+    """
+    from zhuzhu_Copilot.core import agent_prompt
+    ag = agent or {}
+    return agent_prompt.compose(ag.get("persona") or "",
+                               ag.get("system_prompt") or "")
+
+
 def save_agent(name: str, system_prompt: str,
-               bound_workflow: str = "") -> tuple:
-    """新建/更新自定义 agent。成功返回 (True, 提示)，失败返回 (False, 原因)。"""
+               bound_workflow: str = "", persona: str = "") -> tuple:
+    """新建/更新自定义 agent。成功返回 (True, 提示)，失败返回 (False, 原因)。
+
+    persona: 性格（人设口吻/立场）；system_prompt: 系统级提示词（职责与规则）。
+    两栏至少填一个 —— 都留空等于「没有角色」，切过去只会得到一份无身份的空提示词。
+    """
     name = _safe_name(name)
     if not name:
         return False, "agent 名非法：仅允许字母/数字/下划线/短横线，且长度 1-64"
     if name in RESERVED:
         return False, f"「{name}」为内置保留名，不能用作自定义 agent"
-    if not (system_prompt or "").strip():
-        return False, "system_prompt（人格）不能为空"
+    persona = (persona or "").strip()
+    system_prompt = (system_prompt or "").strip()
+    if not persona and not system_prompt:
+        return False, "性格（persona）与系统级提示词至少填写一项"
     from zhuzhu_Copilot.core import agent_workflow
     bound = (bound_workflow or "").strip()
     if bound and bound != agent_workflow.DEFAULT_WORKFLOW \
@@ -90,6 +113,7 @@ def save_agent(name: str, system_prompt: str,
         return False, f"绑定工作流不存在或已禁用: {bound}"
     ag = {
         "name": name,
+        "persona": persona,
         "system_prompt": system_prompt,
         "bound_workflow": bound,
         "updated": time.time(),

@@ -24,6 +24,7 @@ from PyQt6.QtGui import QImage
 
 from zhuzhu_Copilot.core import agent_llm, agent_tools, agent_skills, agent_subagent, agent_tts
 from zhuzhu_Copilot.core import agent_workflow
+from zhuzhu_Copilot.core import agent_prompt
 from zhuzhu_Copilot.core import agent_sandbox
 from zhuzhu_Copilot.core import agent_background
 # 账号系统：内置默认模型（agnes）登录门槛 + 按 token 实时积分消耗
@@ -2059,6 +2060,7 @@ class AgentEngine:
                       "goal": str(args.get("goal") or "").strip() or custom["goal"],
                       "allowed": tuple(custom.get("allowed") or []) or None,
                       "persona": custom.get("persona") or "",
+                      "system_prompt": custom.get("system_prompt") or "",
                       "context": str(args.get("context") or "").strip(),
                       "shared_context": bool(sc),
                       "space": str(args.get("space") or batch_space or "").strip(),
@@ -2166,6 +2168,11 @@ class AgentEngine:
                         entry["allowed"] = tuple(allowed)
                     if persona:
                         entry["persona"] = persona
+                    # 系统级提示词与 persona 分开存：注册记录里两栏独立，派发时一起带上
+                    sysp = str(ov.get("system_prompt") or conf.get("system_prompt")
+                               or "").strip()
+                    if sysp:
+                        entry["system_prompt"] = sysp
                     entry["custom"] = True
             batch.append(entry)
             batch_origin[i] = len(batch) - 1
@@ -2350,6 +2357,10 @@ class AgentEngine:
         # 运行环境约定对所有 agent 成立（内置人设 / @agent 自定义人格 / 工作流 SYSTEM_PROMPT
         # 都能命中）：统一在这里追加，避免只在某一分支写而漏掉「整体替换型」提示词。
         prompt += agent_skills.runtime_env_notice()
+        # 全局规则（设置页「全局规则」）：同理必须在这一层追加 —— 角色人格与工作流
+        # SYSTEM_PROMPT 都是整体替换型提示词，放进 agent_skills.build_system_prompt
+        # 对它们完全失效，切换 Agent 后用户的全局约束就丢了。
+        prompt += agent_prompt.global_block()
         if getattr(self, "efficient_mode", False):
             manual = bool(getattr(self, "_manual_plugins", None))
             if not manual:

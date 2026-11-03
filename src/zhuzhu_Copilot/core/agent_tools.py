@@ -6158,7 +6158,8 @@ def _register_sub_agent(args: dict) -> dict:
             str(args.get("persona") or ""),
             shared_context=_sc if _sc is not None else True,
             allow_chat=bool(_al) if _al is not None else True,
-            share_context=bool(_sx) if _sx is not None else True)
+            share_context=bool(_sx) if _sx is not None else True,
+            system_prompt=str(args.get("system_prompt") or ""))
         return {"text": msg, "images": []} if ok else _blocked(msg)
     except Exception as e:
         return _blocked(f"[register_sub_agent] {e}")
@@ -6662,7 +6663,8 @@ def _register_agent_network(args: dict) -> dict:
                 str(args.get("allowed") or ""),
                 str(args.get("persona") or ""),
                 workflow=str(args.get("workflow") or "").strip(),
-                shared_context=args.get("shared_context"))
+                shared_context=args.get("shared_context"),
+                system_prompt=str(args.get("system_prompt") or ""))
             return {"text": msg, "images": []} if ok else _blocked(msg)
         if op == "create_agent":
             if not name:
@@ -6670,7 +6672,8 @@ def _register_agent_network(args: dict) -> dict:
             ok, msg = _ag().save_agent(
                 name,
                 str(args.get("system_prompt") or ""),
-                str(args.get("bound_workflow") or ""))
+                str(args.get("bound_workflow") or ""),
+                persona=str(args.get("persona") or ""))
             if not ok:
                 return _blocked(msg)
             # 结构性纠偏：自定义 Agent 只是「会话级切换主 Agent 人格」，主 Agent 无法把它当子
@@ -6745,7 +6748,8 @@ def _create_agent(args: dict) -> dict:
         ok, msg = _ag().save_agent(
             str(args.get("name", "")),
             str(args.get("system_prompt", "")),
-            str(args.get("bound_workflow", "")))
+            str(args.get("bound_workflow", "")),
+            persona=str(args.get("persona", "")))
         if not ok:
             return _blocked(msg)
         # 与 register_agent_network(op=create_agent) 同一纠偏：人格 Agent 不可被主 Agent 调用

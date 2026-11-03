@@ -148,6 +148,7 @@ from zhuzhu_Copilot.core import (
 
 from zhuzhu_Copilot.core.agent_mcp import McpManager
 from zhuzhu_Copilot.ui import agent_chat_bubbles as chat_bubbles
+from zhuzhu_Copilot.ui import agent_edit_dialogs
 from zhuzhu_Copilot.ui import brand_icons
 from zhuzhu_Copilot.ui import tool_icons
 from zhuzhu_Copilot.ui.tokens import (
@@ -1399,7 +1400,7 @@ _LUCIDE_NAV_ICONS: dict[str, str] = {
 _NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("通用与记忆", "general"),
     ("自定义规则", "rules"),
-    ("系统提示词", "prompt"),
+    ("提示词与人格", "prompt"),
     ("bash 白名单", "bash"),
     ("模型接入", "model"),
     ("技能", "skills"),
@@ -1732,6 +1733,11 @@ def _line_icon(kind: str, size: int = 18, color: str = TEXT_DIM) -> QIcon:
     elif kind == "user":        # 用户/Agent（圆头 + 肩部弧线）
         p.drawEllipse(QPointF(s * 0.5, s * 0.30), s * 0.14, s * 0.14)
         p.drawArc(QRectF(s * 0.26, s * 0.58, s * 0.48, s * 0.32), 0, 180 * 16)
+    elif kind == "users":       # 群聊（双人：左后一位 + 右前一位，肩线错位）
+        p.drawEllipse(QPointF(s * 0.36, s * 0.30), s * 0.12, s * 0.12)
+        p.drawArc(QRectF(s * 0.14, s * 0.56, s * 0.44, s * 0.30), 0, 180 * 16)
+        p.drawEllipse(QPointF(s * 0.68, s * 0.36), s * 0.11, s * 0.11)
+        p.drawArc(QRectF(s * 0.48, s * 0.62, s * 0.40, s * 0.26), 0, 180 * 16)
     elif kind == "server":      # 服务器（MCP）
         p.drawRoundedRect(QRectF(s * 0.18, s * 0.20, s * 0.64, s * 0.24),
                           s * 0.05, s * 0.05)
@@ -6162,14 +6168,67 @@ class _AgentSettingsDialog(QDialog):
         return w
 
     def _build_prompt_page(self, s) -> QWidget:
-        w = self._page(_ui("系统提示词"))
+        """提示词与人格：全局规则（穿透所有 Agent）+ 默认主 Agent 的人格覆盖。
+
+        三栏的分工必须清晰，否则用户会以为「填了就该生效」：
+          · 全局规则 —— 追加到**任何** Agent（内置/自定义/子 Agent/工作流），切换不变；
+          · 主 Agent 性格 / 系统提示词 —— 只覆盖内置默认主 Agent，整体替换对应段落，
+            留空即沿用内置。
+        """
+        from zhuzhu_Copilot.core import agent_prompt
+        w = self._page(_ui("提示词与人格"))
         lay = self._page_body(w)
-        self.prompt_edit = QPlainTextEdit()
-        self.prompt_edit.setPlaceholderText(_ui("补充的提示词…"))
-        self.prompt_edit.setPlainText(str(s.get("custom_system_prompt") or ""))
-        # 限高：整页一个大空框既难看也没必要，输入区 300px 足够，其余留白在底部
-        self.prompt_edit.setMaximumHeight(300)
-        lay.addWidget(self.prompt_edit)
+
+        lay.addWidget(self._section_label(_ui("全局规则（对所有 Agent 生效）")))
+        g_hint = QLabel(_ui(
+            "追加到每一个 Agent 的系统提示词末尾：内置主 Agent、@自定义 Agent、"
+            "子 Agent、各对话流都生效；切换任何 Agent 或对话流都不会改变。"))
+        g_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        g_hint.setWordWrap(True)
+        lay.addWidget(g_hint)
+        self.global_prompt_edit = QPlainTextEdit()
+        self.global_prompt_edit.setPlaceholderText(_uim(
+            "如：\n任何情况下都不得删除项目外文件\n回答前先确认是否已读过相关源码"))
+        # 旧版「系统提示词」的语义与此相同（追加到末尾），读取时自动迁移到本栏
+        self.global_prompt_edit.setPlainText(agent_prompt.global_prompt())
+        self.global_prompt_edit.setMinimumHeight(120)
+        self.global_prompt_edit.setMaximumHeight(200)
+        lay.addWidget(self.global_prompt_edit)
+
+        lay.addWidget(self._section_label(_ui("主 Agent 性格（覆盖内置人设）")))
+        p_hint = QLabel(_ui(
+            "只影响内置默认主 Agent。填写后整体替换内置人设；留空则沿用内置，"
+            "自定义 Agent 与子 Agent 不读取本栏（它们在「Agent 管理」页各自配置）。"))
+        p_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        p_hint.setWordWrap(True)
+        lay.addWidget(p_hint)
+        self.main_persona_edit = QPlainTextEdit()
+        self.main_persona_edit.setPlaceholderText(_uim(
+            "如：你是一位克制、直接的资深工程师，先给结论再给依据。"))
+        self.main_persona_edit.setPlainText(str(s.get(agent_prompt.MAIN_PERSONA_KEY) or ""))
+        self.main_persona_edit.setMinimumHeight(90)
+        self.main_persona_edit.setMaximumHeight(150)
+        lay.addWidget(self.main_persona_edit)
+
+        lay.addWidget(self._section_label(_ui("主 Agent 系统提示词（覆盖内置）")))
+        self.main_system_edit = QPlainTextEdit()
+        self.main_system_edit.setPlaceholderText(_uim(
+            "如：只做代码审查，不改文件；每次输出必须附文件路径与行号。"))
+        self.main_system_edit.setPlainText(str(s.get(agent_prompt.MAIN_SYSTEM_KEY) or ""))
+        self.main_system_edit.setMinimumHeight(90)
+        self.main_system_edit.setMaximumHeight(150)
+        lay.addWidget(self.main_system_edit)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        reset = QPushButton(_ui("清空本页（恢复内置）"))
+        reset.setStyleSheet(self._btn_qss("ghost"))
+        reset.setAutoDefault(False)
+        reset.clicked.connect(lambda: (self.global_prompt_edit.clear(),
+                                       self.main_persona_edit.clear(),
+                                       self.main_system_edit.clear()))
+        row.addWidget(reset)
+        lay.addLayout(row)
         lay.addStretch(1)
         return w
 
@@ -7021,9 +7080,45 @@ class _AgentSettingsDialog(QDialog):
         m_edit.setStyleSheet(self._btn_qss("primary"))
         m_edit.setAutoDefault(False)
         m_edit.clicked.connect(self._on_agent_edit_main)
+        m_prompt = QPushButton(_ui("人格与提示词（设置页）"))
+        m_prompt.setStyleSheet(self._btn_qss("ghost"))
+        m_prompt.setAutoDefault(False)
+        m_prompt.clicked.connect(
+            lambda: self._switch_page(_nav_index("prompt")))
         mrow.addWidget(m_edit)
+        mrow.addWidget(m_prompt)
         mrow.addStretch(1)
         lay.addLayout(mrow)
+
+        # ---- 自定义 Agent（@agent）----
+        lay.addWidget(self._section_label(_ui("自定义 Agent（@名称 切换）")))
+        c_hint = QLabel(_ui(
+            "性格与系统级提示词只对这一个 Agent 生效，切换时合成完整人格；"
+            "设置页的「全局规则」对所有 Agent 恒生效。"))
+        c_hint.setStyleSheet(f"color: {self._DIM}; font-size: 12px;")
+        c_hint.setWordWrap(True)
+        lay.addWidget(c_hint)
+        self.agent_custom_list = _CardBoard(self)
+        crow = QHBoxLayout()
+        crow.setSpacing(8)
+        c_add = QPushButton(_ui("新建 Agent"))
+        c_add.setStyleSheet(self._btn_qss("primary"))
+        c_add.setAutoDefault(False)
+        c_add.clicked.connect(self._on_agent_add_custom)
+        c_edit = QPushButton(_ui("编辑选中"))
+        c_edit.setStyleSheet(self._btn_qss("ghost"))
+        c_edit.setAutoDefault(False)
+        c_edit.clicked.connect(self._on_agent_edit_custom)
+        c_del = QPushButton(_ui("删除选中"))
+        c_del.setStyleSheet(self._btn_qss("ghost"))
+        c_del.setAutoDefault(False)
+        c_del.clicked.connect(self._on_agent_del_custom)
+        crow.addWidget(c_add)
+        crow.addWidget(c_edit)
+        crow.addWidget(c_del)
+        crow.addStretch(1)
+        lay.addWidget(self.agent_custom_list)
+        lay.addLayout(crow)
 
         # ---- 子 Agent ----
         lay.addWidget(self._section_label(_ui("子 Agent（本对话流注册）")))
@@ -7035,11 +7130,16 @@ class _AgentSettingsDialog(QDialog):
         s_add.setStyleSheet(self._btn_qss("primary"))
         s_add.setAutoDefault(False)
         s_add.clicked.connect(self._on_agent_add_sub)
+        s_edit = QPushButton(_ui("编辑选中"))
+        s_edit.setStyleSheet(self._btn_qss("ghost"))
+        s_edit.setAutoDefault(False)
+        s_edit.clicked.connect(self._on_agent_edit_sub)
         s_del = QPushButton(_ui("删除选中"))
         s_del.setStyleSheet(self._btn_qss("ghost"))
         s_del.setAutoDefault(False)
         s_del.clicked.connect(self._on_agent_del_sub)
         srow.addWidget(s_add)
+        srow.addWidget(s_edit)
         srow.addWidget(s_del)
         srow.addStretch(1)
         lay.addWidget(self.agent_sub_list)   # 卡片看板在上（定高 ≤10 张）
@@ -7068,6 +7168,7 @@ class _AgentSettingsDialog(QDialog):
                 self.agent_wf.setCurrentIndex(idx)
         self.agent_wf.blockSignals(False)
         self._refresh_agent_main()
+        self._refresh_agent_customs()
         self._refresh_agent_subs()
 
     def _refresh_agent_main(self):
@@ -7081,10 +7182,115 @@ class _AgentSettingsDialog(QDialog):
             custom = (agent_workflow.workflow_dir(name) / "agent.py").is_file()
         except Exception:
             custom = False
-        self.agent_main_info.setText(
-            _uif("主 Agent 人格：{a0}\n核心文件：{a1}",
-                 a0=_ui("自定义（agent.py）") if custom else _ui("内置默认"),
-                 a1=files))
+        # 设置页的覆盖状态必须显式展示：用户改了性格却看不到生效位置时，
+        # 会误以为设置页没保存（该覆盖只在默认主 Agent 上生效）。
+        from zhuzhu_Copilot.core import agent_prompt
+        over = []
+        if agent_prompt.main_persona():
+            over.append(_ui("性格"))
+        if agent_prompt.main_system_prompt():
+            over.append(_ui("系统提示词"))
+        self.agent_main_info.setText(_uif(
+            "主 Agent 人格：{a0}\n设置页覆盖：{a1}\n核心文件：{a2}",
+            a0=_ui("自定义（agent.py）") if custom else _ui("内置默认"),
+            a1=("、".join(over) if over else _ui("未覆盖（沿用内置）")),
+            a2=files))
+
+    def _refresh_agent_customs(self):
+        """自定义 Agent（agents/*.json，@名称 会话级切换）卡片列表"""
+        board = getattr(self, "agent_custom_list", None)
+        if board is None:
+            return
+        board.clear()
+        for ag in agent_agents.list_agents():
+            persona = (ag.get("persona") or "").strip()
+            system = (ag.get("system_prompt") or "").strip()
+            # 描述取两栏首行：卡片只显示一行摘要，正文在编辑弹窗里看
+            desc = " · ".join(x.splitlines()[0] for x in (persona, system) if x)
+            bound = (ag.get("bound_workflow") or "").strip()
+            card = board.add_card(
+                ag.get("name", ""), desc,
+                meta=_uif("绑定对话流：{a0}",
+                          a0=bound or _ui("沿用当前对话流")),
+                icon_text=ag.get("name", ""))
+            card.setToolTip(desc)
+            card.setData(Qt.ItemDataRole.UserRole, ag.get("name", ""))
+
+    def _agent_workflow_names(self) -> list:
+        """可绑定的对话流名（仅启用中）"""
+        return [w["name"] for w in agent_workflow.list_workflows()
+                if w.get("enabled", True)]
+
+    def _notify_panel_agents_changed(self):
+        """自定义 Agent / 子 Agent 变更后刷新面板的 @ 候选缓存（同一进程共享）"""
+        p = self.parent()
+        if p is not None and hasattr(p, "_invalidate_cmd_cache"):
+            p._invalidate_cmd_cache()
+
+    def _on_agent_add_custom(self, *_):
+        """新建自定义 Agent（@名称 切换；性格 + 系统级提示词）"""
+        vals = agent_edit_dialogs.edit_custom_agent(
+            self, None, self._agent_workflow_names())
+        if not vals:
+            return
+        ok, msg = agent_agents.save_agent(
+            vals.get("name", ""), vals.get("system_prompt", ""),
+            vals.get("bound_workflow", ""), persona=vals.get("persona", ""))
+        if ok:
+            QMessageBox.information(self, _ui("已保存"), _uif(
+                "{a0}\n\n在输入框输入 @{a1} 即可切换该人格。", a0=msg, a1=vals.get("name", "")))
+        else:
+            QMessageBox.warning(self, _ui("保存失败"), msg)
+        self._refresh_agent_customs()
+        self._notify_panel_agents_changed()
+
+    def _on_agent_edit_custom(self, *_):
+        """编辑选中的自定义 Agent"""
+        it = getattr(self, "agent_custom_list", None)
+        cur = it.currentItem() if it is not None else None
+        if cur is None:
+            QMessageBox.information(self, _ui("提示"), _ui("请选择要编辑的 Agent"))
+            return
+        name = str(cur.data(Qt.ItemDataRole.UserRole) or "")
+        ag = agent_agents.get_agent(name)
+        if not ag:
+            QMessageBox.warning(self, _ui("提示"), _ui("该 Agent 已不存在，请刷新"))
+            self._refresh_agent_customs()
+            return
+        vals = agent_edit_dialogs.edit_custom_agent(
+            self, ag, self._agent_workflow_names())
+        if not vals:
+            return
+        ok, msg = agent_agents.save_agent(
+            name, vals.get("system_prompt", ""),
+            vals.get("bound_workflow", ""), persona=vals.get("persona", ""))
+        if ok:
+            QMessageBox.information(self, _ui("已保存"), msg)
+        else:
+            QMessageBox.warning(self, _ui("保存失败"), msg)
+        self._refresh_agent_customs()
+        self._notify_panel_agents_changed()
+
+    def _on_agent_del_custom(self, *_):
+        """删除选中的自定义 Agent"""
+        it = getattr(self, "agent_custom_list", None)
+        cur = it.currentItem() if it is not None else None
+        if cur is None:
+            QMessageBox.information(self, _ui("提示"), _ui("请选择要删除的 Agent"))
+            return
+        name = str(cur.data(Qt.ItemDataRole.UserRole) or "")
+        ret = QMessageBox.question(
+            self, _ui("确认删除"),
+            _uif("确定删除自定义 Agent「{a0}」？正在使用它的对话会回退到工作流人格。", a0=name))
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        ok, msg = agent_agents.delete_agent(name)
+        if ok:
+            QMessageBox.information(self, _ui("已删除"), msg)
+        else:
+            QMessageBox.warning(self, _ui("删除失败"), msg)
+        self._refresh_agent_customs()
+        self._notify_panel_agents_changed()
 
     def _refresh_agent_subs(self):
         if not hasattr(self, "agent_sub_list"):
@@ -7094,10 +7300,11 @@ class _AgentSettingsDialog(QDialog):
         for it in agent_subagent.registered_subagents(name):
             desc = (it["description"] or "").strip()
             goal = (it["goal"] or "").strip()
+            meta = _uif("{k}: {v}", k=_ui("目标"), v=goal) if goal else ""
+            if (it.get("persona") or it.get("system_prompt")):
+                meta = (meta + "　" if meta else "") + _ui("已自定义人格")
             card = self.agent_sub_list.add_card(
-                it["name"], desc, meta=(_uif("{k}: {v}", k=_ui("目标"), v=goal)
-                                        if goal else ""),
-                icon_text=it["name"])
+                it["name"], desc, meta=meta, icon_text=it["name"])
             card.setToolTip(goal)
             card.setData(Qt.ItemDataRole.UserRole, it["name"])
 
@@ -7135,28 +7342,51 @@ class _AgentSettingsDialog(QDialog):
         if not name:
             QMessageBox.information(self, _ui("提示"), _ui("请先选择对话流"))
             return
-        sname, ok1 = QInputDialog.getText(self, _ui("注册子 Agent"), _ui("子 Agent 名称（如 sub_reviewer）："))
-        if not ok1 or not sname.strip():
-            return
-        desc, ok2 = QInputDialog.getText(self, _ui("注册子 Agent"), _ui("简短描述（列表展示用）："))
-        if not ok2:
-            return
-        goal, ok3 = _MultiLineInputDialog.get(
-            self, "注册子 Agent", "任务指令（goal，必填）：", "", wrap=True, min_size=(520, 200))
-        if not ok3 or not goal.strip():
-            return
-        allowed, ok4 = QInputDialog.getText(
-            self, _ui("注册子 Agent"),
-            _ui("允许工具（逗号分隔，如 read_file,write_file；留空=全部白名单）："))
-        if not ok4:
+        vals = agent_edit_dialogs.edit_sub_agent(self, None)
+        if not vals:
             return
         ok, msg = agent_subagent.register_subagent(
-            sname.strip(), desc.strip(), goal.strip(), allowed.strip(), workflow=name)
+            vals.get("name", ""), vals.get("description", ""),
+            vals.get("goal", ""), vals.get("allowed", ""),
+            vals.get("persona", ""), workflow=name,
+            system_prompt=vals.get("system_prompt", ""))
         if ok:
             QMessageBox.information(self, _ui("注册成功"), msg)
         else:
             QMessageBox.warning(self, _ui("注册失败"), msg)
         self._refresh_agent_subs()
+        self._notify_panel_agents_changed()
+
+    def _on_agent_edit_sub(self, *_):
+        """编辑选中的子 Agent：描述 / 任务指令 / 允许工具 / 性格 / 系统级提示词"""
+        name = self._agent_current_wf()
+        it = self.agent_sub_list.currentItem()
+        if not name or it is None:
+            QMessageBox.information(self, _ui("提示"), _ui("请选择要编辑的子 Agent"))
+            return
+        sname = str(it.data(Qt.ItemDataRole.UserRole) or "")
+        cur = next((x for x in agent_subagent.registered_subagents(name)
+                    if x["name"] == sname), None)
+        if not cur:
+            QMessageBox.warning(self, _ui("提示"), _ui("该子 Agent 已不存在，请刷新"))
+            self._refresh_agent_subs()
+            return
+        vals = agent_edit_dialogs.edit_sub_agent(self, cur)
+        if not vals:
+            return
+        ok, msg = agent_subagent.register_subagent(
+            sname, vals.get("description", ""), vals.get("goal", ""),
+            vals.get("allowed", ""), vals.get("persona", ""), workflow=name,
+            shared_context=bool(cur.get("shared_context", True)),
+            allow_chat=bool(cur.get("allow_chat", True)),
+            share_context=bool(cur.get("share_context", True)),
+            system_prompt=vals.get("system_prompt", ""))
+        if ok:
+            QMessageBox.information(self, _ui("已保存"), msg)
+        else:
+            QMessageBox.warning(self, _ui("保存失败"), msg)
+        self._refresh_agent_subs()
+        self._notify_panel_agents_changed()
 
     def _on_agent_del_sub(self, *_):
         """从选中对话流删除子 Agent"""
@@ -7176,6 +7406,7 @@ class _AgentSettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, _ui("删除失败"), msg)
         self._refresh_agent_subs()
+        self._notify_panel_agents_changed()
 
     def _build_workflow_page(self) -> QWidget:
         """工作流管理（Cordis）：列表 + 自然语言 AI 生成 + 添加/编辑/删除核心文件 + 切换/禁用/删除"""
@@ -10300,7 +10531,12 @@ class _AgentSettingsDialog(QDialog):
         data = {
             "custom_rules": [ln.strip() for ln in self.rules_edit.toPlainText().splitlines()
                              if ln.strip()],
-            "custom_system_prompt": self.prompt_edit.toPlainText().strip(),
+            # 提示词与人格：全局规则 / 主 Agent 覆盖（见 core/agent_prompt.py）。
+            # 旧键 custom_system_prompt 不再写入 —— 其值读取时已视作全局规则并显示在
+            # 本页，保存即完成迁移（save_settings 整体覆盖文件，旧键随之消失）。
+            "global_system_prompt": self.global_prompt_edit.toPlainText().strip(),
+            "main_agent_persona": self.main_persona_edit.toPlainText().strip(),
+            "main_agent_system_prompt": self.main_system_edit.toPlainText().strip(),
             "custom_safe_commands": [ln.strip() for ln in self.safe_edit.toPlainText().splitlines()
                                      if ln.strip()],
             "memory_enabled": self.memory_check.isChecked(),
@@ -19715,6 +19951,7 @@ class _SessionDrawer(QFrame):
 
     session_activated = pyqtSignal(str)     # 点击会话 → 切到该对话
     new_requested = pyqtSignal()            # 点击「新建对话」
+    group_requested = pyqtSignal()          # 点击「AI 群聊」
     delete_requested = pyqtSignal(str, str)  # 右键删除（sid, 展示名）
     pin_requested = pyqtSignal(str, bool)    # 右键置顶 / 取消置顶（sid, 是否置顶）
     toggle_requested = pyqtSignal()         # 标题栏 / 窄条上的收起、展开按钮
@@ -19756,6 +19993,16 @@ class _SessionDrawer(QFrame):
         self.new_btn.setStyleSheet(_BTN_ICON)
         self.new_btn.clicked.connect(self.new_requested)
         head.addWidget(self.new_btn)
+        # AI 群聊：与「新对话」同级入口（独立窗口，不占用会话列表）
+        self.group_btn = QPushButton(_line_icon("users", 16, TEXT_DIM), "")
+        self.group_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.group_btn.setAutoDefault(False)
+        self.group_btn.setFixedSize(28, 28)
+        self.group_btn.setIconSize(QSize(16, 16))
+        self.group_btn.setToolTip(_ui("AI 群聊"))
+        self.group_btn.setStyleSheet(_BTN_ICON)
+        self.group_btn.clicked.connect(self.group_requested)
+        head.addWidget(self.group_btn)
         # 收起箭头：与右侧胶囊的「对话栏」开关同一状态（面板统一调度）
         self.collapse_btn = QPushButton(_line_icon("chev-left", 14, TEXT_DIM), "")
         self.collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -22249,6 +22496,7 @@ class AgentPanel(QDialog):
         self.session_drawer = _SessionDrawer(self, self)
         self.session_drawer.session_activated.connect(self._on_drawer_session)
         self.session_drawer.new_requested.connect(self._new_session)
+        self.session_drawer.group_requested.connect(self._open_group_chat)
         self.session_drawer.delete_requested.connect(self._remove_session)
         self.session_drawer.pin_requested.connect(self._toggle_session_pin)
         self.session_drawer.toggle_requested.connect(self._toggle_drawer)
@@ -23990,6 +24238,23 @@ class AgentPanel(QDialog):
         if eng is not None and eng._messages and len(eng._messages) > 1:
             return False   # 引擎已积累对话历史（首条为 system prompt）
         return True
+
+    def _open_group_chat(self):
+        """打开 AI 群聊窗口（独立窗口，单例：再次点击只把已有窗口前置）。
+
+        刻意不复用主面板的会话状态机：群聊的发言人是多个独立引擎、上下文是共享
+        记录而非单条对话史，混进会话列表只会把排队/中断/持久化逻辑搅在一起。
+        """
+        from zhuzhu_Copilot.ui.group_chat_dialog import GroupChatDialog
+        dlg = getattr(self, "_group_chat_dlg", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.raise_()
+            dlg.activateWindow()
+            return
+        dlg = GroupChatDialog(self)
+        dlg.finished.connect(lambda *_: setattr(self, "_group_chat_dlg", None))
+        self._group_chat_dlg = dlg
+        dlg.show()
 
     def _new_session(self, *_):
         """新开对话：保存当前 → 创建空会话（当前会话后台任务不中断，多对话并发）。
@@ -31162,11 +31427,13 @@ class AgentPanel(QDialog):
         return text, None
 
     def _agent_persona(self, name: str):
-        """返回自定义 Agent 的人格（用户 system_prompt）；保留名/缺失返回 None（用工作流人格）"""
+        """返回自定义 Agent 的人格（性格 + 系统级提示词合成）；保留名/缺失返回 None"""
         if not name or name == "_default":
             return None
         ag = agent_agents.get_agent(name)
-        return (ag or {}).get("system_prompt") or None
+        if not ag:
+            return None
+        return agent_agents.composed_prompt(ag) or None
 
     def _switch_session_agent(self, name: str) -> bool:
         """会话级切换自定义 Agent：人格覆盖（system_prompt）+ 可选绑定工作流（tools/skill/llm）。
@@ -31199,7 +31466,7 @@ class AgentPanel(QDialog):
         eng = st.get("engine")
         if eng is None:
             eng = self._engine_for(self._session_id)
-        eng.persona = ag.get("system_prompt") or None
+        eng.persona = agent_agents.composed_prompt(ag) or None
         self._persist_current()
         self._invalidate_cmd_cache()   # agent 变化：@ 候选/技能候选随之下次重建
         return True
@@ -31748,6 +32015,7 @@ class AgentPanel(QDialog):
                 on_sub_event=_ev,
                 workflow=wf,
                 persona=persona,
+                system_prompt=conf.get("system_prompt") or "",
                 custom=True,
                 history=hist,
                 on_history=_save,

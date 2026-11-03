@@ -354,7 +354,7 @@ def test_create_agent_result_points_back_to_register_sub_agent(monkeypatch):
     from zhuzhu_Copilot.core import agent_tools
 
     class _FakeAgents:
-        def save_agent(self, name, prompt, bound):
+        def save_agent(self, name, prompt, bound, persona=""):
             return True, f"已保存自定义 Agent「{name}」"
 
     monkeypatch.setattr(agent_tools, "_ag", lambda: _FakeAgents())
