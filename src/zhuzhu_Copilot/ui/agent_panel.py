@@ -9253,7 +9253,14 @@ class _AgentSettingsDialog(QDialog):
         if is_plan and (tier == "free" or p.get("id") == "free"):
             price_main, price_unit = _ui("免费"), _ui("永久")
         else:
-            price_main = _uif("¥{a0}", a0=p.get("price"))
+            # 服务端价格可能是 7 或 7.0：整数不带小数点，避免出现「¥7.0」
+            raw = p.get("price")
+            try:
+                num = float(raw)
+                price_txt = str(int(num)) if num.is_integer() else ("%g" % num)
+            except (TypeError, ValueError):
+                price_txt = str(raw or "")
+            price_main = _uif("¥{a0}", a0=price_txt)
             price_unit = _ui("/ 月") if is_plan else ""
         card = member_cards.build_product_card(
             title=_ui(p["name"]),
