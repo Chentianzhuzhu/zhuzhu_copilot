@@ -51,7 +51,7 @@ _ALPHA_KEYS = {
 _DOWNSCALE = 4              # 磨砂底降采样倍数（线性）：像素量降到 1/16
 _BLUR_MIN, _BLUR_MAX = 2.0, 24.0
 #: 角部高光沿边的点缀长度上限（px）：定值而非等比，长条/窄高控件才不会拉出亮带
-_RIM_SPAN_MAX = 26.0
+_RIM_SPAN_MAX = 38.0
 
 _strength: int | None = None
 _alphas: dict = {}          # mode -> 不透明度（懒加载，按需缓存）

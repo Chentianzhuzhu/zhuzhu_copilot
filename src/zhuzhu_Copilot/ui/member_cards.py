@@ -84,7 +84,9 @@ class EdgeCard(QFrame):
         border = PALETTE["border"]
         accent = PALETTE["primary"]
         if dark:
-            bg_top = _mix(card, "#FFFFFF", 0.07)
+            # 卡面统一暗色平面：不再做"顶亮底暗"的竖向渐变（那是给卡面加的内部
+            # 泛光，用户明确不要），一行底色让整页元素色调一致
+            bg_top = card
             edge_top = _mix(border, "#FFFFFF", 0.42)
             edge_bottom = border
             glint = 74
