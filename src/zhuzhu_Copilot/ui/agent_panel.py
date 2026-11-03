@@ -8990,8 +8990,9 @@ class _AgentSettingsDialog(QDialog):
         sub_hint.setWordWrap(True)
         lay.addWidget(sub_hint)
         sub_row = QHBoxLayout()
-        # 卡片自带 14px 外边距（供发光绘制），布局间距归零，视觉间隔由卡片自己的留白决定
-        sub_row.setContentsMargins(0, 2, 0, 0)
+        # 卡片自带 14px 外边距（供发光绘制），布局间距归零，视觉间隔由卡片自己的留白决定。
+        # 顶部多留 10px：推荐胶囊是"一半压在卡片顶边上"的，不留空间会被上一行裁掉。
+        sub_row.setContentsMargins(0, 12, 0, 0)
         sub_row.setSpacing(0)
         self._memb_card_widgets = {}       # product_id -> (card, buy_btn)
         for p in self._MEMBERSHIP_PRODUCTS:
@@ -9270,9 +9271,11 @@ class _AgentSettingsDialog(QDialog):
             cta=label,
             cta_enabled=can_buy,
             cta_tip=tip,
-            recommended=(tier == "pro"),
+            # 已订阅用户不再推荐：泛光、推荐胶囊、实心按钮整套收掉，
+            # 否则「推荐」会顶在「当前」卡旁边，暗示用户再买一档
+            recommended=(tier == "pro" and cur == "free"),
             current=(is_plan and tier == cur),
-            badge=_ui("推荐") if tier == "pro" else "",
+            badge=_ui("推荐") if (tier == "pro" and cur == "free") else "",
             compact=not is_plan)
         prod = dict(p)
         card.buy_btn.clicked.connect(
