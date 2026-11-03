@@ -150,6 +150,7 @@ from zhuzhu_Copilot.core.agent_mcp import McpManager
 from zhuzhu_Copilot.ui import agent_chat_bubbles as chat_bubbles
 from zhuzhu_Copilot.ui import agent_edit_dialogs
 from zhuzhu_Copilot.ui import avatars as _avatars
+from zhuzhu_Copilot.ui import member_cards
 from zhuzhu_Copilot.ui import brand_icons
 from zhuzhu_Copilot.ui import tool_icons
 from zhuzhu_Copilot.ui.tokens import (
@@ -5411,9 +5412,12 @@ class _AgentSettingsDialog(QDialog):
             # 勾选框 / 单选框默认会被样式化系统铺一层 palette 底（深浅主题下都
             # 表现为「文字后面一条灰带」），显式透明让它坐在卡片上。
             "QCheckBox, QRadioButton { background: transparent; }"
-            f"QLineEdit, QPlainTextEdit, QComboBox {{ background: {_in_bg};"
+            f"QLineEdit, QPlainTextEdit {{ background: {_in_bg};"
             f"color: {self._TEXT}; border: none;"
             "border-radius: 12px; padding: 6px 10px; }"
+            # 下拉框本体已由 ArrowComboBox 自绘玻璃底，这里不能再铺实色
+            f"QComboBox {{ background: transparent; color: {self._TEXT};"
+            "border: none; border-radius: 12px; padding: 6px 10px; }"
             f"QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover {{"
             f"background: {_in_hover}; }}"
             f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
@@ -5911,7 +5915,7 @@ class _AgentSettingsDialog(QDialog):
         _mode = str(s.get("proxy_mode", "global")).strip().lower()
         self.proxy_mode_combo.setCurrentIndex(1 if _mode == "fallback" else 0)
         self.proxy_mode_combo.setStyleSheet(
-            f"QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QComboBox {{ background: transparent; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 8px;"
             "padding: 5px 10px; font-size: 13px; }"
             f"QComboBox QAbstractItemView {{ background: {self._PANEL}; color: {self._TEXT};"
@@ -6839,7 +6843,7 @@ class _AgentSettingsDialog(QDialog):
         self.skill_wf_combo = _ArrowComboBox()
         self.skill_wf_combo.setMinimumWidth(240)
         self.skill_wf_combo.setStyleSheet(
-            f"QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QComboBox {{ background: transparent; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
             f"QComboBox QAbstractItemView {{ background: {self._PANEL};"
             f" color: {TEXT};"
@@ -8923,37 +8927,30 @@ class _AgentSettingsDialog(QDialog):
         lay = self._page_body(w)
 
         # ---- 每日签到宣传（签到按钮在个人信息面板用户名右侧）----
-        self._memb_checkin_banner = QLabel("")
-        self._memb_checkin_banner.setObjectName("membCheckinBanner")
-        self._memb_checkin_banner.setStyleSheet(
-            f"#membCheckinBanner {{ background: {self._PANEL2}; border: none;"
-            "border-radius: 10px; padding: 10px 14px; }"
-            f"#membCheckinBanner QLabel {{ color: {self._TEXT}; font-size: 12px; }}"
-            f"#membCheckinBanner QLabel#membCheckinDim {{ color: {self._DIM};"
-            "font-size: 11px; }")
-        cbox = QVBoxLayout(self._memb_checkin_banner)
-        cbox.setContentsMargins(14, 10, 14, 10)
-        cbox.setSpacing(3)
-        c_title = QLabel(_ui("每日签到领积分"))
-        c_title.setObjectName("membCheckinTitle")
-        cbox.addWidget(c_title)
+        # 与商品卡共用同一套卡片语言（圆角描边 + 边缘高光），整页视觉才统一。
+        self._memb_checkin_banner = member_cards.InfoBanner(
+            _ui("每日签到领积分"), "")
         lay.addWidget(self._memb_checkin_banner)
 
         # ---- 当前状态：积分大数字 + 会员类型标签 ----
+        # 黑白配色：积分数用主文字色（不再用蓝色），蓝色只留给 Pro 推荐卡的泛光。
         status_row = QHBoxLayout()
+        status_row.setSpacing(6)
         self._memb_points_label = QLabel("--")
         self._memb_points_label.setStyleSheet(
-            f"color: {self._ACCENT_HOVER}; font-size: 32px; font-weight: 800;")
-        status_row.addWidget(self._memb_points_label)
+            f"color: {self._TEXT}; font-size: 30px; font-weight: 700;"
+            " background: transparent;")
+        status_row.addWidget(self._memb_points_label, 0, Qt.AlignmentFlag.AlignBaseline)
         unit = QLabel(_ui("积分"))
-        unit.setStyleSheet(f"color: {self._DIM}; font-size: 13px;")
-        status_row.addWidget(unit)
-        status_row.addSpacing(24)
+        unit.setStyleSheet(f"color: {self._DIM}; font-size: 12px; background: transparent;")
+        status_row.addWidget(unit, 0, Qt.AlignmentFlag.AlignBaseline)
+        status_row.addSpacing(18)
         self._memb_type_label = QLabel("")
         self._memb_type_label.setStyleSheet(
-            f"color: {self._PANEL}; background: {self._DIM};"
-            "border-radius: 8px; padding: 3px 12px; font-size: 12px; font-weight: 700;")
-        status_row.addWidget(self._memb_type_label)
+            f"color: {self._TEXT}; background: transparent;"
+            f"border: 1px solid {self._BORDER}; border-radius: 9px;"
+            " padding: 2px 10px; font-size: 11px; font-weight: 600;")
+        status_row.addWidget(self._memb_type_label, 0, Qt.AlignmentFlag.AlignVCenter)
         status_row.addStretch(1)
         lay.addLayout(status_row)
 
@@ -8971,15 +8968,31 @@ class _AgentSettingsDialog(QDialog):
         lay.addWidget(self._memb_benefits)
         self._memb_login_btn = QPushButton(_ui("立即登录"))
         self._memb_login_btn.setAutoDefault(False)
+        self._memb_login_btn.setFixedSize(104, 32)
+        self._memb_login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 反色实心（浅色黑底白字 / 深色白底黑字）：与 Pro 卡的主按钮同一套「最强引导」样式
         self._memb_login_btn.setStyleSheet(
-            f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
-            "border-radius: 8px; padding: 6px 18px; font-weight: 700;")
+            f"background: {self._TEXT}; color: {self._PANEL2}; border: none;"
+            "border-radius: 8px; font-weight: 700;")
         self._memb_login_btn.clicked.connect(lambda: auth.login_with_browser())
-        lay.addWidget(self._memb_login_btn)
+        # 按钮不铺满整行：满宽白色条会抢走推荐卡的视觉焦点
+        login_row = QHBoxLayout()
+        login_row.setContentsMargins(0, 2, 0, 2)
+        login_row.addWidget(self._memb_login_btn)
+        login_row.addStretch(1)
+        lay.addLayout(login_row)
 
         # ---- 会员订阅卡片 ----
         lay.addWidget(self._section_label(_ui("会员订阅")))
+        sub_hint = QLabel(_ui(
+            "按月订阅，升级即时生效且剩余时长自动叠加；推荐 Pro —— 功能与积分的最优平衡。"))
+        sub_hint.setStyleSheet(f"color: {self._DIM}; font-size: 11px; margin-top: -4px;")
+        sub_hint.setWordWrap(True)
+        lay.addWidget(sub_hint)
         sub_row = QHBoxLayout()
+        # 卡片自带 14px 外边距（供发光绘制），布局间距归零，视觉间隔由卡片自己的留白决定
+        sub_row.setContentsMargins(0, 2, 0, 0)
+        sub_row.setSpacing(0)
         self._memb_card_widgets = {}       # product_id -> (card, buy_btn)
         for p in self._MEMBERSHIP_PRODUCTS:
             card = self._memb_product_card(p)
@@ -9001,7 +9014,13 @@ class _AgentSettingsDialog(QDialog):
 
         # ---- 积分包卡片 ----
         lay.addWidget(self._section_label(_ui("积分包")))
+        pack_hint = QLabel(_ui("按需加购，任意会员等级均可购买；积分即时到账。"))
+        pack_hint.setStyleSheet(f"color: {self._DIM}; font-size: 11px; margin-top: -4px;")
+        pack_hint.setWordWrap(True)
+        lay.addWidget(pack_hint)
         pack_row = QHBoxLayout()
+        pack_row.setContentsMargins(0, 2, 0, 0)
+        pack_row.setSpacing(0)
         for p in self._POINTPACK_PRODUCTS:
             pack_row.addWidget(self._memb_product_card(p))
         pack_row.addStretch(1)
@@ -9186,15 +9205,20 @@ class _AgentSettingsDialog(QDialog):
         """
         cur = ((self._memb_auth.current_user() or {}).get("membership_type")
                if getattr(self, "_memb_auth", None) else None) or "free"
-        for pid, (_card, btn) in (self.__dict__.get("_memb_card_widgets") or {}).items():
+        for pid, (card, btn) in (self.__dict__.get("_memb_card_widgets") or {}).items():
             prod = next((p for p in self._memb_membership_products if p["id"] == pid), None)
             if prod is None:
                 continue
             try:
                 label, tip, can_buy = self._memb_card_state(prod, cur)
-                btn.setEnabled(can_buy)
-                btn.setText(label)
-                btn.setToolTip(tip)
+                if hasattr(card, "set_cta"):
+                    # 走卡片自身的 set_cta：文字/可用性与**按钮样式**一起刷新，
+                    # 否则禁用后仍留着推荐档的实心反色按钮（看不出不可点）
+                    card.set_cta(label, can_buy, tip)
+                else:
+                    btn.setEnabled(can_buy)
+                    btn.setText(label)
+                    btn.setToolTip(tip)
             except Exception:
                 pass
 
@@ -9210,57 +9234,43 @@ class _AgentSettingsDialog(QDialog):
         return lab
 
     def _memb_product_card(self, p: dict) -> QFrame:
-        card = QFrame()
-        # 卡片不描边（用户要求去掉会员价位/内容卡片的边框），仅保留底色 + 圆角。
-        # 显式写 border: none：给了 background 后若不定 border，部分 Qt 样式后端会补出默认边框。
-        card.setObjectName("membCard")
-        card.setStyleSheet(
-            f"#membCard {{background: {self._PANEL2}; border: none;"
-            "border-radius: 10px;}}")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(14, 12, 14, 12)
-        cl.setSpacing(6)
-        name = QLabel(_ui(p["name"]))
-        name.setStyleSheet(f"color: {self._TEXT}; font-size: 14px; font-weight: 700;")
-        cl.addWidget(name)
-        desc = QLabel(_ui(p.get("desc") or ""))
-        desc.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
-        desc.setWordWrap(True)
-        cl.addWidget(desc)
-        # 价格文案：免费版不是「N 元 = N 积分」，单独处理
-        tier = p.get("membership_type") or ""
-        if tier == "free" or p.get("id") == "free":
-            price_text = _ui("永久免费")
-        elif "monthly" in str(p.get("id") or ""):
-            price_text = _uif("{price} 元 / 月 · 送 {pts} 积分",
-                              price=p["price"], pts=p["points"])
-        else:
-            price_text = _uif("{price} 元 = {pts} 积分",
-                              price=p["price"], pts=p["points"])
-        price = QLabel(price_text)
-        price.setStyleSheet(f"color: {self._ACCENT_HOVER}; font-size: 13px; font-weight: 700;")
-        cl.addWidget(price)
-        # 文案与可用性统一由 _memb_card_state 决定（含「已订阅更高档位 → 置灰」），
-        # 避免「创建时」与「后续刷新」两套规则漂移（曾漏掉 action=upgrade → 显示「购买」）。
+        """商品卡：黑白简约 + 圆角描边 + 边缘高光；Pro 档额外叠蓝色泛光与实心按钮。
+
+        视觉层级只由三件事建立：① 唯一带彩色泛光的卡；② 唯一实心反色主按钮；
+        ③ 顶部「推荐」胶囊。其余档位一律描边幽灵按钮 —— 不用大段文案喊「推荐」。
+        """
         cur = ((self._memb_auth.current_user() or {}).get("membership_type")
                if getattr(self, "_memb_auth", None) else None) or "free"
+        tier = p.get("membership_type") or ""
+        is_plan = bool(tier)
+        # 文案与可用性统一由 _memb_card_state 决定（含「已订阅更高档位 → 置灰」），
+        # 避免「创建时」与「后续刷新」两套规则漂移。
         label, tip, can_buy = self._memb_card_state(p, cur)
-        buy = QPushButton(label)
-        buy.setAutoDefault(False)
-        buy.setStyleSheet(
-            f"QPushButton {{ background: {self._ACCENT}; color: #FFFFFF; border: none;"
-            " border-radius: 6px; padding: 6px 0px; font-weight: 700; }"
-            # 必须显式写 :disabled：QSS 里没有该规则时，禁用按钮会**沿用强调色**，
-            # 「置灰不可点」在视觉上根本看不出来（用户要求的是灰色禁用态）。
-            f"QPushButton:disabled {{ background: {self._PANEL2};"
-            f" color: {self._DIM}; border: 1px solid {self._BORDER}; }}")
-        if not can_buy:
-            buy.setEnabled(False)   # 灰色禁用（免费版/低档位，或服务端判定不可购）
-        buy.setToolTip(tip)
+        # 权益条目：后端 desc 用「，/；」分隔多个卖点，拆成列表逐条呈现
+        perks = [x.strip() for x in
+                 str(p.get("desc") or "").replace("；", "，").split("，")
+                 if x.strip()]
+        if is_plan and (tier == "free" or p.get("id") == "free"):
+            price_main, price_unit = _ui("免费"), _ui("永久")
+        else:
+            price_main = _uif("¥{a0}", a0=p.get("price"))
+            price_unit = _ui("/ 月") if is_plan else ""
+        card = member_cards.build_product_card(
+            title=_ui(p["name"]),
+            price_main=price_main,
+            price_unit=price_unit,
+            perks=perks,
+            cta=label,
+            cta_enabled=can_buy,
+            cta_tip=tip,
+            recommended=(tier == "pro"),
+            current=(is_plan and tier == cur),
+            badge=_ui("推荐") if tier == "pro" else "",
+            compact=not is_plan)
         prod = dict(p)
-        buy.clicked.connect(lambda _checked=False, pr=prod: self._memb_buy(pr))
-        cl.addWidget(buy)
-        card._buy_btn = buy      # 供 _memb_apply_purchase_state 后续重绘
+        card.buy_btn.clicked.connect(
+            lambda _checked=False, pr=prod: self._memb_buy(pr))
+        card._buy_btn = card.buy_btn   # 供 _memb_apply_purchase_state 后续重绘
         return card
 
     def _memb_refresh_status(self, *_args):
@@ -9282,6 +9292,19 @@ class _AgentSettingsDialog(QDialog):
             self._memb_login_hint.setText(_ui("未登录：内置模型需登录后使用，购买前请先登录。"))
         # 当前权益 / 过期提示：等级或到期日变化时一并更新
         self._refresh_memb_benefits(u if logged else None)
+        # 签到条副标题：能拿到服务端奖励值时用真实数值，否则只给规则说明
+        banner = self.__dict__.get("_memb_checkin_banner")
+        if banner is not None:
+            reward = {}
+            try:
+                reward = (auth.checkin_state() or {}) if logged else {}
+            except Exception:
+                reward = {}
+            pts = reward.get("reward")
+            banner.set_subtitle(
+                _uif("今日签到可得 {a0} 积分；会员等级越高，单日签到积分越多。", a0=pts)
+                if logged and pts else
+                _ui("会员等级越高，每日签到积分越多；签到入口在左上角个人信息面板。"))
         # 会员等级变化会影响购买资格（Max 不能再买 Pro）→ 按钮态与卡片数据一起刷新
         try:
             if logged:
@@ -10808,7 +10831,9 @@ class _McpServerDialog(QDialog):
         _mcp_qss = (
             f"QDialog {{ background: {_mcp_bg}; }}"
             f"QLabel {{ color: {TEXT}; font-size: 13px; }}"
-            f"QLineEdit, QComboBox {{ background: {_mcp_in}; color: {TEXT};"
+            f"QLineEdit {{ background: {_mcp_in}; color: {TEXT};"
+            f"border: 1px solid {_mcp_bd}; border-radius: 6px; padding: 6px 10px; }}"
+            f"QComboBox {{ background: transparent; color: {TEXT};"
             f"border: 1px solid {_mcp_bd}; border-radius: 6px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {_mcp_bd}; }}"
             f"QComboBox QAbstractItemView {{ background: {_mcp_in};"
@@ -11007,7 +11032,9 @@ class _ProviderDialog(QDialog):
         _pvd_qss = (
             f"QDialog {{ background: {self._BG}; }}"
             f"QLabel {{ color: {self._TEXT}; font-size: 13px; }}"
-            f"QLineEdit, QComboBox {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"QLineEdit {{ background: {self._PANEL}; color: {self._TEXT};"
+            f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
+            f"QComboBox {{ background: transparent; color: {self._TEXT};"
             f"border: 1px solid {self._BORDER}; border-radius: 6px; padding: 6px 10px; }}"
             f"QLineEdit:focus, QComboBox:focus {{ border: 1px solid {self._BORDER}; }}"
             f"QComboBox QAbstractItemView {{ background: {self._PANEL};"
