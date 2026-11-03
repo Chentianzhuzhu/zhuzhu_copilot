@@ -142,7 +142,9 @@ class FadeMenu(QMenu):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        glass.paint_surface(self, p, radius=RADIUS_MD, tint=PALETTE["elevated"])
+        # 菜单项文字密集：同下拉弹层，填充更实
+        glass.paint_surface(self, p, radius=RADIUS_MD, tint=PALETTE["elevated"],
+                            min_alpha=0.85)
         p.end()
         super().paintEvent(e)        # 菜单项/分隔线/箭头（QSS 底已透明）
 
@@ -485,8 +487,9 @@ class ComboPopup(QFrame):
         # 撤掉遮罩时不会「跳」；壁纸变化由 glass 的重绘通知兜住）
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # 列表文字密集：填充更实（0.85 兜底），背景文字不再透上来干扰阅读
         glass.paint_surface(self, p, radius=RADIUS_SM, tint=PALETTE["elevated"],
-                            reflect=True)
+                            reflect=True, min_alpha=0.85)
         p.end()
 
     # ---------- 开合 ----------

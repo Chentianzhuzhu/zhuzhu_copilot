@@ -14704,8 +14704,9 @@ class _ModelTunePopover(QFrame):
         """玻璃底：磨砂 + 半透明填充 + 边缘高光（强度见 ui/glass.py）。"""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # 文字密集的浮层：填充更实（0.85 兜底），避免背景文字透上来干扰阅读
         glass.paint_surface(self, p, radius=RADIUS_MD, tint=_base_color("ELEVATED"),
-                            reflect=True)
+                            reflect=True, min_alpha=0.85)
         p.end()
 
     # ---------- 状态 ----------
@@ -15605,7 +15606,9 @@ class _ProfilePanel(QFrame):
         """玻璃底：磨砂 + 半透明填充 + 边缘高光（强度见 ui/glass.py）。"""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        glass.paint_surface(self, p, radius=RADIUS_MD, tint=_base_color("PANEL"))
+        # 个人信息面板文字密集：填充更实（0.86 兜底）+ 真实反射背景
+        glass.paint_surface(self, p, radius=RADIUS_MD, tint=_base_color("PANEL"),
+                            min_alpha=0.86, reflect=True)
         p.end()
 
     # ---------- 尺寸自适应 ----------
@@ -30308,6 +30311,8 @@ class AgentPanel(QDialog):
             _w, _h = self._profile_panel_size(panel)
             panel.apply_width(_w)   # 宽度定稿后再回填省略预算（用户名 / 明细值）
             panel.resize(_w, _h)
+            # 显示前抓一次真实背景（此刻面板不可见，不会拍到自己）：深一点的磨砂
+            glass.capture_scene(panel, blur_scale=1.6)
             panel.slide_in(self._profile_panel_geometry(panel, anchor_global))
             self._profile_panel_open = True
             self._profile_panel_attach(True)

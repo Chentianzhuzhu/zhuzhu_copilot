@@ -292,7 +292,8 @@ def _frosted_layer(window):
     return entry
 
 
-def capture_scene(widget, rect: QRect | None = None) -> None:
+def capture_scene(widget, rect: QRect | None = None,
+                  blur_scale: float = 1.0) -> None:
     """抓「widget 背后**真实渲染**的内容」并磨砂化，存到控件上供后续绘制使用。
 
     与壁纸层采样的区别：壁纸层只有背景图，看不到压在上面的卡片、气泡与文字；
@@ -347,7 +348,8 @@ def capture_scene(widget, rect: QRect | None = None) -> None:
         _capturing = False
     if pm is None or pm.isNull():
         return
-    blurred = app_wallpaper.blur_pixmap(pm, blur_radius())
+    # blur_scale > 1：给文字密集的面板更深的磨砂（背景文字更容易被"抹平"）
+    blurred = app_wallpaper.blur_pixmap(pm, blur_radius() * max(1.0, float(blur_scale)))
     off_x, off_y = pos.x() - src.x(), pos.y() - src.y()
     try:
         snap = blurred.copy(off_x, off_y, rect.width(), rect.height())
