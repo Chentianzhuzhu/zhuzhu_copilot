@@ -64,9 +64,9 @@ public class ContentService {
     /** 默认内容：真实产品信息，仅作为结构骨架与首次初始化数据 */
     public static Map<String, Object> defaults() {
         Map<String, Object> c = new LinkedHashMap<>();
-        c.put("title", "WinAppMigrator");
+        c.put("title", "zhuzhu Copilot");
         c.put("slogan", "把电脑交给 AI，替你把活干完");
-        c.put("description", "Windows 应用迁移与系统优化工具，内置 AI Copilot：观察屏幕、理解指令、自动完成电脑操作。");
+        c.put("description", "Windows 桌面 AI Agent：迁移应用释放 C 盘、优化系统负载，并让 AI 直接观察屏幕、理解指令、替你完成操作。");
         c.put("heroImage", "");
 
         c.put("sections", sections());
@@ -207,17 +207,18 @@ public class ContentService {
      */
     private static Map<String, Object> style() {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("themeColor", "#3D7DFF");
-        m.put("themeColorDark", "#1E4FD0");
-        m.put("accentColor", "#7DF9E4");
-        m.put("bgColor", "#0A0C11");
-        m.put("cardBgColor", "#11141C");
-        m.put("textColor", "#F0F3F9");
-        m.put("textMuted", "#A8B2C6");
+        m.put("themeColor", "#1E40AF");
+        m.put("themeColorDark", "#16307F");
+        m.put("accentColor", "#7D96E8");
+        m.put("bgColor", "#0A0B0D");
+        m.put("cardBgColor", "#14171B");
+        m.put("textColor", "#F5F5F5");
+        m.put("textMuted", "#A9AFB8");
         m.put("logoUrl", "");
         m.put("faviconUrl", "");
         m.put("heroBgImage", "");
-        m.put("heroGradient", "linear-gradient(160deg, #0A0C11 0%, #111A2E 55%, #0A0C11 100%)");
+        // 主视觉已改为「图幅 + 规格条」，不再渲染渐变背景；字段保留只为兼容既有库记录。
+        m.put("heroGradient", "");
         m.put("fontFamily", "");
         m.put("customCss", "");
         m.put("navStyle", "glass");

@@ -34,26 +34,23 @@ VOID_TAGS = {
 # 允许省略闭合标签的块级元素（HTML 规范），模板里偶尔会用到
 OPTIONAL_END = {"p", "li", "td", "th", "tr", "option", "dt", "dd", "thead", "tbody"}
 
-# 色系允许的颜色（冷调中性色阶 + 蓝/青双主色 + 三个语义色）
-# 设计原则（2026-10 重构）：
-#   1. 中性色带极轻的冷蓝倾向，不用纯灰也不用纯黑 —— 纯黑纯灰在大面积暗色上
-#      显得死板，且两者在真实显示器上都无法还原，视觉上必然发闷。
-#   2. 主色为电光蓝，强调色为青绿；两者构成冷色双轴，强调色只用于 10% 的
-#      关键处（焦点环、状态、点缀），滥用会失去力量。
-#   3. 语义色（绿/琥珀/玫瑰）仅用于状态表达，不做整块背景，避免界面失焦。
+# 色系允许的颜色（2026-11 重构：装配说明书 / ASSEMBLY MANUAL）
+# 设计原则：
+#   1. 全套界面只有一个彩色 —— 深蓝。它只出现在"可以操作"的地方（按钮、
+#      当前章节、焦点环、图纸标注线）。大面积铺色会稀释它的指示性。
+#   2. 中性色是四档近黑：靠表面色差与 1px 描边分层，不用阴影。
+#   3. 不设红/绿/黄语义色 —— 状态靠文字、图标与位置表达，单色屏幕与
+#      色觉障碍下依然可读。上一版的电光蓝 + 青绿双主色已移除（青绿是
+#      "AI 落地页"最容易被认出的配色特征之一）。
 ALLOWED_HEX = {
-    # 表面层级：越亮越高（暗色模式靠表面色差而非阴影制造深度）
-    "#0a0c11", "#11141c", "#181c26", "#202634",
-    # 描边与分割用的深色
-    "#0b0d12", "#0a0b0d", "#0b0c0f",
-    # 文字四级
-    "#f0f3f9", "#a8b2c6", "#7c879e",
-    # 主色（蓝）与强调色（青）
-    "#3d7dff", "#1e4fd0", "#7df9e4",
-    # 语义色：成功 / 警告 / 错误
-    "#4ade80", "#fbbf24", "#fb7185",
-    # 中性（弹层、遮罩、纯白前景）
-    "#ffffff", "#fff", "#000000", "#000",
+    # 表面层级：越亮越靠前
+    "#0a0b0d", "#0f1114", "#14171b", "#1b1f24", "#232830",
+    # 文字三级
+    "#f5f5f5", "#a9afb8", "#8a9099",
+    # 深蓝：填充 / 悬停 / 暗底文字 / 最深底色
+    "#1e40af", "#2a55d0", "#7d96e8", "#16307f",
+    # 纯白与纯黑（反色按钮文字、视频画布）
+    "#ffffff", "#e9edfa", "#000000",
 }
 # 大写形式同样放行（不同来源的十六进制写法大小写混用）
 ALLOWED_HEX |= {c.upper() for c in list(ALLOWED_HEX)}
@@ -400,7 +397,11 @@ class TestProductRedesign(unittest.TestCase):
         self.assertRegex(index, r'<h1[^>]+th:text="\$\{site.slogan\}"')
         for removed in ("迁移引擎就绪", "沙盒防护开启", "starfield", "cursorGlow"):
             self.assertNotIn(removed, index)
-        self.assertIn('class="product-overview"', index)
+        # 主视觉右侧：后台没配截图时应该是一张说明"迁移保留了什么"的图幅，
+        # 而不是伪造的运行状态或编造的容量数字（"剩余 4.2 GB"之类）。
+        self.assertIn('class="blueprint"', index)
+        for fake in ("剩余", "GB 可用", "运行中", "已就绪"):
+            self.assertNotIn(fake, index, f"主视觉出现了编造的状态信息：{fake}")
         self.assertIn("${features}", index)
 
     def test_dialog_keyboard_and_background_isolation(self) -> None:
@@ -432,7 +433,7 @@ class TestProductRedesign(unittest.TestCase):
                       "--surface-3:", "--ok-color:", "--err-color:"):
             self.assertIn(token, css, f"site.css 缺少设计令牌 {token}")
         # theme-color 必须与样式表的底色同源，不能再读后台字段
-        self.assertIn('<meta name="theme-color" content="#0A0C11">', head)
+        self.assertIn('<meta name="theme-color" content="#0A0B0D">', head)
 
     def test_no_bounce_easing_curves(self) -> None:
         """禁用回弹/弹性缓动。

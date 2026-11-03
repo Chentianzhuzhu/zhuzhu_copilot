@@ -346,7 +346,7 @@ class TemplateRenderTest {
         assertFalse(html.contains("--theme-color:"), "head 不应再注入 --theme-color，配色唯一来源应为 site.css");
         assertFalse(html.contains("--bg-color:"), "head 不应再注入 --bg-color");
         assertFalse(html.contains("--text-muted:"), "head 不应再注入 --text-muted");
-        assertTrue(html.contains("name=\"theme-color\" content=\"#0A0C11\""),
+        assertTrue(html.contains("name=\"theme-color\" content=\"#0A0B0D\""),
                 "theme-color 应与样式表底色同源");
         // 样式表本身仍必须带完整主色，否则页面会退化成浏览器默认配色
         assertTrue(html.contains("/css/site.css?v=testcss1"), "样式表必须被引用");

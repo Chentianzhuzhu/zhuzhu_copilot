@@ -5,38 +5,66 @@
 <!-- ============ 页脚 ============ -->
 <footer class="footer" th:fragment="footer">
   <div class="footer-inner">
-    <div class="footer-brand">
-      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="4" stroke="currentColor" stroke-width="1.5"/>
-        <path d="M12 1.6v20.8M1.6 12h20.8" stroke="currentColor" stroke-width="1" opacity=".34"/>
-        <rect x="4.7" y="4.7" width="6" height="6" rx="1.6" fill="#1E40AF"/>
-      </svg>
-      <span class="footer-name" th:text="${site.title}">WinAppMigrator</span>
+    <div class="footer-top">
+      <div class="footer-brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="2.2" y="2.2" width="19.6" height="19.6" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M2.2 8.8h19.6M2.2 15.4h19.6" stroke="currentColor" stroke-width="1" opacity=".38"/>
+          <rect x="5" y="4.9" width="5" height="2.6" fill="#1E40AF"/>
+          <rect x="5" y="11.5" width="5" height="2.6" fill="currentColor" opacity=".5"/>
+          <rect x="5" y="18.1" width="12" height="1.2" fill="currentColor" opacity=".5"/>
+        </svg>
+        <div>
+          <span class="footer-name" th:text="${site.title}">zhuzhu Copilot</span>
+          <p class="footer-tag" th:text="${site.description}">产品简介</p>
+        </div>
+      </div>
+
+      <nav class="footer-links" aria-label="页脚导航">
+        <a th:each="l : ${site.footer.links}" th:href="${l.href}" th:text="${l.label}">功能特性</a>
+      </nav>
+
+      <!-- 社交链接（后台「视觉样式」里配置，留空则整块隐藏） -->
+      <nav class="footer-social" aria-label="社交媒体"
+           th:if="${site.style != null and site.style.socialLinks != null and !site.style.socialLinks.isEmpty()}">
+        <a th:each="s : ${site.style.socialLinks}" th:href="${s.href}" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+          <span th:text="${s.label}">社交链接</span>
+        </a>
+      </nav>
     </div>
 
-    <p class="footer-tag" th:text="${site.description}">产品简介</p>
-
-    <nav class="footer-links" aria-label="页脚导航">
-      <a th:each="l : ${site.footer.links}" th:href="${l.href}" th:text="${l.label}">功能特性</a>
-    </nav>
-
-    <!-- 社交链接（后台「视觉样式」里配置，留空则整块隐藏） -->
-    <nav class="footer-social" aria-label="社交媒体"
-         th:if="${site.style != null and site.style.socialLinks != null and !site.style.socialLinks.isEmpty()}">
-      <a th:each="s : ${site.style.socialLinks}" th:href="${s.href}" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-        </svg>
-        <span th:text="${s.label}">社交链接</span>
-      </a>
-    </nav>
+    <!--
+      站点时间戳：内容 / 版本 / 媒体库三处最后更新时间。
+      取值与 /api/site 的 timestamps 完全同源（均由 SiteTimestampService 提供），
+      不在模板里各自推算；任一来源缺失时该条整条隐藏，不留空占位。
+      标签措辞刻意避开「最新版本」（下载页区块标题同名）：
+      正文里同一串文案出现两次，会被「标题只出现一次」的渲染用例判为重复。
+    -->
+    <div class="footer-stamps"
+         th:if="${!#strings.isEmpty(stampContentUpdated) or !#strings.isEmpty(stampLatestRelease) or !#strings.isEmpty(stampMediaUpdated)}">
+      <span class="stamp" th:if="${!#strings.isEmpty(stampContentUpdated)}">
+        <span class="stamp-label">站点内容更新</span>
+        <time class="stamp-value" th:attr="datetime=${stampContentUpdated}" th:text="${stampContentUpdated}">2026-10-03</time>
+      </span>
+      <span class="stamp" th:if="${!#strings.isEmpty(stampLatestRelease)}">
+        <span class="stamp-label">版本发布日期</span>
+        <time class="stamp-value" th:attr="datetime=${stampLatestRelease}" th:text="${stampLatestRelease}">2026-10-03</time>
+      </span>
+      <span class="stamp" th:if="${!#strings.isEmpty(stampMediaUpdated)}">
+        <span class="stamp-label">媒体库更新</span>
+        <time class="stamp-value" th:attr="datetime=${stampMediaUpdated}" th:text="${stampMediaUpdated}">2026-10-03</time>
+      </span>
+    </div>
 
     <div class="footer-meta">
       <span th:with="yr=${#dates.year(#dates.createNow())}"
             th:text="${#strings.isEmpty(site.footer.copyrightSince)
                       ? '© ' + yr + ' ' + site.title
-                      : '© ' + site.footer.copyrightSince + '–' + yr + ' ' + site.title}">© 2026 WinAppMigrator</span>
+                      : '© ' + site.footer.copyrightSince + '–' + yr + ' ' + site.title}">© 2026 zhuzhu Copilot</span>
       <span th:if="${!#strings.isEmpty(site.footer.icp)}" th:text="${site.footer.icp}">备案号</span>
       <a href="/about" th:text="${site.footer.contactLabel}">联系我们</a>
       <a href="/sitemap">站点地图</a>
@@ -68,29 +96,6 @@
         <span class="fb-badge-text" th:text="${site.footer.badge}">zhuzhu Copilot powered by xiaozhu · 开源免费</span>
       </span>
     </div>
-
-    <!--
-      站点时间戳：内容 / 版本 / 媒体库三处最后更新时间。
-      取值与 /api/site 的 timestamps 完全同源（均由 SiteTimestampService 提供），
-      不在模板里各自推算；任一来源缺失时该条整条隐藏，不留空占位。
-      标签措辞刻意避开「最新版本」（下载页区块标题同名）：
-      正文里同一串文案出现两次，会被「标题只出现一次」的渲染用例判为重复。
-    -->
-    <div class="footer-stamps"
-         th:if="${!#strings.isEmpty(stampContentUpdated) or !#strings.isEmpty(stampLatestRelease) or !#strings.isEmpty(stampMediaUpdated)}">
-      <span class="stamp" th:if="${!#strings.isEmpty(stampContentUpdated)}">
-        <span class="stamp-label">站点内容更新</span>
-        <time class="stamp-value" th:attr="datetime=${stampContentUpdated}" th:text="${stampContentUpdated}">2026-10-03</time>
-      </span>
-      <span class="stamp" th:if="${!#strings.isEmpty(stampLatestRelease)}">
-        <span class="stamp-label">版本发布日期</span>
-        <time class="stamp-value" th:attr="datetime=${stampLatestRelease}" th:text="${stampLatestRelease}">2026-10-03</time>
-      </span>
-      <span class="stamp" th:if="${!#strings.isEmpty(stampMediaUpdated)}">
-        <span class="stamp-label">媒体库更新</span>
-        <time class="stamp-value" th:attr="datetime=${stampMediaUpdated}" th:text="${stampMediaUpdated}">2026-10-03</time>
-      </span>
-    </div>
   </div>
 </footer>
 
@@ -114,21 +119,25 @@
 
 <!-- ============ 区块标题 ============ -->
 <div class="section-head sr" th:fragment="sectionHead(sec)" th:if="${sec != null}">
-  <p class="section-tag" th:text="${sec.tag}">// 区块</p>
-  <h2 class="section-title" th:text="${sec.title}">标题</h2>
+  <div class="section-head-main">
+    <p class="section-tag" th:text="${sec.tag}">// 区块</p>
+    <h2 class="section-title" th:text="${sec.title}">标题</h2>
+  </div>
   <p class="section-sub" th:text="${sec.sub}">副标题</p>
 </div>
 
-<!-- ============ 功能特性 ============ -->
+<!-- ============ 功能特性：编号能力表 ============
+     不使用卡片阵列。能力以「行」组织：编号 / 图标 / 能力名 / 说明，
+     像说明书的能力清单一样可从上往下扫读，行高一致、不靠阴影制造层级。 -->
 <section class="section" id="features" th:fragment="features(list, sec)" th:if="${list != null and !list.isEmpty()}">
   <div class="wrap">
     <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
-    <div class="features-grid sr" id="featuresGrid" data-parallax="0.06">
+    <div class="features-grid sr" id="featuresGrid">
       <div class="tilt" th:each="f, it : ${list}">
-        <article class="feature-card" data-light>
-          <span class="feature-num" th:text="${'/' + #numbers.formatInteger(it.index + 1, 2)}">/01</span>
+        <article class="feature-card">
+          <span class="feature-num" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
           <span class="feature-icon" aria-hidden="true">
-            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
                  stroke-linecap="round" stroke-linejoin="round"
                  th:utext="${iconPaths[f.icon]}"></svg>
           </span>
@@ -149,7 +158,7 @@
     <th:block th:if="${showHead}">
       <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
     </th:block>
-    <div class="gallery-grid sr" id="galleryGrid" data-parallax="-0.06">
+    <div class="gallery-grid sr" id="galleryGrid">
       <figure class="gallery-item" th:each="g, it : ${list}"
               th:classappend="${it.index % 5 == 0} ? 'wide' : ''">
         <a class="gallery-link" th:href="${g.url}" data-lightbox
@@ -158,8 +167,8 @@
                loading="lazy" decoding="async">
           <span class="gallery-veil" aria-hidden="true"></span>
           <span class="gallery-zoom" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-              <circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8 21 21M11 8.6v4.8M8.6 11h4.8"/>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M14 4h6v6M20 4l-7 7"/><path d="M10 20H4v-6M4 20l7-7"/>
             </svg>
           </span>
         </a>
@@ -190,7 +199,7 @@
           <img th:if="${!#strings.isEmpty(v.poster)}" th:src="${v.poster}"
                th:alt="${v.title ?: '视频封面'}" loading="lazy" decoding="async">
           <span class="video-placeholder" th:unless="${!#strings.isEmpty(v.poster)}" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="4.5" width="19" height="15" rx="2"/><path d="M9.5 9.2v5.6l4.8-2.8-4.8-2.8Z"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="4.5" width="19" height="15" rx="0"/><path d="M9.5 9.2v5.6l4.8-2.8-4.8-2.8Z"/></svg>
           </span>
           <span class="video-veil" aria-hidden="true"></span>
           <span class="video-play" aria-hidden="true">
@@ -207,8 +216,8 @@
   </div>
 </section>
 
-<!-- ============ 数据一览 ============ -->
-<section class="section" id="stats" th:fragment="statsBlock(list, sec)"
+<!-- ============ 数据一览：带刻度尺的测量带 ============ -->
+<section class="section stats-section" id="stats" th:fragment="statsBlock(list, sec)"
          th:if="${(list != null and !list.isEmpty()) or downloads > 0}">
   <div class="wrap stats">
     <div class="stats-lead sr">
@@ -232,13 +241,14 @@
   </div>
 </section>
 
-<!-- ============ 产品优势 ============ -->
+<!-- ============ 产品优势：图纸框 ============
+     四角定位标记 + 1px 描边，不加圆角与阴影：这不是「卡片」，是图纸上的一个图幅。 -->
 <section class="section" id="advantages" th:fragment="advantages(list, sec)" th:if="${list != null and !list.isEmpty()}">
   <div class="wrap">
     <div th:replace="~{fragments/blocks :: sectionHead(${sec})}"></div>
-    <div class="adv-grid sr" data-parallax="0.10">
+    <div class="adv-grid sr">
       <div class="tilt" th:each="a, it : ${list}">
-        <article class="adv-card" data-light>
+        <article class="adv-card">
           <span class="adv-index" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
           <h3 class="adv-title" th:text="${a.title}">优势标题</h3>
           <p class="adv-desc" th:text="${a.desc}">优势描述</p>
@@ -261,7 +271,7 @@
           <span class="faq-num" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
           <span class="faq-text" th:text="${f.q}">问题</span>
           <span class="faq-toggle" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
               <path d="M12 5v14M5 12h14"/>
             </svg>
           </span>
@@ -299,19 +309,24 @@
   </div>
 </section>
 
-<!-- ============ 结尾行动区 ============ -->
+<!-- ============ 结尾行动区：整块深蓝，图上的一枚印章 ============ -->
 <section class="section cta-section" th:fragment="ctaBand()">
   <div class="wrap">
-    <div class="cta-card sr" data-parallax="0.06">
-      <p class="section-tag cta-tag">READY TO GO</p>
-      <h2 class="cta-title">让系统更轻盈，也让操作更省心</h2>
-      <p class="cta-desc" th:text="${site.slogan}">标语</p>
-      <div class="cta-actions">
-        <a class="btn btn-primary" th:href="${latest != null ? latest.url : '/download'}">立即下载</a>
-        <a class="btn btn-ghost" href="/gallery">先看看界面</a>
+    <div class="cta-card sr">
+      <div class="cta-body">
+        <p class="section-tag cta-tag">READY TO GO</p>
+        <h2 class="cta-title">让系统更轻盈，也让操作更省心</h2>
+        <p class="cta-desc" th:text="${site.slogan}">标语</p>
       </div>
-      <p class="cta-note" th:if="${latest != null}"
-         th:text="${'当前版本 v' + latest.version + ' · 支持 Windows 10 / 11'}">版本说明</p>
+      <div class="cta-side">
+        <div class="cta-actions">
+          <a class="btn btn-primary" th:href="${latest != null ? latest.url : '/download'}">立即下载</a>
+          <a class="btn btn-ghost" href="/gallery">先看看界面</a>
+        </div>
+        <p class="cta-note" th:if="${latest != null}"
+           th:text="${'当前版本 v' + latest.version + ' · 支持 Windows 10 / 11'}">版本说明</p>
+      </div>
+      <span class="cta-grid" aria-hidden="true"></span>
     </div>
   </div>
 </section>

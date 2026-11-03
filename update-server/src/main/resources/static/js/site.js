@@ -112,6 +112,9 @@
   function initScrollSpy() {
     if (!('IntersectionObserver' in window)) { return; }
     var links = $$('.menu a[data-spy]'), map = {}, targets = [];
+    /* 章节脊与顶部菜单共用同一份观察结果，不额外注册观察器 */
+    var spine = {};
+    $$('.spine-item[data-spy]').forEach(function (a) { spine[a.getAttribute('data-spy')] = a; });
     links.forEach(function (a) {
       var id = a.getAttribute('data-spy'), sec = document.getElementById(id);
       if (sec) { map[id] = a; targets.push(sec); }
@@ -122,6 +125,7 @@
         links.forEach(function (a) { a.classList.remove('active'); a.removeAttribute('aria-current'); });
         var a = map[en.target.id];
         if (a) { a.classList.add('active'); a.setAttribute('aria-current', 'location'); }
+        Object.keys(spine).forEach(function (k) { spine[k].classList.toggle('active', k === en.target.id); });
       });
     }, { rootMargin: '-20% 0px -65% 0px', threshold: 0 });
     targets.forEach(function (t) { io.observe(t); });
@@ -223,44 +227,6 @@
     nums.forEach(function (el) { io.observe(el); });
   }
 
-  /* 微视差：滚动时区块缓慢位移，营造层次。
-     监听 scroll 只做一件事 —— 写一个 transform 变量；
-     真正应用交给 CSS 的 transform 合成层，JS 不参与逐帧布局计算。
-     被动监听 + rAF 节流，移动端默认关闭（低端机滚动掉帧代价太高）。 */
-  function initParallax() {
-    if (REDUCED || !('IntersectionObserver' in window)) { return; }
-    var isNarrow = window.matchMedia('(max-width: 800px)').matches;
-    var coarse = window.matchMedia('(pointer: coarse)').matches;
-    if (isNarrow || coarse) { return; }
-    var nodes = $$('[data-parallax]');
-    if (!nodes.length) { return; }
-    var ticking = false;
-    function paint() {
-      ticking = false;
-      var vh = window.innerHeight;
-      nodes.forEach(function (el) {
-        var rect = el.getBoundingClientRect();
-        if (rect.bottom < -80 || rect.top > vh + 80) { return; }
-        /* 元素中心相对视口中心的偏移量，映射到 ±10px 以内。 */
-        var offset = (rect.top + rect.height / 2 - vh / 2) / vh;
-        el.style.setProperty('--py', (offset * 10).toFixed(2));
-      });
-    }
-    function schedule() {
-      if (!ticking) { ticking = true; requestAnimationFrame(paint); }
-    }
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) {
-        en.target.classList.toggle('is-parallax', en.isIntersecting);
-        if (en.isIntersecting) { io.unobserve(en.target); }
-      });
-      schedule();
-    }, { rootMargin: '120px 0px' });
-    nodes.forEach(function (el) { io.observe(el); });
-    window.addEventListener('scroll', schedule, { passive: true });
-    window.addEventListener('resize', schedule, { passive: true });
-    paint();
-  }
   function initBackTop() {
     [$('#backTop'), $('#backTopLink')].forEach(function (el) {
       if (!el) { return; }
@@ -414,7 +380,6 @@
     if (total != null) {
       var num = $('#dlNum');
       if (num) { num.setAttribute('data-target', total); num.textContent = fmtInt(total); }
-      setText('#consoleDownloads', fmtInt(total));
       setText('#dlInline', fmtInt(total));
     }
     var line = $('#versionLine');
@@ -455,7 +420,6 @@
     safe('ripple', initRipple);
     safe('reveal', initReveal);
     safe('countUp', initCountUp);
-    safe('parallax', initParallax);
     safe('scrollSpy', initScrollSpy);
     safe('backTop', initBackTop);
     safe('faq', initFaq);

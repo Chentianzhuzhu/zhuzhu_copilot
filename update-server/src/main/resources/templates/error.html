@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#0A0B0D">
   <meta name="color-scheme" content="dark">
   <meta name="robots" content="noindex, follow">
   <title th:text="${status != null ? status + ' · ' + title : '页面出错'}">页面出错</title>
@@ -12,7 +12,7 @@
   <!--
     错误页刻意不引用外部样式与脚本：出错时资源本身可能正是不可用的，
     因此这里只用一小段内联样式，保证任何情况下都能正常显示。
-    色系：纯黑 #000 / 白 #F5F5F5 / 深蓝 #1E40AF / 冷蓝 #5B7BE8（+ 灰阶过渡）。
+    色系与站点一致：纯黑 #0A0B0D / 白 #F5F5F5 / 深蓝 #1E40AF / 亮蓝 #7D96E8（+ 灰阶过渡）。
   -->
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -21,38 +21,47 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: #000;
+      background: #0A0B0D;
       color: #F5F5F5;
-      font-family: "Source Han Sans SC", "HarmonyOS Sans SC", "MiSans", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
       line-height: 1.65;
       -webkit-font-smoothing: antialiased;
       position: relative;
       overflow: hidden;
     }
-    :focus-visible { outline: 2px solid #5B7BE8; outline-offset: 5px; }
+    /* 蓝图网格：出错页也要一眼认出是同一个产品，用一条伪元素铺满，不额外请求资源 */
+    body::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, rgba(126,150,232,.055) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(126,150,232,.055) 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none;
+    }
+    :focus-visible { outline: 2px solid #7D96E8; outline-offset: 5px; }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
     .err-wrap { width: min(560px, 90%); position: relative; z-index: 1; }
     .err-mark { width: 34px; height: 34px; margin-bottom: 26px; color: #F5F5F5; }
     .err-code {
-      font-family: "Cascadia Code", Consolas, monospace;
-      font-size: 12px; letter-spacing: .32em; color: #5B7BE8;
+      font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace;
+      font-size: 12px; letter-spacing: .32em; color: #7D96E8;
     }
-    .err-title { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800; margin: 16px 0 12px; letter-spacing: -.015em; }
-    .err-msg { color: rgba(245,245,245,.62); margin-bottom: 28px; }
-    .err-actions { display: flex; flex-wrap: wrap; gap: 14px; }
+    .err-title { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 700; margin: 16px 0 12px; letter-spacing: -.01em; }
+    .err-msg { color: #A9AFB8; margin-bottom: 28px; }
+    .err-actions { display: flex; flex-wrap: wrap; gap: 12px; }
     .err-btn {
       display: inline-flex; align-items: center; gap: .5em;
-      padding: 14px 26px; font-size: 14px; letter-spacing: .05em; text-decoration: none;
-      border-radius: 10px;
-      transition: transform .3s cubic-bezier(.22,.61,.36,1), box-shadow .3s, border-color .3s, background .3s;
+      padding: 14px 26px; font-size: 15px; letter-spacing: .04em; text-decoration: none;
+      border-radius: 2px;
+      transition: transform .3s cubic-bezier(.16,1,.3,1), background-color .3s, border-color .3s, color .3s;
     }
     .err-btn:hover { transform: translateY(-2px); }
-    .err-btn-primary {
-      background: #1E40AF; color: #fff;
-    }
-    .err-btn-primary:hover { background: #0F1D5E; }
-    .err-btn-ghost { color: #F5F5F5; border: 1px solid rgba(245,245,245,.18); background: rgba(245,245,245,.03); }
-    .err-btn-ghost:hover { border-color: rgba(91,123,232,.55); background: rgba(91,123,232,.1); }
+    .err-btn-primary { background: #1E40AF; color: #FFFFFF; }
+    .err-btn-primary:hover { background: #2A55D0; }
+    .err-btn-ghost { color: #F5F5F5; border: 1px solid rgba(200,210,230,.3); }
+    .err-btn-ghost:hover { border-color: #7D96E8; color: #7D96E8; }
   </style>
 </head>
 <body>

@@ -7,19 +7,36 @@
 
 <header th:replace="~{fragments/nav :: nav}"></header>
 
+<!--
+  章节脊：桌面宽屏下的常驻索引。
+  编号即章节号，名称走 aria-label 由 CSS 悬停展开。
+  这里刻意不复用区块标题 —— 标题在正文里必须只出现一次，任何属性里再写一遍
+  都会让"同一标题出现两次"，也会让读屏软件把同一句话念两遍。
+-->
+<nav class="spine" aria-label="章节索引">
+  <a class="spine-item" href="#features" data-spy="features" aria-label="能力清单"><span>01</span></a>
+  <a class="spine-item" href="#gallery" data-spy="gallery" aria-label="界面实拍"><span>02</span></a>
+  <a class="spine-item" href="#stats" data-spy="stats" aria-label="数据一览"><span>03</span></a>
+  <a class="spine-item" href="#advantages" data-spy="advantages" aria-label="产品优势"><span>04</span></a>
+  <a class="spine-item" href="#faq" data-spy="faq" aria-label="常见问题"><span>05</span></a>
+  <a class="spine-item" href="#changelog" data-spy="changelog" aria-label="版本日志"><span>06</span></a>
+</nav>
+
 <main id="main">
 
   <!-- ==================== 主视觉 ==================== -->
   <section class="hero" id="hero">
     <div class="hero-inner">
       <div class="hero-copy">
-        <p class="eyebrow reveal" style="--d:.05s">
-          <span class="pulse-dot" aria-hidden="true"></span>WINDOWS 应用迁移 / AI COPILOT
+        <p class="hero-kicker reveal">
+          <span class="kicker-dot" aria-hidden="true"></span>
+          <span th:text="${site.title}">zhuzhu Copilot</span>
+          <span class="kicker-sep" aria-hidden="true">/</span>
+          <span class="kicker-tail">WINDOWS AGENT</span>
         </p>
-        <p class="hero-slogan" th:text="${site.title}">WinAppMigrator</p>
-        <h1 class="hero-title" th:text="${site.slogan}">把电脑交给 AI，替你把活干完</h1>
-        <p class="hero-desc reveal" style="--d:.4s" th:text="${site.description}">产品描述</p>
-        <div class="hero-actions reveal" style="--d:.52s">
+        <h1 class="hero-title reveal" style="--d:.08s" th:text="${site.slogan}">把电脑交给 AI，替你把活干完</h1>
+        <p class="hero-desc reveal" style="--d:.16s" th:text="${site.description}">产品描述</p>
+        <div class="hero-actions reveal" style="--d:.24s">
           <a class="btn btn-primary" id="downloadBtn"
              th:href="${latest != null ? latest.url : '/download'}">
             <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -27,9 +44,9 @@
             </svg>
             <span th:text="${'下载 ' + site.title}">下载</span>
           </a>
-          <a class="btn btn-ghost" href="#features">浏览功能特性</a>
+          <a class="btn btn-ghost" href="#features">浏览能力清单</a>
         </div>
-        <p class="hero-version reveal" id="versionLine" style="--d:.64s">
+        <p class="hero-version reveal" id="versionLine" style="--d:.32s">
           <span th:if="${latest != null}">
             最新版本 <a class="v-link" href="#changelog" th:text="${'v' + latest.version}">v1.0.0</a>
             <span class="v-sep" th:if="${!#strings.isEmpty(latest.sizeText)}">/</span>
@@ -40,38 +57,46 @@
         </p>
       </div>
 
-      <!-- 没有后台主图时使用内容索引，不伪造产品界面或运行状态。 -->
+      <!--
+        主视觉不伪造产品界面：后台配了截图就展示截图，没配就画一张「迁移保留项」图幅，
+        说明实际会被同步重写的东西，而不是再列一遍功能（下方区块已经列过）。
+      -->
       <div class="hero-visual" id="heroVisual">
         <figure class="hero-shot" th:if="${!#strings.isEmpty(site.heroImage)}">
           <img th:src="${site.heroImage}" th:alt="${site.title + ' 界面预览'}" loading="eager" fetchpriority="high" decoding="async">
         </figure>
-        <aside class="product-overview" aria-label="产品概览" th:unless="${!#strings.isEmpty(site.heroImage)}">
-          <div class="overview-head">
-            <span class="overview-kicker">PRODUCT OVERVIEW / 产品概览</span>
-            <span class="overview-os">WINDOWS</span>
+        <aside class="blueprint" th:unless="${!#strings.isEmpty(site.heroImage)}" aria-label="迁移保留项">
+          <div class="bp-head">
+            <span class="bp-fig">FIG. 01</span>
+            <span class="bp-cap">MIGRATION / 迁移保留项</span>
           </div>
-          <div class="overview-brand">
-            <div class="product-symbol" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-            <div>
-              <p class="overview-title" th:text="${site.title}">WinAppMigrator</p>
-              <p class="overview-caption">迁移 · 优化 · AI 辅助操作</p>
-            </div>
+          <div class="bp-paths" aria-hidden="true">
+            <span class="bp-from">C:\Program Files\App</span>
+            <span class="bp-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15m0 0-5-5m5 5-5 5"/></svg>
+            </span>
+            <span class="bp-to">D:\Apps\App</span>
           </div>
-          <nav class="overview-list" aria-label="了解产品能力">
-            <a class="overview-item" href="#features" th:each="f, it : ${features}">
-              <span class="overview-num" th:text="${#numbers.formatInteger(it.index + 1, 2)}">01</span>
-              <strong th:text="${f.title}">产品功能</strong>
-              <svg class="overview-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
-            </a>
-          </nav>
-          <div class="overview-foot">
-            <span><span id="consoleDownloads" th:text="${downloadsText}">0</span> 次累计下载</span>
-            <a href="/download" th:text="${latest != null ? '查看 v' + latest.version : '查看下载信息'}">查看下载信息</a>
-          </div>
+          <ul class="bp-list">
+            <li><span class="bp-k">程序文件</span><span class="bp-v">整目录搬迁，不重新安装</span></li>
+            <li><span class="bp-k">注册表项</span><span class="bp-v">安装路径同步重写</span></li>
+            <li><span class="bp-k">快捷方式</span><span class="bp-v">开始菜单与桌面指向新位置</span></li>
+            <li><span class="bp-k">AppData</span><span class="bp-v">配置与数据跟随迁移</span></li>
+          </ul>
+          <p class="bp-note">迁移前逐项确认，迁移后可核对结果</p>
         </aside>
       </div>
     </div>
-    <div class="hero-bottom">
+
+    <!-- 规格条：直接渲染后台「系统要求」，不在这里另写一份 -->
+    <div class="hero-spec wrap reveal" th:if="${site.requirements != null and !site.requirements.isEmpty()}">
+      <div class="spec-cell" th:each="r : ${site.requirements}">
+        <span class="spec-k" th:text="${r.label}">操作系统</span>
+        <span class="spec-v" th:text="${r.value}">Windows 10 / 11（64 位）</span>
+      </div>
+    </div>
+
+    <div class="hero-bottom wrap">
       <span>MIGRATE / OPTIMIZE / AUTOMATE</span>
       <a href="#features">向下了解产品<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg></a>
     </div>
