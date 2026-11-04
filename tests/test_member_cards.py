@@ -143,3 +143,30 @@ def test_update_product_changes_content_without_resizing():
     assert len(card._perks) == 3
     assert card._perks[2].text() == "第三项卖点"
     assert card._perks[2].isVisible()
+
+
+def test_plan_and_pack_cards_share_the_same_height():
+    """上下两行卡片大小一致：积分包不再比订阅卡矮一截。"""
+    plan = mc.build_product_card(title="Pro 版", price_main="¥7", perks=["每月 1000 积分"],
+                                 cta="购买")
+    pack = mc.build_product_card(title="150 积分", price_main="¥1", perks=["轻量补充"],
+                                 cta="购买", compact=True)
+    # 用最小高度比对：未进入布局时控件仍是 Qt 默认尺寸，布局跑过后才收敛
+    assert plan.minimumHeight() == pack.minimumHeight() == mc.CARD_H
+
+
+def test_current_paid_tier_button_says_renew():
+    """已订阅当前档位 → 按钮是「续费」（后端 action 偶发返回 purchase）。"""
+    from zhuzhu_Copilot.ui import agent_panel as ap
+    prod = {"id": "max_monthly", "membership_type": "max", "purchasable": True,
+            "action": "purchase", "_current": True}
+    label, tip = ap._AgentSettingsDialog._memb_btn_label(prod)
+    assert label == "续费", f"当前档位按钮应为续费，实际 {label}"
+    assert tip
+    # 免费版不算订阅：仍是「当前版本」
+    free = {"id": "free", "membership_type": "free", "_current": True}
+    assert ap._AgentSettingsDialog._memb_btn_label(free)[0] == "当前版本"
+    # 非当前档位仍按后端 action
+    other = {"id": "pro_monthly", "membership_type": "pro", "purchasable": True,
+             "action": "upgrade"}
+    assert ap._AgentSettingsDialog._memb_btn_label(other)[0] == "升级"

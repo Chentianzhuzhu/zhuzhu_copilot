@@ -5205,6 +5205,11 @@ class _SettingsWheelGuard(QObject):
         return True
 
 
+#: 付费档位（free 之外）。已订阅其中之一 → 当前档位卡按钮为「续费」，
+#: 而不是后端 action 偶发返回的「购买」。
+_PAID_TIERS = ("pro", "max")
+
+
 class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
@@ -8903,7 +8908,7 @@ class _AgentSettingsDialog(QDialog):
          "membership_type": "max", "desc": "每月 2000 积分，每日签到 +200"},
     )
     #: 可购买的档位（「免费版」不是商品，不参与下单）
-    _PURCHASABLE_TIERS = ("pro", "max")
+    _PURCHASABLE_TIERS = _PAID_TIERS
     #: 档位高低序，与后端 order_service.MEMBERSHIP_TIERS 的次序一致
     #: （free 即界面上的 Basic/免费版 / pro / max）。
     #: 已订阅某档位时，**序位更低**的档位按钮一律置灰禁用，不依赖服务端是否
@@ -9028,7 +9033,6 @@ class _AgentSettingsDialog(QDialog):
         pack_row.setSpacing(0)
         for p in self._POINTPACK_PRODUCTS:
             pack_row.addWidget(self._memb_product_card(p))
-        pack_row.addStretch(1)
         lay.addLayout(pack_row)
 
         lay.addStretch(1)
@@ -9171,6 +9175,10 @@ class _AgentSettingsDialog(QDialog):
             return (_ui("不可购买"), _ui("已订阅更高档位，无需重复订阅"))
         if prod.get("purchasable", True) is False:
             return (_ui("不可购买"), prod.get("reason") or "")
+        # 已订阅当前档位 → 一律「续费」（在当前到期日上叠加时长）。
+        # 服务端 action 偶发给当前档位返回 purchase（用户截图），以本地状态为准。
+        if prod.get("_current") and tier in _PAID_TIERS:
+            return (_ui("续费"), _ui("续费将在当前到期日上叠加 30 天"))
         action = prod.get("action") or "purchase"
         if action == "renew":
             return (_ui("续费"), _ui("续费将在当前到期日上叠加 30 天"))
@@ -9289,8 +9297,9 @@ class _AgentSettingsDialog(QDialog):
             current=(is_plan and tier == cur),
             badge=_ui("推荐") if is_recommended else "",
             compact=not is_plan,
-            # 档位卡三等分页面宽度：固定宽度会撑破页面宽度，横向滚动把左侧文字裁掉
-            expand=is_plan,
+            # 每一行的卡片都按行宽平分：固定宽度会撑破页面宽度，横向滚动把左侧
+            # 文字裁掉（用户截图）；两行都平分 → 上下卡片大小一致
+            expand=True,
         )
 
     def _memb_product_card(self, p: dict) -> QFrame:
@@ -9995,6 +10004,9 @@ class _AgentSettingsDialog(QDialog):
                        self.stack.widget(self.stack.currentIndex())):
                 if isinstance(sc, QScrollArea):
                     sc.verticalScrollBar().setValue(0)
+                    # 横向也归零：内容比视口宽时滚动区可能停在非零位置，
+                    # 左侧的标题与说明会整段被裁掉（用户截图）
+                    sc.horizontalScrollBar().setValue(0)
         except Exception:
             pass
 

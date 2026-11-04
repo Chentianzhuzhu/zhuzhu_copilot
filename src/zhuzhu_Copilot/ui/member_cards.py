@@ -30,6 +30,8 @@ _EDGE = 14
 _RADIUS = 12
 #: 可放大卡片的最小宽度占标准宽度的比例（可缩到 78%，避免窄页面横向溢出）
 _EXPAND_MIN_RATIO = 0.78
+#: 权益文本的最小宽度（换行标签的高度下限基准，见 _add_perk_row）
+_PERK_MIN_W = 96
 #: 会员卡与积分卡尺寸（含 _EDGE 外边距）
 CARD_W = 244
 CARD_H = 252
@@ -287,6 +289,9 @@ class ProductCard(EdgeCard):
         lab = QLabel(text)
         lab.setObjectName("membPerk")
         lab.setWordWrap(True)
+        # 换行标签的 minimumSizeHint 会在"极窄宽度"下算出极高的最小高度（实测把
+        # 整张卡撑到 480px，文字被挤成细条）。给一个宽度下限，高度才有意义。
+        lab.setMinimumWidth(_PERK_MIN_W)
         row.addWidget(lab, 1)
         self._body.addLayout(row)
         self._perks.append(lab)
@@ -433,11 +438,12 @@ def build_product_card(*, title: str, price_main: str, price_unit: str = "",
                        compact: bool = False, height: int = CARD_H,
                        expand: bool = False, parent=None) -> ProductCard:
     """工厂函数：会员档位与积分包用同一套卡片，后者更矮、内边距更紧。"""
+    # 高度统一（订阅卡与积分包一致）：compact 只影响内边距，不再改高度，
+    # 上下两行卡片大小保持一致（用户反馈）
     card = ProductCard(title=title, price_main=price_main, price_unit=price_unit,
                        perks=perks, cta=cta, cta_enabled=cta_enabled,
                        cta_tip=cta_tip, recommended=recommended,
-                       current=current, badge=badge,
-                       height=(PACK_H if compact else height),
+                       current=current, badge=badge, height=height,
                        expand=expand, parent=parent)
     if compact:
         card._body.setContentsMargins(_EDGE + 16, _EDGE + 14, _EDGE + 16, _EDGE + 14)
