@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#000000">
+  <title>Piano Studio · AI 实时演奏台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.4">
+            <rect x="3" y="4" width="18" height="16" rx="2.5"></rect>
+            <path d="M3 10h18"></path>
+            <path d="M8 10v7M12 10v7M16 10v7"></path>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <strong>Piano Studio</strong>
+          <small>AI 实时演奏台</small>
+        </span>
+      </div>
+      <div class="conn" id="conn">
+        <span class="dot" id="connDot"></span>
+        <span id="connText">正在连接</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stage" aria-label="演奏画面">
+        <div class="stage-head">
+          <div class="now">
+            <span class="eyebrow">正在演奏</span>
+            <h1 id="title">等待 AI 演奏</h1>
+            <p id="subtitle">让 Copilot 弹一段旋律，音符会实时出现在这里</p>
+          </div>
+          <div class="badges">
+            <span class="badge" id="voiceBadge">音色 —</span>
+            <span class="badge" id="registerBadge">音区 —</span>
+            <span class="badge" id="countBadge">0 个音</span>
+          </div>
+        </div>
+
+        <div class="canvas-wrap" id="canvasWrap">
+          <canvas id="stageCanvas"></canvas>
+          <div class="gate" id="gate">
+            <div class="gate-inner">
+              <span class="gate-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+                  <path d="M16.5 8.5a5 5 0 0 1 0 7"></path>
+                  <path d="M19 6a8.5 8.5 0 0 1 0 12"></path>
+                </svg>
+              </span>
+              <h2>开启声音</h2>
+              <p>浏览器需要一次点击才能播放音频</p>
+              <button type="button" class="primary-btn" id="gateBtn">开始聆听</button>
+              <span class="gate-note">开启后，AI 的演奏会实时从这里响起</span>
+              <span class="gate-error" id="gateError" role="alert"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+
+        <div class="transport">
+          <div class="time">
+            <span id="elapsed">0:00</span>
+            <span class="time-sep">/</span>
+            <span id="duration">0:00</span>
+          </div>
+          <div class="controls">
+            <button type="button" class="icon-btn" id="muteBtn" aria-label="静音" title="静音">
+              <svg class="icon-on" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+                <path d="M16 9.5a4 4 0 0 1 0 5"></path>
+                <path d="M18.5 7a7.5 7.5 0 0 1 0 10"></path>
+              </svg>
+              <svg class="icon-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M4 9v6h4l5 4V5L8 9H4z"></path>
+                <path d="M16 9l5 6M21 9l-5 6"></path>
+              </svg>
+            </button>
+            <input type="range" id="volume" min="0" max="100" value="85" aria-label="音量">
+            <button type="button" class="ghost-btn" id="reconnectBtn">重新连接</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>音色</h2>
+            <span class="panel-note" id="voiceCount">—</span>
+          </div>
+          <ul class="voice-list" id="voiceList"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>音区</h2>
+            <span class="panel-note">octave</span>
+          </div>
+          <div class="register-list" id="registerList"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>收听地址</h2>
+            <span class="panel-note">LAN</span>
+          </div>
+          <a class="listen-link" id="listenLink" href="#" target="_blank" rel="noreferrer">—</a>
+          <p class="panel-hint">同一 Wi-Fi 下的手机或电脑打开这个地址即可同步收听。</p>
+          <div class="meta-row">
+            <span>页面连接</span>
+            <strong id="listenerCount">0</strong>
+          </div>
+          <div class="meta-row">
+            <span>已开启声音</span>
+            <strong id="audioCount">0</strong>
+          </div>
+        </section>
+
+        <section class="panel panel-tools">
+          <div class="panel-head">
+            <h2>MCP 工具</h2>
+            <span class="panel-note">stdio</span>
+          </div>
+          <div class="tool-chips">
+            <span>piano_play</span>
+            <span>piano_stop</span>
+            <span>piano_voices</span>
+            <span>piano_status</span>
+            <span>piano_server</span>
+          </div>
+          <p class="panel-hint">演奏只由本机 AI 触发；本页面为只读收听端。</p>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <span id="footerUrl">正在获取服务地址</span>
+      <span class="footer-note">Piano Studio · Web Audio 实时合成</span>
+    </footer>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

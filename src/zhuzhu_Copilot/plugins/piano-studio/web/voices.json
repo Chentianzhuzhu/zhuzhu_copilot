@@ -1,0 +1,457 @@
+{
+  "schema": 1,
+  "default": "grand_piano",
+  "max_polyphony": 64,
+  "registers": {
+    "low": {
+      "octave": 3,
+      "label": "低音区"
+    },
+    "mid": {
+      "octave": 4,
+      "label": "中音区"
+    },
+    "high": {
+      "octave": 5,
+      "label": "高音区"
+    }
+  },
+  "voices": [
+    {
+      "id": "grand_piano",
+      "label": "大钢琴",
+      "description": "明亮自然的三角钢琴，适合大多数旋律",
+      "gain": 0.9,
+      "envelope": {
+        "attack": 0.004,
+        "decay": 1.15,
+        "sustain": 0.0,
+        "release": 0.28
+      },
+      "pitch_decay": 0.45,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 2,
+          "gain": 0.38,
+          "type": "sine",
+          "detune": 1.2
+        },
+        {
+          "ratio": 3,
+          "gain": 0.16,
+          "type": "sine",
+          "detune": -1.8
+        },
+        {
+          "ratio": 4,
+          "gain": 0.07,
+          "type": "sine",
+          "detune": 2.4
+        },
+        {
+          "ratio": 6,
+          "gain": 0.03,
+          "type": "sine",
+          "detune": -3.1
+        }
+      ],
+      "noise": 0.035,
+      "vibrato": {
+        "rate": 0,
+        "depth": 0,
+        "delay": 0
+      },
+      "pan": 0
+    },
+    {
+      "id": "electric_piano",
+      "label": "电钢琴",
+      "description": "柔和圆润的电钢琴，带轻微颤音",
+      "gain": 0.82,
+      "envelope": {
+        "attack": 0.006,
+        "decay": 1.7,
+        "sustain": 0.04,
+        "release": 0.42
+      },
+      "pitch_decay": 0.28,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 2,
+          "gain": 0.5,
+          "type": "sine",
+          "detune": 1.6
+        },
+        {
+          "ratio": 4,
+          "gain": 0.2,
+          "type": "sine",
+          "detune": -2
+        },
+        {
+          "ratio": 7,
+          "gain": 0.06,
+          "type": "sine",
+          "detune": 2.8
+        }
+      ],
+      "noise": 0.012,
+      "vibrato": {
+        "rate": 4.6,
+        "depth": 2.5,
+        "delay": 0.5
+      },
+      "pan": 0
+    },
+    {
+      "id": "music_box",
+      "label": "八音盒",
+      "description": "清脆的八音盒音色，适合高音区短句",
+      "gain": 0.62,
+      "envelope": {
+        "attack": 0.002,
+        "decay": 0.55,
+        "sustain": 0.0,
+        "release": 0.16
+      },
+      "pitch_decay": 0.7,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 3,
+          "gain": 0.28,
+          "type": "sine",
+          "detune": 2
+        },
+        {
+          "ratio": 5.4,
+          "gain": 0.1,
+          "type": "sine",
+          "detune": -2.5
+        }
+      ],
+      "noise": 0.012,
+      "vibrato": {
+        "rate": 0,
+        "depth": 0,
+        "delay": 0
+      },
+      "pan": 0
+    },
+    {
+      "id": "organ",
+      "label": "管风琴",
+      "description": "持续饱满的管风琴，适合和弦与长音",
+      "gain": 0.55,
+      "envelope": {
+        "attack": 0.02,
+        "decay": 0.12,
+        "sustain": 0.85,
+        "release": 0.34
+      },
+      "pitch_decay": 0,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 2,
+          "gain": 0.55,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 3,
+          "gain": 0.32,
+          "type": "sine",
+          "detune": 1
+        },
+        {
+          "ratio": 4,
+          "gain": 0.2,
+          "type": "sine",
+          "detune": -1
+        },
+        {
+          "ratio": 6,
+          "gain": 0.12,
+          "type": "sine",
+          "detune": 1.5
+        },
+        {
+          "ratio": 8,
+          "gain": 0.07,
+          "type": "sine",
+          "detune": -2
+        }
+      ],
+      "noise": 0.008,
+      "vibrato": {
+        "rate": 5.0,
+        "depth": 3.5,
+        "delay": 0.2
+      },
+      "pan": 0
+    },
+    {
+      "id": "strings",
+      "label": "弦乐",
+      "description": "温暖宽阔的弦乐合奏，适合抒情段落",
+      "gain": 0.6,
+      "envelope": {
+        "attack": 0.16,
+        "decay": 0.5,
+        "sustain": 0.72,
+        "release": 0.7
+      },
+      "pitch_decay": 0,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 0.45,
+          "type": "sawtooth",
+          "detune": -6
+        },
+        {
+          "ratio": 1,
+          "gain": 0.45,
+          "type": "sawtooth",
+          "detune": 6
+        },
+        {
+          "ratio": 2,
+          "gain": 0.12,
+          "type": "sine",
+          "detune": 0
+        }
+      ],
+      "noise": 0.006,
+      "vibrato": {
+        "rate": 5.4,
+        "depth": 5,
+        "delay": 0.35
+      },
+      "pan": 0
+    },
+    {
+      "id": "nylon_guitar",
+      "label": "尼龙吉他",
+      "description": "柔和温暖的尼龙弦吉他拨奏",
+      "gain": 0.78,
+      "envelope": {
+        "attack": 0.003,
+        "decay": 1.0,
+        "sustain": 0.0,
+        "release": 0.2
+      },
+      "pitch_decay": 0.4,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "triangle",
+          "detune": 0
+        },
+        {
+          "ratio": 2,
+          "gain": 0.3,
+          "type": "sine",
+          "detune": 1.4
+        },
+        {
+          "ratio": 3,
+          "gain": 0.12,
+          "type": "sine",
+          "detune": -1.6
+        }
+      ],
+      "noise": 0.025,
+      "vibrato": {
+        "rate": 0,
+        "depth": 0,
+        "delay": 0
+      },
+      "pan": 0
+    },
+    {
+      "id": "marimba",
+      "label": "马林巴",
+      "description": "木质打击音色，颗粒清晰有弹性",
+      "gain": 0.8,
+      "envelope": {
+        "attack": 0.001,
+        "decay": 0.48,
+        "sustain": 0.0,
+        "release": 0.18
+      },
+      "pitch_decay": 0.5,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 3.9,
+          "gain": 0.22,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 9.2,
+          "gain": 0.06,
+          "type": "sine",
+          "detune": 0
+        }
+      ],
+      "noise": 0.01,
+      "vibrato": {
+        "rate": 0,
+        "depth": 0,
+        "delay": 0
+      },
+      "pan": 0
+    },
+    {
+      "id": "synth_lead",
+      "label": "合成主音",
+      "description": "明亮的合成器主音，适合电子风格旋律",
+      "gain": 0.5,
+      "envelope": {
+        "attack": 0.012,
+        "decay": 0.25,
+        "sustain": 0.6,
+        "release": 0.25
+      },
+      "pitch_decay": 0,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 0.5,
+          "type": "sawtooth",
+          "detune": -5
+        },
+        {
+          "ratio": 1,
+          "gain": 0.5,
+          "type": "sawtooth",
+          "detune": 5
+        },
+        {
+          "ratio": 2,
+          "gain": 0.18,
+          "type": "square",
+          "detune": 0
+        }
+      ],
+      "noise": 0,
+      "vibrato": {
+        "rate": 6,
+        "depth": 8,
+        "delay": 0.4
+      },
+      "pan": 0
+    },
+    {
+      "id": "pad",
+      "label": "氛围铺底",
+      "description": "缓慢铺开的氛围音色，适合长音与背景",
+      "gain": 0.52,
+      "envelope": {
+        "attack": 0.6,
+        "decay": 1.2,
+        "sustain": 0.8,
+        "release": 1.6
+      },
+      "pitch_decay": 0,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 2,
+          "gain": 0.25,
+          "type": "triangle",
+          "detune": 3
+        },
+        {
+          "ratio": 3,
+          "gain": 0.1,
+          "type": "sine",
+          "detune": -3
+        }
+      ],
+      "noise": 0.004,
+      "vibrato": {
+        "rate": 4.2,
+        "depth": 3,
+        "delay": 0.8
+      },
+      "pan": 0
+    },
+    {
+      "id": "celesta",
+      "label": "钢片琴",
+      "description": "晶莹的钢片琴，适合梦幻的高音旋律",
+      "gain": 0.58,
+      "envelope": {
+        "attack": 0.002,
+        "decay": 0.7,
+        "sustain": 0.0,
+        "release": 0.3
+      },
+      "pitch_decay": 0.6,
+      "partials": [
+        {
+          "ratio": 1,
+          "gain": 1.0,
+          "type": "sine",
+          "detune": 0
+        },
+        {
+          "ratio": 4,
+          "gain": 0.2,
+          "type": "sine",
+          "detune": 2
+        },
+        {
+          "ratio": 7,
+          "gain": 0.08,
+          "type": "sine",
+          "detune": -2
+        }
+      ],
+      "noise": 0.008,
+      "vibrato": {
+        "rate": 0,
+        "depth": 0,
+        "delay": 0
+      },
+      "pan": 0
+    }
+  ]
+}

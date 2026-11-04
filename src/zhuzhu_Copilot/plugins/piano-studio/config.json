@@ -1,0 +1,12 @@
+{
+  "piano_host": "0.0.0.0",
+  "piano_port": 8848,
+  "piano_auto_start": true,
+  "piano_default_voice": "grand_piano",
+  "piano_default_interval_ms": 320,
+  "piano_default_duration_ms": 0,
+  "piano_default_velocity": 0.85,
+  "piano_lookahead_ms": 1200,
+  "piano_max_notes": 2048,
+  "piano_max_seconds": 1800
+}
