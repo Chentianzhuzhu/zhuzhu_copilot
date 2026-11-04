@@ -316,7 +316,30 @@ html.js .reveal.in, html.js .sr.in { opacity: 1; transform: none; }
   color: var(--text-muted);
 }
 .nav-drawer nav a.active { color: var(--text-color); }
-.nav-overlay { position: fixed; inset: 0; z-index: 90; background: rgba(10, 11, 13, .6); }
+/* 移动端抽屉的遮罩：默认必须完全"不存在"。
+   它由脚本无条件插入 body，只在打开抽屉时才显示 —— 如果默认可见，
+   就会有一层半透明黑纱常驻全站：页面整体发暗发灰，且所有点击都被它吃掉。
+
+   显隐以 display 为准（不参与命中测试，绝不吃点击），过渡只负责淡入。
+   如果把显隐交给 opacity/visibility，一旦环境不产帧（离屏渲染、后台标签页），
+   过渡停在起始值，遮罩就会变成一块永远消不掉的"黑纱"。 */
+.nav-overlay {
+  position: fixed;
+  inset: var(--nav-h) 0 0;
+  z-index: 90;
+  background: rgba(10, 11, 13, .72);
+  display: none;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease), visibility var(--dur-2) var(--ease);
+}
+body.nav-open .nav-overlay {
+  display: block;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
 .drawer-download {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   margin-top: var(--space-4);

@@ -921,6 +921,25 @@ class TestTeamMemberLayout(unittest.TestCase):
         for banned in ("filter: blur", "filter:blur", "backdrop-filter"):
             self.assertNotIn(banned, css, f"CSS 出现了高成本滤镜：{banned}")
 
+    def test_drawer_overlay_is_inert_by_default(self) -> None:
+        """移动端抽屉的遮罩默认不可见、且不接管指针事件。
+
+        遮罩由脚本无条件插入 body，只在打开抽屉时才显示。
+        若默认可见，就会有一层半透明黑纱常驻全站：页面发暗发灰，
+        且所有点击都被它吃掉 —— 这是最难自查、却最影响使用的一类故障。
+        """
+        css = read(STATIC / "css/site.css")
+        rules = re.findall(r"(?m)^\.nav-overlay\s*\{([^}]*)\}", css)
+        self.assertTrue(rules, "site.css 缺少 .nav-overlay 规则")
+        base = rules[-1]
+        # 显隐必须以 display 为准：把显隐交给过渡，环境不产帧时遮罩就消不掉了
+        self.assertIn("display: none", base,
+                      "抽屉遮罩默认参与显示，会给整页蒙一层黑纱")
+        self.assertIn("pointer-events: none", base,
+                      "抽屉遮罩默认接管了指针事件，会吃掉全站点击")
+        self.assertRegex(css, r"body\.nav-open \.nav-overlay",
+                         "缺少打开抽屉时显示遮罩的规则")
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)
