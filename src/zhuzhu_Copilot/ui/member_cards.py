@@ -292,6 +292,7 @@ class ProductCard(EdgeCard):
         # 换行标签的 minimumSizeHint 会在"极窄宽度"下算出极高的最小高度（实测把
         # 整张卡撑到 480px，文字被挤成细条）。给一个宽度下限，高度才有意义。
         lab.setMinimumWidth(_PERK_MIN_W)
+        lab.setMinimumHeight(lab.fontMetrics().height() + 2)   # 同理：不让布局压扁
         row.addWidget(lab, 1)
         self._body.addLayout(row)
         self._perks.append(lab)
@@ -415,6 +416,7 @@ class InfoBanner(EdgeCard):
         self._body.addWidget(self._title)
         self._sub = QLabel(subtitle)
         self._sub.setWordWrap(True)
+        self._sub.setMinimumHeight(self._sub.fontMetrics().height() + 4)
         self._body.addWidget(self._sub)
         self.restyle()
 

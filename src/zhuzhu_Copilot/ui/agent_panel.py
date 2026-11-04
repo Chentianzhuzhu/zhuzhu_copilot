@@ -5579,7 +5579,22 @@ class _AgentSettingsDialog(QDialog):
         sa.setStyleSheet(f"QScrollArea {{ background: {self._BG}; border: none; }}")
         sa.viewport().setStyleSheet(f"background: {self._BG};")
         sa.setWidget(w)
+        self._lock_wrap_labels(w)
         return sa
+
+    @staticmethod
+    def _lock_wrap_labels(page: QWidget) -> None:
+        """给换行标签锁一行最小高度。
+
+        QLabel 开启换行后 minimumSizeHint 很小（可以任意窄），页面空间紧张时
+        布局会把它压到几像素 —— 文字上下被切、看着像"字被挤扁"（用户截图）。
+        这里统一锁一行高度，页面放不下时改为滚动而不是压扁。
+        """
+        for lab in page.findChildren(QLabel):
+            if lab.wordWrap():
+                # +6：给 QSS 的负 margin（如 margin-top:-4px）留出余量，
+                # 否则锁住的高度仍会被负 margin 吃掉一点，字还是被切
+                lab.setMinimumHeight(lab.fontMetrics().height() + 6)
 
     def _nav_col_w(self) -> int:
         """左侧导航列宽度：按**当前语言**的导航项译文实测宽度自适应。
