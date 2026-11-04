@@ -3,10 +3,10 @@
   "kind": "web",
   "enabled": true,
   "author": "zhuzhu Copilot",
-  "description": "钢琴演奏插件：AI 通过 MCP 实时弹奏旋律（低音/中音/高音、多种音色、逐音间隔与发声长度、和弦与休止符），局域网内任意手机/电脑打开网页即可同步收听，页面用 Web Audio 实时合成音色并显示落键瀑布与键盘高亮。三件套：SKILL.md 技能 + MCP 工具 + 局域网 HTTP/SSE 演奏台。",
+  "description": "钢琴演奏插件：AI 通过 MCP 演奏旋律或完整曲谱。采样级真实钢琴音色（6 音区 × 3 层力度离线模态渲染、非谐泛音、三弦拍音、锤击噪声、卷积混响、踏板），支持低/中/高音区、10 种音色、和弦/休止符；piano_play_score 支持 BPM + beat/dur 精确排程、多轨音色与曲谱校验，局域网网页用音频时钟精确播放并显示落键瀑布与键盘高亮。三件套：SKILL.md 技能 + MCP 工具 + 局域网 HTTP/SSE 演奏台。",
   "created_at": "2026-11-05 00:00:00",
-  "updated_at": "2026-11-05 00:45:00",
-  "revision": 2,
+  "updated_at": "2026-11-05 01:10:00",
+  "revision": 3,
   "icon": "",
   "mcp_name": "piano-studio-mcp",
   "skill_name": "piano-studio"

@@ -1,7 +1,83 @@
 {
-  "schema": 1,
+  "schema": 2,
   "default": "grand_piano",
   "max_polyphony": 64,
+  "sample_engine": {
+    "voices": [
+      "grand_piano"
+    ],
+    "anchors": [
+      {
+        "midi": 36,
+        "seconds": 4.0,
+        "modes": 26,
+        "decay": 3.4
+      },
+      {
+        "midi": 48,
+        "seconds": 3.6,
+        "modes": 24,
+        "decay": 2.9
+      },
+      {
+        "midi": 60,
+        "seconds": 3.0,
+        "modes": 22,
+        "decay": 2.3
+      },
+      {
+        "midi": 72,
+        "seconds": 2.5,
+        "modes": 20,
+        "decay": 1.8
+      },
+      {
+        "midi": 84,
+        "seconds": 2.0,
+        "modes": 18,
+        "decay": 1.3
+      },
+      {
+        "midi": 96,
+        "seconds": 1.6,
+        "modes": 16,
+        "decay": 0.9
+      }
+    ],
+    "velocity_layers": [
+      0.32,
+      0.62,
+      0.92
+    ],
+    "strings": [
+      {
+        "detune": 0.0,
+        "gain": 0.62
+      },
+      {
+        "detune": 0.0018,
+        "gain": 0.23
+      },
+      {
+        "detune": -0.0022,
+        "gain": 0.15
+      }
+    ],
+    "inharmonicity": 0.0004,
+    "mode_gain_power": 1.32,
+    "mode_damping": 0.18,
+    "attack": 0.0035,
+    "hammer_noise": 0.06,
+    "hammer_noise_ms": 26,
+    "release_ms": 70,
+    "reverb": {
+      "enabled": true,
+      "seconds": 0.32,
+      "decay": 2.2,
+      "wet": 0.17
+    },
+    "schedule_ahead_ms": 8000
+  },
   "registers": {
     "low": {
       "octave": 3,
@@ -19,6 +95,7 @@
   "voices": [
     {
       "id": "grand_piano",
+      "engine": "sample",
       "label": "大钢琴",
       "description": "明亮自然的三角钢琴，适合大多数旋律",
       "gain": 0.9,

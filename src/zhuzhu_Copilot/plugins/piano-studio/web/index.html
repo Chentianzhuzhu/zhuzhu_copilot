@@ -58,7 +58,9 @@
               </span>
               <h2>开启声音</h2>
               <p>浏览器需要一次点击才能播放音频</p>
-              <button type="button" class="primary-btn" id="gateBtn">开始聆听</button>
+              <div class="gate-progress" id="gateProgressWrap"><span id="gateProgressBar"></span></div>
+              <button type="button" class="primary-btn" id="gateBtn" disabled>正在准备钢琴音色…</button>
+              <span class="gate-status" id="gateStatus">正在渲染 6 个音区 × 3 层力度的钢琴采样</span>
               <span class="gate-note">开启后，AI 的演奏会实时从这里响起</span>
               <span class="gate-error" id="gateError" role="alert"></span>
             </div>
@@ -74,6 +76,7 @@
             <span id="duration">0:00</span>
           </div>
           <div class="controls">
+            <span class="level-meter" id="levelMeter" aria-hidden="true"><i id="levelBar"></i></span>
             <button type="button" class="icon-btn" id="muteBtn" aria-label="静音" title="静音">
               <svg class="icon-on" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6">
                 <path d="M4 9v6h4l5 4V5L8 9H4z"></path>

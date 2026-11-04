@@ -258,6 +258,29 @@ button {
 .primary-btn:hover { background: #3a6bf2; }
 .primary-btn:active { background: #2752cc; }
 .primary-btn:disabled { opacity: 0.55; cursor: default; }
+.gate-progress {
+  height: 3px;
+  margin: 0 0 16px;
+  border-radius: 3px;
+  background: #111621;
+  overflow: hidden;
+}
+.gate-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #1d3c96, #4f7cff);
+  transition: width 0.2s ease;
+}
+.gate-progress.hidden { display: none; }
+.gate-status {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+}
 .gate-note {
   display: block;
   margin-top: 12px;
@@ -304,6 +327,22 @@ button {
 .time-sep { margin: 0 5px; color: #3a414e; }
 
 .controls { display: flex; align-items: center; gap: 10px; }
+
+.level-meter {
+  display: block;
+  width: 58px;
+  height: 4px;
+  border-radius: 2px;
+  background: #11141b;
+  overflow: hidden;
+}
+.level-meter i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #1d3c96, #4f7cff);
+  transition: width 0.08s linear;
+}
 
 .icon-btn {
   display: grid;

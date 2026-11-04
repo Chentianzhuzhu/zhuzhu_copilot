@@ -129,9 +129,11 @@ def _voices_public() -> dict:
         "default": _DEFAULT_VOICE,
         "max_polyphony": int(_VOICES_DOC.get("max_polyphony") or 64),
         "registers": _REGISTERS,
+        "sample_engine": _VOICES_DOC.get("sample_engine") or {},
         "voices": [
             {"id": str(v.get("id")), "label": str(v.get("label") or v.get("id")),
-             "description": str(v.get("description") or "")}
+             "description": str(v.get("description") or ""),
+             "engine": str(v.get("engine") or "synth")}
             for v in _VOICES.values()
         ],
         # 合成参数给浏览器：同一份数据驱动 Web Audio，不在前端重复维护音色表
@@ -275,7 +277,7 @@ def _normalize_items(notes) -> list:
 
 
 def _parse_notes(notes, register_octave: int, default_gap: int,
-                 default_dur: int, default_vel: float) -> tuple:
+                 default_dur: int, default_vel: float, voice: str = "") -> tuple:
     """返回 (事件列表, 总时长 ms)。事件带绝对开始时间 at。"""
     tokens = _normalize_items(notes)
     if not tokens:
@@ -291,7 +293,7 @@ def _parse_notes(notes, register_octave: int, default_gap: int,
             continue
         events.append({"at": cursor, "ms": item["ms"], "dur": item["dur"],
                        "velocity": item["velocity"], "midis": item["midis"],
-                       "names": item["names"]})
+                       "names": item["names"], "voice": voice})
         cursor += item["ms"]
     if not events:
         raise ValueError("notes 里没有可演奏的音符（全是休止符）")
@@ -301,6 +303,155 @@ def _parse_notes(notes, register_octave: int, default_gap: int,
     if total > _MAX_SECONDS * 1000:
         raise ValueError(f"总时长 {total / 1000:.1f}s 超过上限 {_MAX_SECONDS}s，请分成多段调用")
     return events, total
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _as_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _parse_score(score) -> tuple:
+    """解析结构化曲谱：tempo + beat/dur + 多轨音色 + 踏板。
+
+    返回 (事件列表, 总时长 ms, meta)。事件字段：
+      at(ms) / dur(ms) / velocity / voice / midis / names
+    支持 beat+dur（按 tempo 换算）或 at_ms+dur_ms（绝对毫秒）两种写法；
+    兼容 score 为 JSON 字符串。
+    """
+    if isinstance(score, str):
+        try:
+            score = json.loads(score)
+        except ValueError as exc:
+            raise ValueError(f"score 不是合法 JSON：{exc}")
+    if not isinstance(score, dict):
+        raise ValueError("score 必须是对象（或对象 JSON 字符串）")
+
+    tempo = max(20.0, min(240.0, _as_float(score.get("tempo"), 80)))
+    beat_ms = 60000.0 / tempo
+    try:
+        register_key, register_octave, _ = _parse_register(score.get("octave"))
+    except ValueError as exc:
+        raise ValueError(str(exc))
+    default_velocity = max(0.05, min(1.0, _as_float(score.get("velocity"), _DEFAULT_VELOCITY)))
+    pedal = _truthy(score.get("pedal", False))
+
+    time_signature = score.get("time_signature") or [4, 4]
+    if not isinstance(time_signature, (list, tuple)) or len(time_signature) != 2:
+        time_signature = [4, 4]
+    try:
+        time_signature = [int(time_signature[0]), int(time_signature[1])]
+        if time_signature[0] <= 0 or time_signature[1] <= 0:
+            time_signature = [4, 4]
+    except (TypeError, ValueError):
+        time_signature = [4, 4]
+
+    tracks = score.get("tracks")
+    if tracks is None:
+        if score.get("notes") is None:
+            raise ValueError("score 缺少 tracks（或 notes）")
+        tracks = [{"voice": score.get("voice") or _DEFAULT_VOICE,
+                   "notes": score.get("notes")}]
+    if not isinstance(tracks, list) or not tracks:
+        raise ValueError("score.tracks 必须是非空数组")
+    if len(tracks) > 4:
+        raise ValueError("score.tracks 最多 4 条轨道")
+
+    events = []
+    voices_used = []
+    for ti, track in enumerate(tracks):
+        if not isinstance(track, dict):
+            raise ValueError(f"第 {ti + 1} 条轨道不是对象")
+        voice = str(track.get("voice") or score.get("voice") or _DEFAULT_VOICE).strip()
+        if voice not in _VOICES:
+            available = "、".join(f"{k}({v.get('label')})" for k, v in _VOICES.items())
+            raise ValueError(f"第 {ti + 1} 条轨道音色「{voice}」不存在；可用：{available}")
+        items = track.get("notes")
+        if isinstance(items, str) or not isinstance(items, list) or not items:
+            raise ValueError(f"第 {ti + 1} 条轨道的 notes 必须是对象数组（不能是字符串）")
+        for ni, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符不是对象")
+            raw_note = item.get("note")
+            if raw_note is None:
+                raw_note = item.get("notes")
+            if raw_note is None:
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符缺少 note")
+            body, gap, dur_mod, vel_mod = _split_modifiers(str(raw_note))
+            if gap is not None or dur_mod is not None or vel_mod is not None:
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符不要写 @/:/!，"
+                                 "请改用 beat、dur、velocity 字段")
+            try:
+                parsed = _parse_note_token(body, register_octave, 1, 1, default_velocity)
+            except ValueError as exc:
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符「{raw_note}」：{exc}")
+            if parsed["rest"]:
+                continue
+            at_ms = item.get("at_ms")
+            dur_ms = item.get("dur_ms")
+            beat = item.get("beat")
+            dur = item.get("dur")
+            if at_ms is None and beat is None:
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符缺少 beat 或 at_ms")
+            if dur_ms is None and dur is None:
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符缺少 dur 或 dur_ms")
+            at = int(round(_as_float(at_ms, 0))) if at_ms is not None \
+                else int(round(_as_float(beat, 0) * beat_ms))
+            if at < 0:
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符起始时间不能为负")
+            duration = int(round(_as_float(dur_ms, 0))) if dur_ms is not None \
+                else int(round(_as_float(dur, 0) * beat_ms))
+            if duration <= 0:
+                raise ValueError(f"第 {ti + 1} 轨第 {ni + 1} 个音符 dur 必须大于 0")
+            velocity = max(0.05, min(1.0, _as_float(item.get("velocity"), default_velocity)))
+            events.append({"at": at, "ms": duration, "dur": duration,
+                           "velocity": round(velocity, 3), "voice": voice,
+                           "midis": parsed["midis"], "names": parsed["names"]})
+            voices_used.append(voice)
+
+    if not events:
+        raise ValueError("score 里没有可演奏的音符")
+    if len(events) > _MAX_NOTES:
+        raise ValueError(f"音符数量 {len(events)} 超过上限 {_MAX_NOTES}，请拆分曲谱")
+    events.sort(key=lambda event: (event["at"], event["voice"]))
+    total = max(event["at"] + event["dur"] for event in events)
+    if total > _MAX_SECONDS * 1000:
+        raise ValueError(f"总时长 {total / 1000:.1f}s 超过上限 {_MAX_SECONDS}s，请拆分曲谱")
+
+    low = min(min(event["midis"]) for event in events)
+    high = max(max(event["midis"]) for event in events)
+    unique_voices = []
+    for voice in voices_used:
+        if voice not in unique_voices:
+            unique_voices.append(voice)
+    primary_voice = unique_voices[0]
+    voice_label = str(_VOICES[primary_voice].get("label") or primary_voice)
+    if len(unique_voices) > 1:
+        voice_label = "多音色"
+    title = re.sub(r"\s+", " ", str(score.get("title") or "")).strip()[:80] or "AI 演奏"
+    meta = {
+        "title": title,
+        "tempo": tempo,
+        "time_signature": time_signature,
+        "pedal": pedal,
+        "tracks": len(tracks),
+        "voice": primary_voice,
+        "voice_label": voice_label,
+        "voices": unique_voices,
+        "register": "score",
+        "register_label": f"{_midi_name(low)} - {_midi_name(high)}",
+        "range": [low, high],
+        "total_ms": total,
+        "note_count": len(events),
+    }
+    return events, total, meta
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +531,10 @@ def _playback_state() -> dict:
             "remaining_ms": max(0, cur["total_ms"] - elapsed),
             "range": cur["range"],
             "lead_ms": cur["lead_ms"],
+            "tempo": cur.get("tempo"),
+            "time_signature": cur.get("time_signature"),
+            "pedal": bool(cur.get("pedal")),
+            "tracks": int(cur.get("tracks") or 1),
         }
 
 
@@ -394,6 +549,7 @@ def _state_payload() -> dict:
         "voices": voices_doc["voices"],
         "registers": voices_doc["registers"],
         "max_polyphony": voices_doc["max_polyphony"],
+        "sample_engine": voices_doc["sample_engine"],
         "defaults": {
             "voice": _DEFAULT_VOICE,
             "interval_ms": _DEFAULT_INTERVAL_MS,
@@ -433,6 +589,11 @@ def _start_playback(events: list, meta: dict) -> dict:
             "total_ms": meta["total_ms"],
             "range": meta["range"],
             "lead_ms": _LOOKAHEAD_MS,
+            "tempo": meta.get("tempo"),
+            "time_signature": meta.get("time_signature"),
+            "pedal": bool(meta.get("pedal")),
+            "tracks": int(meta.get("tracks") or 1),
+            "score": events,
             # 时间轴整体后移一个提前量：第一个音也有完整的提前量做视觉/音频排程
             "timeline_start": time.monotonic() + _LOOKAHEAD_MS / 1000.0,
         }
@@ -449,37 +610,22 @@ def _start_playback(events: list, meta: dict) -> dict:
         "total_ms": playback["total_ms"],
         "range": playback["range"],
         "lead_ms": playback["lead_ms"],
+        "tempo": playback["tempo"],
+        "time_signature": playback["time_signature"],
+        "pedal": playback["pedal"],
+        "tracks": playback["tracks"],
+        # 整份曲谱一次性下发：浏览器以音频时钟为基准精确排程，不再依赖逐音到达时间
+        "score": events,
     })
-    threading.Thread(target=_run_playback, args=(gen, events, playback),
+    threading.Thread(target=_run_playback, args=(gen, playback),
                      daemon=True, name="piano-playback").start()
     return playback
 
 
-def _run_playback(gen: int, events: list, playback: dict) -> None:
-    timeline_start = playback["timeline_start"]
-    lookahead = playback["lead_ms"] / 1000.0
+def _run_playback(gen: int, playback: dict) -> None:
+    """服务器只负责计时与结束事件；音符排程完全交给浏览器音频时钟。"""
     try:
-        for event in events:
-            deadline = timeline_start + event["at"] / 1000.0 - lookahead
-            while True:
-                if gen != _playback_gen:
-                    return
-                remain = deadline - time.monotonic()
-                if remain <= 0:
-                    break
-                time.sleep(min(0.05, remain))
-            in_ms = int(round((timeline_start + event["at"] / 1000.0 - time.monotonic()) * 1000))
-            in_ms = max(0, min(in_ms, int(lookahead * 1000)))
-            _broadcast("note", {
-                "type": "note",
-                "playback_id": playback["id"],
-                "voice": playback["voice"],
-                "in_ms": in_ms,
-                "dur_ms": event["dur"],
-                "velocity": event["velocity"],
-                "notes": [{"midi": m, "name": n} for m, n in zip(event["midis"], event["names"])],
-            })
-        end_at = timeline_start + playback["total_ms"] / 1000.0
+        end_at = playback["timeline_start"] + playback["total_ms"] / 1000.0
         while True:
             if gen != _playback_gen:
                 return
@@ -493,6 +639,13 @@ def _run_playback(gen: int, events: list, playback: dict) -> None:
         with _LOCK:
             if gen == _playback_gen and _playback is playback:
                 _playback = None
+
+
+def _playback_score() -> list:
+    with _LOCK:
+        if not _playback:
+            return []
+        return list(_playback.get("score") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -712,7 +865,11 @@ class _HttpHandler(BaseHTTPRequestHandler):
                 self.send_header(key, value)
             self.end_headers()
             hello = {"type": "hello", "state": _state_payload(),
-                     "definitions": _voices_public()["definitions"]}
+                     "definitions": _voices_public()["definitions"],
+                     "sample_engine": _voices_public()["sample_engine"]}
+            if _playback_state().get("playing"):
+                hello["score"] = _playback_score()
+                hello["pedal"] = bool(_playback_state().get("pedal"))
             self.wfile.write(b": connected\n\n")
             self.wfile.write(_sse_frame("hello", hello))
             self.wfile.flush()
@@ -779,6 +936,25 @@ def _url_hint() -> str:
     return "；".join(urls)
 
 
+def _play_lines(playback: dict, events: list, total_ms: int) -> list:
+    total, audio = _client_counts()
+    lines = [
+        f"已开始演奏《{playback['title']}》：{len(events)} 个音，"
+        f"音色「{playback['voice_label']}」，{playback['register_label']}，"
+        f"总时长 {total_ms / 1000:.1f} 秒。",
+        f"收听地址：{_url_hint()}",
+        f"当前连接：{total} 个页面，其中 {audio} 个已开启声音。",
+    ]
+    if playback.get("tempo"):
+        ts = playback.get("time_signature") or [4, 4]
+        lines.insert(1, f"曲谱：{playback['tracks']} 轨，{playback['tempo']:g} BPM，"
+                        f"{ts[0]}/{ts[1]} 拍，踏板：{'开' if playback.get('pedal') else '关'}。")
+    if audio == 0:
+        lines.append("注意：还没有页面开启声音，用户打开上面的地址并点击「开始聆听」后才能听到；"
+                     "若已错过开头，可再次调用演奏工具重播。")
+    return lines
+
+
 def _tool_play(args: dict) -> dict:
     notes = args.get("notes")
     if notes is None or (isinstance(notes, str) and not notes.strip()) or \
@@ -812,7 +988,8 @@ def _tool_play(args: dict) -> dict:
     velocity = max(0.05, min(1.0, velocity))
 
     try:
-        events, total_ms = _parse_notes(notes, register_octave, gap, duration, velocity)
+        events, total_ms = _parse_notes(notes, register_octave, gap, duration,
+                                        velocity, voice_id)
     except ValueError as exc:
         return _tool_result(str(exc), True)
 
@@ -830,19 +1007,58 @@ def _tool_play(args: dict) -> dict:
         "register_label": register_label,
         "total_ms": total_ms,
         "range": [low, high],
+        "tempo": None,
+        "time_signature": None,
+        "pedal": False,
+        "tracks": 1,
     })
-    total, audio = _client_counts()
-    lines = [
-        f"已开始演奏《{title}》：{len(events)} 个音，"
-        f"音色「{playback['voice_label']}」，{register_label}，"
-        f"总时长 {total_ms / 1000:.1f} 秒。",
-        f"收听地址：{_url_hint()}",
-        f"当前连接：{total} 个页面，其中 {audio} 个已开启声音。",
+    return _tool_result("\n".join(_play_lines(playback, events, total_ms)))
+
+
+def _tool_play_score(args: dict) -> dict:
+    """结构化曲谱：tempo+beat/dur+多轨音色+踏板，浏览器按音频时钟精确排程。"""
+    score = args.get("score")
+    if score is None:
+        return _tool_result("缺少 score：请给出结构化曲谱对象（见插件 SKILL.md）", True)
+    try:
+        events, total_ms, meta = _parse_score(score)
+    except ValueError as exc:
+        return _tool_result(str(exc), True)
+
+    ts = meta.get("time_signature") or [4, 4]
+    summary = [
+        f"曲谱《{meta['title']}》：{meta['tracks']} 轨，{len(events)} 个音，"
+        f"{meta['tempo']:g} BPM，{ts[0]}/{ts[1]} 拍，时长 {total_ms / 1000:.1f}s。",
+        f"音域：{meta['register_label']}；音色：{meta['voice_label']}；"
+        f"踏板：{'开' if meta['pedal'] else '关'}。",
     ]
-    if audio == 0:
-        lines.append("注意：还没有页面开启声音，用户打开上面的地址并点击「开始聆听」后才能听到；"
-                     "若已错过开头，可再次调用 piano_play 重播。")
-    return _tool_result("\n".join(lines))
+    preview = events[:8]
+    if preview:
+        summary.append("前 8 个音：")
+        for event in preview:
+            summary.append(f"  {event['at'] / 1000:7.2f}s  "
+                           f"{'+'.join(event['names']):14s} "
+                           f"{event['dur']}ms  {event['voice']}")
+    if _truthy(args.get("dry_run")):
+        summary.append("校验通过（dry_run=true，未演奏）。")
+        return _tool_result("\n".join(summary))
+
+    if not _ensure_http():
+        return _tool_result("局域网演奏台启动失败（端口不可用），无法播放。", True)
+    playback = _start_playback(events, {
+        "title": meta["title"],
+        "voice": meta["voice"],
+        "voice_label": meta["voice_label"],
+        "register": meta["register"],
+        "register_label": meta["register_label"],
+        "total_ms": total_ms,
+        "range": meta["range"],
+        "tempo": meta["tempo"],
+        "time_signature": meta["time_signature"],
+        "pedal": meta["pedal"],
+        "tracks": meta["tracks"],
+    })
+    return _tool_result("\n".join(summary + _play_lines(playback, events, total_ms)))
 
 
 def _tool_stop(args: dict) -> dict:
@@ -870,9 +1086,14 @@ def _tool_status(args: dict) -> dict:
             f"音色/音区：{playback['voice_label']} / {playback['register_label']}",
             f"进度：{playback['elapsed_ms'] / 1000:.1f}s / {playback['total_ms'] / 1000:.1f}s",
         ])
+        if playback.get("tempo"):
+            ts = playback.get("time_signature") or [4, 4]
+            lines.append(f"曲谱：{playback['tracks']} 轨，{playback['tempo']:g} BPM，"
+                         f"{ts[0]}/{ts[1]} 拍，踏板：{'开' if playback.get('pedal') else '关'}")
     else:
         lines.append("当前没有演奏。")
-    lines.append("可用工具：piano_play / piano_stop / piano_status / piano_voices / piano_server")
+    lines.append("可用工具：piano_play / piano_play_score / piano_stop / "
+                 "piano_status / piano_voices / piano_server")
     return _tool_result("\n".join(lines))
 
 
@@ -880,9 +1101,11 @@ def _tool_voices(args: dict) -> dict:
     lines = [f"可用音色（{len(_VOICES)} 种，voice 参数传 id）："]
     for voice_id, voice in _VOICES.items():
         mark = "（默认）" if voice_id == _DEFAULT_VOICE else ""
-        lines.append(f"- {voice_id}｜{voice.get('label') or voice_id}{mark}："
+        engine = "采样" if str(voice.get("engine") or "") == "sample" else "合成"
+        lines.append(f"- {voice_id}｜{voice.get('label') or voice_id}{mark}［{engine}］："
                      f"{voice.get('description') or ''}")
     lines.append("音区参数 octave：low=低音区、mid=中音区、high=高音区，也可直接给 0-8 的八度数字。")
+    lines.append("完整曲子请用 piano_play_score（tempo + beat/dur + 多轨），可先 dry_run=true 校验。")
     return _tool_result("\n".join(lines))
 
 
@@ -930,7 +1153,8 @@ TOOLS = [
                        "多种音色、逐音间隔、逐音发声长度、和弦与休止符。音符写法：C4 为绝对音高；"
                        "不写八度则用 octave 指定音区；C4+E4+G4 为和弦；@毫秒 指定该音到下一个音的间隔；"
                        ":毫秒 指定发声长度；!0.8 指定力度；R 为休止符。示例："
-                       "\"C4@400 D4@400 E4@400 G4@800\" 或 \"C4+E4+G4@1200\"。",
+                       "\"C4@400 D4@400 E4@400 G4@800\" 或 \"C4+E4+G4@1200\"。"
+                       "完整曲子/需要按 BPM 精确控制节拍与多轨音色时，用 piano_play_score。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -951,6 +1175,29 @@ TOOLS = [
                 "title": {"type": "string", "description": "曲目名，显示在收听页上（可选）。"},
             },
             "required": ["notes"],
+        },
+    },
+    {
+        "name": "piano_play_score",
+        "description": "按结构化曲谱精确演奏（推荐用于完整歌曲）。曲谱对象格式："
+                       '{"title":"...","tempo":72,"time_signature":[4,4],"pedal":true,'
+                       '"tracks":[{"voice":"grand_piano","notes":['
+                       '{"beat":0,"dur":1,"note":"C4","velocity":0.8},'
+                       '{"beat":1,"dur":0.5,"note":"C4+E4+G4"},'
+                       '{"beat":2,"dur":1,"note":"R"}]}]}。'
+                       "beat=从曲首开始的拍数（可小数），dur=持续拍数；也可用 at_ms/dur_ms 绝对毫秒。"
+                       "多轨可各用不同音色（钢琴+弦乐/氛围铺底）。dry_run=true 只校验并返回摘要，先校验再演奏。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "score": {"type": "object",
+                          "description": "结构化曲谱：title/tempo/time_signature/pedal/tracks。"
+                                         "tracks[].notes[] 每项含 beat、dur、note，可选 velocity；"
+                                         "note 支持和弦 C4+E4+G4 与休止 R。也可直接传 JSON 字符串。"},
+                "dry_run": {"type": "boolean",
+                            "description": "true=只解析校验并返回摘要，不演奏；默认 false。"},
+            },
+            "required": ["score"],
         },
     },
     {
@@ -985,6 +1232,7 @@ TOOLS = [
 
 _HANDLERS = {
     "piano_play": _tool_play,
+    "piano_play_score": _tool_play_score,
     "piano_stop": _tool_stop,
     "piano_status": _tool_status,
     "piano_voices": _tool_voices,
@@ -1047,9 +1295,9 @@ def main() -> None:
 
 
 def _selftest() -> int:
-    """离线自检：起 HTTP → 拉页面/状态/音色 → 解析记谱 → 关服务。不依赖音频设备。"""
+    """离线自检：起 HTTP → 拉页面/状态/音色 → 解析记谱与曲谱 → 关服务。不依赖音频设备。"""
     result = {"ok": True, "page_bytes": 0, "state": False, "voices": 0,
-              "parsed_notes": 0, "total_ms": 0, "error": ""}
+              "parsed_notes": 0, "score_notes": 0, "total_ms": 0, "error": ""}
     port = _start_http(0)
     if not port:
         result.update(ok=False, error="HTTP 启动失败")
@@ -1066,8 +1314,16 @@ def _selftest() -> int:
         events, total = _parse_notes("C4@400 D4@400 E4@800", 4, 320, 0, 0.85)
         result["parsed_notes"] = len(events)
         result["total_ms"] = total
+        score_events, _, _ = _parse_score({
+            "title": "selftest", "tempo": 60,
+            "tracks": [{"voice": _DEFAULT_VOICE, "notes": [
+                {"beat": 0, "dur": 1, "note": "C4"},
+                {"beat": 1, "dur": 1, "note": "E4+G4"},
+            ]}],
+        })
+        result["score_notes"] = len(score_events)
         if result["page_bytes"] < 200 or not result["state"] or not result["voices"] \
-                or len(events) != 3 or total <= 0:
+                or len(events) != 3 or total <= 0 or len(score_events) != 2:
             result["ok"] = False
             result["error"] = "自检断言未通过"
     except Exception as exc:

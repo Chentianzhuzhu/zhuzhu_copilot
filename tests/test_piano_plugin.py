@@ -63,8 +63,9 @@ def test_skill_md_frontmatter_and_workflow():
     text = (PLUGIN_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert text.startswith("---")
     assert "name: piano-studio" in text
-    for key in ("piano_status", "piano_play", "piano_stop", "piano_voices",
-                "开始聆听", "octave", "interval_ms", "duration_ms"):
+    for key in ("piano_play", "piano_play_score", "piano_stop", "piano_voices",
+                "开始聆听", "octave", "interval_ms", "duration_ms",
+                "dry_run", "beat", "dur", "pedal", "tracks", "版权"):
         assert key in text, f"SKILL.md 缺少关键约定: {key}"
 
 
@@ -73,6 +74,12 @@ def test_voices_data_is_complete():
     assert data["default"] in {voice["id"] for voice in data["voices"]}
     assert len(data["voices"]) >= 8
     assert set(data["registers"]) == {"low", "mid", "high"}
+    sample = data.get("sample_engine") or {}
+    assert sample.get("voices") and sample.get("anchors")
+    assert len(sample["anchors"]) >= 5
+    assert len(sample["velocity_layers"]) >= 2
+    grand = next(voice for voice in data["voices"] if voice["id"] == "grand_piano")
+    assert grand.get("engine") == "sample"
     for voice in data["voices"]:
         assert voice["id"] and voice["label"]
         assert voice.get("partials"), f"{voice['id']} 没有泛音配置"
@@ -146,6 +153,84 @@ def test_register_aliases():
         mod._parse_register("超高音")
 
 
+# ---------- 结构化曲谱 ----------
+
+def test_parse_score_beats_multitrack_and_pedal():
+    mod = _load_module()
+    score = {
+        "title": "score-test",
+        "tempo": 60,
+        "time_signature": [4, 4],
+        "pedal": True,
+        "tracks": [
+            {"voice": "grand_piano", "notes": [
+                {"beat": 0, "dur": 1, "note": "C4"},
+                {"beat": 2, "dur": 2, "note": "E4+G4", "velocity": 0.7},
+            ]},
+            {"voice": "pad", "notes": [
+                {"beat": 0, "dur": 4, "note": "C3"},
+            ]},
+        ],
+    }
+    events, total, meta = mod._parse_score(score)
+    assert len(events) == 3
+    chord = next(event for event in events if event["at"] == 2000)
+    assert chord["midis"] == [64, 67]
+    assert chord["dur"] == 2000
+    assert chord["velocity"] == 0.7
+    assert {event["voice"] for event in events} == {"grand_piano", "pad"}
+    assert total == 4000
+    assert meta["tempo"] == 60 and meta["tracks"] == 2
+    assert meta["pedal"] is True
+    assert meta["voice_label"] == "多音色"
+    assert meta["range"] == [48, 67]
+
+
+def test_parse_score_absolute_ms_and_rest():
+    mod = _load_module()
+    events, total, meta = mod._parse_score({
+        "tracks": [{"voice": "grand_piano", "notes": [
+            {"at_ms": 100, "dur_ms": 250, "note": "C4"},
+            {"beat": 1, "dur": 1, "note": "R"},
+            {"at_ms": 500, "dur_ms": 100, "note": "G4", "velocity": 0.4},
+        ]}],
+    })
+    assert [event["at"] for event in events] == [100, 500]
+    assert [event["dur"] for event in events] == [250, 100]
+    assert total == 600
+    assert meta["tempo"] == 80
+
+
+def test_parse_score_rejects_bad_shapes():
+    mod = _load_module()
+    with pytest.raises(ValueError):
+        mod._parse_score({"tracks": [{"notes": "C4 D4"}]})
+    with pytest.raises(ValueError):
+        mod._parse_score({"tracks": [{"notes": [{"beat": 0, "dur": 1, "note": "C4@500"}]}]})
+    with pytest.raises(ValueError):
+        mod._parse_score({"tracks": [{"notes": [{"note": "C4"}]}]})
+    with pytest.raises(ValueError):
+        mod._parse_score({"tracks": [{"voice": "unknown", "notes": [
+            {"beat": 0, "dur": 1, "note": "C4"}]}]})
+
+
+def test_piano_play_score_dry_run(server):
+    mod, _ = server
+    result = mod._handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                          "params": {"name": "piano_play_score", "arguments": {
+                              "dry_run": True,
+                              "score": {"title": "dry", "tempo": 60, "tracks": [
+                                  {"voice": "grand_piano", "notes": [
+                                      {"beat": 0, "dur": 1, "note": "C4"},
+                                      {"beat": 1, "dur": 1, "note": "E4"},
+                                  ]}]},
+                          }}})
+    text = result["result"]["content"][0]["text"]
+    assert "校验通过" in text
+    assert "前 8 个音" in text
+    assert mod._playback_state()["playing"] is False
+
+
 # ---------- HTTP ----------
 
 def _get(port, path):
@@ -167,6 +252,8 @@ def test_http_page_and_apis(server):
     assert len(data["voices"]) == 10
     assert len(data["definitions"]) == 10
     assert data["registers"]["mid"]["octave"] == 4
+    assert data["sample_engine"]["voices"] == ["grand_piano"]
+    assert next(v for v in data["definitions"] if v["id"] == "grand_piano")["engine"] == "sample"
 
     status, body, _ = _get(port, "/api/state")
     state = json.loads(body)
@@ -230,6 +317,7 @@ def test_sse_play_flow(server):
         hello = _read_events(response, {"hello"})
         assert hello["hello"]["state"]["server"]["running"] is True
         assert len(hello["hello"]["definitions"]) == 10
+        assert hello["hello"]["sample_engine"]["voices"] == ["grand_piano"]
 
         result = mod._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                               "params": {"name": "piano_play",
@@ -240,11 +328,15 @@ def test_sse_play_flow(server):
         text = result["result"]["content"][0]["text"]
         assert "已开始演奏" in text and "测试旋律" in text
 
-        events = _read_events(response, {"start", "note", "end"}, limit=60)
-        assert events["start"]["title"] == "测试旋律"
-        assert events["note"]["notes"][0]["name"] == "C4"
-        assert 0 <= events["note"]["in_ms"] <= 200
-        assert events["end"]["playback_id"] == events["start"]["playback_id"]
+        events = _read_events(response, {"start", "end"}, limit=60)
+        start = events["start"]
+        assert start["title"] == "测试旋律"
+        assert len(start["score"]) == 3
+        assert start["score"][0]["names"] == ["C4"]
+        assert start["score"][0]["voice"] == "grand_piano"
+        assert start["score"][1]["at"] == 120
+        assert start["pedal"] is False
+        assert events["end"]["playback_id"] == start["playback_id"]
     finally:
         connection.close()
 
@@ -257,8 +349,8 @@ def test_sse_stop_flow(server):
         mod._handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                      "params": {"name": "piano_play",
                                 "arguments": {"notes": "C4@4000", "interval_ms": 4000}}})
-        events = _read_events(response, {"note"}, limit=30)
-        assert events["note"]["notes"][0]["name"] == "C4"
+        events = _read_events(response, {"start"}, limit=30)
+        assert events["start"]["score"][0]["names"] == ["C4"]
         mod._handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                      "params": {"name": "piano_stop", "arguments": {}}})
         stopped = _read_events(response, {"stop"}, limit=30)
@@ -294,9 +386,10 @@ def test_mcp_stdio_protocol_and_tools():
     by_id = {message.get("id"): message for message in messages}
     assert by_id[1]["result"]["serverInfo"]["name"] == "piano-studio"
     names = {tool["name"] for tool in by_id[2]["result"]["tools"]}
-    assert names == {"piano_play", "piano_stop", "piano_status",
-                     "piano_voices", "piano_server"}
+    assert names == {"piano_play", "piano_play_score", "piano_stop",
+                     "piano_status", "piano_voices", "piano_server"}
     assert "grand_piano" in by_id[3]["result"]["content"][0]["text"]
+    assert "采样" in by_id[3]["result"]["content"][0]["text"]
     assert "未运行" in by_id[4]["result"]["content"][0]["text"]
 
 
@@ -308,6 +401,7 @@ def test_selftest_entrypoint():
     assert result["ok"] is True
     assert result["page_bytes"] > 200
     assert result["voices"] == 10
+    assert result["score_notes"] == 2
 
 
 # ---------- 真实导入链路 ----------
