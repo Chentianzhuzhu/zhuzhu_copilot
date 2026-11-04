@@ -29,7 +29,7 @@ _EDGE = 14
 #: 圆角
 _RADIUS = 12
 #: 可放大卡片的最小宽度占标准宽度的比例（可缩到 78%，避免窄页面横向溢出）
-_EXPAND_MIN_RATIO = 0.78
+_EXPAND_MIN_RATIO = 0.64
 #: 权益文本的最小宽度（换行标签的高度下限基准，见 _add_perk_row）
 _PERK_MIN_W = 96
 #: 会员卡与积分卡尺寸（含 _EDGE 外边距）

@@ -5364,6 +5364,13 @@ class _AgentSettingsDialog(QDialog):
         # 统一禁掉横向滚动条，超宽内容由内部布局自适应处理
         self._page_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 横向偏移硬锁为 0：内容比视口宽时，焦点控件（兑换码输入框等）会触发
+        # Qt 的 ensureWidgetVisible，把横向偏移推成非零 → 左侧的标题与说明整段
+        # 被裁（用户截图）。隐藏滚动条**不阻止程序滚动**，必须显式拉回。
+        _hbar = self._page_scroll.horizontalScrollBar()
+        _hbar.setRange(0, 0)
+        _hbar.rangeChanged.connect(lambda *_: _hbar.setValue(0))
+        _hbar.valueChanged.connect(lambda *_: _hbar.setValue(0))
         self._page_scroll.setWidgetResizable(True)
         self._page_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._page_scroll.setStyleSheet(
