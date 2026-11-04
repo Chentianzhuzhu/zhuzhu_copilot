@@ -50,8 +50,6 @@ _ALPHA_KEYS = {
 }
 _DOWNSCALE = 4              # 磨砂底降采样倍数（线性）：像素量降到 1/16
 _BLUR_MIN, _BLUR_MAX = 2.0, 24.0
-#: 角部高光沿边的点缀长度上限（px）：定值而非等比，长条/窄高控件才不会拉出亮带
-_RIM_SPAN_MAX = 38.0
 
 _strength: int | None = None
 _alphas: dict = {}          # mode -> 不透明度（懒加载，按需缓存）
@@ -449,16 +447,12 @@ def _glass_block(widget, rect: QRect, radius: float, tint: str,
 
 
 def _rim(p: QPainter, rect: QRect, radius: float) -> None:
-    """边缘高光：**严格 1px 描边**，只在左上 / 右下两角做一小段点缀。
+    """边缘高光：**顶边最亮，沿左右两侧向下渐弱到侧边中部**，下半圈是普通发丝线。
 
-    用户三次强调的点，这里逐条落实：
-    1. 不往内部加任何泛光/渐变 —— 只描线，内部完全交给磨砂底；
-    2. 线宽固定 1px（不是 1.2/1.4）：宽线在长边上会出现抗锯齿撕裂的"亮带"；
-    3. 高光长度**按像素封顶**（``_RIM_SPAN_MAX``），不随长边等比放大 —— 否则长条
-       胶囊/窄高面板上，高光会沿着边拉出很长一条，看起来像接缝。
-
-    画法：先铺一圈极淡的发丝线保证轮廓，再用「角部小方块裁剪 + 短渐变」叠两段
-    高光；方块边长 = 圆角半径 + 点缀长度，光只可能在角附近出现。
+    画法只有一条描边：竖直渐变的笔刷（顶=亮 → 侧边中部=发丝线 → 底=发丝线），
+    于是「顶边 → 两侧上半段」形成由高到低的连续过渡，底部保持安静。
+    不往内部填任何渐变（用户明确不要内部泛光），线宽固定 1px（宽线在长直边上
+    会出现抗锯齿撕裂的亮带）。
     """
     hi = QColor(255, 255, 255)
     hi.setAlphaF(min(0.9, rim_alpha() + 0.22))
@@ -474,28 +468,15 @@ def _rim(p: QPainter, rect: QRect, radius: float) -> None:
     path = QPainterPath()
     path.addRoundedRect(inner, radius, radius)
 
-    # ① 全周发丝线（1px）
-    p.setPen(QPen(line, 1.0))
+    grad = QLinearGradient(inner.topLeft(), inner.bottomLeft())
+    grad.setColorAt(0.0, hi)      # 顶边：最亮
+    grad.setColorAt(0.5, line)     # 两侧中部：收到发丝线
+    grad.setColorAt(1.0, line)     # 底边：保持发丝线
+    pen = QPen(QBrush(grad), 1.0)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawPath(path)
-
-    # ② 角部短高光：高光长度按像素封顶，且不超过短边的 45%
-    span = max(8.0, min(_RIM_SPAN_MAX, min(rect.width(), rect.height()) * 0.45))
-    box = max(6.0, float(radius)) + span
-
-    for cx, cy, dx, dy in ((rect.x(), rect.y(), 1, 1),
-                           (rect.x() + rect.width(), rect.y() + rect.height(), -1, -1)):
-        box_rect = QRectF(cx, cy, dx * box, dy * box).normalized()
-        grad = QLinearGradient(QPointF(cx, cy),
-                               QPointF(cx + dx * box * 0.72, cy + dy * box * 0.72))
-        grad.setColorAt(0.0, hi)
-        grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-        p.save()
-        p.setClipRect(box_rect)
-        p.setPen(QPen(QBrush(grad), 1.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
-        p.restore()
 
 
 def paint_surface(widget, p: QPainter, rect: QRect | None = None,
