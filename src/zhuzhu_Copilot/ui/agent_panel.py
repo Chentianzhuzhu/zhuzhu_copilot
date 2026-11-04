@@ -4427,6 +4427,40 @@ class _CardBoard(QScrollArea):
             self._last_w = w
             self._schedule_relayout()
 
+    def viewportEvent(self, ev):
+        """内层滚不动时把滚轮转发给外层页面。
+
+        本控件套在设置页的 QScrollArea 里。卡片没超出可视张数时内层滚动范围是 0，
+        QScrollArea 仍会吃掉滚轮事件但什么都不做 —— 指针停在卡片区时页面像"卡住"
+        （用户反馈的无法正常交互）。
+
+        注意入口是 **viewportEvent** 而 not wheelEvent：QScrollArea 在视口上处理
+        滚轮，事件根本到不了轮询本控件的 wheelEvent。
+        """
+        if ev.type() == QEvent.Type.Wheel and not self._can_scroll_self(
+                ev.angleDelta().y()):
+            outer = self._outer_scroll_area()
+            if outer is not None and outer is not self:
+                ev.accept()
+                QApplication.sendEvent(outer.viewport(), ev)
+                return True
+        return super().viewportEvent(ev)
+
+    def _can_scroll_self(self, delta: int) -> bool:
+        """本控件自己还能不能朝该方向滚（否则滚轮该交给外层页面）。"""
+        vb = self.verticalScrollBar()
+        if vb.maximum() <= vb.minimum():
+            return False
+        return not ((delta > 0 and vb.value() <= vb.minimum())
+                    or (delta < 0 and vb.value() >= vb.maximum()))
+
+    def _outer_scroll_area(self):
+        """最近的、把本控件包在里面的外层滚动区。"""
+        outer = self.parentWidget()
+        while outer is not None and not isinstance(outer, QScrollArea):
+            outer = outer.parentWidget()
+        return outer
+
     def showEvent(self, ev):
         """切到本页时按当前视口重算高度（懒加载页面首次显示时布局才确定）。"""
         super().showEvent(ev)
@@ -4469,8 +4503,11 @@ class _CardBoard(QScrollArea):
             self._rows_lay.removeWidget(w)
             w.deleteLater()
         self._need_h = max(120, total + 6)
-        self.setFixedHeight(self._need_h)
-        # 页面放不下时按可用高度收敛，避免「页面滚动 + 卡片区滚动」两层滚动条
+        # 直接给**收敛后**的高度：先设内容高再等 _fit_height 收缩，会让内层滚动条
+        # 出现又消失、视口宽度抖动，进而触发 resizeEvent → 再重排（高度 430↔300
+        # 反复跳，表现就是闪烁）。一次到位后高度只有一个稳定值。
+        self._fit_height()
+        # 布局收敛后（self.y() 可能此时还不准）再校一次，最多一次额外修正
         self._schedule_fit()
 
     def _below_space(self) -> int:
@@ -4544,7 +4581,13 @@ class _CardBoard(QScrollArea):
                 # 前 10 个」），且高度跟随视口反复变化还会让页面滚动时整块闪烁。
                 h = need
             else:
-                h = need if avail <= 0 else min(need, max(140, avail))
+                # 关键：高度**永远不超过可用空间**。avail 算不出来时（下方空间不足
+                # 或布局还没收敛）曾直接退回内容高（实测 430px），把下面的按钮顶出
+                # 视口 —— 按钮位置随高度跳变（183 → 430），用户点了没反应
+                # （Agent 管理页无法交互 + 元素闪烁）。这里退回一个保守值，
+                # 卡片区自己内部滚动。
+                limit = max(140, avail) if avail > 0 else 140
+                h = min(need, limit)
             if abs(h - self.height()) > 2:
                 self._fitting = True
                 try:
@@ -4589,7 +4632,6 @@ class _Card(QFrame):
         self._meta_text = self._shorten(str(meta or ""), 160)
         self._badge_text = str(badges or "")
         self.setObjectName("pluginCard")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Fixed)
@@ -4626,8 +4668,13 @@ class _Card(QFrame):
         col.setSpacing(2)
         self._title = QLabel(self._title_text)
         self._title.setWordWrap(True)
-        self._title.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 700;"
-                                  "background: transparent;")
+        # 标题色走调色板而不是样式表：运行期改样式表会触发控件级 polish（重建样式、
+        # 重算盒子模型），悬停/选中时整棵子树重绘 → 卡片列表频繁闪烁。只设静态字体。
+        self._title.setStyleSheet("font-size: 13px; background: transparent;")
+        f = self._title.font()
+        f.setWeight(QFont.Weight.Bold)
+        self._title.setFont(f)
+        self._set_title_color(TEXT)
         col.addWidget(self._title)
         self._desc = None
         if self._desc_text:
@@ -4652,7 +4699,7 @@ class _Card(QFrame):
                 f"color: {ACCENT_HOVER}; background: {_tint(ACCENT, 0.12)};"
                 f"border-radius: {_PAGE_BTN_RADIUS}px; padding: 2px 8px; font-size: 11px;")
             row.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
-        self._apply_style()
+        # 三态由 paintEvent 自绘，构造期不需要再刷一遍样式表
 
     @staticmethod
     def _shorten(text: str, limit: int) -> str:
@@ -4670,7 +4717,9 @@ class _Card(QFrame):
             h += 2 + self._text_h(self._desc, self._desc_text, inner)
         if self._meta is not None:
             h += 1 + self._text_h(self._meta, self._meta_text, inner)
-        self.setFixedHeight(max(52, int(h) + 2))
+        h = max(52, int(h) + 2)
+        if h != self.height():        # 同高不重设：避免每次重排都触发布局
+            self.setFixedHeight(h)
 
     @staticmethod
     def _text_h(label: QLabel, text: str, width: int) -> int:
@@ -4699,42 +4748,60 @@ class _Card(QFrame):
         super().setToolTip(str(tip or ""))
 
     # ---- 外观 ----
-    def _apply_style(self):
-        """卡片三态（招 1：不画边框，全部用背景分层表达）：
-        常态 = 面板色；悬停 = 提亮一档（浮起）；选中 = 强调色淡染（tint）+ 标题着强调色。
-        选中态另加 3px 左侧强调条 —— 那是**选中指示器**不是描边，与大厂导航一致。"""
+    def _set_title_color(self, color: str) -> None:
+        """改标题色只动调色板（不发样式表 polish，不触发整棵子树重绘）。"""
+        pal = self._title.palette()
+        pal.setColor(QPalette.ColorRole.WindowText, QColor(color))
+        self._title.setPalette(pal)
+
+    def _bg_color(self) -> str:
+        """三态底色（选中 = 强调色淡染；悬停 = 提亮一档；常态 = 面板色）。"""
         if self._sel:
-            bg = _mix_hex(ACCENT, PANEL, 0.16)
-        elif self._hover:
-            bg = _mix_hex(HOVER, PANEL, 0.6)
-        else:
-            bg = PANEL
-        self.setStyleSheet(
-            f"QFrame#pluginCard {{ background: {bg};"
-            f" border: 1px solid {_base_color('BORDER')};"
-            f" border-left: 3px solid {ACCENT if self._sel else 'transparent'};"
-            f" border-radius: {_CARD_RADIUS}px; }}")
-        self._title.setStyleSheet(
-            f"color: {ACCENT_HOVER if self._sel else TEXT};"
-            f" font-size: 13px; font-weight: {_W_STRONG};"
-            "background: transparent;")
-        if self._desc is not None:
-            self._desc.setStyleSheet(
-                f"color: {TEXT}; font-size: 12px;"
-                "background: transparent;")
+            return _mix_hex(ACCENT, PANEL, 0.16)
+        if self._hover:
+            return _mix_hex(HOVER, PANEL, 0.6)
+        return PANEL
+
+    def paintEvent(self, _e):
+        """自绘卡片底 / 边框 / 选中指示条。
+
+        以前三态靠 setStyleSheet 切换：每设一次样式表，Qt 会对本控件**及所有子控件**
+        重新 polish（重建样式、重算盒子模型并重绘），鼠标划过卡片列表时持续触发，
+        表现为频繁闪烁、撕裂。改为画家自绘 —— 状态变化只 update() 一帧。
+        """
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, _CARD_RADIUS, _CARD_RADIUS)
+        p.fillPath(path, QColor(self._bg_color()))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(_base_color("BORDER")), 1))
+        p.drawPath(path)
+        if self._sel:
+            # 3px 左侧强调条（选中指示器，不是描边）：裁进圆角，不外溢
+            p.save()
+            p.setClipPath(path)
+            p.fillRect(QRectF(rect.x(), rect.y(), 3, rect.height()), QColor(ACCENT))
+            p.restore()
+        p.end()
 
     def set_selected(self, on: bool):
-        self._sel = bool(on)
-        self._apply_style()
+        on = bool(on)
+        if on == self._sel:
+            return
+        self._sel = on
+        self._set_title_color(ACCENT_HOVER if on else TEXT)
+        self.update()
 
     def enterEvent(self, ev):
         self._hover = True
-        self._apply_style()
+        self.update()              # 只重绘，不重建样式
         super().enterEvent(ev)
 
     def leaveEvent(self, ev):
         self._hover = False
-        self._apply_style()
+        self.update()
         super().leaveEvent(ev)
 
     def mousePressEvent(self, ev):
