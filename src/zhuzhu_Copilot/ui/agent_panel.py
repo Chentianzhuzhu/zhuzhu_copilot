@@ -16576,9 +16576,10 @@ class _RoundedFloatWindow(QWidget):
             painter = QPainter(self)
             try:
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                # 底色取 CARD（与设置页卡片、会员卡同一份色板），保证"统一的暗色"
+                # 底色与对话列表（dock 栏）同一档：文件树 / 待办清单 / 对话列表三者
+                # 必须是同一个暗色，否则同一屏里深浅不一（CARD 比 BG 亮一档）
                 glass.paint_surface(self, painter, radius=self._WINDOW_RADIUS,
-                                    tint=_base_color("CARD"),
+                                    tint=_base_color("BG"),
                                     min_alpha=floor_alpha)
             finally:
                 try:
