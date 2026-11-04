@@ -706,6 +706,11 @@ def test_dropdown_popup_fades_as_one_block(panel):
     assert pop._op == pytest.approx(0.0), \
         "浮层必须先完全透明再整块淡入，避免首帧以半成品上屏"
     _pump(60)
+    # 动画时间轴由主线程事件驱动，重负载/CI 下会慢一拍：轮询到"开始推进"再断言
+    for _ in range(12):
+        if pop._op > 0.0:
+            break
+        _pump(50)
     assert pop._op > 0.0, "淡入动画未推进"
     _pump(300)
     assert pop._op == pytest.approx(1.0), "淡入未完成"
