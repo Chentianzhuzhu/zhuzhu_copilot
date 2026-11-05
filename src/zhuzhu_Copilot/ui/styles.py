@@ -226,11 +226,11 @@ QLineEdit, QComboBox {{
     selection-color: #FFFFFF;
 }}
 
-QLineEdit:hover, QComboBox:hover {{
+QLineEdit:hover {{
     background-color: {field_hover};
 }}
 
-QLineEdit:focus, QComboBox:focus {{
+QLineEdit:focus {{
     background-color: {field_focus};
 }}
 

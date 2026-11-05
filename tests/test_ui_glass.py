@@ -304,3 +304,72 @@ def test_glass_alpha_is_per_mode(tmp_path):
     finally:
         for m, v in old.items():
             glass.set_alpha(v, persist=False, mode_key=m)
+
+
+def test_interaction_state_keeps_rim_and_lifts_interior():
+    """悬停/按下只叠**内侧**对比色：描边像素必须完全不变，内部亮度要有可辨识变化。
+
+    这是用户明确要求的行为（「悬停后边缘高光消失」是此前的缺陷）：
+      · 描边（含贴边 1px 余量）像素前后完全一致 → 高光不会丢；
+      · 内部亮度差 ≥ 10（0~255）→ 用户能感知到反馈。
+    """
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QColor, QEnterEvent, QPainter, QPixmap
+    from PyQt6.QtWidgets import QWidget
+
+    app = _qapp()
+    import zhuzhu_Copilot.ui.styles as styles
+    from zhuzhu_Copilot.ui import agent_panel, glass
+    from zhuzhu_Copilot.ui.widgets import ArrowComboBox
+
+    old_strength = glass.strength()
+    old_palette = styles.PALETTE["bg_top"]
+    styles.set_palette("dark")
+    app.setStyleSheet(styles.GLOBAL_QSS)
+    glass.set_strength(50, persist=False)
+
+    class _Host(QWidget):
+        def paintEvent(self, _e):
+            p = QPainter(self)
+            p.fillRect(self.rect(), QColor("#0B0C0E"))
+            p.end()
+
+    try:
+        host = _Host()
+        host.resize(240, 100)
+        host.show()
+        app.processEvents()
+        combo = ArrowComboBox(host)
+        combo.addItem("自动")
+        combo.setStyleSheet(agent_panel._QCOMBO)
+        combo.setGeometry(20, 30, 180, 34)
+        combo.show()
+        app.processEvents()
+
+        def _shot():
+            pm = QPixmap(host.size())
+            pm.fill(QColor("#000000"))
+            host.render(pm)
+            return pm.toImage()
+
+        before = _shot()
+        combo.enterEvent(QEnterEvent(QPointF(90, 17), QPointF(90, 17),
+                                     QPointF(90, 17)))
+        app.processEvents()
+        after = _shot()
+
+        cx = 110
+        rim_before, rim_after = before.pixelColor(cx, 30), after.pixelColor(cx, 30)
+        gap_before, gap_after = before.pixelColor(cx, 31), after.pixelColor(cx, 31)
+        inner_before, inner_after = before.pixelColor(cx, 34), after.pixelColor(cx, 34)
+
+        assert rim_before == rim_after, "悬停不得改变描边像素"
+        assert gap_before == gap_after, "内填充不得渗到描边贴边像素上"
+        assert abs(inner_after.lightness() - inner_before.lightness()) >= 10, \
+            f"内部对比度变化过小（{inner_before.lightness()} → {inner_after.lightness()}）"
+    finally:
+        glass.set_strength(old_strength, persist=False)
+        # 还原原主题（PALETTE 是全局单例，改了必须换回来，否则影响后续用例）
+        styles.set_palette("light" if old_palette == styles.LIGHT_PALETTE["bg_top"]
+                           else "dark")
+        assert styles.PALETTE["bg_top"] == old_palette

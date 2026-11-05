@@ -668,6 +668,7 @@ class ArrowComboBox(QComboBox):
         # 需要实色本体的下拉（对话框里的输入型下拉）可 set_glass_body(False) 关掉。
         self._glass_body = True
         self._glass_tint = None
+        self._pressed = False           # 按下态：只用于内侧叠色（描边保持不动）
         self._arrow_angle = 0.0        # 箭头旋转角度：0=收起，180=展开
         self._arrow_open = False
         self._arrow_hover = False
@@ -748,7 +749,22 @@ class ArrowComboBox(QComboBox):
             self.hidePopup()
             e.accept()
             return
+        self._pressed = True
+        self.update()
         super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._pressed = False
+        self.update()
+        super().mouseReleaseEvent(e)
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self.update()          # 聚焦也只在内部叠色，需重绘一次
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.update()
 
     def hideEvent(self, e):
         # 控件被隐藏（切页 / 弹窗关闭）时下拉不能停留在屏幕上
@@ -794,6 +810,11 @@ class ArrowComboBox(QComboBox):
             g.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             glass.paint_surface(self, g, radius=RADIUS_SM,
                                 tint=self._glass_tint or PALETTE["field"])
+            # 悬停 / 按下 / 聚焦只叠内侧对比色：描边高光恒定（QSS 里也禁止再铺底）
+            if self._arrow_hover or self._pressed or self.hasFocus():
+                state = ("press" if self._pressed
+                         else "focus" if self.hasFocus() else "hover")
+                glass.paint_state(self, g, RADIUS_SM, state)
             g.end()
         super().paintEvent(e)
         # 在右侧下拉区自绘旋转箭头（∨ 形折线，展开后旋转 180° 变为 ∧）
@@ -932,8 +953,7 @@ class GlassPill(QWidget):
         r = self.height() / 2.0
         glass.paint_surface(self, p, radius=r, tint=self.glass_tint())
         if self._g_hover or self._g_pressed:
-            glass.fill_inner(self, p, radius=r, color=PALETTE["hover"],
-                             alpha=0.36 if self._g_pressed else 0.26)
+            glass.paint_state(self, p, r, "press" if self._g_pressed else "hover")
 
     def paintEvent(self, _e):
         p = QPainter(self)
@@ -976,7 +996,7 @@ class GlassIconButton(QPushButton):
                  reflect: bool = False):
         super().__init__(icon, "", parent)
         self._g_tint_key = tint_key
-        self._g_hover_key = hover_tint_key
+        # hover_tint_key 仅为兼容保留：状态反馈走内侧叠色，底色与描边恒定
         self._g_hover = False
         self._g_reflect = bool(reflect)
         self.setFixedSize(int(diameter), int(diameter))
@@ -990,10 +1010,13 @@ class GlassIconButton(QPushButton):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        key = self._g_hover_key if self._g_hover else self._g_tint_key
-        tint = PALETTE.get(key) or PALETTE["elevated"]
-        glass.paint_surface(self, p, radius=self.width() / 2.0, tint=tint,
-                            reflect=self._g_reflect)
+        # 底色恒定：悬停/按下只在内侧叠对比色。以前换 tint 键会连整块贴图
+        # （含描边高光）一起重建，边缘随之变淡 —— 看起来像"悬停就丢了高光"。
+        tint = PALETTE.get(self._g_tint_key) or PALETTE["elevated"]
+        r = self.width() / 2.0
+        glass.paint_surface(self, p, radius=r, tint=tint, reflect=self._g_reflect)
+        if self._g_hover or self.isDown():
+            glass.paint_state(self, p, r, "press" if self.isDown() else "hover")
         p.end()
         super().paintEvent(e)          # 图标（QSS 底已透明）
 
@@ -1024,7 +1047,7 @@ class GlassButton(QPushButton):
                  reflect: bool = True):
         super().__init__(icon, "", parent)
         self._g_tint_key = tint_key
-        self._g_hover_key = hover_tint_key
+        # hover_tint_key 仅为兼容保留：状态反馈走内侧叠色，底色与描边恒定
         self._g_reflect = bool(reflect)
         self._g_hover = False
         self._g_last_capture = 0.0
@@ -1085,9 +1108,8 @@ class GlassButton(QPushButton):
         glass.paint_surface(self, p, radius=self.radius(), tint=tint,
                             reflect=self._g_reflect)
         if self._g_hover or self.isDown():
-            glass.fill_inner(self, p, radius=self.radius(),
-                             color=PALETTE.get(self._g_hover_key),
-                             alpha=0.30 if not self.isDown() else 0.45)
+            glass.paint_state(self, p, self.radius(),
+                              "press" if self.isDown() else "hover")
         p.end()
         super().paintEvent(e)           # 图标/文字（QSS 底已透明）
 

@@ -525,12 +525,14 @@ def paint_surface(widget, p: QPainter, rect: QRect | None = None,
 
 def fill_inner(widget, p: QPainter, rect: QRect | None = None,
                radius: float | None = None, color: str | None = None,
-               alpha: float = 0.32, inset: float = 1.4) -> None:
+               alpha: float = 0.32, inset: float = 2.0) -> None:
     """**只改内部填充**：把颜色填在描边内侧，边缘高光与磨砂底完全不动。
 
     hover / press 用它而不是换 tint —— 换 tint 会连整块贴图（含描边高光）一起重建，
-    悬停时边缘会跟着变色/变亮，观感像"整块被点亮"。这里只在内缩 1.4px 的圆角区域
-    里叠一层色，描边保持原样。
+    悬停时边缘会跟着变色/变亮，观感像"整块被点亮"。
+
+    inset 取 2px（描边占 1px + 1px 余量）：内填充的边缘抗锯齿不会渗到描边像素上，
+    否则悬停时**贴边那一像素**会跟着变亮，肉眼就是"高光被冲淡/消失"。
     """
     rect = QRect(widget.rect()) if rect is None else QRect(rect)
     if rect.isEmpty():
@@ -544,6 +546,43 @@ def fill_inner(widget, p: QPainter, rect: QRect | None = None,
     c = QColor(color or PALETTE["primary_light"])
     c.setAlphaF(max(0.0, min(1.0, alpha)))
     p.fillPath(path, c)
+
+
+#: 悬停 / 按下 / 聚焦的**内部**叠色强度（深色叠白提亮 / 浅色叠黑压暗 /
+#: 壁纸叠中性灰）。单一事实源：所有玻璃表面共用一份，不再各自写 α。
+_STATE_ALPHA = {
+    #       深色(叠白) 浅色(叠黑) 壁纸(叠中性灰)
+    "hover": (0.08, 0.07, 0.18),
+    "press": (0.14, 0.12, 0.30),
+    "focus": (0.10, 0.09, 0.22),
+}
+#: 壁纸模式的中性叠色（任意明暗壁纸上都能拉开对比）
+_STATE_GRAY = "#94A3B8"
+
+
+def state_fill(state: str = "hover") -> tuple[str, float]:
+    """返回该交互态的 (叠色, 不透明度)。
+
+    只提高**内部**对比度：深色主题叠白、浅色主题叠黑、壁纸模式叠中性灰。
+    颜色与强度都按当前模式取，不写死具体色值。
+    """
+    dark_a, light_a, wall_a = _STATE_ALPHA.get(state, _STATE_ALPHA["hover"])
+    if app_wallpaper.active():
+        return _STATE_GRAY, wall_a
+    if mode() == "dark":
+        return "#FFFFFF", dark_a
+    return "#000000", light_a
+
+
+def paint_state(widget, p: QPainter, radius: float, state: str = "hover",
+                rect: QRect | None = None) -> None:
+    """悬停 / 按下 / 聚焦：**只**在内侧叠一层对比色，边缘描边高光保持不变。
+
+    这是全应用统一的交互反馈入口 —— 任何玻璃表面都不该用「换底色重绘整块贴图」
+    或「QSS 铺 hover 背景」表达状态，那会把边缘高光一起盖掉。
+    """
+    color, alpha = state_fill(state)
+    fill_inner(widget, p, rect=rect, radius=radius, color=color, alpha=alpha)
 
 
 def repaint_all() -> None:

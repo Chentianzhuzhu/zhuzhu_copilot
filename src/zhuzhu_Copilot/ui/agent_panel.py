@@ -847,8 +847,8 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                f" border: none;"
                f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                f"font-size: {FONT_SMALL}px; }}"
-               f"QComboBox:hover {{ background: {_mix_hex(_combo_hover, _combo_bg, 0.55)}; }}"
-               f"QComboBox:focus {{ background: {_combo_hover}; }}"
+               # 悬停/聚焦的对比度由 ArrowComboBox 在内侧叠色实现：QSS 再铺一层实色
+               # 会盖住玻璃底**连同边缘描边**（用户反馈「悬停后边缘高光消失」）。
                f"QComboBox:disabled {{ background: {_combo_hover}; color: {TEXT_DIM}; }}"
                f"QComboBox::drop-down {{ border: none; width: {COMBO_ARROW_W}px; }}"
                f"QComboBox QAbstractItemView {{ background: {_combo_elev};"
@@ -865,8 +865,7 @@ def _apply_colors(t: dict, force: bool = False, bump_version: bool = True) -> No
                    f" border: none;"
                    f"border-radius: {RADIUS_SM}px; padding: {SPACING_SM}px {SPACING_MD}px;"
                    f"font-size: {FONT_SMALL}px; }}"
-                   f"QComboBox:hover {{ background: {HOVER}; }}"
-                   f"QComboBox:focus {{ background: {HOVER}; }}"
+                   # 同 _QCOMBO：状态反馈走内侧叠色，QSS 不再铺底
                    f"QComboBox:disabled {{ background: {HOVER}; color: {TEXT_DIM}; }}"
                    f"QComboBox::drop-down {{ border: none; width: {COMBO_ARROW_W}px; }}"
                    f"QComboBox QAbstractItemView {{ background: {_combo_elev};"
@@ -5498,10 +5497,10 @@ class _AgentSettingsDialog(QDialog):
             # 下拉框本体已由 ArrowComboBox 自绘玻璃底，这里不能再铺实色
             f"QComboBox {{ background: transparent; color: {self._TEXT};"
             "border: none; border-radius: 12px; padding: 6px 10px; }"
-            f"QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover {{"
-            f"background: {_in_hover}; }}"
-            f"QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{"
-            f"background: {_in_focus}; }}"
+            # 输入框是"字段"，保留自己的底色反馈；下拉框本体是玻璃表面，状态色由
+            # ArrowComboBox 内侧叠色负责（QSS 铺底会盖掉边缘描边）
+            f"QLineEdit:hover, QPlainTextEdit:hover {{ background: {_in_hover}; }}"
+            f"QLineEdit:focus, QPlainTextEdit:focus {{ background: {_in_focus}; }}"
             f"QComboBox QAbstractItemView {{ background: {_popup_bg};"
             f"color: {TEXT}; border: none;"
             f"border-radius: 12px; padding: 4px; outline: none;"
