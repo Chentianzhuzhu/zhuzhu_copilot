@@ -3,7 +3,7 @@
 #
 # 用法：
 #   export SSHPASS_PASSWORD='服务器密码'
-#   export STRIPE_SECRET_KEY='sk_live_...'          # 必填
+#   export STRIPE_SECRET_KEY='sk_live_...'          # 可留空：服务照常启动，下单接口暂不可用，密钥补齐后重启即可
 #   export STRIPE_WEBHOOK_SECRET='whsec_...'        # 首次部署可留空（创建 webhook 后补）
 #   bash scripts/deploy_pay_server.sh
 #
@@ -19,8 +19,9 @@ AUTH_DIR="$ROOT/auth-server"
 # ---------- 前置检查 ----------
 [ -f "$JAR" ] || { echo "缺少 $JAR，请先 mvn package"; exit 1; }
 : "${SSHPASS_PASSWORD:?缺少 SSHPASS_PASSWORD}"
-: "${STRIPE_SECRET_KEY:?缺少 STRIPE_SECRET_KEY}"
-
+# 密钥允许后补：未配置时服务仍可启动，下单/webhook 接口会明确报错
+STRIPE_SECRET_KEY="${STRIPE_SECRET_KEY:-}"
+[ -n "$STRIPE_SECRET_KEY" ] || echo "警告：未设置 STRIPE_SECRET_KEY，下单接口暂不可用（补齐后重启 pay-server）"
 AUTH_INTERNAL_TOKEN="${AUTH_INTERNAL_TOKEN:-$(openssl rand -hex 32)}"
 
 # ---------- SSH 通道（OpenSSH + askpass）----------
@@ -34,7 +35,7 @@ export SSH_ASKPASS="$AP" SSH_ASKPASS_REQUIRE=force DISPLAY=:0
 SSH="ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 $USER@$HOST"
 SCP="scp -o StrictHostKeyChecking=accept-new"
 
-cleanup() { rm -f "$AP"; }
+cleanup() { rm -f "$AP" 2>/dev/null || true; }
 trap cleanup EXIT
 
 run() { echo "[SSH] $1"; $SSH "$1"; }
@@ -49,12 +50,14 @@ put "$AUTH_DIR/app/schemas/__init__.py"      /www/auth-server/app/schemas/__init
 
 # ---------- 2. 建库建号（幂等）+ 内部令牌写入 auth-server ----------
 run "command -v java >/dev/null || yum install -y java-17-openjdk-headless"
-run "mysql -e \"CREATE DATABASE IF NOT EXISTS pay_server DEFAULT CHARACTER SET utf8mb4\""
-run "mysql -e \"CREATE USER IF NOT EXISTS 'payapp'@'127.0.0.1'\""
+# MySQL 凭据复用服务器上 auth-server 已有的 .env（root 全权限），不新增明文口令
+MYSQL='set -a; . /www/auth-server/.env; set +a; MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER"'
+run "$MYSQL -e \"CREATE DATABASE IF NOT EXISTS pay_server DEFAULT CHARACTER SET utf8mb4\""
+run "$MYSQL -e \"CREATE USER IF NOT EXISTS 'payapp'@'127.0.0.1'\""
 # 密码每次重置为脚本可控值（幂等），仅写入服务器端 .env，不回传本地
 PAYAPP_DB_PW="${PAYAPP_DB_PW:-$(openssl rand -hex 16)}"
-run "mysql -e \"ALTER USER 'payapp'@'127.0.0.1' IDENTIFIED BY '$PAYAPP_DB_PW'; FLUSH PRIVILEGES\""
-run "mysql -e \"GRANT ALL PRIVILEGES ON pay_server.* TO 'payapp'@'127.0.0.1'; FLUSH PRIVILEGES\""
+run "$MYSQL -e \"ALTER USER 'payapp'@'127.0.0.1' IDENTIFIED BY '$PAYAPP_DB_PW'; FLUSH PRIVILEGES\""
+run "$MYSQL -e \"GRANT ALL PRIVILEGES ON pay_server.* TO 'payapp'@'127.0.0.1'; FLUSH PRIVILEGES\""
 # auth-server .env 追加/更新内部令牌
 run "grep -q '^INTERNAL_API_TOKEN=' /www/auth-server/.env 2>/dev/null && sed -i 's/^INTERNAL_API_TOKEN=.*/INTERNAL_API_TOKEN=$AUTH_INTERNAL_TOKEN/' /www/auth-server/.env || echo 'INTERNAL_API_TOKEN=$AUTH_INTERNAL_TOKEN' >> /www/auth-server/.env"
 
@@ -89,25 +92,34 @@ WantedBy=multi-user.target
 UNIT
 put "$TMP1" /www/pay-server/.env
 put "$TMP2" /etc/systemd/system/pay-server.service
-rm -f "$TMP1" "$TMP2"
+rm -f "$TMP1" "$TMP2" 2>/dev/null || true
 
 # ---------- 4. nginx /payapp/ 反代（幂等）----------
-run "grep -q '/payapp/' /etc/nginx/conf.d/update-server.conf || sed -i '/location \/authapp\//i\\
-    location /payapp/ {\\
-        proxy_pass http://127.0.0.1:8090;\\
-        proxy_set_header Host \$host;\\
-        proxy_set_header X-Real-IP \$remote_addr;\\
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\\
-        proxy_set_header X-Forwarded-Proto \$scheme;\\
-    }\\
-' /etc/nginx/conf.d/update-server.conf"
+# 该站点的 80/443 两个 server 块都 include chentian-locations.conf，改一处即可。
+# proxy_pass 末尾带 / 用于剥掉 /payapp/ 前缀，与 /authapp/ 的写法保持一致。
+TMP3="$(mktemp)"
+cat > "$TMP3" <<'NGINX'
+
+# zhuzhu Copilot 支付服务（pay-server :8090）反代
+location /payapp/ {
+    proxy_pass http://127.0.0.1:8090/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $client_scheme;
+}
+NGINX
+put "$TMP3" /tmp/payapp-location.conf
+rm -f "$TMP3" 2>/dev/null || true
+run "grep -q 'location /payapp/' /etc/nginx/snippets/chentian-locations.conf || cat /tmp/payapp-location.conf >> /etc/nginx/snippets/chentian-locations.conf"
+run "nginx -t && systemctl reload nginx"
 
 # ---------- 5. 重启 + 健康检查 ----------
 run "cd /www/auth-server && .venv/bin/python -c 'import app.main; print(\"AUTH IMPORT OK\")'"
 run "systemctl restart auth-server && systemctl daemon-reload && systemctl enable --now pay-server"
-sleep 5
+# Spring Boot 冷启动约 25-30s，轮询等待端口就绪而非固定 sleep
+run "for i in \$(seq 1 40); do c=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer x' http://127.0.0.1:8090/api/pay/order/x || true); [ \"\$c\" != '000' ] && break; sleep 2; done; echo \"pay-server ready: tries=\$i http=\$c\""
 run "systemctl is-active auth-server pay-server"
-run "curl -s -o /dev/null -w 'pay health=%{http_code}\\n' http://127.0.0.1:8090/api/pay/order/x"
 run "curl -s -o /dev/null -w 'nginx payapp=%{http_code}\\n' -H 'Authorization: Bearer x' https://chentian.dpdns.org/payapp/api/pay/order/x"
 run "journalctl -u pay-server -n 10 --no-pager | tail -10"
 
