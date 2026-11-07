@@ -3,11 +3,11 @@ package com.zhuzhu.pay.service;
 import com.stripe.model.Event;
 import com.stripe.model.checkout.Session;
 import com.stripe.net.Webhook;
+import com.zhuzhu.pay.config.StripeProperties;
 import com.zhuzhu.pay.model.PayOrder;
 import com.zhuzhu.pay.repo.PayOrderRepo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /** Stripe webhook 处理：验签 + 幂等确认 + 回调发货 */
@@ -18,13 +18,12 @@ public class WebhookService {
 
     private final PayOrderRepo repo;
     private final AuthServerClient auth;
+    private final StripeProperties stripe;
 
-    @Value("${stripe.webhook-secret}")
-    private String webhookSecret;
-
-    public WebhookService(PayOrderRepo repo, AuthServerClient auth) {
+    public WebhookService(PayOrderRepo repo, AuthServerClient auth, StripeProperties stripe) {
         this.repo = repo;
         this.auth = auth;
+        this.stripe = stripe;
     }
 
     /**
@@ -32,6 +31,7 @@ public class WebhookService {
      * 返回 pay_order_id 表示已确认支付。
      */
     public String handle(String payload, String sigHeader) {
+        String webhookSecret = stripe.getWebhookSecret();
         if (webhookSecret == null || webhookSecret.isBlank()) {
             throw new PayException(500, "服务端未配置 Webhook 签名密钥");
         }

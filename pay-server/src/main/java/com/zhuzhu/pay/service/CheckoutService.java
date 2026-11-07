@@ -5,11 +5,11 @@ import com.stripe.exception.StripeException;
 import com.stripe.model.checkout.Session;
 import com.stripe.param.checkout.SessionCreateParams;
 import com.zhuzhu.pay.config.PayProperties;
+import com.zhuzhu.pay.config.StripeProperties;
 import com.zhuzhu.pay.model.PayOrder;
 import com.zhuzhu.pay.repo.PayOrderRepo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,17 +27,14 @@ public class CheckoutService {
     private static final SecureRandom RNG = new SecureRandom();
 
     private final PayProperties props;
+    private final StripeProperties stripe;
     private final PayOrderRepo repo;
     private final AuthServerClient auth;
 
-    @Value("${stripe.secret-key}")
-    private String secretKey;
-
-    @Value("${stripe.currency}")
-    private String currency;
-
-    public CheckoutService(PayProperties props, PayOrderRepo repo, AuthServerClient auth) {
+    public CheckoutService(PayProperties props, StripeProperties stripe,
+                           PayOrderRepo repo, AuthServerClient auth) {
         this.props = props;
+        this.stripe = stripe;
         this.repo = repo;
         this.auth = auth;
     }
@@ -49,8 +46,12 @@ public class CheckoutService {
         if (product == null) {
             throw new PayException(400, "商品不存在");
         }
-        if (secretKey == null || secretKey.isBlank()) {
+        if (stripe.getSecretKey() == null || stripe.getSecretKey().isBlank()) {
             throw new PayException(500, "服务端未配置 Stripe 密钥");
+        }
+        // Stripe 按 USD 等值校验最低收款额，提前拦截，避免打到 API 才失败
+        if (product.getAmount() < stripe.getMinAmount()) {
+            throw new PayException(400, "该商品金额低于支付渠道最低限额，请选择其他商品");
         }
 
         AuthServerClient.MeInfo me = auth.me(bearerToken);
@@ -61,12 +62,15 @@ public class CheckoutService {
         order.setUserId(me.id());
         order.setUsername(me.username());
         order.setProductId(productId);
-        order.setCurrency(currency);
+        order.setCurrency(stripe.getCurrency());
         order.setAmount(product.getAmount());
         order.setStatus("pending");
         repo.save(order);
 
-        Stripe.apiKey = secretKey;
+        String taxCode = product.getTaxCode() == null || product.getTaxCode().isBlank()
+                ? stripe.getTaxCode() : product.getTaxCode();
+
+        Stripe.apiKey = stripe.getSecretKey();
         long expireAt = Instant.now().plusSeconds(props.getSessionExpireMinutes() * 60L).getEpochSecond();
         try {
             Session session = Session.create(SessionCreateParams.builder()
@@ -76,10 +80,11 @@ public class CheckoutService {
                     .addLineItem(SessionCreateParams.LineItem.builder()
                             .setQuantity(1L)
                             .setPriceData(SessionCreateParams.LineItem.PriceData.builder()
-                                    .setCurrency(currency)
+                                    .setCurrency(stripe.getCurrency())
                                     .setUnitAmount(product.getAmount())
                                     .setProductData(SessionCreateParams.LineItem.PriceData.ProductData.builder()
                                             .setName(product.getName())
+                                            .setTaxCode(taxCode)
                                             .build())
                                     .build())
                             .build())
@@ -91,7 +96,8 @@ public class CheckoutService {
                     .build());
             order.setStripeSessionId(session.getId());
             repo.save(order);
-            log.info("创建 Checkout 会话 order={} user={} product={}", order.getOrderId(), me.id(), productId);
+            log.info("创建 Checkout 会话 order={} user={} product={} taxCode={}",
+                    order.getOrderId(), me.id(), productId, taxCode);
             return new MapResult(order.getOrderId(), session.getUrl());
         } catch (StripeException e) {
             log.error("Stripe 下单失败 order={}: {}", order.getOrderId(), e.getMessage());

@@ -33,11 +33,15 @@ public class PayProperties {
         private String name;
         /** 最小货币单位（分） */
         private long amount;
+        /** 覆盖 stripe.tax-code 的商品税码（可为 null） */
+        private String taxCode;
 
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
         public long getAmount() { return amount; }
         public void setAmount(long amount) { this.amount = amount; }
+        public String getTaxCode() { return taxCode; }
+        public void setTaxCode(String taxCode) { this.taxCode = taxCode; }
     }
 
     public String getAuthBaseUrl() { return authBaseUrl; }

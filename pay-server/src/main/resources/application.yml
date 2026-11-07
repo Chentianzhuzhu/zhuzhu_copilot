@@ -25,15 +25,17 @@ pay:
   cancel-url: ${PAY_CANCEL_URL:https://chentian.dpdns.org/payapp/return.html?order_id={ORDER_ID}&canceled=1}
   # Checkout 会话有效期（分钟），下单后超时未付自动作废
   session-expire-minutes: 30
-  # 商品表：key = auth-server PRODUCTS 的 product_id（发货单一事实来源在 auth-server），
-  # amount 为最小货币单位（分）。改价格只改这里，不改代码。
+  # 商品表：key = auth-server PRODUCTS 的 product_id（发货单一事实来源在 auth-server）。
+  # amount 为最小货币单位（分），tax-code 可覆盖 stripe.tax-code。改价格/加商品只改这里。
   products:
     pro_monthly:
       name: "Pro版 会员 30 天"
       amount: 700
+      tax-code: txcd_10103000
     max_monthly:
       name: "Max版 会员 30 天"
       amount: 1400
+      tax-code: txcd_10103000
     points_150:
       name: "150 积分"
       amount: 100
@@ -50,6 +52,10 @@ stripe:
   webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
   # 结算币种：小写 ISO 4217。若账号不支持 cny，改环境变量 STRIPE_CURRENCY=usd 并同步调价格
   currency: ${STRIPE_CURRENCY:cny}
+  # Managed Payments 账号强制要求商品税码；默认通用电子服务类
+  tax-code: ${STRIPE_TAX_CODE:txcd_10000000}
+  # 单笔最低金额（最小货币单位）：Stripe 按 USD 等值校验，CNY 约 ¥4 起
+  min-amount: ${STRIPE_MIN_AMOUNT:400}
 
 logging:
   level:
