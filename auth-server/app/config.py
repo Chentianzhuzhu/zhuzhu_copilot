@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     admin_username: str = "zhutianlaing"
     admin_password: str = "windows10"
 
+    # 内部发货接口令牌：pay-server 回调 /api/internal/grant 时必须携带
+    # X-Internal-Token 与之一致。留空 = 内部接口关闭（fail-closed）。
+    internal_api_token: str = ""
+
     @property
     def mysql_url(self) -> str:
         auth = f"{self.mysql_user}:{self.mysql_password}"

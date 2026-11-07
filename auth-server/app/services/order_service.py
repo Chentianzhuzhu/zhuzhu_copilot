@@ -250,41 +250,25 @@ async def get_order_status(order_id: str, user_id: int, db: AsyncSession) -> dic
     }
 
 
-async def confirm_order(
-    order_id: str,
+async def grant_benefits(
+    user_id: int,
+    product: dict,
+    detail: str,
+    order_ref: str,
     db: AsyncSession,
-    redis: aioredis.Redis,
-) -> dict:
+) -> str | None:
+    """按商品发放权益：加积分 / 开通会员 + 写积分流水 + WS 推送。
+
+    供两条路径共用：
+    - confirm_order()（收款码人工确认到账）；
+    - /api/internal/grant（Stripe 等外部支付渠道回调后发货）。
+    本函数不碰 orders 表——订单归属由调用方管理。
+
+    返回 membership_after（仅会员类订单有值）。
     """
-    管理员确认订单到账：标记paid，发放积分/会员
-    """
-    # 查询订单
-    result = await db.execute(
-        text("SELECT * FROM orders WHERE id = :oid FOR UPDATE"),
-        {"oid": order_id},
-    )
-    row = result.mappings().first()
-    if not row:
-        raise ValueError("订单不存在", 404)
-
-    if row["status"] == "paid":
-        raise ValueError("订单已支付", 400)
-
-    product = PRODUCTS.get(row["product_id"])
-    if not product:
-        raise ValueError("商品配置异常", 500)
-
-    # 更新订单状态
-    await db.execute(
-        text("UPDATE orders SET status = 'paid', paid_at = NOW() WHERE id = :oid"),
-        {"oid": order_id},
-    )
-
-    user_id = row["user_id"]
     points_added = product["points"]
-    membership_after: str | None = None   # 仅会员类订单有值，供返回给管理端
+    membership_after: str | None = None
 
-    # 发放积分 / 开通会员
     if product["order_type"] == "membership":
         target_tier = product["membership_type"]
         days = product["duration_days"]
@@ -357,7 +341,7 @@ async def confirm_order(
             "uid": user_id,
             "ca": points_added,
             "reason": "membership" if product["order_type"] == "membership" else "purchase",
-            "detail": f"订单:{order_id} 商品:{product['name']}",
+            "detail": detail,
         },
     )
 
@@ -368,7 +352,7 @@ async def confirm_order(
     await ws_manager.send_to_user(user_id, {
         "type": "order_paid",
         "data": {
-            "order_id": order_id,
+            "order_id": order_ref,
             "points_added": points_added,
         },
     })
@@ -387,9 +371,49 @@ async def confirm_order(
         },
     })
 
+    return membership_after
+
+
+async def confirm_order(
+    order_id: str,
+    db: AsyncSession,
+    redis: aioredis.Redis,
+) -> dict:
+    """
+    管理员确认订单到账：标记paid，发放积分/会员
+    """
+    # 查询订单
+    result = await db.execute(
+        text("SELECT * FROM orders WHERE id = :oid FOR UPDATE"),
+        {"oid": order_id},
+    )
+    row = result.mappings().first()
+    if not row:
+        raise ValueError("订单不存在", 404)
+
+    if row["status"] == "paid":
+        raise ValueError("订单已支付", 400)
+
+    product = PRODUCTS.get(row["product_id"])
+    if not product:
+        raise ValueError("商品配置异常", 500)
+
+    # 更新订单状态
+    await db.execute(
+        text("UPDATE orders SET status = 'paid', paid_at = NOW() WHERE id = :oid"),
+        {"oid": order_id},
+    )
+
+    # 发放积分 / 开通会员（公共逻辑，见 grant_benefits）
+    membership_after = await grant_benefits(
+        row["user_id"], product,
+        f"订单:{order_id} 商品:{product['name']}",
+        order_id, db,
+    )
+
     return {
         "order_id": order_id,
-        "points_added": points_added,
+        "points_added": product["points"],
         "status": "paid",
         "membership_type": membership_after,
     }

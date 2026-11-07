@@ -61,6 +61,14 @@ class CreateOrderRequest(BaseModel):
     pay_method: str  # alipay / wechat
 
 
+class InternalGrantRequest(BaseModel):
+    """内部发货接口（pay-server 等受信服务回调）"""
+    user_id: int
+    product_id: str
+    order_id: str
+    source: str = "stripe"
+
+
 # ========== 管理员相关 ==========
 class AdminLoginRequest(BaseModel):
     username: str

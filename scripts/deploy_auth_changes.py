@@ -39,6 +39,7 @@ FILES = [
     "app/api/admin.py",
     "app/api/agreement.py",
     "app/api/checkin.py",
+    "app/api/internal.py",
     "app/api/shop.py",
     "app/services/auth_service.py",
     "app/services/order_service.py",

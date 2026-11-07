@@ -13,7 +13,7 @@ from app.redis_client import redis
 from app.core.security import decode_jwt, assert_jwt_secret_strength
 from app.core.session import is_session_valid
 from app.services.ws_manager import ws_manager
-from app.api import auth, points, shop, admin, agreement, checkin
+from app.api import auth, points, shop, admin, agreement, checkin, internal
 
 # 日志配置
 logging.basicConfig(level=logging.INFO)
@@ -78,6 +78,7 @@ app.include_router(shop.router)
 app.include_router(admin.router)
 app.include_router(agreement.router)
 app.include_router(checkin.router)
+app.include_router(internal.router)
 
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")

@@ -1,0 +1,56 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: pay-server
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/pay_server?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: payapp
+    password: ${DB_PASSWORD:CHANGE_ME}
+    hikari:
+      maximum-pool-size: 8
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+
+pay:
+  # auth-server 地址：同机直连内网回环；发货/验身份都经它
+  auth-base-url: ${AUTH_BASE_URL:http://127.0.0.1:8000}
+  # 内部接口令牌：必须与 auth-server 的 INTERNAL_API_TOKEN 一致（webhook 发货凭据）
+  internal-token: ${AUTH_INTERNAL_TOKEN:}
+  # 支付完成/取消跳转页（{ORDER_ID} 会替换为订单号）
+  success-url: ${PAY_SUCCESS_URL:https://chentian.dpdns.org/payapp/return.html?order_id={ORDER_ID}}
+  cancel-url: ${PAY_CANCEL_URL:https://chentian.dpdns.org/payapp/return.html?order_id={ORDER_ID}&canceled=1}
+  # Checkout 会话有效期（分钟），下单后超时未付自动作废
+  session-expire-minutes: 30
+  # 商品表：key = auth-server PRODUCTS 的 product_id（发货单一事实来源在 auth-server），
+  # amount 为最小货币单位（分）。改价格只改这里，不改代码。
+  products:
+    pro_monthly:
+      name: "Pro版 会员 30 天"
+      amount: 700
+    max_monthly:
+      name: "Max版 会员 30 天"
+      amount: 1400
+    points_150:
+      name: "150 积分"
+      amount: 100
+    points_750:
+      name: "750 积分"
+      amount: 500
+    points_1500:
+      name: "1500 积分"
+      amount: 1000
+
+stripe:
+  # 密钥只从环境变量注入，严禁写死进代码/仓库
+  secret-key: ${STRIPE_SECRET_KEY:}
+  webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+  # 结算币种：小写 ISO 4217。若账号不支持 cny，改环境变量 STRIPE_CURRENCY=usd 并同步调价格
+  currency: ${STRIPE_CURRENCY:cny}
+
+logging:
+  level:
+    com.zhuzhu.pay: INFO
