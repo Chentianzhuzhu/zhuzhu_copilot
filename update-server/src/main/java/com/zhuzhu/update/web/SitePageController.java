@@ -34,6 +34,10 @@ public class SitePageController {
     @Value("${site.base-url:}")
     private String configuredBaseUrl;
 
+    /** 官网「试用 Chat」按钮跳转地址；未配置时首页不渲染该按钮 */
+    @Value("${site.chat-url:}")
+    private String configuredChatUrl;
+
     /** 站点样式与脚本的版本号（内容哈希），避免 CDN 缓存造成新旧错配 */
     private static final String CSS_PATH = "/css/site.css";
     private static final String JS_PATH = "/js/site.js";
@@ -232,6 +236,7 @@ public class SitePageController {
 
         model.addAttribute("site", site);
         model.addAttribute("base", base);
+        model.addAttribute("chatUrl", configuredChatUrl);
         model.addAttribute("assetCss", assets.of(CSS_PATH));
         model.addAttribute("assetJs", assets.of(JS_PATH));
         model.addAttribute("assetFeedbackJs", assets.of("/js/feedback.js"));

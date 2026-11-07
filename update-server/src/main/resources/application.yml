@@ -36,6 +36,8 @@ admin:
 # 若前置了 CDN 或域名有变，建议显式设置，例如 https://example.com
 site:
   base-url: ${SITE_BASE_URL:}
+  # 官网「试用 Chat」按钮的跳转地址；可用环境变量覆盖
+  chat-url: ${SITE_CHAT_URL:https://chat.chentian.dpdns.org}
 
 # 上传目录（安装包 + 官网图片 + 官网视频）
 upload:

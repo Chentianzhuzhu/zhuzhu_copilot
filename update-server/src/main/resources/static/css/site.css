@@ -587,6 +587,17 @@ body.nav-open .nav-overlay {
 .btn-ghost { color: var(--text-color); border-color: var(--line-strong); }
 .btn-ghost:hover { border-color: var(--accent-color); color: var(--accent-color); }
 .btn-ghost:hover .ico { transform: none; }
+.btn-chat {
+  color: var(--accent-color);
+  border-color: rgba(147, 170, 246, .55);
+  background: rgba(36, 71, 200, .10);
+}
+.btn-chat:hover {
+  color: #FFFFFF;
+  border-color: var(--theme-color);
+  background: var(--theme-color);
+}
+.btn-chat:hover .ico { transform: none; }
 
 /* 按压涟漪：只在 JS 可用且未开启「减少动效」时由脚本插入 */
 .ripple {

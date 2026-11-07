@@ -172,6 +172,7 @@ class TemplateRenderTest {
         Context ctx = new Context();
         ctx.setVariable("site", site);
         ctx.setVariable("base", "https://example.com");
+        ctx.setVariable("chatUrl", "https://chat.chentian.dpdns.org");
         ctx.setVariable("assetCss", "testcss1");
         ctx.setVariable("assetJs", "testjs01");
         ctx.setVariable("assetFeedbackJs", "testfb01");
@@ -335,6 +336,16 @@ class TemplateRenderTest {
         assertTrue(html.contains("/js/site.js?v=testjs01"), "脚本未带版本号");
         String downloads = String.format(java.util.Locale.US, "%,d", buildModel().totalDownloads());
         assertTrue(html.contains(downloads), "下载量未注入，期望：" + downloads);
+    }
+
+    @Test
+    @DisplayName("首页渲染试用 Chat 按钮且外链安全")
+    void indexRendersChatTrialButton() {
+        String html = render("index", context("/", "WinAppMigrator — 标语"));
+        assertTrue(html.contains("id=\"chatTryBtn\""), "缺少试用 Chat 按钮");
+        assertTrue(html.contains("href=\"https://chat.chentian.dpdns.org\""), "Chat 地址不正确");
+        assertTrue(html.contains("target=\"_blank\""), "外链应新窗口打开");
+        assertTrue(html.contains("rel=\"noopener noreferrer\""), "外链缺少安全属性");
     }
 
     @Test

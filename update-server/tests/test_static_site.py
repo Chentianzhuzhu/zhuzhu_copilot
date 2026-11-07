@@ -406,6 +406,27 @@ class TestProductRedesign(unittest.TestCase):
             self.assertNotIn(fake, index, f"主视觉出现了编造的状态信息：{fake}")
         self.assertIn("${features}", index)
 
+    def test_home_has_chat_trial_button(self) -> None:
+        """首页主视觉必须有「试用 Chat」跳转按钮，且地址来自配置而非写死在模板。"""
+        index = read(TEMPLATES / "index.html")
+        self.assertIn('id="chatTryBtn"', index, "首页缺少试用 Chat 按钮")
+        self.assertIn('th:href="${chatUrl}"', index, "按钮地址应取 chatUrl 配置")
+        self.assertIn('target="_blank"', index, "试用 Chat 应新标签打开")
+        self.assertIn('rel="noopener noreferrer"', index, "外链必须带 noopener noreferrer")
+        self.assertIn("试用", index)
+
+        controller = read(JAVA / "web/SitePageController.java")
+        self.assertIn('model.addAttribute("chatUrl", configuredChatUrl)', controller,
+                      "控制器未把 chatUrl 注入模板")
+        self.assertIn("@Value(\"${site.chat-url:}\")", controller)
+
+        config = read(RES / "application.yml")
+        self.assertIn("https://chat.chentian.dpdns.org", config,
+                      "application.yml 缺少默认 Chat 地址")
+
+        css = read(STATIC / "css/site.css")
+        self.assertIn(".btn-chat", css, "缺少试用 Chat 按钮样式")
+
     def test_dialog_keyboard_and_background_isolation(self) -> None:
         js = read(STATIC / "js/site.js")
         self.assertIn("function lockLayer(", js)

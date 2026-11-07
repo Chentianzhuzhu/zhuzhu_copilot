@@ -44,6 +44,14 @@
             </svg>
             <span th:text="${'下载 ' + site.title}">下载</span>
           </a>
+          <a class="btn btn-chat" id="chatTryBtn" th:if="${!#strings.isEmpty(chatUrl)}"
+             th:href="${chatUrl}" target="_blank" rel="noopener noreferrer">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              <path d="M8 9h8M8 12.5h5"/>
+            </svg>
+            <span th:text="${'试用 ' + site.title + ' Chat'}">试用 zhuzhu Copilot Chat</span>
+          </a>
           <a class="btn btn-ghost" href="#features">浏览能力清单</a>
         </div>
         <p class="hero-version reveal" id="versionLine" style="--d:.32s">
