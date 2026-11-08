@@ -1,0 +1,448 @@
+"""全局基础样式：科技感深色系（深空蓝 + 霓虹青 + 紫光）/ 浅色保持原样
+
+主面板、各对话框、WebView 面板共用同一套 PALETTE 与 GLOBAL_QSS，
+修改色板即可全局换肤。风格：简约、高效、深色基调。
+
+美化版（客户端 UI/UX 五招落地）：
+- 招 1 微对比色阶分层：层级 bg → card → elevated 每层亮度差 1%~3%，
+  **不画边框线**；输入框/文本框做成「凹陷字段」（比卡片暗一档），聚焦时
+  背景整体加深做出温润咬合感，不用亮线描边。
+- 招 2 暗色字重减细：深色底上粗体视觉发糊，标题/按钮字重按主题降一档
+  （档位表见 tokens.FONT_WEIGHT）。
+- 招 4 等宽数字：numeric_font_css() 供实时跳动的数字控件使用。
+"""
+
+from PyQt6.QtCore import QByteArray, Qt
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtSvg import QSvgRenderer
+
+from zhuzhu_Copilot.ui.tokens import (
+    COMBO_ARROW_W,
+    FONT_BASE,
+    FONT_BODY,
+    FONT_CAPTION,
+    FONT_LARGE,
+    FONT_SMALL,
+    FONT_WEIGHT,
+    NUMERIC_FONT_STACK,
+    RADIUS_MD,
+    RADIUS_SM,
+    RADIUS_XS,
+    SPACING_MD,
+    SPACING_SM,
+)
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    """两色按比例混合（t=0 取 a，t=1 取 b），用于派生层级色。"""
+    ca, cb = QColor(a), QColor(b)
+    return QColor(
+        int(round(ca.red() * (1 - t) + cb.red() * t)),
+        int(round(ca.green() * (1 - t) + cb.green() * t)),
+        int(round(ca.blue() * (1 - t) + cb.blue() * t)),
+    ).name()
+
+
+def _is_dark() -> bool:
+    """当前色板是否为深色（按主背景明度判定，供字重降档等主题相关决策）。"""
+    return QColor(PALETTE["bg_top"]).lightness() < 128
+
+
+def _weights() -> dict:
+    """当前主题的字重档位表（浅色常规档 / 暗色降一档）。"""
+    return FONT_WEIGHT["dark" if _is_dark() else "light"]
+
+
+def numeric_font_css() -> str:
+    """等宽数字字体声明（招 4）：拼进 QSS 的 font-family，或 HTML span 的
+    font-family。用于 token 计数 / 耗时 / 统计值等**实时跳动**的数字文本。"""
+    return f"font-family: {NUMERIC_FONT_STACK};"
+
+
+# 极简四色系：石墨黑 + 淡灰 + 白 + 深蓝
+# 层级（招 1）：bg → card → elevated 每层亮度差 1%~3%，绝不用纯黑；
+# field 为「凹陷字段」色（输入框/文本框，比卡片暗一档，做凹陷咬合感）。
+# 科技感深色系：深空蓝底 + 霓虹青 (#00e5ff) + 紫光，与官网/管理后台同一套。
+# primary 用偏深的青（#00a8c8）做渐变底、primary_hover 用亮青：白字配亮青
+# 对比度不够，主按钮文字改用 primary_text（深色字），见 _build_global_qss。
+DARK_PALETTE = {
+    "bg_top": "#060b16",            # 深空蓝
+    "bg_bottom": "#04070d",         # 近黑蓝
+    "card": "#0a1424",              # 卡片（深蓝，层次高于背景）
+    "elevated": "#0d1a2e",          # 悬浮层（菜单/提示/下拉，比卡片亮一档）
+    "field": "#070d18",             # 凹陷字段（输入框，比卡片暗一档）
+    "primary": "#00a8c8",           # 霓虹青（偏深，保证渐变底可读）
+    "primary_hover": "#00e5ff",
+    "primary_pressed": "#0086a8",   # 按压态
+    "primary_light": "#0a2438",     # 选中态（深青底，亮字可读）
+    "primary_text": "#04121f",      # 主按钮文字（深色，配亮青底）
+    "text": "#e6f4ff",              # 青白
+    "text_secondary": "#8fb0c9",    # 淡青灰
+    "border": "#1b3a52",
+    "hover": "#12233c",
+    "success": "#00ffa3",
+    "warning": "#ffb020",
+    "danger": "#ff3b6b",
+}
+
+# 浅色主题色板（与 AI 面板浅色主题同风格，颜色沿用四色系）
+LIGHT_PALETTE = {
+    "bg_top": "#F7F8FB",
+    "bg_bottom": "#EDF0F5",
+    "card": "#FFFFFF",
+    "elevated": "#FFFFFF",          # 悬浮层（浅色下白面板浮在灰底上即分层）
+    "field": "#EEF1F7",             # 凹陷字段（比白卡片暗一档）
+    "primary": "#1E40AF",
+    "primary_hover": "#2B51D1",
+    "primary_pressed": "#1A368F",   # 按压态
+    "primary_light": "#E4EBFC",     # 选中态（浅蓝底，深字可读）
+    "primary_text": "#FFFFFF",      # 主按钮文字（浅色主题用白字）
+    "text": "#1B2433",
+    "text_secondary": "#5F6B7E",
+    "border": "#E3E8F0",
+    "hover": "#EDF1F8",
+    "success": "#16A34A",
+    "warning": "#D97706",
+    "danger": "#DC2626",
+}
+
+# 当前激活色板（set_palette() 就地更新内容，引用方读取即时生效）
+PALETTE = dict(DARK_PALETTE)
+
+# 全局滚动条滑块不透明度：淡灰极简，滑块压到 30% 半透明（悬停提亮到 55% 保持可辨）
+_SCROLLBAR_OPACITY = 0.30
+_SCROLLBAR_HOVER_OPACITY = 0.55
+
+
+def _scrollbar_handle() -> str:
+    """滚动条滑块色：边框色压到 30% 不透明度（全局统一淡灰）。"""
+    c = QColor(PALETTE["border"])
+    c.setAlphaF(_SCROLLBAR_OPACITY)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
+
+
+def _scrollbar_handle_hover() -> str:
+    """滚动条滑块悬停色：提亮到 55%，保持可辨又不喧宾夺主。"""
+    c = QColor(PALETTE["text_secondary"])
+    c.setAlphaF(_SCROLLBAR_HOVER_OPACITY)
+    return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
+
+
+def _build_global_qss() -> str:
+    """按当前 PALETTE 生成全局 QSS（主窗口基础样式，浅色/深色随主题重建）
+
+    招 1（不画边框，微对比分层）：输入类控件一律「凹陷字段」——
+    底比卡片暗一档（field），hover / focus 逐档加深，**不描边**；
+    聚焦的可见性由「背景整体加深 + 光标闪烁」承担（现代大厂客户端的做法，
+    参见 macOS 聚焦搜索 / Win11 搜索框均无聚焦亮线）。
+    菜单 / 提示 / 下拉弹层用 elevated 层（比卡片亮 ~3%）浮起，同样不描边。
+
+    招 2（暗色字重减细）：标题 / 按钮字重按 tokens.FONT_WEIGHT 取档，
+    深色主题自动降一档。
+
+    下拉箭头**不在这里画**：Qt 的 QSS 不支持 CSS 那种「透明边框拼三角」的写法，
+    `border-top` + 透明左右边会被渲染成一个实心小方块（用户反馈的「下拉箭头是方块」）。
+    箭头统一由 `ui/widgets.ArrowComboBox` 在 paintEvent 里自绘（可随 hover/展开换色），
+    这里只保留与自绘箭头等宽的 `::drop-down` 预留位。
+    """
+    w = _weights()
+    field = PALETTE["field"]                       # 凹陷字段（输入框底）
+    field_hover = _mix(PALETTE["field"], PALETTE["hover"], 0.55)
+    field_focus = _mix(PALETTE["field"], PALETTE["hover"], 1.0)
+    elevated = PALETTE["elevated"]                 # 悬浮层（弹层底）
+    return f"""
+QMainWindow {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {PALETTE['bg_top']}, stop:1 {PALETTE['bg_bottom']});
+}}
+
+QMainWindow, QWidget {{
+    color: {PALETTE['text']};
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-size: {FONT_BASE}px;
+}}
+
+QLabel {{
+    color: {PALETTE['text']};
+    background: transparent;
+}}
+
+QLabel#title {{
+    font-size: {FONT_LARGE}px;
+    font-weight: {w['title']};
+    color: {PALETTE['primary_hover']};
+}}
+
+QLabel#subtitle {{
+    font-size: {FONT_BODY}px;
+    color: {PALETTE['text_secondary']};
+}}
+
+QPushButton {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {PALETTE['primary_hover']}, stop:1 {PALETTE['primary']});
+    color: {PALETTE['primary_text']};
+    border: none;
+    border-radius: {RADIUS_SM}px;
+    padding: 10px 24px;
+    font-weight: {w['button']};
+}}
+
+QPushButton:hover {{
+    background: {PALETTE['primary_hover']};
+}}
+
+QPushButton:pressed {{
+    background: {PALETTE['primary_pressed']};
+}}
+
+QPushButton:disabled {{
+    background: {PALETTE['border']};
+    color: {PALETTE['text_secondary']};
+}}
+
+QPushButton#secondary {{
+    background: {field};
+    color: {PALETTE['text']};
+    border: none;
+    border-radius: {RADIUS_SM}px;
+}}
+
+QPushButton#secondary:hover {{
+    background: {field_hover};
+    color: {PALETTE['primary_hover']};
+}}
+
+QPushButton#secondary:pressed {{
+    background: {PALETTE['primary_light']};
+}}
+
+QLineEdit, QComboBox {{
+    background-color: {field};
+    color: {PALETTE['text']};
+    border: none;
+    border-radius: {RADIUS_SM}px;
+    padding: 8px 12px;
+    min-height: 20px;
+    selection-background-color: {PALETTE['primary']};
+    selection-color: {PALETTE['primary_text']};
+}}
+
+QLineEdit:hover, QComboBox:hover {{
+    background-color: {field_hover};
+}}
+
+QLineEdit:focus, QComboBox:focus {{
+    background-color: {field_focus};
+}}
+
+QComboBox::drop-down {{
+    border: none;
+    width: {COMBO_ARROW_W}px;
+}}
+
+QComboBox QAbstractItemView {{
+    border: none;
+    border-radius: {RADIUS_SM}px;
+    padding: 4px;
+    outline: none;
+    background-color: {elevated};
+    color: {PALETTE['text']};
+    selection-background-color: {PALETTE['primary']};
+    selection-color: {PALETTE['primary_text']};
+}}
+
+QComboBox QAbstractItemView::item {{
+    padding: 6px 10px;
+    border-radius: {RADIUS_XS}px;
+}}
+
+QProgressBar {{
+    border: none;
+    border-radius: {RADIUS_XS}px;
+    background-color: {PALETTE['bg_bottom']};
+    text-align: center;
+    height: 16px;
+    color: {PALETTE['text']};
+    font-size: {FONT_CAPTION}px;
+}}
+
+QProgressBar::chunk {{
+    border-radius: {RADIUS_XS}px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {PALETTE['primary']}, stop:1 {PALETTE['primary_hover']});
+}}
+
+QListWidget {{
+    background-color: {PALETTE['card']};
+    border: none;
+    border-radius: {RADIUS_MD}px;
+    padding: 6px;
+    outline: none;
+    color: {PALETTE['text']};
+}}
+
+QListWidget::item {{
+    border: none;
+    padding: 10px 12px;
+    border-radius: {RADIUS_SM}px;
+}}
+
+QListWidget::item:selected {{
+    background-color: {PALETTE['primary_light']};
+    color: {PALETTE['text']};
+}}
+
+QListWidget::item:hover {{
+    background-color: {PALETTE['hover']};
+}}
+
+QScrollBar:vertical {{
+    background: transparent;
+    width: 12px;
+    margin: 2px 2px 2px 0;
+}}
+
+QScrollBar::handle:vertical {{
+    background: {_scrollbar_handle()};
+    border-radius: 4px;
+    min-height: 40px;
+    margin: 0 2px;
+}}
+
+QScrollBar::handle:vertical:hover {{
+    background: {_scrollbar_handle_hover()};
+}}
+
+QScrollBar::sub-page:vertical, QScrollBar::add-page:vertical {{
+    background: transparent;
+}}
+
+QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {{
+    background: transparent;
+    height: 0;
+    width: 0;
+}}
+
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 12px;
+    margin: 0 2px 2px 2px;
+}}
+
+QScrollBar::handle:horizontal {{
+    background: {_scrollbar_handle()};
+    border-radius: 4px;
+    min-width: 40px;
+    margin: 2px 0;
+}}
+
+QScrollBar::handle:horizontal:hover {{
+    background: {_scrollbar_handle_hover()};
+}}
+
+QScrollBar::sub-page:horizontal, QScrollBar::add-page:horizontal {{
+    background: transparent;
+}}
+
+QScrollBar::sub-line:horizontal, QScrollBar::add-line:horizontal {{
+    background: transparent;
+    height: 0;
+    width: 0;
+}}
+
+QTextEdit {{
+    background-color: {field};
+    color: {PALETTE['text']};
+    border: none;
+    border-radius: {RADIUS_MD}px;
+    padding: 12px;
+    selection-background-color: {PALETTE['primary']};
+    selection-color: {PALETTE['primary_text']};
+}}
+
+QTextEdit:focus {{
+    background-color: {field_hover};
+}}
+
+QToolTip {{
+    background-color: {elevated};
+    color: {PALETTE['text']};
+    border: none;
+    border-radius: {RADIUS_XS}px;
+    padding: 5px 9px;
+    font-size: {FONT_SMALL}px;
+}}
+
+QMenu {{
+    background-color: {elevated};
+    color: {PALETTE['text']};
+    border: none;
+    border-radius: {RADIUS_MD}px;
+    padding: 5px;
+}}
+
+QMenu::item {{
+    padding: 7px 24px 7px 16px;
+    border-radius: {RADIUS_XS}px;
+}}
+
+QMenu::item:selected {{
+    background-color: {PALETTE['primary_light']};
+}}
+
+QMenu::separator {{
+    height: 1px;
+    background: {PALETTE['hover']};
+    margin: 5px 10px;
+}}
+
+QCheckBox, QRadioButton {{
+    color: {PALETTE['text']};
+    spacing: {SPACING_SM}px;
+}}
+
+QSplitter::handle {{
+    background: {PALETTE['border']};
+}}
+"""
+
+
+GLOBAL_QSS = _build_global_qss()
+
+
+def set_palette(theme: str) -> None:
+    """按主题（dark/light）就地切换 PALETTE 内容并重建 GLOBAL_QSS。
+    引用 PALETTE 的字符串在取值时读取最新颜色，无需改动各处 f-string。"""
+    global GLOBAL_QSS
+    src = LIGHT_PALETTE if str(theme).lower() == "light" else DARK_PALETTE
+    if PALETTE == src:
+        return
+    PALETTE.clear()
+    PALETTE.update(src)
+    GLOBAL_QSS = _build_global_qss()
+
+
+def apply_palette(app):
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(PALETTE["bg_top"]))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(PALETTE["text"]))
+    palette.setColor(QPalette.ColorRole.Base, QColor(PALETTE["card"]))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(PALETTE["bg_bottom"]))
+    palette.setColor(QPalette.ColorRole.Text, QColor(PALETTE["text"]))
+    palette.setColor(QPalette.ColorRole.Button, QColor(PALETTE["primary"]))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(PALETTE["primary_text"]))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(PALETTE["primary"]))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(PALETTE["primary_text"]))
+    app.setPalette(palette)
+
+
+def svg_icon(svg: str, size: int = 24) -> QIcon:
+    """SVG 矢量图 → QIcon（淡灰简约图标，替代 emoji）"""
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    renderer.render(p)
+    p.end()
+    return QIcon(pix)
