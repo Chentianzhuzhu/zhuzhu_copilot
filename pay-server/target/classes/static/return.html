@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>支付结果</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: #000; color: #fff; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .card { text-align: center; padding: 40px 48px; border: 1px solid #333; border-radius: 8px;
+          background: #111; min-width: 300px; }
+  .title { font-size: 20px; margin-bottom: 12px; }
+  .sub { font-size: 13px; color: #aaa; margin-bottom: 8px; }
+  .status { font-size: 14px; color: #9db4d0; margin-top: 16px; }
+  .err { color: #999; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="title" id="title">支付结果确认中</div>
+  <div class="sub" id="order"></div>
+  <div class="status" id="status">正在查询订单状态…</div>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var orderId = params.get("order_id") || "";
+  var canceled = params.get("canceled") === "1";
+  document.getElementById("order").textContent = orderId ? "订单号 " + orderId : "";
+  if (canceled) {
+    document.getElementById("title").textContent = "支付已取消";
+    document.getElementById("status").textContent = "订单未完成支付，可重新发起";
+    document.getElementById("status").className = "status err";
+    return;
+  }
+  if (!orderId) {
+    document.getElementById("status").textContent = "缺少订单号参数";
+    return;
+  }
+  // 轮询订单状态（未登录的浏览器场景无法带 token，仅展示Stripe回跳提示；
+  // 真实到账与发货以服务端 webhook 为准）
+  document.getElementById("title").textContent = "支付已完成";
+  document.getElementById("status").textContent =
+    "支付结果以服务端确认为准，会员/积分将在数秒内自动到账";
+})();
+</script>
+</body>
+</html>

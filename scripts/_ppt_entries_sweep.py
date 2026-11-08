@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """效果普查：逐个探测 PowerPoint 入场效果编号(1..70)，保存合法者对应 shape，
 保存文件后回读 slide XML，抽出每个效果的「官方 clickEffect 规范块」存 JSON。
 

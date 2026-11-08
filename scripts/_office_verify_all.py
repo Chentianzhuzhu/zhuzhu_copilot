@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """汇总验证：PPT 新能力回归 + Word 水印/封面 + Excel 条件格式 + skill 结构校验 + 自定义工具保活 + 自动复核。"""
 import os
 import subprocess

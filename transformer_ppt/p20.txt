@@ -1,0 +1,41 @@
+===== 第 20 页形状（按 z 序）=====
+[ 0] AUTO_SHAPE   name=Rectangle 1            x=  0.62 y= 0.56  0.09x 0.52
+      
+[ 1] TEXT_BOX     name=TextBox 2              x=  0.92 y= 0.50 11.00x 0.75
+      复杂度对比：为什么它能赢
+[ 2] AUTO_SHAPE   name=Rectangle 3            x=  0.62 y= 1.18 12.10x 0.03
+      
+[ 3] TEXT_BOX     name=TextBox 4              x=  0.62 y= 7.12  9.00x 0.30
+      Transformer 架构详解 · 从注意力机制到工程实践
+[ 4] TEXT_BOX     name=TextBox 5              x= 11.90 y= 7.00  1.00x 0.40
+      20
+[ 5] AUTO_SHAPE   name=Rounded Rectangle 6    x=  0.50 y= 1.47  8.39x 1.75
+      
+[ 6] TABLE        name=Table 7                x=  0.62 y= 1.57  8.15x 1.65
+      
+[ 7] TEXT_BOX     name=TextBox 8              x=  0.62 y= 3.37  8.15x 0.40
+      n = 512 时任意两位置的最大交互步数（越小越好）
+[ 8] AUTO_SHAPE   name=Rectangle 9            x=  0.62 y= 4.40  8.15x 0.01
+      
+[ 9] AUTO_SHAPE   name=Rectangle 10           x=  0.62 y= 4.97  8.15x 0.01
+      
+[10] AUTO_SHAPE   name=Rectangle 11           x=  0.62 y= 5.53  8.15x 0.01
+      
+[11] AUTO_SHAPE   name=Rectangle 12           x=  0.62 y= 6.10  8.15x 0.01
+      
+[12] AUTO_SHAPE   name=Rectangle 13           x=  0.62 y= 6.67  8.15x 0.02
+      
+[13] AUTO_SHAPE   name=Rounded Rectangle 14   x=  0.62 y= 5.25  6.52x 0.50
+      
+[14] TEXT_BOX     name=TextBox 15             x=  7.22 y= 5.19  1.53x 0.50
+      RNN  512
+[15] AUTO_SHAPE   name=Rounded Rectangle 16   x=  0.62 y= 4.28  0.35x 0.50
+      
+[16] TEXT_BOX     name=TextBox 17             x=  1.05 y= 4.22  7.70x 0.50
+      CNN (k=3)  6
+[17] AUTO_SHAPE   name=Rounded Rectangle 18   x=  0.62 y= 3.31  0.35x 0.50
+      
+[18] TEXT_BOX     name=TextBox 19             x=  1.05 y= 3.25  7.70x 0.50
+      Self-Attention  1
+[19] TEXT_BOX     name=TextBox 20             x=  9.32 y= 1.82  3.39x 5.05
+      →  代价很明确：n² 的注意力矩阵，序列翻倍显存翻四倍——这正是长上下文要专门优化的原因。 | →

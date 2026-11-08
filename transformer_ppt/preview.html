@@ -1,0 +1,166 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transformer 架构详解 · 演示预览</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #121c2e;
+    --line: #1e2c44;
+    --text: #e6edf6;
+    --muted: #7d8fa8;
+    --accent: #12a8c0;
+    --accent2: #4ade80;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 14px 26px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #0e1728, #0b1220);
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: baseline; gap: 12px; }
+  .brand h1 { font-size: 16px; font-weight: 700; letter-spacing: .5px; }
+  .brand span { font-size: 12px; color: var(--muted); }
+  .tag {
+    font-size: 11px; padding: 3px 9px; border-radius: 20px;
+    background: rgba(18,168,192,.14); color: var(--accent);
+    border: 1px solid rgba(18,168,192,.3);
+  }
+  .nav { display: flex; align-items: center; gap: 10px; }
+  button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    padding: 7px 15px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    font-family: inherit; transition: .16s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  #counter { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); min-width: 74px; text-align: center; }
+  #counter b { color: var(--accent); }
+
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 22px 20px 10px; }
+  .stage {
+    width: 100%; max-width: 1240px; aspect-ratio: 16/9;
+    background: #fff; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.07);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .meta { margin-top: 12px; font-size: 12.5px; color: var(--muted); text-align: center; line-height: 1.7; }
+  .meta kbd {
+    background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font-size: 11px; color: var(--text);
+    font-family: ui-monospace, monospace;
+  }
+
+  .thumbs {
+    border-top: 1px solid var(--line);
+    background: #0a1019;
+    padding: 12px 16px;
+    overflow-x: auto;
+    display: flex; gap: 10px;
+  }
+  .thumbs::-webkit-scrollbar { height: 8px; }
+  .thumbs::-webkit-scrollbar-thumb { background: #24344f; border-radius: 4px; }
+  .thumb {
+    flex: 0 0 auto; width: 128px; cursor: pointer;
+    border-radius: 6px; overflow: hidden; position: relative;
+    border: 2px solid transparent; transition: .16s; opacity: .62;
+  }
+  .thumb:hover { opacity: .9; }
+  .thumb.active { border-color: var(--accent); opacity: 1; }
+  .thumb img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; background: #fff; }
+  .thumb i {
+    position: absolute; left: 5px; bottom: 4px; font-style: normal;
+    font-size: 10px; background: rgba(0,0,0,.72); color: #fff;
+    padding: 1px 5px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Transformer 架构详解</h1>
+    <span>从 Self-Attention 到 GPT / BERT 的完整拆解</span>
+    <span class="tag">24 页</span>
+  </div>
+  <div class="nav">
+    <button id="prev">← 上一页</button>
+    <span id="counter"><b>1</b> / 24</span>
+    <button id="next">下一页 →</button>
+    <button id="full">全屏</button>
+  </div>
+</header>
+
+<main>
+  <div class="stage"><img id="slide" src="preview/slide1.png" alt="幻灯片"></div>
+  <div class="meta">
+    <kbd>←</kbd> <kbd>→</kbd> 翻页　·　<kbd>Home</kbd> <kbd>End</kbd> 首尾页　·　<kbd>F</kbd> 全屏　·　点击下方缩略图跳转
+  </div>
+</main>
+
+<div class="thumbs" id="thumbs"></div>
+
+<script>
+  const TOTAL = 24;
+  let cur = 1;
+  const img = document.getElementById('slide');
+  const counter = document.getElementById('counter');
+  const thumbs = document.getElementById('thumbs');
+
+  for (let i = 1; i <= TOTAL; i++) {
+    const d = document.createElement('div');
+    d.className = 'thumb';
+    d.dataset.i = i;
+    d.innerHTML = `<img src="preview/slide${i}.png" loading="lazy" alt="第${i}页"><i>${i}</i>`;
+    d.addEventListener('click', () => go(i));
+    thumbs.appendChild(d);
+  }
+
+  function go(n) {
+    cur = Math.min(TOTAL, Math.max(1, n));
+    img.src = `preview/slide${cur}.png`;
+    counter.innerHTML = `<b>${cur}</b> / ${TOTAL}`;
+    document.querySelectorAll('.thumb').forEach(t => {
+      t.classList.toggle('active', Number(t.dataset.i) === cur);
+    });
+    document.getElementById('prev').disabled = cur === 1;
+    document.getElementById('next').disabled = cur === TOTAL;
+    const act = document.querySelector('.thumb.active');
+    if (act) act.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }
+
+  document.getElementById('prev').addEventListener('click', () => go(cur - 1));
+  document.getElementById('next').addEventListener('click', () => go(cur + 1));
+  document.getElementById('full').addEventListener('click', () => {
+    const el = document.querySelector('.stage');
+    if (document.fullscreenElement) document.exitFullscreen();
+    else el.requestFullscreen && el.requestFullscreen();
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(cur + 1); }
+    if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(cur - 1); }
+    if (e.key === 'Home') { e.preventDefault(); go(1); }
+    if (e.key === 'End') { e.preventDefault(); go(TOTAL); }
+    if (e.key === 'f' || e.key === 'F') document.getElementById('full').click();
+  });
+
+  go(1);
+</script>
+</body>
+</html>

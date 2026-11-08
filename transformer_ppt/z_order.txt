@@ -1,0 +1,40 @@
+===== 第 10 页（按 z 序，从底到顶）=====
+z= 0 x=  3.33->  3.75 y= 2.51-> 2.93 AUTO_SHAPE  RECTANGLE        
+z= 1 x=  0.92-> 11.92 y= 0.50-> 1.25 TEXT_BOX                     Q、K、V：同一句话的三个视角
+z= 2 x=  0.62-> 12.72 y= 1.18-> 1.21 AUTO_SHAPE  RECTANGLE        
+z= 3 x=  0.62->  9.62 y= 7.12-> 7.42 TEXT_BOX                     Transformer 架构详解 · 从注意力机制到
+z= 4 x= 11.90-> 12.90 y= 7.00-> 7.40 TEXT_BOX                     10
+z= 5 x=  0.62->  3.33 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z= 6 x=  0.70->  3.25 y= 2.02-> 3.47 TEXT_BOX                     输入向量 X
+z= 7 x=  6.46->  6.88 y= 2.51-> 2.93 AUTO_SHAPE  RIGHT_ARROW      
+z= 8 x=  3.75->  6.46 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z= 9 x=  3.83->  6.38 y= 2.02-> 3.47 TEXT_BOX                     × W_Q → Query/我在找什么
+z=10 x=  9.59-> 10.01 y= 2.51-> 2.93 AUTO_SHAPE  RIGHT_ARROW      
+z=11 x=  6.88->  9.59 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z=12 x=  6.96->  9.51 y= 2.02-> 3.47 TEXT_BOX                     × W_K → Key/我能提供什么
+z=13 x=  6.66->  7.06 y= 2.23-> 2.65 AUTO_SHAPE  RIGHT_ARROW      
+z=14 x= 10.01-> 12.72 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z=15 x= 10.09-> 12.64 y= 2.02-> 3.47 TEXT_BOX                     × W_V → Value/我实际携带的信息
+z=16 x=  0.62-> 12.72 y= 3.98-> 6.73 TEXT_BOX                     →  打个比方：去图书馆找书，你的需求描述是 Que
+
+===== 第 14 页（按 z 序，从底到顶）=====
+z= 0 x=  2.70->  3.12 y= 2.51-> 2.93 AUTO_SHAPE  RECTANGLE        
+z= 1 x=  0.92-> 11.92 y= 0.50-> 1.25 TEXT_BOX                     残差连接 + 层归一化：让深层网络训得动
+z= 2 x=  0.62-> 12.72 y= 1.18-> 1.21 AUTO_SHAPE  RECTANGLE        
+z= 3 x=  0.62->  9.62 y= 7.12-> 7.42 TEXT_BOX                     Transformer 架构详解 · 从注意力机制到
+z= 4 x= 11.90-> 12.90 y= 7.00-> 7.40 TEXT_BOX                     14
+z= 5 x=  0.62->  2.70 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z= 6 x=  0.70->  2.46 y= 2.02-> 3.47 TEXT_BOX                     输入 x
+z= 7 x=  5.21->  5.63 y= 2.51-> 2.93 AUTO_SHAPE  RIGHT_ARROW      
+z= 8 x=  3.12->  5.21 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z= 9 x=  3.20->  4.97 y= 2.02-> 3.47 TEXT_BOX                     子层/注意力 / FFN
+z=10 x=  7.71->  8.13 y= 2.51-> 2.93 AUTO_SHAPE  RIGHT_ARROW      
+z=11 x=  5.63->  7.71 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z=12 x=  5.71->  7.47 y= 2.02-> 3.47 TEXT_BOX                     与 x 相加/（残差）
+z=13 x= 10.22-> 10.64 y= 2.51-> 2.93 AUTO_SHAPE  RIGHT_ARROW      
+z=14 x=  8.13-> 10.22 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z=15 x=  8.21->  9.98 y= 2.02-> 3.47 TEXT_BOX                     LayerNorm
+z=16 x= 10.64-> 12.72 y= 1.72-> 3.72 AUTO_SHAPE  ROUNDED_RECTANGLE 
+z=17 x= 10.72-> 12.48 y= 2.02-> 3.47 TEXT_BOX                     输出/给下一层
+z=18 x=  0.62-> 12.72 y= 3.98-> 6.73 TEXT_BOX                     →  残差连接：输出 = 子层(x) + x，让梯度
+

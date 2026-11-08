@@ -1,0 +1,18 @@
+[ 0] AUTO_SHAPE  x= 0.62 y= 0.56  0.09x 0.52        
+[ 1] TEXT_BOX    x= 0.92 y= 0.50 11.00x 0.75 25.0pt Transformer 家族：一个骨架，四种用法
+[ 2] AUTO_SHAPE  x= 0.62 y= 1.18 12.10x 0.03        
+[ 3] TEXT_BOX    x= 0.62 y= 7.12  9.00x 0.30 9.5pt  Transformer 架构详解 · 从注意力机制到工程实践
+[ 4] TEXT_BOX    x=11.90 y= 7.00  1.00x 0.40 10.0pt 21
+[ 5] AUTO_SHAPE  x= 0.62 y= 1.57  2.86x 4.40        
+[ 6] AUTO_SHAPE  x= 0.90 y= 1.81  0.62x 0.09        
+[ 7] TEXT_BOX    x= 0.82 y= 2.02  2.46x 3.70 21.0pt Encoder-only | 代表 BERT。只保留编码器，双向理解，擅长分类、抽取、检索、句向量。
+[ 8] AUTO_SHAPE  x= 3.70 y= 1.57  2.86x 4.40        
+[ 9] AUTO_SHAPE  x= 3.98 y= 1.81  0.62x 0.09        
+[10] TEXT_BOX    x= 3.90 y= 2.02  2.46x 3.70 21.0pt Decoder-only | 代表 GPT / Llama / Qwen。只保留解码器，因果生成，当前大模型的主流形态。
+[11] AUTO_SHAPE  x= 6.78 y= 1.57  2.86x 4.40        
+[12] AUTO_SHAPE  x= 7.06 y= 1.81  0.62x 0.09        
+[13] TEXT_BOX    x= 6.98 y= 2.02  2.46x 3.70 21.0pt Encoder-Decoder | 代表 T5 / BART。翻译、摘要、结构化生成这类输入输出都长的任务更合适。
+[14] AUTO_SHAPE  x= 9.86 y= 1.57  2.86x 4.40        
+[15] AUTO_SHAPE  x=10.14 y= 1.81  0.62x 0.09        
+[16] TEXT_BOX    x=10.06 y= 2.02  2.46x 3.70 21.0pt 跨模态扩展 | 代表 ViT / CLIP。把图像切成 patch 当 token，架构照搬不改，视觉领域同样通吃。
+[17] TEXT_BOX    x= 0.62 y= 6.22 12.10x 0.30 15.0pt →  架构没变，变的是「用哪半边」和「怎么训练」——这是 Transformer 最漂亮的地方。
