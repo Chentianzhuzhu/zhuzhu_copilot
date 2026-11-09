@@ -5276,6 +5276,18 @@ class _SettingsWheelGuard(QObject):
 _PAID_TIERS = ("pro", "max")
 
 
+def _pay_base(auth_server: str) -> str:
+    """支付服务（pay-server）根地址：与 auth-server 同域反代，路径前缀 /payapp。
+
+    ``auth.server`` 形如 ``https://chentian.dpdns.org/authapp``，支付服务挂在
+    同域的 ``/payapp`` 下，故先剥掉 ``/authapp`` 再拼 ``/payapp``。
+    """
+    s = (auth_server or "").rstrip("/")
+    if s.endswith("/authapp"):
+        s = s[: -len("/authapp")]
+    return f"{s}/payapp"
+
+
 class _AgentSettingsDialog(QDialog):
     """AI 设置：左侧导航 + 右侧分组设置（通用记忆 / 规则 / 提示词 / bash / 模型 / 技能 / MCP / 插件）"""
 
@@ -5294,10 +5306,9 @@ class _AgentSettingsDialog(QDialog):
     #: 控件操作只能在 GUI 线程执行：跨线程 takeAt/setParent/addWidget 会把旧卡片摘掉、
     #: 新卡片却挂不上（全部 isVisible=False）→「会员订阅」只剩标题、卡片整排消失。
     memb_products_ready = pyqtSignal(list)
-    # 支付收款码加载完成：gen(批次号), pixmap|None, 失败文案, 订单号文案（后台线程 → 主线程）。
-    # 收款码对话框属于本设置对话框（会员页），故信号也声明在这里；不能在后台线程直接
-    # 操作控件，否则切换支付方式时更新可能静默失效（见 _memb_show_pay_dialog / _on_pay_qr）。
-    pay_qr_signal = pyqtSignal(int, object, str, str)
+    # Stripe 支付状态回主线程：gen(批次号), 阶段(checkout|paid|timeout|error), 文案, 收银台 URL。
+    # 收款码由 URL 在主线程本地生成（见 _on_stripe_state），后台线程只发信号不碰控件。
+    stripe_pay_signal = pyqtSignal(int, str, str, str)
     # MCP 重启完成（ok, message）：主面板后台线程 → 本对话框（转圈 → 打勾动画收尾）
     restart_done = pyqtSignal(bool, str)
 
@@ -5468,8 +5479,8 @@ class _AgentSettingsDialog(QDialog):
         self.workflow_progress.connect(self._on_workflow_progress)
         self.plugin_progress.connect(self._on_plugin_progress)
         self.copilot_plugin_progress.connect(self._on_coplugin_progress)
-        # 支付收款码加载结果回主线程落地（后台线程 → 主线程，Qt 自动排队）
-        self.pay_qr_signal.connect(self._on_pay_qr)
+        # Stripe 支付状态回主线程落地（后台线程 → 主线程，Qt 自动排队）
+        self.stripe_pay_signal.connect(self._on_stripe_state)
 
     def _dialog_qss(self) -> str:
         """本对话框的根样式：输入类控件（输入框 / 多行文本 / 下拉框）的配色都在这里。
@@ -9507,7 +9518,7 @@ class _AgentSettingsDialog(QDialog):
             return False
 
     def _memb_buy(self, product: dict):
-        """购买流程：未登录先提示登录 → 用户协议确认 → 支付对话框（收款码）。"""
+        """购买流程：未登录先提示登录 → 用户协议确认 → Stripe 支付对话框。"""
         auth = getattr(self, "_memb_auth", None)
         if auth is None:
             return
@@ -9591,12 +9602,16 @@ class _AgentSettingsDialog(QDialog):
             pass
         return (_ui("用户协议：使用本软件及内置模型服务即表示您同意合理使用条款；"
                     "积分用于内置模型 token 消耗，充值后不支持退款；"
-                    "管理员确认到账后积分/会员方发放。"))
+                    "支付成功后积分/会员自动发放。"))
 
     def _memb_show_pay_dialog(self, auth, product: dict):
-        """支付对话框：选择支付方式 → 创建订单 → 显示收款码；等待管理员确认到账。"""
+        """Stripe 支付对话框：创建 Checkout 订单 → 显示 Stripe 收款码 → 轮询到账。
+
+        不再加载支付宝/微信的个人收款码：二维码内容就是 Stripe 收银台地址，
+        手机扫码或在浏览器打开均可支付；到账由服务端 webhook 确认，客户端自动关窗。
+        """
         dlg = QDialog(self)
-        dlg.setWindowTitle(_ui("支付订单"))
+        dlg.setWindowTitle(_ui("Stripe 支付"))
         dlg.setMinimumWidth(380)
         dlg.setStyleSheet(self._dialog_qss())
         dl = QVBoxLayout(dlg)
@@ -9608,18 +9623,7 @@ class _AgentSettingsDialog(QDialog):
         info.setStyleSheet(f"color: {self._TEXT}; font-size: 13px;")
         dl.addWidget(info)
 
-        method_row = QHBoxLayout()
-        method_row.addWidget(QLabel(_ui("支付方式：")))
-        pay_combo = _ArrowComboBox()
-        pay_combo.addItems([_ui("支付宝"), _ui("微信")])
-        pay_combo.setStyleSheet(
-            f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid "
-            f"{self._BORDER}; border-radius: 6px; padding: 4px 8px;")
-        method_row.addWidget(pay_combo)
-        method_row.addStretch(1)
-        dl.addLayout(method_row)
-
-        qr_label = QLabel(_ui("正在加载收款码..."))
+        qr_label = QLabel(_ui("正在创建 Stripe 支付订单..."))
         qr_label.setFixedSize(220, 220)
         qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qr_label.setStyleSheet(
@@ -9635,7 +9639,8 @@ class _AgentSettingsDialog(QDialog):
         order_lab.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
         order_lab.setWordWrap(True)
         dl.addWidget(order_lab)
-        tip = QLabel(_ui("请使用支付宝/微信扫码完成支付，支付完成后请等待管理员确认到账。"))
+        tip = QLabel(_ui("请使用手机扫描二维码，或点击「在浏览器中打开」进入 "
+                        "Stripe 安全收银台完成支付；支付成功后会员/积分自动到账。"))
         tip.setStyleSheet(f"color: {self._DIM}; font-size: 11px;")
         tip.setWordWrap(True)
         dl.addWidget(tip)
@@ -9647,129 +9652,193 @@ class _AgentSettingsDialog(QDialog):
         cancel.setStyleSheet(
             f"background: {self._PANEL}; color: {self._TEXT}; border: 1px solid "
             f"{self._BORDER}; border-radius: 6px; padding: 6px 18px;")
-        done = QPushButton(_ui("我已完成支付"))
-        done.setAutoDefault(False)
-        done.setStyleSheet(
+        open_btn = QPushButton(_ui("在浏览器中打开"))
+        open_btn.setAutoDefault(False)
+        open_btn.setEnabled(False)      # 拿到 Stripe 收银台地址后才可点
+        open_btn.setStyleSheet(
             f"background: {self._ACCENT}; color: #FFFFFF; border: none;"
-            "border-radius: 6px; padding: 6px 18px; font-weight: 700;")
+            "border-radius: 6px; padding: 6px 18px; font-weight: 700;"
+            f"QPushButton:disabled {{ background: {self._PANEL};"
+            f" color: {self._DIM}; border: 1px solid {self._BORDER}; }}")
         cancel.clicked.connect(dlg.reject)
-        done.clicked.connect(dlg.accept)
+        open_btn.clicked.connect(lambda: self._open_checkout_url(
+            getattr(self, "_pay_checkout_url", "")))
         btns.addWidget(cancel)
-        btns.addWidget(done)
+        btns.addWidget(open_btn)
         dl.addLayout(btns)
 
-        # 收款码刷新的批次号：每次下单/切换支付方式都 +1，旧批次结果一律丢弃。
-        # 用户快速连点切换时会有多个后台请求在飞，若不做过期判定，先返回的旧方式
-        # 收款码会把后返回的新收款码覆盖掉（表现为"切了却显示上一个方式的码"）。
-        self._pay_qr_gen = 0
-        # 支付对话框内的收款码/订单号标签引用：UI 更新由 _on_pay_qr 在主线程统一执行；
-        # 对话框关闭时置空，避免迟到的后台结果写向已销毁控件。
+        # 批次号保持单调递增（不重置为 0）：Stripe 轮询线程可能跨对话框存活，
+        # 对话框关闭时 +1 作废旧回包，避免迟到的结果写进新窗口。
+        self._pay_qr_gen = int(getattr(self, "_pay_qr_gen", 0))
+        # 支付对话框内的二维码/订单号/跳转按钮引用：UI 更新由 _on_stripe_state
+        # 在主线程统一执行；对话框关闭时置空，避免迟到结果写向已销毁控件。
         self._pay_qr_label = qr_label
         self._pay_order_label = order_lab
+        self._pay_open_btn = open_btn
+        self._pay_checkout_url = ""
+        # 支付成功标记：成功时由 _on_stripe_state 关窗，关闭后不再弹「确认中」提示
+        self._pay_paid_ok = False
 
-        def _current_method() -> str:
-            """当前支付方式键（与后端 pay_method 取值一致）。
+        def _load_stripe(gen: int):
+            """后台：创建 Stripe Checkout 订单 → 回主线程生成收款码 → 轮询到账。
 
-            **在主线程读取**控件状态后作为参数传给后台线程：工作线程里访问 QComboBox
-            属于跨线程操作 Qt 控件，结果不可靠。
-            """
-            return "alipay" if pay_combo.currentIndex() == 0 else "wechat"
-
-        def _load_order(gen: int, pay_method: str):
-            """后台：按指定支付方式下单并取回收款码。
-
-            结果一律经 pay_qr_signal 回主线程落地（见 _on_pay_qr）——**绝不在此线程直接
-            setPixmap/setText**：跨线程写 GUI 是 Qt 未定义行为，可能静默失效或崩溃，
-            正是"切换支付方式后收款码不更新"这类偶发问题的温床。
+            结果一律经 stripe_pay_signal 回主线程落地（见 _on_stripe_state）：
+            跨线程直接操作控件属于 Qt 未定义行为，可能静默失效或崩溃。
             """
             from zhuzhu_Copilot.core.auth_client import _http_post_json, _http_get_json
+            base = _pay_base(auth.server)
             ok, data, _ = _http_post_json(
-                f"{auth.server}/api/shop/order",
-                {"product_id": product["id"], "pay_method": pay_method},
-                token=auth.token, timeout=10)
+                f"{base}/api/pay/checkout",
+                {"product_id": product["id"]},
+                token=auth.token, timeout=15)
             if not ok or not isinstance(data, dict) or data.get("code") != 0:
-                self.pay_qr_signal.emit(gen, None, _ui("订单创建失败，请重试"), "")
+                msg = _ui("支付服务暂不可用，请稍后重试")
+                if isinstance(data, dict) and data.get("detail"):
+                    msg = str(data["detail"])
+                self.stripe_pay_signal.emit(gen, "error", msg, "")
                 return
             od = data.get("data") or {}
-            order_text = _uif("订单号：{oid}（金额 {amt} 元）",
-                              oid=od.get("order_id", ""), amt=od.get("amount", ""))
-            qrcode_url = od.get("qrcode_url") or ""
-            if not qrcode_url:
-                ok2, qd, _ = _http_get_json(f"{auth.server}/api/shop/qrcodes",
-                                            token=auth.token, timeout=10)
-                if ok2 and isinstance(qd, dict):
-                    qrcode_url = (qd.get("data") or {}).get(pay_method) or ""
-            if qrcode_url:
-                if qrcode_url.startswith("/"):
-                    qrcode_url = f"{auth.server}{qrcode_url}"
-                try:
-                    import urllib.request
-                    req = urllib.request.Request(qrcode_url,
-                                                 headers={"User-Agent": "Mozilla/5.0"})
-                    img_bytes = urllib.request.urlopen(req, timeout=15).read()
-                    pm = QPixmap()
-                    if pm.loadFromData(img_bytes):
-                        scaled = pm.scaled(210, 210,
-                                           Qt.AspectRatioMode.KeepAspectRatio,
-                                           Qt.TransformationMode.SmoothTransformation)
-                        self.pay_qr_signal.emit(gen, scaled, "", order_text)
-                        return
-                except Exception:
-                    pass
-            self.pay_qr_signal.emit(gen, None,
-                                    _ui("收款码加载失败，请联系管理员配置"), order_text)
+            order_id = str(od.get("order_id") or "")
+            checkout_url = str(od.get("checkout_url") or "")
+            if not checkout_url:
+                self.stripe_pay_signal.emit(
+                    gen, "error", _ui("支付服务未返回跳转地址，请稍后重试"), "")
+                return
+            self.stripe_pay_signal.emit(
+                gen, "checkout", _uif("订单号：{oid}", oid=order_id), checkout_url)
+            # 轮询订单状态：Webhook 到账后 pay-server 返回 paid，窗口自动确认并关闭。
+            # 真正发货始终以服务端 webhook 为准，这里只负责 UI 状态。
+            deadline = time.time() + 10 * 60
+            while time.time() < deadline:
+                time.sleep(5)
+                if int(gen) != int(getattr(self, "_pay_qr_gen", 0)):
+                    return          # 用户已关窗：停止轮询
+                ok2, d2, _ = _http_get_json(
+                    f"{base}/api/pay/order/{order_id}", token=auth.token, timeout=10)
+                if not ok2 or not isinstance(d2, dict) or d2.get("code") != 0:
+                    continue
+                od2 = d2.get("data") or {}
+                # 必须「已支付且已发放」才算完成：grant 失败时服务端会等
+                # Stripe 重放 webhook 重试，客户端继续轮询即可。
+                if (od2.get("status") == "paid"
+                        and od2.get("grant_status") == "granted"):
+                    self.stripe_pay_signal.emit(
+                        gen, "paid", _ui("支付成功，权益已到账"), "")
+                    return
+            self.stripe_pay_signal.emit(
+                gen, "timeout",
+                _ui("尚未确认到账：完成支付后请稍等，到账后会自动更新。"), "")
 
-        def _reload_qr():
-            """（重新）加载收款码：首次打开、以及每次切换支付方式时调用。
-
-            先把上一方式的收款码清掉并显示加载态：否则新码返回前界面上仍是旧码，
-            用户可能扫错码付款（这是切换支付方式必须刷新收款码的根本原因）。
-            """
-            self._pay_qr_gen += 1
-            gen = self._pay_qr_gen
-            qr_label.clear()
-            qr_label.setText(_ui("正在加载收款码..."))
-            order_lab.setText("")
-            threading.Thread(target=_load_order, args=(gen, _current_method()),
-                             daemon=True).start()
-
-        # 切换支付方式 → 立即刷新为新方式的收款码（订单按 pay_method 创建，故重新下单）
-        pay_combo.currentIndexChanged.connect(lambda _i: _reload_qr())
-        _reload_qr()
+        # 打开即下单：一次只创建一个 Stripe Checkout 会话，不再请求个人收款码
+        self._pay_dialog = dlg          # 先挂引用：极快的回包也要能自动关窗
+        self._pay_qr_gen += 1
+        threading.Thread(target=_load_stripe, args=(self._pay_qr_gen,),
+                         daemon=True).start()
         accepted = False
         try:
             accepted = bool(dlg.exec())
         finally:
-            # 关闭对话框：摘掉标签引用并作废在途批次，避免后台线程写向已销毁控件
+            # 关闭对话框：摘掉引用并作废在途批次，避免后台线程写向已销毁控件
             self._pay_qr_gen += 1
             self._pay_qr_label = None
             self._pay_order_label = None
-        if accepted:
+            self._pay_open_btn = None
+            self._pay_checkout_url = ""
+            self._pay_dialog = None
+        if getattr(self, "_pay_paid_ok", False):
             QMessageBox.information(
-                self, _ui("已提交"),
-                _ui("已提交支付确认，管理员确认到账后积分/会员将自动入账。"))
+                self, _ui("支付成功"), _ui("支付成功，会员/积分已到账。"))
+        elif accepted:
+            QMessageBox.information(
+                self, _ui("支付确认中"),
+                _ui("Stripe 支付确认中：完成支付后权益会自动到账，"
+                    "可稍后在会员页查看。"))
+        self._pay_paid_ok = False
 
-    def _on_pay_qr(self, gen: int, pixmap, qr_text: str, order_text: str):
-        """支付收款码加载完成（后台线程 → 主线程）：应用结果并丢弃过期批次。
-
-        gen 与当前批次不一致 → 用户已再次切换支付方式（或已关窗），该结果必须丢弃：
-        否则旧方式的收款码会把新方式的覆盖回去，用户就会扫到错的码。
-        """
+    def _on_stripe_state(self, gen: int, stage: str, text: str, url: str):
+        """Stripe 支付状态（后台线程 → 主线程）：渲染收款码、确认到账并关闭对话框。"""
         if int(gen) != int(getattr(self, "_pay_qr_gen", 0)):
             return
         lbl = getattr(self, "_pay_qr_label", None)
         order_lbl = getattr(self, "_pay_order_label", None)
+        btn = getattr(self, "_pay_open_btn", None)
         try:
-            if order_lbl is not None and order_text:
-                order_lbl.setText(order_text)
+            if order_lbl is not None and text and stage != "paid":
+                order_lbl.setText(text)
             if lbl is None:
                 return
-            if pixmap is not None and not pixmap.isNull():
-                lbl.setPixmap(pixmap)
+            if stage == "checkout":
+                # 收款码内容 = Stripe 收银台地址：手机扫码或浏览器打开都能付款
+                self._pay_checkout_url = url
+                pm = self._qr_pixmap(url, 210)
+                if pm is not None and not pm.isNull():
+                    lbl.setPixmap(pm)
+                    lbl.setToolTip(url)
+                else:
+                    lbl.setText(_ui("二维码生成失败\n请点击下方「在浏览器中打开」"))
+                if btn is not None:
+                    btn.setEnabled(bool(url))
+            elif stage == "paid":
+                lbl.setText(text)
+                self._pay_paid_ok = True
+                # 到账后立即刷新本页（WS 推送也会触发，这里兜底）
+                try:
+                    self._memb_refresh_status()
+                    self._memb_load_products()
+                except Exception:
+                    pass
+                dlg = getattr(self, "_pay_dialog", None)
+                if dlg is not None:
+                    dlg.accept()
             else:
-                lbl.setText(qr_text)
+                lbl.setText(text)
         except RuntimeError:
             pass   # 控件已随对话框销毁（关闭瞬间返回的结果）
+
+    @staticmethod
+    def _qr_pixmap(text: str, size: int = 210):
+        """把文本（Stripe 收银台 URL）生成二维码位图；失败返回 None。
+
+        必须在本方法（主线程）调用：QPixmap 不能在后台线程创建。
+        """
+        if not text:
+            return None
+        try:
+            import io
+            import qrcode
+            from qrcode.constants import ERROR_CORRECT_M
+            qr = qrcode.QRCode(version=None, error_correction=ERROR_CORRECT_M,
+                               box_size=8, border=2)
+            qr.add_data(text)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            pm = QPixmap()
+            pm.loadFromData(buf.getvalue())
+            if pm.isNull():
+                return None
+            return pm.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _open_checkout_url(url: str):
+        """打开 Stripe 收银台（webbrowser 失败时退化为系统命令）。"""
+        if not url:
+            return
+        opened = False
+        try:
+            opened = webbrowser.open(url)
+        except Exception:
+            opened = False
+        if not opened:
+            try:
+                from zhuzhu_Copilot.core.auth_client import AuthClient
+                AuthClient._open_url_fallback(url)
+            except Exception:
+                pass
 
     def _wechat_start_binding(self):
         """获取二维码并启动状态轮询。"""

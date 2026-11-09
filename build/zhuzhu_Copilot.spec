@@ -153,6 +153,10 @@ a = Analysis(
         *collect_submodules('win32com'),
         # 三件套图片依赖：docx/pptx/openpyxl 的 add_picture/add_image 运行时 import PIL，显式声明确保随包
         'PIL',
+        # 支付页 Stripe 收款码：agent_panel 函数内延迟 import qrcode（会编译成 .pyd），
+        # PyInstaller 静态分析看不到；漏声明会让打包版二维码静默退化为「生成失败」。
+        'qrcode',
+        'qrcode.image.pil',
         # 3D 桌宠（ui/pet3d）：QOpenGLWidget 直渲 + numpy。pet3d 是 PEP 562 懒加载包，
         # PyInstaller 静态分析看不到 `from . import window` 里的 QtOpenGL 导入，必须显式声明，
         # 否则打包版会静默回退成 GIF 桌宠（用户侧就是「怎么还是那只 gif」）。

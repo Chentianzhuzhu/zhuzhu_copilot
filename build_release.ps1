@@ -294,7 +294,7 @@ function Test-Prereq($PyInfo) {
 
     # 构建解释器自带依赖自检（缺依赖会让打包出的产物功能残缺）
     # 用单行 -c（多行脚本经 PowerShell 传参会被折行破坏）并以 MISS: 标记输出
-    $req = 'PyInstaller,PyQt6,PIL,docx,pptx,openpyxl,pygame,win32api'
+    $req = 'PyInstaller,PyQt6,PIL,qrcode,docx,pptx,openpyxl,pygame,win32api'
     $probeSrc = "import importlib.util as u;mods='" + $req +
     "'.split(',');print('MISS:'+','.join([m for m in mods if u.find_spec(m) is None]))"
     $probe = @($PyInfo.Pre) + @('-c', $probeSrc)
